@@ -14,7 +14,7 @@ namespace xgboost::common::metal {
 void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> groups,
                 Span<std::size_t> relative_indices);
 
-enum class RankingMetricKind : std::uint32_t { kPrecision, kNDCG };
+enum class RankingMetricKind : std::uint32_t { kPrecision, kNDCG, kMAP };
 struct RankingSums {
   double score, weight;
 };

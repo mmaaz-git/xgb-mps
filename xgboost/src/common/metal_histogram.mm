@@ -1471,7 +1471,8 @@ RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const>
   auto n_groups = groups.size() - 1;
   CHECK_EQ(labels.Size(), predictions.Size());
   CHECK(weights.empty() || weights.size() == n_groups);
-  CHECK(kind == RankingMetricKind::kPrecision || kind == RankingMetricKind::kNDCG);
+  CHECK(kind == RankingMetricKind::kPrecision || kind == RankingMetricKind::kNDCG ||
+        kind == RankingMetricKind::kMAP);
   if (kind == RankingMetricKind::kNDCG) {
     CHECK_GE(discounts.size(), std::min(max_group_size, topk));
     CHECK_EQ(inverse_idcg.size(), n_groups);

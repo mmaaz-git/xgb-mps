@@ -30,9 +30,9 @@ void CheckScores() {
            maximum = sizes.empty() ? 0 : *std::max_element(sizes.begin(), sizes.end());
     std::vector<double> discounts(maximum);
     for (size_t i = 0; i < maximum; ++i) discounts[i] = 1 / std::log2(double(i) + 2);
-    for (int kind = 0; kind < 3; ++kind) {
+    for (int kind = 0; kind < 4; ++kind) {
       for (size_t stride : {1, 3}) {
-        for (uint32_t topk : {1u, 10u, ~0u}) {
+        for (uint32_t topk : {0u, 1u, 10u, ~0u}) {
           for (int mode = 0; mode < 4; ++mode) {
             std::vector<float> pred(n * stride, NAN), label(n * stride, NAN), weight;
             if (mode) weight.resize(sizes.size());
@@ -44,10 +44,11 @@ void CheckScores() {
               constexpr float binary[]{0, 1, 0.99999994f, 1.e-7f, -1.e-7f};
               constexpr float linear[]{-.4f, 0, .7f, 1.2f, 2.8f, 6.4f};
               constexpr float exponential[]{0, 1, 2, 5, 15, 31, 1.e-7f, 1.0000001f};
-              float y = kind == 0   ? binary[rng() % 5]
-                        : kind == 1 ? exponential[rng() % 8]
-                                    : linear[rng() % 6];
+              float y = (kind == 0 || kind == 3) ? binary[rng() % 5]
+                        : kind == 1              ? exponential[rng() % 8]
+                                                 : linear[rng() % 6];
               if (kind == 0 && i % 17 == 0) y = std::numeric_limits<float>::denorm_min();
+              if (kind == 3 && mode == 2) y = float(rng() % 2);
               label[i * stride] = mode == 1 ? 0 : y;
             }
             auto scores =
@@ -66,7 +67,7 @@ void CheckScores() {
               auto gain = [&](float y) {
                 return kind == 1 ? double((1u << uint32_t(y)) - 1) : double(y);
               };
-              if (kind != 0) {
+              if (kind == 1 || kind == 2) {
                 std::stable_sort(order.begin(), order.end(), [&](auto a, auto b) {
                   return labels(begin + a) > labels(begin + b);
                 });
@@ -81,21 +82,34 @@ void CheckScores() {
               });
               float w = weight.empty() ? 1 : weight[g];
               double score = 0;
-              for (size_t i = 0; i < k; ++i) {
-                auto y = labels(begin + order[i]);
-                score += kind == 0 ? double(y * w) : discounts[i] * gain(y) * inverse[g];
+              if (kind == 3) {
+                double hits = 0;
+                for (size_t i = 0; i < count; ++i) {
+                  auto y = labels(begin + order[i]);
+                  hits += y;
+                  if (i < k) score += hits / double(i + 1) * y;
+                }
+                score = hits > 0 ? score / std::min(hits, double(topk)) : (minus ? 0 : 1);
+                score *= w;
+              } else {
+                for (size_t i = 0; i < k; ++i) {
+                  auto y = labels(begin + order[i]);
+                  score += kind == 0 ? double(y * w) : discounts[i] * gain(y) * inverse[g];
+                }
+                if (kind == 0)
+                  score /= double(k);
+                else
+                  score = inverse[g] <= 0 ? (minus ? 0 : 1) : score * w;
               }
-              if (kind == 0)
-                score /= double(k);
-              else
-                score = inverse[g] <= 0 ? (minus ? 0 : 1) : score * w;
               expected_score += score;
               expected_weight += w;
             }
             auto before = common::metal::GetStatistics();
-            auto result = common::metal::RankingScore(
-                kind == 0 ? RankingMetricKind::kPrecision : RankingMetricKind::kNDCG, scores,
-                labels, groups, weight, topk, minus, kind == 1, discounts, inverse);
+            auto result = common::metal::RankingScore(kind == 0   ? RankingMetricKind::kPrecision
+                                                      : kind == 3 ? RankingMetricKind::kMAP
+                                                                  : RankingMetricKind::kNDCG,
+                                                      scores, labels, groups, weight, topk, minus,
+                                                      kind == 1, discounts, inverse);
             auto after = common::metal::GetStatistics();
             Check(after.ranking_metric_dispatches - before.ranking_metric_dispatches ==
                       uint64_t(!sizes.empty()),
@@ -124,8 +138,8 @@ void CheckScores() {
     std::printf("Checked %zu ranking score cases / %zu rows\n", cases, checked);
     std::fflush(stdout);
   }
-  std::printf("PASS %zu precision/NDCG cases / %zu rows; max scaled CPU difference %.9g\n", cases,
-              checked, max_difference);
+  std::printf("PASS %zu precision/NDCG/MAP cases / %zu rows; max scaled CPU difference %.9g\n",
+              cases, checked, max_difference);
 }
 
 int main() {

@@ -31,7 +31,7 @@ def test_ranking_training(metal, objective, method, largest):
     # Objective ranking, NDCG ideal order and all three metric orders use GPU.
     assert after["group_sort_dispatches"] - before["group_sort_dispatches"] >= 20
     assert after["float_sum_dispatches"] > before["float_sum_dispatches"]
-    assert after["ranking_metric_dispatches"] - before["ranking_metric_dispatches"] == 10
+    assert after["ranking_metric_dispatches"] - before["ranking_metric_dispatches"] == 15
     assert (after["radix_sort_dispatches"] > before["radix_sort_dispatches"]) == (largest > 4096)
     np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
                                rtol=2e-5, atol=2e-5)
@@ -60,7 +60,7 @@ def test_ranking_metric_ties(metal, metric, largest):
     assert xgb.metal_info()["group_sort_dispatches"] > before
 
 
-@pytest.mark.parametrize("metric", ["ndcg@10", "ndcg@10-", "pre@10"])
+@pytest.mark.parametrize("metric", ["ndcg@10", "ndcg@10-", "pre@10", "map@10", "map@10-"])
 @pytest.mark.parametrize("mode", ["weighted", "zero_weights", "zero_labels", "linear_gain"])
 def test_ranking_score_edge_cases(metal, metric, mode):
     rng = np.random.default_rng(7192)
@@ -84,4 +84,29 @@ def test_ranking_score_edge_cases(metal, metric, mode):
     gpu_value = float(gpu.eval(d).rsplit(":", 1)[1])
     cpu_value = float(cpu.eval(d).rsplit(":", 1)[1])
     np.testing.assert_allclose(gpu_value, cpu_value, rtol=2e-12, atol=2e-12)
+    assert xgb.metal_info()["ranking_metric_dispatches"] == before + 1
+
+
+@pytest.mark.parametrize("metric", ["pre", "map", "map-"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_ranking_soft_label_cancellation(metal, metric, reverse):
+    # All three are accepted as near-binary labels upstream. Ordered double
+    # addition loses the subnormal when it precedes +/- epsilon; reordering
+    # those terms would change MAP's zero-hit fallback.
+    labels = np.array([np.nextafter(np.float32(0), np.float32(1)), -1e-7, 1e-7], dtype=np.float32)
+    if reverse:
+        labels = labels[::-1].copy()
+    d = xgb.DMatrix(np.ones((3, 1)), label=labels, group=[3], base_margin=[3, 2, 1], nthread=2)
+    params = dict(objective="reg:squarederror", eval_metric=metric, nthread=2, base_score=.5)
+    cpu = xgb.train(params | {"device": "cpu"}, d, 0)
+    gpu = xgb.train(params | {"device": "mps"}, d, 0)
+    before = xgb.metal_info()["ranking_metric_dispatches"]
+    if reverse and metric.startswith("map"):
+        # The CPU formula exceeds one for this signed near-zero denominator.
+        for model in [cpu, gpu]:
+            with pytest.raises(xgb.core.XGBoostError, match="score"):
+                model.eval(d)
+    else:
+        np.testing.assert_allclose(float(gpu.eval(d).rsplit(":", 1)[1]),
+                                   float(cpu.eval(d).rsplit(":", 1)[1]), rtol=2e-12, atol=2e-12)
     assert xgb.metal_info()["ranking_metric_dispatches"] == before + 1

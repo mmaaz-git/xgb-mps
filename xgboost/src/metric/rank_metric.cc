@@ -443,6 +443,17 @@ class EvalMAPScore : public EvalRankWithCache<ltr::MAPCache> {
       return Finalize(ctx_, info, map.Residue(), map.Weights());
     }
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      auto sums = common::metal::RankingScore(
+          common::metal::RankingMetricKind::kMAP,
+          linalg::MakeTensorView(DeviceOrd::CPU(), predt.ConstHostSpan(), predt.Size()),
+          info.labels.HostView().Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
+          info.weights_.ConstHostSpan(), param_.TopK(), minus_);
+      return Finalize(ctx_, info, sums.score, sums.weight);
+    }
+#endif
+
     auto gptr = p_cache->DataGroupPtr(ctx_);
     auto h_label = info.labels.HostView().Slice(linalg::All(), 0);
 

@@ -9,7 +9,7 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums and stump
-fitting, means, stable column/grouped sorting, ROC/PR-AUC and quantile/median estimation on Metal. Feature quantile sketching,
+fitting, means, stable column/grouped sorting, ROC/PR-AUC, ranking metrics and quantile/median estimation on Metal. Feature quantile sketching,
 gradient-based sampling and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
@@ -69,7 +69,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Ranking sorts | Stable per-query prediction order for pairwise/NDCG/MAP training and NDCG/MAP/precision metrics; NDCG ideal-label order and query-weight sums also use Metal; pair construction and gradients remain CPU |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
-| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG and precision; NDCG discounts and inverse ideal gains remain CPU |
+| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision; NDCG discounts and inverse ideal gains remain CPU |
 
 AFT gradient evaluation is still hybrid for numerically sensitive censored rows.
 The GPU flags interval probabilities at or below `1e-5`; the host recomputes those
@@ -876,3 +876,37 @@ the CPU-only checks also pass. The added **504 native score cases / 5,350,320 ro
 cover empty/degenerate queries, strided labels, exponential and linear gain,
 near-binary labels, extreme query weights and top-k limits. Maximum scaled
 CPU score difference is `3.61e-15`.
+
+
+### MAP scoring and current ranking validation
+
+MAP now joins precision and NDCG in the fused GPU sort-and-score path. Exact binary
+labels use parallel integer hit counts and prefixes. For the near-binary labels
+accepted by upstream validation, GPU evaluation preserves CPU summation order so
+cancellation cannot silently change the zero-hit fallback. Weighted zero-relevance
+behavior, signed near-zero labels and invalid-result handling are covered explicitly.
+NDCG cache calculations, ranking losses and grouped ROC/PR-AUC remain unfinished.
+
+All **557 Python tests** pass, with one skip, along with native tests under Metal
+API Validation and the CPU-only build checks. Native ranking validation now covers
+**120 sort cases / 7,518,270 rows** and **896 score cases / 9,511,680 rows**. The
+maximum scaled CPU score difference is `4.88e-15`.
+
+Current [NDCG@10](validation/benchmark-ranking-v4-m3.json),
+[precision@10](validation/benchmark-pre-v4-m3.json) and
+[MAP@10](validation/benchmark-map-v4-m3.json) measurements include all sort/score work
+and use five alternating repetitions. At one million rows, with 4,096-row queries:
+
+| Metric | CPU | Metal | CPU / Metal |
+| --- | ---: | ---: | ---: |
+| NDCG@10 | 10.45 ms | 2.66 ms | 3.94× |
+| Precision@10 | 7.36 ms | 2.58 ms | 2.86× |
+| MAP@10 | 7.98 ms | 2.94 ms | 2.72× |
+| [Uncapped NDCG](validation/benchmark-ndcg-full-v4-m3.json) | 11.03 ms | 2.63 ms | **4.19×** |
+| [Uncapped MAP](validation/benchmark-map-full-v4-m3.json) | 9.03 ms | 2.90 ms | 3.11× |
+
+Short queries can still favor CPU: at 32 rows per query, million-row precision@10
+is 0.90× and uncapped MAP is 0.90×. Maximum absolute metric difference across these
+benchmarks is below `3.5e-15`. Initial cache setup, data/model construction and
+training are excluded; first-evaluation times and every repeat are retained.
+These metric improvements do not change the **1.04×** wide-training result above.

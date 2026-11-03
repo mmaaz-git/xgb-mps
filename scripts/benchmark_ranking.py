@@ -64,7 +64,7 @@ def main():
                     after = xgb.metal_info()
                     delta = {k: after[k] - before[k] for k in after if k not in {"built", "available"}}
                     assert delta["group_sort_dispatches"] == int(device == "mps")
-                    expected_score = device == "mps" and args.metric.split("@")[0].rstrip("-") in {"ndcg", "pre"}
+                    expected_score = device == "mps" and args.metric.split("@")[0].rstrip("-") in {"ndcg", "pre", "map"}
                     assert delta["ranking_metric_dispatches"] == int(expected_score)
                     timings[device].append(seconds)
                     counters[device].append(delta)

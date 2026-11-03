@@ -33,7 +33,7 @@ listed below. This is not yet a complete GPU backend.
 | AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and binary64 block sums; small final host reduction |
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and tied-score trapezoids on Metal; per-output normalization and aggregation remain host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and stable continuous integration on Metal; final per-output degeneracy checks and aggregation remain host |
-| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts and inverse ideal gains are still calculated on CPU after GPU ideal-label sorting; MAP sorting is Metal but scoring remains CPU. Grouped ROC/PR-AUC remains CPU |
+| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts and inverse ideal gains are still calculated on CPU after GPU ideal-label sorting. Label validation remains CPU. Grouped ROC/PR-AUC remains CPU |
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Quantile sketching/cut construction remain CPU; numeric/categorical bin assignment and hit counts for SparsePage-backed matrices use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
@@ -95,3 +95,23 @@ original CPU formula. `survival_cpu_corrections` counts rows; `survival_cpu_time
 measures that host work. These counters are separate from completed GPU dispatches.
 No hidden whole-objective CPU fallback is used. Removing the correction path while
 preserving a defensible numerical contract remains required for full AFT coverage.
+
+
+## Ranking metric numerical behavior
+
+Precision preserves CPU FP32 label × query-weight products before binary64 summation.
+NDCG preserves the CPU's unweighted fallback when inverse ideal gain is nonpositive;
+MAP's zero-hit fallback is multiplied by the query weight. These details can differ
+from upstream CUDA degeneracy handling. The reference contract here is upstream CPU.
+
+MAP uses parallel integer hit counts/prefixes for exact binary labels. Upstream
+validation also admits labels within epsilon of zero or one, including tiny negatives.
+For those queries, the GPU uses the CPU's sequential binary64 evaluation order:
+reordering near-zero signed terms could otherwise change whether the zero-hit fallback
+is selected. This path remains on the GPU and is slower for long nonbinary queries.
+Empty-query and top-k-zero native tests preserve CPU NaN/fallback behavior; the
+existing public metric finalization still reports invalid scores.
+
+The fused metric command reads back only score and weight totals. NDCG cache creation,
+ranking pair construction/gradients and grouped AUC remain separate unfinished work;
+GPU metric dispatch does not imply those operations have been ported.

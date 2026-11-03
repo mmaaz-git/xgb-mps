@@ -2991,6 +2991,52 @@ kernel void xgb_ranking_score(device const uint2* records [[buffer(0)]],
   using namespace xgb_survival;
   uint begin = offsets[group], count = offsets[group + 1] - begin, n = min(count, p.topk);
   D weight = p.weighted ? From(as_type<float>(weights[group])) : one;
+  if (p.kind == 2) {
+    uint local_hits = 0;
+    bool soft_label = false;
+    for (ulong i = lane; i < count; i += 32) {
+      uint bits = labels[ulong(records[ulong(begin) + i].y) * p.label_stride];
+      local_hits += uint(bits == 0x3f800000u);
+      soft_label |= (bits & 0x7fffffffu) != 0 && bits != 0x3f800000u;
+    }
+    // Upstream validation admits labels within epsilon of zero/one, including
+    // tiny negative values. Cancellation can change the zero-hit fallback. Keep
+    // CPU's sequential order for these queries, still entirely on the GPU.
+    if (simd_any(soft_label)) {
+      if (lane == 0) {
+        D hits = zero, area = zero;
+        for (ulong i = 0; i < count; ++i) {
+          D label = From(as_type<float>(labels[ulong(records[ulong(begin) + i].y) * p.label_stride]));
+          hits = hits + label;
+          if (i < n) area = area + (hits / D{xgb_scaled_integer(i + 1, 0)}) * label;
+        }
+        D limit{xgb_scaled_integer(p.topk, 0)};
+        area = hits > zero ? area / (hits < limit ? hits : limit) : (p.minus ? zero : one);
+        partial[group] = ulong2((area * weight).bits, weight.bits);
+      }
+      return;
+    }
+    uint total_hits = simd_sum(local_hits), preceding = 0;
+    D area = zero;
+    for (ulong base = 0; base < n; base += 32) {
+      ulong i = base + lane;
+      uint hit = i < n ? uint(labels[ulong(records[ulong(begin) + i].y) * p.label_stride] == 0x3f800000u) : 0;
+      uint prefix = simd_prefix_exclusive_sum(hit) + hit;
+      if (hit) area = area + D{xgb_scaled_integer(preceding + prefix, 0)} /
+                                D{xgb_scaled_integer(i + 1, 0)};
+      preceding += simd_sum(hit);
+    }
+    for (uint distance = 16; distance; distance >>= 1) {
+      D other = xgb_shuffle_down_double(area, distance);
+      if (lane + distance < 32) area = area + other;
+    }
+    if (lane == 0) {
+      area = total_hits ? area / D{xgb_scaled_integer(min(total_hits, p.topk), 0)}
+                        : (p.minus ? zero : one);
+      partial[group] = ulong2((area * weight).bits, weight.bits);
+    }
+    return;
+  }
   D inverse = p.kind == 1 ? D{inverse_idcg[group]} : one;
   D sum = zero;
   if (p.kind == 0 || inverse > zero) {
