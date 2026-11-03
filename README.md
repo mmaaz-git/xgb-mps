@@ -91,7 +91,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **411 passed, 1 skipped**. The skip requires a machine without an
+- Python: **415 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **192 cases**, with every bin compared exactly to independent
@@ -174,10 +174,10 @@ quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 100,000 | 0.115 s | 0.393 s | 0.29× |
-| 1,000,000 | 0.796 s | 1.207 s | 0.66× |
+| 100,000 | 0.114 s | 0.323 s | 0.35× |
+| 1,000,000 | 0.795 s | 1.110 s | 0.72× |
 
-[Latest raw training results](validation/benchmark-prefix-v2-m3.json), including
+[Latest raw training results](validation/benchmark-row-workspaces-v1-m3.json), including
 GPU bin assignment, gradient bounds, root reductions, resident histograms, subtraction/gathering,
 reused split buffers and skipped zero atomic additions. The [preceding run](validation/benchmark-hist-pool-m3.json)
 and [first resident-histogram run](validation/benchmark-hist-storage-m3.json) are
@@ -543,3 +543,18 @@ training remains slower than CPU: the [parallel run](validation/benchmark-prefix
 takes 1.169 seconds and the [adaptive run](validation/benchmark-prefix-v2-m3.json)
 takes 1.207 seconds at one million rows. The faster prefix kernel does not establish
 an end-to-end improvement; GPU timing variability remains substantial.
+
+### Row workspace reuse
+
+Partition metadata, count/prefix arrays and leaf-position outputs now reuse
+per-model Metal buffers. Single-page training also reuses the gradient staging
+allocation for leaf assignment. External-memory pages do not retain separate
+full gradient matrices. The buffers grow when needed and remain isolated between
+models; transfers and synchronization still occur.
+
+The [latest training measurement](validation/benchmark-row-workspaces-v1-m3.json)
+records 42 allocations and 1,238 reuses at one million rows. Its median is 1.110 s
+Metal versus 0.795 s CPU (0.72×), compared with 1.207 s Metal in the preceding run.
+Timing variability prevents attributing the full change to buffer reuse, and CPU
+training remains faster. All 415 Python tests and CPU-only checks pass, including
+new scalar/vector and dense/sparse tests that grow and shrink training matrices.

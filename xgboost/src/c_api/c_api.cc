@@ -178,6 +178,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["survival_metric_dispatches"] = Integer{static_cast<std::int64_t>(stats.survival_metric_dispatches)};
   info["survival_cpu_corrections"] = Integer{static_cast<std::int64_t>(stats.survival_cpu_corrections)};
   info["survival_cpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.survival_cpu_time_ns)};
+  info["row_workspace_allocations"] = Integer{static_cast<std::int64_t>(stats.row_workspace_allocations)};
+  info["row_workspace_reuses"] = Integer{static_cast<std::int64_t>(stats.row_workspace_reuses)};
+
 
 
   info["mean_dispatches"] = Integer{static_cast<std::int64_t>(stats.mean_dispatches)};
@@ -241,6 +244,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["survival_metric_dispatches"] = Integer{0};
   info["survival_cpu_corrections"] = Integer{0};
   info["survival_cpu_time_ns"] = Integer{0};
+  info["row_workspace_allocations"] = Integer{0};
+  info["row_workspace_reuses"] = Integer{0};
   info["mean_dispatches"] = Integer{0};
   info["mean_gpu_time_ns"] = Integer{0};
   info["binning_dispatches"] = Integer{0};

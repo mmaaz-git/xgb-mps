@@ -63,3 +63,36 @@ def test_partition_block_boundaries(metal, size):
     model = xgb.train(p | {"device": "mps"}, d, 3)
     assert xgb.metal_info()["leaf_partition_dispatches"] - before == 3
     np.testing.assert_allclose(model.predict(d), expected, rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.parametrize("layout", ["dense", "sparse"])
+@pytest.mark.parametrize("targets", [1, 3])
+def test_row_workspace_resize_and_reuse(metal, layout, targets):
+    rng = np.random.default_rng(931)
+    params = dict(tree_method="hist", max_depth=3, nthread=2, base_score=.2,
+                   multi_strategy="multi_output_tree")
+    models = {}
+    for iteration, rows in enumerate([257, 2049, 65, 4097, 129]):
+        x = rng.normal(size=(rows, 8)).astype(np.float32)
+        y = x[:, :targets] * 2 + x[:, -1, None]
+        if layout == "sparse":
+            x[rng.random(x.shape) < .7] = 0
+            x = sp.csr_matrix(x)
+        d = xgb.DMatrix(x, label=y, nthread=2)
+        if not models:
+            models = {device: xgb.Booster(params | {"device": device}, cache=[d])
+                       for device in ["cpu", "mps"]}
+        for model in models.values():
+            model.update(d, iteration)
+        np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
+                                   rtol=2e-5, atol=2e-5)
+    before = xgb.metal_info()
+    for iteration in range(5, 8):
+        for model in models.values():
+            model.update(d, iteration)
+    after = xgb.metal_info()
+    allocations = after["row_workspace_allocations"] - before["row_workspace_allocations"]
+    reuses = after["row_workspace_reuses"] - before["row_workspace_reuses"]
+    assert reuses > allocations
+    np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
+                               rtol=2e-5, atol=2e-5)

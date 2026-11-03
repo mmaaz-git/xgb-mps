@@ -36,6 +36,7 @@ std::atomic<std::uint64_t> gradient_sum_dispatches{0}, gradient_sum_gpu_time_ns{
 std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
+std::atomic<std::uint64_t> row_workspace_allocations{0}, row_workspace_reuses{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
 std::atomic<std::uint64_t> binning_dispatches{0}, binning_gpu_time_ns{0};
 std::atomic<std::uint64_t> mean_dispatches{0}, mean_gpu_time_ns{0};
@@ -360,6 +361,14 @@ void CompleteTraining(id<MTLCommandBuffer> command) {
 class MetalRows final : public DeviceRows {
   Runtime& rt_{GetRuntime()};
   id<MTLBuffer> rows_, saved_rows_, ranks_;
+  id<MTLBuffer> splits_, blocks_, categories_, counts_, prefix_, left_;
+  id<MTLBuffer> leaves_, leaf_gradients_, leaf_output_;
+  id<MTLBuffer> Workspace(id<MTLBuffer> __strong* buffer, std::size_t bytes, void const* data = nullptr) {
+    bool allocated = !*buffer || (*buffer).length < bytes;
+    auto result = Scratch(rt_, buffer, bytes, data);
+    (allocated ? row_workspace_allocations : row_workspace_reuses).fetch_add(1, std::memory_order_relaxed);
+    return result;
+  }
   std::size_t size_{0};
   bst_idx_t base_{0};
   bool ready_{false};
@@ -372,7 +381,7 @@ class MetalRows final : public DeviceRows {
   }
   id<MTLBuffer> EnsureReady(id<MTLCommandBuffer> command) {
     CHECK_LE(size_, std::numeric_limits<std::uint32_t>::max());
-    EnsureBuffer(rt_, &rows_, size_ * sizeof(bst_idx_t));
+    Workspace(&rows_, size_ * sizeof(bst_idx_t));
     if (!ready_ && size_) {
       struct {
         std::uint64_t rows, base;
@@ -435,14 +444,14 @@ class MetalRows final : public DeviceRows {
       auto command = [rt_.queue commandBuffer];
       CHECK(command);
       this->EnsureReady(command);
-      EnsureBuffer(rt_, &saved_rows_, size_ * sizeof(bst_idx_t));
-      EnsureBuffer(rt_, &ranks_, size_ * sizeof(std::uint32_t));
-      auto split_buffer = Upload(rt_, splits.data(), splits.size() * sizeof(PartitionSplit));
-      auto block_buffer = Upload(rt_, blocks.data(), blocks.size() * sizeof(Block));
-      auto cats = Upload(rt_, categories.data(), categories.size_bytes());
-      auto counts = Allocate(rt_, blocks.size() * sizeof(std::uint32_t));
-      auto prefix = Allocate(rt_, blocks.size() * sizeof(std::uint32_t));
-      auto left = Allocate(rt_, splits.size() * sizeof(std::uint64_t));
+      Workspace(&saved_rows_, size_ * sizeof(bst_idx_t));
+      Workspace(&ranks_, size_ * sizeof(std::uint32_t));
+      auto split_buffer = Workspace(&splits_, splits.size() * sizeof(PartitionSplit), splits.data());
+      auto block_buffer = Workspace(&blocks_, blocks.size() * sizeof(Block), blocks.data());
+      auto cats = Workspace(&categories_, categories.size_bytes(), categories.data());
+      auto counts = Workspace(&counts_, blocks.size() * sizeof(std::uint32_t));
+      auto prefix = Workspace(&prefix_, blocks.size() * sizeof(std::uint32_t));
+      auto left = Workspace(&left_, splits.size() * sizeof(std::uint64_t));
       Params p{size_,
                base_,
                static_cast<std::uint32_t>(gidx.index.GetBinTypeSize()),
@@ -522,9 +531,16 @@ class MetalRows final : public DeviceRows {
       auto command = [rt_.queue commandBuffer];
       CHECK(command);
       this->EnsureReady(command);
-      auto leaf_buffer = Upload(rt_, leaves.data(), leaves.size() * sizeof(LeafRange));
-      auto g = Upload(rt_, gradients.Values().data(), gradients.Values().size_bytes());
-      auto out = Allocate(rt_, size_ * sizeof(bst_node_t));
+      auto leaf_buffer = Workspace(&leaves_, leaves.size() * sizeof(LeafRange), leaves.data());
+      id<MTLBuffer> g;
+      if (base_ == 0 && size_ == gradients.Shape(0)) {
+        g = Workspace(&leaf_gradients_, gradients.Values().size_bytes(), gradients.Values().data());
+      } else {
+        // External-memory pages must not each retain an entire gradient matrix.
+        leaf_gradients_ = nil;
+        g = Upload(rt_, gradients.Values().data(), gradients.Values().size_bytes());
+      }
+      auto out = Workspace(&leaf_output_, size_ * sizeof(bst_node_t));
       struct {
         std::uint64_t rows, base, stride0, stride1;
         std::uint32_t targets, leaves;
@@ -864,7 +880,9 @@ Statistics GetStatistics() {
           survival_gradient_dispatches.load(std::memory_order_relaxed),
           survival_metric_dispatches.load(std::memory_order_relaxed),
           survival_cpu_corrections.load(std::memory_order_relaxed),
-          survival_cpu_time_ns.load(std::memory_order_relaxed)};
+          survival_cpu_time_ns.load(std::memory_order_relaxed),
+          row_workspace_allocations.load(std::memory_order_relaxed),
+          row_workspace_reuses.load(std::memory_order_relaxed)};
 }
 
 namespace {

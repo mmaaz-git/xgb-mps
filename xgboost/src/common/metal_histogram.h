@@ -42,6 +42,7 @@ struct Statistics {
   std::uint64_t radix_sort_dispatches, quantile_dispatches, quantile_gpu_time_ns;
   std::uint64_t survival_gradient_dispatches, survival_metric_dispatches;
   std::uint64_t survival_cpu_corrections, survival_cpu_time_ns;
+  std::uint64_t row_workspace_allocations, row_workspace_reuses;
 };
 
 class Histogram {
