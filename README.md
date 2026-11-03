@@ -221,10 +221,10 @@ vendored source.
 
 With three quantile levels (`0.1, 0.5, 0.9`) and one million rows, training takes
 **2.107 s Metal versus 1.878 s CPU** (0.89×). Adding random sample weights takes
-**2.238 s versus 1.903 s** (0.85×). Maximum prediction differences are `9.54e-7`.
+**2.221 s versus 1.835 s** (0.83×). Maximum prediction differences are `9.54e-7`.
 The initial GPU sort serves all three levels; weighted quantiles preserve CPU
 sequential FP32 cumulative sums. [Multiple-level results](validation/benchmark-quantile-multi-v1-m3.json)
-and [weighted results](validation/benchmark-quantile-weighted-v1-m3.json) include
+and [weighted results](validation/benchmark-quantile-weighted-v2-m3.json) include
 all repetitions and operation timings.
 
 ### Uniform sampling
@@ -452,3 +452,16 @@ pass; CPU-only compatibility checks pass. Feature quantile sketches remain CPU w
 The latest single-quantile million-row benchmark takes 0.970 s Metal versus 0.856 s
 CPU (0.88×). The three-level weighted benchmark remains slower and exposes the
 sequential weighted CDF as an optimization target. Raw results are linked above.
+
+### Weighted quantile tuning
+
+The weighted CDF now checks each gathered tile for subnormals or negative inputs
+before its sequential accumulation. Ordinary nonnegative weights use direct FP32
+addition, preserving CPU rounding order without per-element underflow checks.
+The slow path remains for exceptional inputs. The full test suite still passes.
+
+GPU quantile initialization at one million rows fell from 0.153 to 0.093 seconds
+across the [baseline](validation/benchmark-quantile-weighted-v1-m3.json) and
+[tuned](validation/benchmark-quantile-weighted-v2-m3.json) runs. Full training changed
+from 2.238 to 2.221 seconds, while CPU timing also varied; this does not establish
+an end-to-end training speedup. Both measurements are retained.

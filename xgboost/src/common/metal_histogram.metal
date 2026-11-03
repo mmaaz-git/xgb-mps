@@ -2056,19 +2056,43 @@ kernel void xgb_quantile_weight_cdf(device const uint2* records [[buffer(0)]],
                                     uint target [[threadgroup_position_in_grid]],
                                     uint tid [[thread_index_in_threadgroup]]) {
   threadgroup float tile[256];
+  threadgroup uint slow_group[8];
   threadgroup uint accumulated;
   if (tid == 0) accumulated = 0;
   threadgroup_barrier(mem_flags::mem_threadgroup);
   for (ulong begin = 0; begin < rows; begin += 256) {
     ulong index = ulong(target) * rows + begin + tid;
     uint length = uint(min(256ul, ulong(rows) - begin));
-    tile[tid] = tid < length ? as_type<float>(weights[records[index].y]) : 0.0f;
+    uint bits = tid < length ? weights[records[index].y] : 0;
+    tile[tid] = as_type<float>(bits);
+    uint magnitude = bits & 0x7fffffffu;
+    bool slow = simd_any((magnitude && magnitude < 0x00800000u) ||
+                         (magnitude && (bits & 0x80000000u)));
+    if (tid % 32 == 0) slow_group[tid / 32] = slow;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid == 0) {
+      uint a = accumulated & 0x7fffffffu;
+      bool preserve = (a && a < 0x00800000u) || (a && (accumulated & 0x80000000u));
+      for (uint i = 0; i < 8; ++i) preserve |= bool(slow_group[i]);
       float sum = as_type<float>(accumulated);
-      for (uint i = 0; i < length; ++i) {
-        sum = (begin == 0 && i == 0) ? tile[i] : xgb_fadd_preserve(sum, tile[i]);
-        tile[i] = sum;
+      uint first = 0;
+      if (begin == 0) {
+        sum = tile[0];  // std::partial_sum copies its first input, including -0.
+        first = 1;
+      }
+      // Normal, nonnegative inputs cannot underflow or cancel. Keeping this
+      // branch outside the loop preserves sequential FP32 rounding while
+      // avoiding subnormal checks on every addition in the common case.
+      if (preserve) {
+        for (uint i = first; i < length; ++i) {
+          sum = xgb_fadd_preserve(sum, tile[i]);
+          tile[i] = sum;
+        }
+      } else {
+        for (uint i = first; i < length; ++i) {
+          sum += tile[i];
+          tile[i] = sum;
+        }
       }
       accumulated = as_type<uint>(sum);
     }
