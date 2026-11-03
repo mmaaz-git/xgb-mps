@@ -21,7 +21,6 @@ struct Raw {
 };
 struct Dequantize {
   uint64_t count;
-  int32_t gu, hu;
   uint32_t bins, add;
 };
 struct Subtract {
@@ -31,7 +30,7 @@ struct Gather {
   uint64_t source;
   uint32_t output, bins, stride, padding;
 };
-static_assert(sizeof(Dequantize) == 24 && sizeof(Subtract) == 32 && sizeof(Gather) == 24);
+static_assert(sizeof(Dequantize) == 16 && sizeof(Subtract) == 32 && sizeof(Gather) == 24);
 void Require(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
@@ -87,7 +86,9 @@ int main(int argc, char** argv) {
           auto output = upload(expected.data(), expected.size() * sizeof(Pair));
           auto offset = upload(offsets, sizeof(offsets));
           for (uint32_t add : {0u, 1u}) {
-            Dequantize p{raw.size(), unit, -unit, bins, add};
+            Dequantize p{raw.size(), bins, add};
+            int32_t scale[4]{-unit, unit, 1, 0};
+            auto scales = upload(scale, sizeof(scale));
             auto command = [queue commandBuffer];
             auto e = [command computeCommandEncoder];
             [e setComputePipelineState:dequantize];
@@ -95,6 +96,7 @@ int main(int argc, char** argv) {
             [e setBuffer:output offset:0 atIndex:1];
             [e setBuffer:offset offset:0 atIndex:2];
             [e setBytes:&p length:sizeof(p) atIndex:3];
+            [e setBuffer:scales offset:0 atIndex:4];
             [e dispatchThreads:MTLSizeMake(raw.size(), 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
             [e endEncoding];

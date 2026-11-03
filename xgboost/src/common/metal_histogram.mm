@@ -36,7 +36,7 @@ std::atomic<std::uint64_t> dispatches{0};
 std::atomic<std::uint64_t> processed_rows{0};
 std::atomic<std::uint64_t> shared_dispatches{0};
 std::atomic<std::uint64_t> gpu_time_ns{0};
-std::atomic<std::uint64_t> quantization_dispatches{0};
+std::atomic<std::uint64_t> quantization_dispatches{0}, gradient_bound_dispatches{0};
 std::atomic<std::uint64_t> metric_dispatches{0}, metric_gpu_time_ns{0};
 std::atomic<std::uint64_t> prediction_dispatches{0}, prediction_gpu_time_ns{0},
     leaf_update_dispatches{0};
@@ -62,6 +62,12 @@ char const* ErrorText(NSError* error) {
   return error ? error.localizedDescription.UTF8String : "unknown Metal error";
 }
 
+struct GradientScale {
+  std::int32_t grad_exponent, hess_exponent;
+  std::uint32_t valid, padding;
+};
+static_assert(sizeof(GradientScale) == 16);
+
 class Runtime {
  public:
   id<MTLDevice> device;
@@ -73,7 +79,7 @@ class Runtime {
   id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
   id<MTLComputePipelineState> quantile_metric_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
-  id<MTLComputePipelineState> shared_pipeline;
+  id<MTLComputePipelineState> shared_pipeline, gradient_maximum_pipeline, gradient_scale_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
   id<MTLComputePipelineState> row_iota_pipeline, partition_classify_pipeline,
@@ -131,6 +137,8 @@ class Runtime {
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
       quantile_metric_pipeline = make_pipeline(@"xgb_quantile_metric");
       uniform_sampling_pipeline = make_pipeline(@"xgb_uniform_sample");
+      gradient_maximum_pipeline = make_pipeline(@"xgb_gradient_maximum");
+      gradient_scale_pipeline = make_pipeline(@"xgb_gradient_scale");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
       LOG(INFO) << "Metal compute backend: " << device.name.UTF8String;
     }
@@ -503,49 +511,49 @@ class MetalHistogram final : public Histogram {
   Runtime& rt_;
   id<MTLCommandQueue> queue_;
   id<MTLBuffer> gradients_, raw_gradients_, histogram_buffer_, row_buffer_, node_buffer_,
-      block_buffer_;
+      block_buffer_, gradient_maximum_, gradient_scale_;
   bool gradients_ready_{false};
 
-  std::int32_t inverse_units_[2]{0, 0};
-
   void UploadGradients(Span<GradientPair const> gradients, id<MTLCommandBuffer> command) {
-    // Use independent power-of-two scales. Bound every possible subset by
-    // n_rows * max(abs(value)), with three signed bits of accumulation headroom.
-    // CPU FP64 is intentional: Metal has no native FP64 arithmetic.
     CHECK_LE(gradients.size(), std::numeric_limits<std::uint32_t>::max());
-    double maxima[2]{0.0, 0.0};
-    for (auto const& g : gradients) {
-      CHECK(std::isfinite(g.GetGrad()) && std::isfinite(g.GetHess()))
-          << "Metal histograms require finite gradients and Hessians.";
-      maxima[0] = std::max(maxima[0], std::abs(static_cast<double>(g.GetGrad())));
-      maxima[1] = std::max(maxima[1], std::abs(static_cast<double>(g.GetHess())));
-    }
-    int exponents[2];
-    for (int i = 0; i < 2; ++i) {
-      double bound = maxima[i] * static_cast<double>(gradients.size());
-      int exponent = bound > 0.0 ? 60 - static_cast<int>(std::ceil(std::log2(bound))) : 0;
-      exponents[i] = exponent;
-      inverse_units_[i] = -exponent;
-    }
     if (!gradients_ || gradients_.length < gradients.size() * sizeof(QuantizedPair))
       gradients_ = Allocate(rt_, gradients.size() * sizeof(QuantizedPair));
     static_assert(sizeof(GradientPair) == 8);
     if (!raw_gradients_ || raw_gradients_.length < gradients.size() * sizeof(GradientPair))
       raw_gradients_ = Allocate(rt_, gradients.size() * sizeof(GradientPair));
     std::memcpy(raw_gradients_.contents, gradients.data(), gradients.size() * sizeof(GradientPair));
-    auto raw = raw_gradients_;
-    struct {
-      std::uint64_t n;
-      std::int32_t grad, hess;
-    } p{gradients.size(), exponents[0], exponents[1]};
+    EnsureBuffer(rt_, &gradient_maximum_, 2 * sizeof(std::uint32_t));
+    EnsureBuffer(rt_, &gradient_scale_, sizeof(GradientScale));
+    auto clear = [command blitCommandEncoder];
+    CHECK(clear);
+    [clear fillBuffer:gradient_maximum_ range:NSMakeRange(0, 2 * sizeof(std::uint32_t)) value:0];
+    [clear endEncoding];
+    std::uint64_t count = gradients.size();
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
+    [encoder setComputePipelineState:rt_.gradient_maximum_pipeline];
+    [encoder setBuffer:raw_gradients_ offset:0 atIndex:0];
+    [encoder setBuffer:gradient_maximum_ offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreadgroups:MTLSizeMake((count + 255) / 256, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder endEncoding];
+    encoder = [command computeCommandEncoder];
+    CHECK(encoder);
+    [encoder setComputePipelineState:rt_.gradient_scale_pipeline];
+    [encoder setBuffer:gradient_maximum_ offset:0 atIndex:0];
+    [encoder setBuffer:gradient_scale_ offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [encoder endEncoding];
+    encoder = [command computeCommandEncoder];
+    CHECK(encoder);
     [encoder setComputePipelineState:rt_.quantize_pipeline];
-    [encoder setBuffer:raw offset:0 atIndex:0];
+    [encoder setBuffer:raw_gradients_ offset:0 atIndex:0];
     [encoder setBuffer:gradients_ offset:0 atIndex:1];
-    [encoder setBytes:&p length:sizeof(p) atIndex:2];
-    [encoder dispatchThreads:MTLSizeMake(gradients.size(), 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder setBuffer:gradient_scale_ offset:0 atIndex:3];
+    [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
   }
 
@@ -671,10 +679,8 @@ class MetalHistogram final : public Histogram {
           Upload(rt_, output_offsets.data(), output_offsets.size() * sizeof(std::uint64_t));
       struct {
         std::uint64_t count;
-        std::int32_t grad, hess;
         std::uint32_t bins, add;
-      } dequantize{nodes.size() * bins, inverse_units_[0], inverse_units_[1],
-                   static_cast<std::uint32_t>(bins), page_idx != 0};
+      } dequantize{nodes.size() * bins, static_cast<std::uint32_t>(bins), page_idx != 0};
       CHECK_LE(dequantize.count, std::numeric_limits<std::uint32_t>::max());
       encoder = [command computeCommandEncoder];
       CHECK(encoder);
@@ -683,6 +689,7 @@ class MetalHistogram final : public Histogram {
       [encoder setBuffer:shared->buffer offset:0 atIndex:1];
       [encoder setBuffer:offset_buffer offset:0 atIndex:2];
       [encoder setBytes:&dequantize length:sizeof(dequantize) atIndex:3];
+      [encoder setBuffer:gradient_scale_ offset:0 atIndex:4];
       [encoder dispatchThreads:MTLSizeMake(dequantize.count, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [encoder endEncoding];
@@ -698,6 +705,9 @@ class MetalHistogram final : public Histogram {
       }
       wait_time_ns.fetch_add(Elapsed(wait_start), std::memory_order_relaxed);
       if (quantized) {
+        CHECK(static_cast<GradientScale const*>(gradient_scale_.contents)->valid)
+            << "Metal histograms require finite gradients and Hessians.";
+        gradient_bound_dispatches.fetch_add(1, std::memory_order_relaxed);
         quantization_dispatches.fetch_add(1, std::memory_order_relaxed);
         gradients_ready_ = true;
       }
@@ -790,7 +800,8 @@ Statistics GetStatistics() {
           sampling_gpu_time_ns.load(std::memory_order_relaxed),
           histogram_conversion_dispatches.load(std::memory_order_relaxed),
           histogram_subtraction_dispatches.load(std::memory_order_relaxed),
-          resident_split_dispatches.load(std::memory_order_relaxed)};
+          resident_split_dispatches.load(std::memory_order_relaxed),
+          gradient_bound_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {

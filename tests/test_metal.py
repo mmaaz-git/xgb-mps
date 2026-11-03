@@ -281,3 +281,21 @@ def test_concurrent_independent_models(metal):
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(fit, [7, 9, 11, 13]))
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("component", [0, 1])
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_nonfinite_custom_gradients_rejected(component, bad):
+    x, y, _ = dataset()
+    d = xgb.DMatrix(x, label=y)
+
+    def objective(pred, data):
+        grad = np.ones_like(pred)
+        hess = np.ones_like(pred)
+        (grad if component == 0 else hess)[-1] = bad
+        return grad, hess
+
+    with pytest.raises(xgb.core.XGBoostError, match="finite gradients and Hessians"):
+        xgb.train(parameters(device="mps", base_score=0), d, num_boost_round=1,
+                  obj=objective)

@@ -7,6 +7,10 @@ clang++ -std=c++17 -fobjc-arc tests/metal_kernel.mm \
   -framework Metal -framework Foundation -o results/metal_kernel_test
 echo "Checking GPU integer histograms against the independent CPU reference"
 results/metal_kernel_test xgboost/src/common/metal_histogram.metal
+echo "Checking gradient bounds, finite validation and quantization scales"
+clang++ -std=c++17 -fobjc-arc tests/metal_bounds.mm \
+  -framework Metal -framework Foundation -o results/metal_bounds_test
+results/metal_bounds_test xgboost/src/common/metal_histogram.metal
 echo "Checking objective kernels against independent CPU mathematics"
 clang++ -std=c++17 -fobjc-arc tests/metal_objective.mm \
   -framework Metal -framework Foundation -o results/metal_objective_test

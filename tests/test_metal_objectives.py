@@ -39,6 +39,7 @@ def test_objectives_execute_on_metal(metal, objective, extra, weighted):
     after = xgb.metal_info()
     assert after["objective_dispatches"] - before["objective_dispatches"] >= 4
     assert after["quantization_dispatches"] > before["quantization_dispatches"]
+    assert after["gradient_bound_dispatches"] > before["gradient_bound_dispatches"]
     np.testing.assert_allclose(gpu.predict(d, output_margin=True),
                                cpu.predict(d, output_margin=True), rtol=2e-5, atol=2e-5)
     before = xgb.metal_info()

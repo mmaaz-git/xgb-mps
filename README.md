@@ -79,7 +79,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **309 passed, 1 skipped**. The skip requires a machine without an
+- Python: **315 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **84 cases**, with every bin compared exactly to independent
@@ -88,6 +88,9 @@ On Apple M3, 2026-11-03:
 - Native sampling: **3,780 exact cases / 1,019,088 Bernoulli draws** against the
   CPU standard-library implementation, including zero seeds, rounding boundaries,
   strided matrices, guard regions and CPU thread partitions.
+- Native gradient bounds: **63 reductions / 1,015,196 quantized values** and
+  **1,296 scale boundary cases**, including NaNs/infinities, subnormals and
+  row-count limits. Scales are checked with independent CPU 128-bit arithmetic.
 - Native gradient quantization: **713,814 values across six scales**, including
   subnormal floats, compared exactly against double-precision CPU rounding.
 - Native partition/transpose kernels: **256 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
@@ -337,3 +340,14 @@ unbalanced branches and an empty middle node. All 309 Python tests and native
 suites pass. [The new run](validation/benchmark-hist-blocks-v1-m3.json) measured
 1.231 s Metal versus 0.803 s CPU at one million rows (0.65×); it does not establish
 an end-to-end improvement over the preceding run.
+
+### Gradient scale update
+
+Moved maximum-gradient reduction, finite validation and power-of-two scale
+selection to Metal. Scales stay in GPU buffers through quantization and histogram
+conversion; the CPU no longer scans every gradient to choose them. Exact integer
+bounds avoid floating-point logarithm rounding at power-of-two boundaries.
+All 315 Python tests and native suites pass. The
+[training run](validation/benchmark-gradient-bounds-v1-m3.json) measured 1.219 s
+Metal versus 0.791 s CPU at one million rows (0.65×), so this coverage improvement
+has not established an end-to-end speedup.

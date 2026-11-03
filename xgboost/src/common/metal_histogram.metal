@@ -163,19 +163,59 @@ inline long quantize_float(uint bits, int exponent) {
   long value = long(magnitude);
   return (bits >> 31) ? -value : value;
 }
-struct QuantizeParams {
-  ulong n;
-  int grad_exponent;
-  int hess_exponent;
+struct GradientScale {
+  int grad_exponent, hess_exponent;
+  uint valid, padding;
 };
+// Absolute FP32 bit patterns sort in the same order as nonnegative magnitudes,
+// including subnormals. Any NaN or infinity makes the final maximum invalid.
+kernel void xgb_gradient_maximum(device const uint2* input [[buffer(0)]],
+                                 device atomic_uint* maximum [[buffer(1)]],
+                                 constant ulong& n [[buffer(2)]],
+                                 uint tid [[thread_position_in_grid]],
+                                 uint lane [[thread_index_in_simdgroup]],
+                                 uint simd [[simdgroup_index_in_threadgroup]]) {
+  uint2 value = ulong(tid) < n ? input[tid] & 0x7fffffffu : uint2(0);
+  value = uint2(simd_max(value.x), simd_max(value.y));
+  threadgroup uint2 maxima[8];
+  if (lane == 0) maxima[simd] = value;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd == 0) {
+    value = lane < 8 ? maxima[lane] : uint2(0);
+    value = uint2(simd_max(value.x), simd_max(value.y));
+    if (lane == 0) {
+      atomic_fetch_max_explicit(maximum, value.x, memory_order_relaxed);
+      atomic_fetch_max_explicit(maximum + 1, value.y, memory_order_relaxed);
+    }
+  }
+}
+inline int xgb_gradient_exponent(uint magnitude, ulong n) {
+  if (!magnitude || !n) return 0;
+  uint encoded = magnitude >> 23;
+  ulong mantissa = (magnitude & 0x7fffffu) | (encoded ? 0x800000u : 0u);
+  // At most 24 + 32 bits: compute the bound exactly instead of rounding a
+  // floating product or logarithm close to a power of two.
+  ulong product = mantissa * n;
+  int ceiling = 63 - int(clz(product)) + int(bool(product & (product - 1)));
+  return 60 - ceiling - (encoded ? int(encoded) - 150 : -149);
+}
+kernel void xgb_gradient_scale(device const uint2& maximum [[buffer(0)]],
+                               device GradientScale& scale [[buffer(1)]],
+                               constant ulong& n [[buffer(2)]]) {
+  bool valid = all(maximum < uint2(0x7f800000u));
+  scale = {valid ? xgb_gradient_exponent(maximum.x, n) : 0,
+           valid ? xgb_gradient_exponent(maximum.y, n) : 0, uint(valid), 0};
+}
 kernel void xgb_quantize_gradients(device const uint2* input [[buffer(0)]],
                                    device long2* output [[buffer(1)]],
-                                   constant QuantizeParams& p [[buffer(2)]],
+                                   constant ulong& n [[buffer(2)]],
+                                   device const GradientScale& scale [[buffer(3)]],
                                    uint tid [[thread_position_in_grid]]) {
-  if (ulong(tid) >= p.n) return;
-  uint2 bits = input[tid];
-  output[tid] =
-      long2(quantize_float(bits.x, p.grad_exponent), quantize_float(bits.y, p.hess_exponent));
+  if (ulong(tid) >= n) return;
+  uint2 value = input[tid];
+  output[tid] = scale.valid ? long2(quantize_float(value.x, scale.grad_exponent),
+                                    quantize_float(value.y, scale.hess_exponent))
+                            : long2(0);
 }
 
 struct ObjectiveParams {
@@ -1486,17 +1526,18 @@ inline ulong xgb_scaled_integer(ulong value, int unit) {
 }
 struct DequantizeParams {
   ulong count;
-  int grad_unit, hess_unit;
   uint bins, add;
 };
 kernel void xgb_histogram_dequantize(device const ulong2* quantized [[buffer(0)]],
                                      device ulong2* output [[buffer(1)]],
                                      device const ulong* offsets [[buffer(2)]],
                                      constant DequantizeParams& p [[buffer(3)]],
+                                     device const GradientScale& scale [[buffer(4)]],
                                      uint tid [[thread_position_in_grid]]) {
   if (ulong(tid) >= p.count) return;
   ulong2 raw = quantized[tid];
-  ulong2 value(xgb_scaled_integer(raw.x, p.grad_unit), xgb_scaled_integer(raw.y, p.hess_unit));
+  ulong2 value(xgb_scaled_integer(raw.x, -scale.grad_exponent),
+               xgb_scaled_integer(raw.y, -scale.hess_exponent));
   ulong out = offsets[tid / p.bins] + tid % p.bins;
   if (p.add) {
     ulong2 prior = output[out];

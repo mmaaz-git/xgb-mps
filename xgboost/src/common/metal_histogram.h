@@ -35,6 +35,7 @@ struct Statistics {
   std::uint64_t sampling_dispatches, sampling_gpu_time_ns;
   std::uint64_t histogram_conversion_dispatches, histogram_subtraction_dispatches,
       resident_split_dispatches;
+  std::uint64_t gradient_bound_dispatches;
 };
 
 class Histogram {

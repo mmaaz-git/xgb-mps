@@ -230,17 +230,20 @@ int main(int argc, char **argv) {
         auto in = upload(input.data(), input.size() * sizeof(float));
         auto out = [dev newBufferWithLength:reference.size() * sizeof(int64_t)
                                     options:MTLResourceStorageModeShared];
+        uint64_t count = input.size() / 2;
         struct {
-          uint64_t n;
           int32_t g, h;
-        } params{input.size() / 2, exponent, exponent};
+          uint32_t valid, pad;
+        } scale{exponent, exponent, 1, 0};
+        auto scales = upload(&scale, sizeof(scale));
         auto command = [queue commandBuffer];
         auto encoder = [command computeCommandEncoder];
         [encoder setComputePipelineState:quantize_pipeline];
         [encoder setBuffer:in offset:0 atIndex:0];
         [encoder setBuffer:out offset:0 atIndex:1];
-        [encoder setBytes:&params length:sizeof(params) atIndex:2];
-        [encoder dispatchThreads:MTLSizeMake(params.n, 1, 1)
+        [encoder setBytes:&count length:sizeof(count) atIndex:2];
+        [encoder setBuffer:scales offset:0 atIndex:3];
+        [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [encoder endEncoding];
         [command commit];
