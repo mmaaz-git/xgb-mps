@@ -90,13 +90,23 @@ kernel void xgb_histogram_dense_shared(
     device const uint* offsets [[buffer(2)]], device const long2* gradients [[buffer(3)]],
     device const ulong* rows [[buffer(4)]], device atomic_uint* hist [[buffer(5)]],
     constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
-    device const ulong* row_begin [[buffer(8)]],
+    device const ulong* row_begin [[buffer(8)]], device const ulong* block_ptr [[buffer(9)]],
     threadgroup atomic_uint* local_hist [[threadgroup(0)]],
     uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
     uint3 threads [[threads_per_threadgroup]]) {
   uint feature = group.y;
-  uint node = group.z;
-  ulong begin = node_ptr[node] + ulong(group.x) * threads.x * 8;
+  // Only actual node blocks are scheduled. Empty and short nodes do not inherit
+  // the largest node's grid, which wastes groups as tree branches become uneven.
+  uint lo = 0, hi = p.n_nodes;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (block_ptr[mid + 1] <= group.x)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  uint node = lo;
+  ulong begin = node_ptr[node] + (ulong(group.x) - block_ptr[node]) * threads.x * 8;
   ulong end = min(node_ptr[node + 1], begin + threads.x * 8);
   if (begin >= end) return;  // Uniform across the threadgroup, before any barrier.
   uint feature_offset = offsets[feature];

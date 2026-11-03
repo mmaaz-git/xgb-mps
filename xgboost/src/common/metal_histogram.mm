@@ -502,7 +502,8 @@ class MetalRows final : public DeviceRows {
 class MetalHistogram final : public Histogram {
   Runtime& rt_;
   id<MTLCommandQueue> queue_;
-  id<MTLBuffer> gradients_, raw_gradients_, histogram_buffer_, row_buffer_, node_buffer_;
+  id<MTLBuffer> gradients_, raw_gradients_, histogram_buffer_, row_buffer_, node_buffer_,
+      block_buffer_;
   bool gradients_ready_{false};
 
   std::int32_t inverse_units_[2]{0, 0};
@@ -565,10 +566,8 @@ class MetalHistogram final : public Histogram {
       auto staging_start = Clock::now();
       auto page = GetPage(rt_, gidx);
       std::vector<std::uint64_t> node_ptr{0};
-      std::size_t max_node_rows = 0;
       for (auto node : nodes) {
         auto size = rows[node].Size();
-        max_node_rows = std::max(max_node_rows, size);
         node_ptr.push_back(node_ptr.back() + size);
       }
       auto total_rows = node_ptr.back();
@@ -633,7 +632,7 @@ class MetalHistogram final : public Histogram {
       auto shared_bytes = max_feature_bins * sizeof(QuantizedPair);
       bool use_shared = gidx.IsDense() && total_rows >= 16384 &&
                         shared_bytes <= rt_.device.maxThreadgroupMemoryLength &&
-                        params.n_features <= 65535 && nodes.size() <= 65535;
+                        params.n_features <= 65535;
       auto pipeline = use_shared ? rt_.shared_pipeline : rt_.pipeline;
       [encoder setComputePipelineState:pipeline];
       [encoder setBuffer:page->index offset:0 atIndex:0];
@@ -648,8 +647,16 @@ class MetalHistogram final : public Histogram {
       [encoder setBuffer:row_begin_buffer offset:0 atIndex:8];
       if (use_shared) {
         [encoder setThreadgroupMemoryLength:shared_bytes atIndex:0];
-        auto groups = (max_node_rows + threads * 8 - 1) / (threads * 8);
-        [encoder dispatchThreadgroups:MTLSizeMake(groups, params.n_features, nodes.size())
+        std::vector<std::uint64_t> block_ptr{0};
+        for (std::size_t node = 0; node < nodes.size(); ++node) {
+          auto size = node_ptr[node + 1] - node_ptr[node];
+          block_ptr.push_back(block_ptr.back() + (size + threads * 8 - 1) / (threads * 8));
+        }
+        auto block_bytes = block_ptr.size() * sizeof(std::uint64_t);
+        EnsureBuffer(rt_, &block_buffer_, block_bytes);
+        std::memcpy(block_buffer_.contents, block_ptr.data(), block_bytes);
+        [encoder setBuffer:block_buffer_ offset:0 atIndex:9];
+        [encoder dispatchThreadgroups:MTLSizeMake(block_ptr.back(), params.n_features, 1)
                 threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
       } else {
         [encoder dispatchThreads:MTLSizeMake(total_rows, 1, 1)

@@ -328,3 +328,12 @@ from [1.498 s](validation/benchmark-sampling-v1-m3.json) to
 [1.191 s](validation/benchmark-sampling-v2-m3.json) across these runs; CPU remains
 faster. Both measurements are retained rather than treating timing variability as
 a guaranteed improvement.
+
+### Histogram scheduling update
+
+Shared histogram dispatch now schedules only actual blocks in each node instead
+of a rectangular grid sized for the largest node. Native checks include strongly
+unbalanced branches and an empty middle node. All 309 Python tests and native
+suites pass. [The new run](validation/benchmark-hist-blocks-v1-m3.json) measured
+1.231 s Metal versus 0.803 s CPU at one million rows (0.65×); it does not establish
+an end-to-end improvement over the preceding run.

@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
                     } else if (mode == 2)
                       g = {0, 0};
                     gradients[r + base] = g;
-                    uint32_t node = r % nodes;
+                    uint32_t node = mode == 1 ? (r < 32 ? 2 : 0) : r % nodes;
                     rows.push_back({r + base, node, 0});
                     for (uint32_t f = 0; f < features; ++f) {
                       if (!dense && (r % 13 == 0 || rng() % 3 == 0)) continue;
@@ -137,9 +137,9 @@ int main(int argc, char **argv) {
                                    [](Row a, Row b) { return a.node < b.node; });
                   std::vector<uint64_t> node_ptr(nodes + 1, 0);
                   for (auto row : rows) ++node_ptr[row.node + 1];
-                  uint64_t max_node_rows = 0;
+                  std::vector<uint64_t> block_ptr{0};
                   for (size_t node = 1; node < node_ptr.size(); ++node) {
-                    max_node_rows = std::max(max_node_rows, node_ptr[node]);
+                    block_ptr.push_back(block_ptr.back() + (node_ptr[node] + 2047) / 2048);
                     node_ptr[node] += node_ptr[node - 1];
                   }
                   auto idx = upload(indices.data(), indices.size());
@@ -167,8 +167,9 @@ int main(int argc, char **argv) {
                   [encoder setBuffer:np offset:0 atIndex:8];
                   if (shared) {
                     [encoder setThreadgroupMemoryLength:per_feature * sizeof(Pair) atIndex:0];
-                    [encoder dispatchThreadgroups:MTLSizeMake((max_node_rows + 2047) / 2048,
-                                                              features, nodes)
+                    auto bp = upload(block_ptr.data(), block_ptr.size() * sizeof(uint64_t));
+                    [encoder setBuffer:bp offset:0 atIndex:9];
+                    [encoder dispatchThreadgroups:MTLSizeMake(block_ptr.back(), features, 1)
                             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
                   } else {
                     [encoder dispatchThreads:MTLSizeMake(n, 1, 1)
@@ -183,16 +184,16 @@ int main(int argc, char **argv) {
                     if (actual[i].g != reference[i].g || actual[i].h != reference[i].h) {
                       fprintf(stderr,
                               "Mismatch: width=%u dense=%d base=%llu "
-                              "contention=%d bin=%zu\n",
-                              width, dense, (unsigned long long)base, contention, i);
+                              "contention=%d mode=%u bin=%zu\n",
+                              width, dense, (unsigned long long)base, contention, mode, i);
                       throw std::runtime_error("GPU histogram differs from "
                                                "independent integer reference");
                     }
                   }
                   ++cases;
                   printf("PASS case %d: width=%u dense=%d shared=%d base=%llu "
-                         "contention=%d\n",
-                         cases, width, dense, shared, (unsigned long long)base, contention);
+                         "contention=%d mode=%u\n",
+                         cases, width, dense, shared, (unsigned long long)base, contention, mode);
                 }
               }
             }
