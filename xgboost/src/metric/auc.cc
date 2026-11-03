@@ -2,6 +2,9 @@
  * Copyright 2021-2026, XGBoost Contributors
  */
 #include "auc.h"
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_auc.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -82,7 +85,7 @@ std::tuple<double, double, double> BinaryAUC(common::Span<float const> predts,
 template <typename BinaryAUC>
 double MultiAUC(Context const *ctx, common::Span<float const> predts, MetaInfo const &info,
                 std::size_t n_targets, std::int32_t n_threads, MultiAUCType type,
-                BinaryAUC &&binary_auc) {
+                [[maybe_unused]] bool is_roc, BinaryAUC &&binary_auc) {
   CHECK_NE(n_targets, 0);
   auto const labels = info.labels.HostView();
   if (labels.Shape(0) != 0) {
@@ -105,6 +108,18 @@ double MultiAUC(Context const *ctx, common::Span<float const> predts, MetaInfo c
   auto predts_t = linalg::MakeTensorView(ctx, predts, n_samples, n_targets);
 
   if (n_samples != 0) {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS() && is_roc) {
+      std::vector<common::metal::ROCAUCSums> sums(n_targets);
+      common::metal::ROCAUC(predts_t, labels, info.weights_.ConstHostSpan(),
+                            type == MultiAUCType::kMultiClass, sums);
+      for (std::size_t c = 0; c < n_targets; ++c) {
+        tp(c) = sums[c].tp;
+        auc(c) = sums[c].area;
+        local_area(c) = sums[c].fp * sums[c].tp;
+      }
+    } else
+#endif
     common::ParallelFor(n_targets, n_threads, [&](auto c) {
       std::vector<float> proba(n_samples);
       std::vector<float> response(n_samples);
@@ -384,7 +399,7 @@ class EvalROCAUC : public EvalAUC<EvalROCAUC> {
                                    MultiAUCType::kMultiClass);
     } else {
       auc = MultiAUC(ctx_, predts.ConstHostVector(), info, n_classes, n_threads,
-                     MultiAUCType::kMultiClass, BinaryROCAUC);
+                     MultiAUCType::kMultiClass, true, BinaryROCAUC);
     }
     return auc;
   }
@@ -396,7 +411,7 @@ class EvalROCAUC : public EvalAUC<EvalROCAUC> {
                                     n_targets, MultiAUCType::kMultiLabel);
     } else {
       return MultiAUC(ctx_, predts.ConstHostVector(), info, n_targets, ctx_->Threads(),
-                      MultiAUCType::kMultiLabel, BinaryROCAUC);
+                      MultiAUCType::kMultiLabel, true, BinaryROCAUC);
     }
   }
 
@@ -406,7 +421,17 @@ class EvalROCAUC : public EvalAUC<EvalROCAUC> {
     if (ctx_->IsCUDA()) {
       std::tie(fp, tp, auc) =
           cuda_impl::BinaryROCAUC(ctx_, predts.ConstDeviceSpan(), info, &this->d_cache_);
-    } else {
+    }
+#if defined(XGBOOST_USE_METAL)
+    else if (ctx_->IsMPS()) {
+      common::metal::ROCAUCSums sums;
+      common::metal::ROCAUC(
+          linalg::MakeTensorView(DeviceOrd::CPU(), predts.ConstHostSpan(), predts.Size(), 1),
+          info.labels.HostView(), info.weights_.ConstHostSpan(), false, {&sums, 1});
+      std::tie(fp, tp, auc) = std::make_tuple(sums.fp, sums.tp, sums.area);
+    }
+#endif
+    else {
       std::tie(fp, tp, auc) = BinaryROCAUC(ctx_, predts.ConstHostVector(),
                                            info.labels.HostView().Slice(linalg::All(), 0),
                                            common::OptionalWeights{info.weights_.ConstHostSpan()});
@@ -472,7 +497,7 @@ class EvalPRAUC : public EvalAUC<EvalPRAUC> {
     } else {
       auto n_threads = this->ctx_->Threads();
       return MultiAUC(ctx_, predts.ConstHostSpan(), info, n_classes, n_threads,
-                      MultiAUCType::kMultiClass, BinaryPRAUC);
+                      MultiAUCType::kMultiClass, false, BinaryPRAUC);
     }
   }
 
@@ -483,7 +508,7 @@ class EvalPRAUC : public EvalAUC<EvalPRAUC> {
                                    MultiAUCType::kMultiLabel);
     } else {
       return MultiAUC(ctx_, predts.ConstHostSpan(), info, n_targets, ctx_->Threads(),
-                      MultiAUCType::kMultiLabel, BinaryPRAUC);
+                      MultiAUCType::kMultiLabel, false, BinaryPRAUC);
     }
   }
 

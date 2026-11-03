@@ -2567,3 +2567,123 @@ kernel void xgb_aft_transform(device const uint* input [[buffer(0)]],
   output[row] =
       as_type<uint>(xgb_dto_float(to_margin ? xgb_survival::Log(value) : xgb_survival::Exp(value)));
 }
+
+// ROC-AUC: stable descending scores, inclusive binary64 (FP, TP) prefixes,
+// and one trapezoid per equal-score group. No per-row host sorting or scan.
+kernel void xgb_roc_sort_init(device const uint* values [[buffer(0)]],
+                              device uint2* records [[buffer(1)]],
+                              constant GradientSumParams& p [[buffer(2)]],
+                              uint2 tid [[thread_position_in_grid]]) {
+  uint bits = values[ulong(tid.x) * p.stride0 + ulong(tid.y) * p.stride1];
+  uint key = (bits & 0x7fffffffu) == 0 ? 0x80000000u
+              : (bits & 0x80000000u ? ~bits : bits ^ 0x80000000u);
+  records[ulong(tid.y) * p.rows + tid.x] = uint2(~key, tid.x);
+}
+struct ROCParams {
+  ulong rows, label_stride0, label_stride1;
+  uint targets, blocks, weighted, multiclass;
+};
+kernel void xgb_roc_counts(device const uint2* sorted [[buffer(0)]],
+                           device const uint* labels [[buffer(1)]],
+                           device const uint* weights [[buffer(2)]],
+                           device ulong2* counts [[buffer(3)]],
+                           constant ROCParams& p [[buffer(4)]],
+                           uint2 tid [[thread_position_in_grid]]) {
+  ulong idx = ulong(tid.y) * p.rows + tid.x;
+  uint row = sorted[idx].y;
+  float label = as_type<float>(labels[ulong(row) * p.label_stride0 +
+                                     (p.multiclass ? 0 : ulong(tid.y) * p.label_stride1)]);
+  if (p.multiclass) {
+    uint bits = as_type<uint>(label);
+    // Match CPU equality without flushing tiny nonzero labels to class zero.
+    label = float((bits & 0x7fffffffu) == 0 ? tid.y == 0 : bits == as_type<uint>(float(tid.y)));
+  }
+  float w = p.weighted ? as_type<float>(weights[row]) : 1.0f;
+  // Upstream promotes only the first negative term before subtraction/product;
+  // all subsequent terms and all positive terms round their products to FP32.
+  XGBDouble fp = tid.x == 0
+      ? xgb_dmul(xgb_dsub(xgb_dfrom_float(1.0f), xgb_dfrom_float(label)), xgb_dfrom_float(w))
+      : xgb_dfrom_float(xgb_fmul_preserve(xgb_fsub_preserve(1.0f, label), w));
+  XGBDouble tp = xgb_dfrom_float(xgb_fmul_preserve(label, w));
+  counts[idx] = ulong2(fp.bits, tp.bits);
+}
+inline ulong2 xgb_dpair_add(ulong2 a, ulong2 b) {
+  return ulong2(xgb_dadd({a.x}, {b.x}).bits, xgb_dadd({a.y}, {b.y}).bits);
+}
+inline ulong2 xgb_dpair_shuffle_up(ulong2 a, uint delta) {
+  uint4 words = as_type<uint4>(a);
+  return as_type<ulong2>(uint4(simd_shuffle_up(words.x, delta), simd_shuffle_up(words.y, delta),
+                              simd_shuffle_up(words.z, delta), simd_shuffle_up(words.w, delta)));
+}
+kernel void xgb_prefix_double_pair(device const ulong2* input [[buffer(0)]],
+                                   device ulong2* output [[buffer(1)]],
+                                   device ulong2* totals [[buffer(2)]],
+                                   constant uint2& shape [[buffer(3)]],
+                                   uint2 group [[threadgroup_position_in_grid]],
+                                   uint tid [[thread_index_in_threadgroup]],
+                                   uint lane [[thread_index_in_simdgroup]],
+                                   uint simd [[simdgroup_index_in_threadgroup]]) {
+  uint row = group.x * 256 + tid;
+  ulong base = ulong(group.y) * shape.x;
+  ulong2 value = row < shape.x ? input[base + row] : ulong2(0);
+  for (uint d = 1; d < 32; d <<= 1) {
+    ulong2 prior = xgb_dpair_shuffle_up(value, d);
+    if (lane >= d) value = xgb_dpair_add(prior, value);
+  }
+  threadgroup ulong2 subgroup[8];
+  if (lane == 31) subgroup[simd] = value;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd == 0) {
+    ulong2 upper = lane < 8 ? subgroup[lane] : ulong2(0);
+    for (uint d = 1; d < 8; d <<= 1) {
+      ulong2 prior = xgb_dpair_shuffle_up(upper, d);
+      if (lane >= d) upper = xgb_dpair_add(prior, upper);
+    }
+    if (lane < 8) subgroup[lane] = upper;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd) value = xgb_dpair_add(subgroup[simd - 1], value);
+  if (row < shape.x) output[base + row] = value;
+  if (tid == 255) totals[ulong(group.y) * ((ulong(shape.x) + 255) / 256) + group.x] = value;
+}
+kernel void xgb_prefix_double_pair_add(device ulong2* values [[buffer(0)]],
+                                       device const ulong2* prefix [[buffer(1)]],
+                                       constant uint2& shape [[buffer(2)]],
+                                       uint2 tid [[thread_position_in_grid]]) {
+  uint block = tid.x / 256;
+  if (!block) return;
+  ulong idx = ulong(tid.y) * shape.x + tid.x;
+  ulong offset = ulong(tid.y) * ((ulong(shape.x) + 255) / 256) + block - 1;
+  values[idx] = xgb_dpair_add(prefix[offset], values[idx]);
+}
+kernel void xgb_roc_area(device const uint2* sorted [[buffer(0)]],
+                         device const ulong2* prefix [[buffer(1)]],
+                         device ulong2* partial [[buffer(2)]],
+                         constant ROCParams& p [[buffer(3)]],
+                         uint2 group [[threadgroup_position_in_grid]],
+                         uint tid [[thread_index_in_threadgroup]],
+                         uint lane [[thread_index_in_simdgroup]],
+                         uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong row = ulong(group.x) * 256 + tid, base = ulong(group.y) * p.rows;
+  XGBDouble area{0};
+  if (row < p.rows && (row + 1 == p.rows || sorted[base + row].x != sorted[base + row + 1].x)) {
+    uint start = uint(row), key = sorted[base + row].x;
+    if (row && sorted[base + row - 1].x == key) {
+      uint lo = 0, hi = uint(row);
+      while (lo < hi) {
+        uint mid = lo + (hi - lo) / 2;
+        if (sorted[base + mid].x < key) lo = mid + 1;
+        else hi = mid;
+      }
+      start = lo;
+    }
+    ulong2 prev = start ? prefix[base + start - 1] : ulong2(0), end = prefix[base + row];
+    XGBDouble width = xgb_dsub({end.x}, {prev.x});
+    width.bits &= ~kDoubleSign;
+    area = xgb_dmul(xgb_dmul(width, xgb_dadd({end.y}, {prev.y})), xgb_dfrom_float(0.5f));
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(area, {0}, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[ulong(group.y) * p.blocks + group.x] = total;
+}

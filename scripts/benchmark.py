@@ -16,9 +16,10 @@ import xgboost as xgb
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows", type=int, nargs="+", default=[10_000, 100_000, 1_000_000])
-    parser.add_argument("--objective", choices=["reg:squarederror", "reg:absoluteerror", "reg:quantileerror"],
+    parser.add_argument("--objective", choices=["reg:squarederror", "reg:absoluteerror", "reg:quantileerror", "binary:logistic"],
                         default="reg:squarederror")
     parser.add_argument("--quantile-levels", type=float, nargs="+", default=[0.5])
+    parser.add_argument("--eval-metric", help="Evaluate this training metric after every round")
     parser.add_argument("--subsample", type=float, default=1.0)
     parser.add_argument("--weighted", action="store_true")
     parser.add_argument("--features", type=int, default=32)
@@ -32,10 +33,13 @@ def main():
     assert xgb.metal_info()["available"], "A visible Metal GPU is required"
     p = dict(tree_method="hist", objective=args.objective, max_depth=6,
              max_bin=256, nthread=args.threads, seed=7, subsample=args.subsample)
+    if args.eval_metric:
+        p["eval_metric"] = args.eval_metric
     if args.objective == "reg:quantileerror":
         p["quantile_alpha"] = args.quantile_levels
     # Compile the shader and initialize the runtime before timing either device.
-    warm = xgb.DMatrix(np.arange(64, dtype=np.float32).reshape(32, 2), label=np.arange(32),
+    warm_labels = np.arange(32) % 2 if args.objective == "binary:logistic" else np.arange(32)
+    warm = xgb.DMatrix(np.arange(64, dtype=np.float32).reshape(32, 2), label=warm_labels,
                        weight=np.ones(32) if args.weighted else None)
     for device in ["cpu", "mps"]:
         xgb.train(p | {"device": device}, warm, num_boost_round=1)
@@ -48,9 +52,12 @@ def main():
         rng = np.random.default_rng(17)
         x = rng.normal(size=(n, args.features)).astype(np.float32)
         y = (x[:, 0] * 2 - x[:, 1] + x[:, 2] ** 2 + rng.normal(scale=0.1, size=n)).astype(np.float32)
+        if args.objective == "binary:logistic":
+            y = (rng.random(n) < 1 / (1 + np.exp(-.5 * (y - 1)))).astype(np.float32)
         weights = rng.uniform(0.1, 3, n).astype(np.float32) if args.weighted else None
         timings = {"cpu": [], "mps": []}
         preds = {}
+        metric_histories = {"cpu": [], "mps": []}
         dispatch_statistics = {"cpu": [], "mps": []}
         for repeat in range(args.repeats):
             order = ["cpu", "mps"] if repeat % 2 == 0 else ["mps", "cpu"]
@@ -58,11 +65,17 @@ def main():
                 before = xgb.metal_info()
                 start = time.perf_counter()
                 d = xgb.DMatrix(x, label=y, weight=weights, nthread=args.threads)
-                model = xgb.train(p | {"device": device}, d, num_boost_round=args.rounds)
+                history = {}
+                model = xgb.train(p | {"device": device}, d, num_boost_round=args.rounds,
+                                  evals=[(d, "train")] if args.eval_metric else [],
+                                  evals_result=history, verbose_eval=False)
                 elapsed = time.perf_counter() - start
                 after = xgb.metal_info()
                 stats = {k: after[k] - before[k] for k in after if k not in {"built", "available"}}
                 dispatch_statistics[device].append(stats)
+                metric_histories[device].append(history)
+                if args.eval_metric == "auc":
+                    assert stats["roc_auc_dispatches"] == (args.rounds if device == "mps" else 0)
                 completed = after["histogram_dispatches"] - before["histogram_dispatches"]
                 gpu_seconds = (after.get("gpu_time_ns", 0) - before.get("gpu_time_ns", 0)) / 1e9
                 assert (completed > 0) == (device == "mps")
@@ -73,11 +86,17 @@ def main():
         cpu = statistics.median(timings["cpu"])
         mps = statistics.median(timings["mps"])
         np.testing.assert_allclose(preds["mps"], preds["cpu"], rtol=2e-5, atol=2e-5)
+        if args.eval_metric:
+            np.testing.assert_allclose(metric_histories["mps"][-1]["train"][args.eval_metric],
+                                       metric_histories["cpu"][-1]["train"][args.eval_metric],
+                                       rtol=2e-5, atol=2e-5)
         truth = y[:, None] if preds["cpu"].ndim == 2 else y
         case = dict(rows=n, seconds=timings, dispatch_statistics=dispatch_statistics, cpu_median=cpu, mps_median=mps,
                     speedup=cpu/mps, max_prediction_difference=float(np.max(np.abs(preds["cpu"]-preds["mps"]))),
                     cpu_rmse=float(np.sqrt(np.mean((preds["cpu"]-truth)**2))),
                     mps_rmse=float(np.sqrt(np.mean((preds["mps"]-truth)**2))))
+        if args.eval_metric:
+            case["metric_histories"] = metric_histories
         report["cases"].append(case)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(f"  CPU/Metal speedup: {cpu/mps:.3f}x; wrote {args.output}", flush=True)

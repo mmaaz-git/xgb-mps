@@ -9,15 +9,16 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums and stump
-fitting, means, stable column sorting and quantile/median estimation on Metal. Feature quantile sketching,
+fitting, means, stable column sorting, ROC-AUC and quantile/median estimation on Metal. Feature quantile sketching,
 gradient-based sampling and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
 
-**Measured on Apple M3:** large-batch prediction is faster than CPU; training is
-still slower. The latest million-row prediction benchmark is **2.51× faster**,
-including input staging and transfers. This does not establish CUDA-equivalent
-training performance or speedups on other hardware and workloads.
+**Measured on Apple M3:** million-row binary training with AUC evaluated each
+round is **1.27× faster than CPU**, and large-batch prediction measured **2.51×**.
+The squared-error training baseline remains slower than CPU. These are specific
+workloads, not CUDA-equivalent performance or guaranteed gains on other hardware.
+Raw measurements and slower cases are retained below.
 
 ## Build and use
 
@@ -65,6 +66,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
+| ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile and expectile |
 
 AFT gradient evaluation is still hybrid for numerically sensitive censored rows.
@@ -98,7 +100,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **425 passed, 1 skipped**. The skip requires a machine without an
+- Python: **462 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **192 cases**, with every bin compared exactly to independent
@@ -154,7 +156,13 @@ On Apple M3, 2026-11-03:
 - Shared host-memory views: **36 cases / 4,313,492 values** plus six fallback
   checks under Metal API Validation. **51 production objective API cases /
   1,693,795 gradient pairs** cover offsets, guards, read-only inputs, split VM
-  regions and overlapping input/output storage.
+  regions and overlapping input/output storage. **49 production leaf cases /
+  1,118,257 row positions** add page offsets, strided/subnormal Hessians and empty leaves.
+- ROC-AUC: **432 production cases / 6,761,856 score-label pairs** and **420
+  independent weighted-pair checks**. Includes both dense layouts, padded strides,
+  signed-zero ties, subnormal scores/weights, extreme weight ranges, degenerate
+  inputs, and recursive scans spanning three levels. Normalized comparisons use
+  `2e-12` absolute/relative tolerances; general bitwise agreement is not promised.
 - Native objectives: **20 cases / 131,968 gradient pairs** compared against
   independent CPU mathematical references.
 - Native adaptive objectives: **180 cases / 1,260 residual scales / 452,592 gradient
@@ -189,15 +197,15 @@ quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 100,000 | 0.119 s | 0.294 s | 0.40× |
-| 1,000,000 | 0.799 s | 1.051 s | 0.76× |
+| 100,000 | 0.123 s | 0.522 s | 0.24× |
+| 1,000,000 | 0.810 s | 1.176 s | 0.69× |
 
-[Latest raw training results](validation/benchmark-borrow-v1-m3.json), including
+[Latest raw squared-error training results](validation/benchmark-borrow-training-v1-m3.json), including
 GPU bin assignment, gradient bounds, root reductions, resident histograms, subtraction/gathering,
 reused split buffers and skipped zero atomic additions. The [preceding run](validation/benchmark-hist-pool-m3.json)
 and [first resident-histogram run](validation/benchmark-hist-storage-m3.json) are
 retained. Dispatch overhead and substantial GPU timing variability remain.
-Metal training is still slower than CPU.
+Metal training is still slower than CPU. The preceding [objective-sharing run](validation/benchmark-borrow-v1-m3.json) measured 1.051 s Metal at one million rows; the latest run regresses despite avoiding more explicit copies.
 
 Before histogram residency, [split-evaluator optimization](validation/benchmark-split-scan-m3.json)
 measured 1.158 s at one million rows. GPU split evaluation initially regressed million-row
@@ -636,3 +644,67 @@ establish a speedup from sharing more arrays. The counters confirm another
 400 MB of explicit gradient/leaf staging copies avoided at one million rows,
 on top of the ordinary-objective sharing, but dispatch and synchronization
 costs remain and timing variability needs controlled profiling.
+
+
+### ROC-AUC update
+
+Binary, multiclass and multilabel `eval_metric="auc"` now sort predictions, compute
+weighted positive/negative prefixes and integrate tied-score trapezoids on Metal.
+All columns share one command and batched stable radix sort; no per-row host sort,
+scan or class-indicator expansion is needed. Prefixes and integration use software
+binary64; normalization, multiclass prevalence weighting and multilabel macro
+averaging retain the existing host behavior. `roc_auc_dispatches` and
+`roc_auc_gpu_time_ns` expose completed work. PR-AUC and ranking metrics remain CPU.
+NaN score ordering has no defined CPU equivalence contract.
+
+The [weighted metric-only benchmark](validation/benchmark-roc-v1-m3.json) uses five
+alternating repeats, fixed random margins, 8 CPU threads, and warmed runtime and
+prediction caches. Timings include metric input staging, sorting, scans, reduction
+and synchronization; they exclude DMatrix construction and training.
+
+| Rows | Outputs | CPU | Metal | CPU / Metal |
+| ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 1 | 6.25 ms | 3.66 ms | 1.71× |
+| 100,000 | 3 | 6.90 ms | 8.78 ms | 0.79× |
+| 1,000,000 | 1 | 81.07 ms | 22.40 ms | 3.62× |
+| 1,000,000 | 3 | 98.68 ms | 40.72 ms | 2.42× |
+
+Maximum AUC difference is `1.05e-14`. These timings measure only metric evaluation.
+First-evaluation times are retained in the raw JSON.
+
+All **462 Python tests**, native suites under Metal API Validation and the CPU-only
+build checks pass. Additional leaf-cache tests exposed Metal's flushing of
+subnormal Hessians during zero comparisons. Leaf assignment now checks IEEE bits,
+so tiny nonzero Hessians keep their rows valid. Direct leaf tests and cached-margin
+training tests cover the fix; fresh model predictions alone could have hidden it.
+The ROC class-indicator comparison similarly preserves tiny nonzero labels.
+
+
+### Training with ROC-AUC evaluation
+
+A separate [end-to-end benchmark](validation/benchmark-auc-training-v1-m3.json)
+measures fresh DMatrix construction and 20 rounds of weighted binary logistic
+training, evaluating AUC on the training set after every round. It uses 32
+features, depth 6, 256 bins, 8 CPU threads and three alternating repeats.
+
+| Rows | CPU | Metal | CPU / Metal |
+| ---: | ---: | ---: | ---: |
+| 100,000 | 0.236 s | 0.430 s | 0.55× |
+| 1,000,000 | 2.089 s | 1.641 s | **1.27×** |
+
+Metal repeats at one million rows range from 1.588 to 1.678 s, versus 2.056 to
+2.094 s CPU. Every Metal training run records 20 completed ROC-AUC dispatches.
+Maximum prediction difference is `1.19e-7`; maximum per-round AUC difference is
+`6.93e-8`. Unlike the fixed-score metric benchmark, this run also includes CPU/GPU
+prediction-transform rounding, which can change ordering at close scores.
+
+This establishes a speedup for this training-and-evaluation workload. The
+squared-error baseline without AUC evaluation and the smaller binary dataset
+remain slower than CPU. Full CUDA coverage and broadly competitive training
+remain unfinished.
+
+```sh
+.venv/bin/python scripts/benchmark.py --objective binary:logistic \
+  --eval-metric auc --weighted --rows 100000 1000000 \
+  --output results/my-auc-training.json
+```
