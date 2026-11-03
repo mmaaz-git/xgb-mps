@@ -1,0 +1,387 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "cpu_threads": 8,
+  "features": 32,
+  "rounds": 20,
+  "repeats": 3,
+  "params": {
+    "tree_method": "hist",
+    "objective": "reg:squarederror",
+    "max_depth": 6,
+    "max_bin": 256,
+    "nthread": 8,
+    "seed": 7
+  },
+  "cases": [
+    {
+      "rows": 10000,
+      "seconds": {
+        "cpu": [
+          0.04742879210971296,
+          0.046234624926000834,
+          0.043222874868661165
+        ],
+        "mps": [
+          0.141409375006333,
+          0.15431699994951487,
+          0.15535679087042809
+        ]
+      },
+      "dispatch_statistics": {
+        "cpu": [
+          {
+            "gpu_time_ns": 0,
+            "histogram_dispatches": 0,
+            "leaf_update_dispatches": 0,
+            "objective_dispatches": 0,
+            "objective_gpu_time_ns": 0,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 0,
+            "quantization_dispatches": 0,
+            "readback_time_ns": 0,
+            "rows_processed": 0,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 0,
+            "transform_dispatches": 0,
+            "wait_time_ns": 0
+          },
+          {
+            "gpu_time_ns": 0,
+            "histogram_dispatches": 0,
+            "leaf_update_dispatches": 0,
+            "objective_dispatches": 0,
+            "objective_gpu_time_ns": 0,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 0,
+            "quantization_dispatches": 0,
+            "readback_time_ns": 0,
+            "rows_processed": 0,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 0,
+            "transform_dispatches": 0,
+            "wait_time_ns": 0
+          },
+          {
+            "gpu_time_ns": 0,
+            "histogram_dispatches": 0,
+            "leaf_update_dispatches": 0,
+            "objective_dispatches": 0,
+            "objective_gpu_time_ns": 0,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 0,
+            "quantization_dispatches": 0,
+            "readback_time_ns": 0,
+            "rows_processed": 0,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 0,
+            "transform_dispatches": 0,
+            "wait_time_ns": 0
+          }
+        ],
+        "mps": [
+          {
+            "gpu_time_ns": 29464983,
+            "histogram_dispatches": 120,
+            "leaf_update_dispatches": 20,
+            "objective_dispatches": 20,
+            "objective_gpu_time_ns": 162072,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 1281492,
+            "quantization_dispatches": 20,
+            "readback_time_ns": 6157930,
+            "rows_processed": 410531,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 4262911,
+            "transform_dispatches": 0,
+            "wait_time_ns": 67028497
+          },
+          {
+            "gpu_time_ns": 44244066,
+            "histogram_dispatches": 120,
+            "leaf_update_dispatches": 20,
+            "objective_dispatches": 20,
+            "objective_gpu_time_ns": 315864,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 3271407,
+            "quantization_dispatches": 20,
+            "readback_time_ns": 6726707,
+            "rows_processed": 410531,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 4322702,
+            "transform_dispatches": 0,
+            "wait_time_ns": 75893924
+          },
+          {
+            "gpu_time_ns": 45735475,
+            "histogram_dispatches": 120,
+            "leaf_update_dispatches": 20,
+            "objective_dispatches": 20,
+            "objective_gpu_time_ns": 230697,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 800615,
+            "quantization_dispatches": 20,
+            "readback_time_ns": 7391911,
+            "rows_processed": 410531,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 4161827,
+            "transform_dispatches": 0,
+            "wait_time_ns": 81571249
+          }
+        ]
+      },
+      "cpu_median": 0.046234624926000834,
+      "mps_median": 0.15431699994951487,
+      "speedup": 0.29960811149210126,
+      "max_prediction_difference": 0.0,
+      "cpu_rmse": 0.20267006754875183,
+      "mps_rmse": 0.20267006754875183
+    },
+    {
+      "rows": 100000,
+      "seconds": {
+        "cpu": [
+          0.1171947920229286,
+          0.1317577501758933,
+          0.12014970905147493
+        ],
+        "mps": [
+          0.2639719578437507,
+          0.3132575419731438,
+          0.22006999980658293
+        ]
+      },
+      "dispatch_statistics": {
+        "cpu": [
+          {
+            "gpu_time_ns": 0,
+            "histogram_dispatches": 0,
+            "leaf_update_dispatches": 0,
+            "objective_dispatches": 0,
+            "objective_gpu_time_ns": 0,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 0,
+            "quantization_dispatches": 0,
+            "readback_time_ns": 0,
+            "rows_processed": 0,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 0,
+            "transform_dispatches": 0,
+            "wait_time_ns": 0
+          },
+          {
+            "gpu_time_ns": 0,
+            "histogram_dispatches": 0,
+            "leaf_update_dispatches": 0,
+            "objective_dispatches": 0,
+            "objective_gpu_time_ns": 0,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 0,
+            "quantization_dispatches": 0,
+            "readback_time_ns": 0,
+            "rows_processed": 0,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 0,
+            "transform_dispatches": 0,
+            "wait_time_ns": 0
+          },
+          {
+            "gpu_time_ns": 0,
+            "histogram_dispatches": 0,
+            "leaf_update_dispatches": 0,
+            "objective_dispatches": 0,
+            "objective_gpu_time_ns": 0,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 0,
+            "quantization_dispatches": 0,
+            "readback_time_ns": 0,
+            "rows_processed": 0,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 0,
+            "transform_dispatches": 0,
+            "wait_time_ns": 0
+          }
+        ],
+        "mps": [
+          {
+            "gpu_time_ns": 64069514,
+            "histogram_dispatches": 120,
+            "leaf_update_dispatches": 20,
+            "objective_dispatches": 20,
+            "objective_gpu_time_ns": 417948,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 2178159,
+            "quantization_dispatches": 20,
+            "readback_time_ns": 8279791,
+            "rows_processed": 4180453,
+            "shared_histogram_dispatches": 79,
+            "staging_time_ns": 14919330,
+            "transform_dispatches": 0,
+            "wait_time_ns": 107328420
+          },
+          {
+            "gpu_time_ns": 114366187,
+            "histogram_dispatches": 120,
+            "leaf_update_dispatches": 20,
+            "objective_dispatches": 20,
+            "objective_gpu_time_ns": 2681240,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 1636116,
+            "quantization_dispatches": 20,
+            "readback_time_ns": 10040630,
+            "rows_processed": 4180453,
+            "shared_histogram_dispatches": 79,
+            "staging_time_ns": 16444750,
+            "transform_dispatches": 0,
+            "wait_time_ns": 154597533
+          },
+          {
+            "gpu_time_ns": 38847355,
+            "histogram_dispatches": 120,
+            "leaf_update_dispatches": 20,
+            "objective_dispatches": 20,
+            "objective_gpu_time_ns": 445114,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 1202699,
+            "quantization_dispatches": 20,
+            "readback_time_ns": 7729999,
+            "rows_processed": 4180453,
+            "shared_histogram_dispatches": 79,
+            "staging_time_ns": 14294546,
+            "transform_dispatches": 0,
+            "wait_time_ns": 77165621
+          }
+        ]
+      },
+      "cpu_median": 0.12014970905147493,
+      "mps_median": 0.2639719578437507,
+      "speedup": 0.45516088160619506,
+      "max_prediction_difference": 0.0,
+      "cpu_rmse": 0.2563616633415222,
+      "mps_rmse": 0.2563616633415222
+    },
+    {
+      "rows": 1000000,
+      "seconds": {
+        "cpu": [
+          0.8577194998506457,
+          0.8941726670600474,
+          0.920917792012915
+        ],
+        "mps": [
+          1.4998478330671787,
+          1.3853784170933068,
+          1.5821897080168128
+        ]
+      },
+      "dispatch_statistics": {
+        "cpu": [
+          {
+            "gpu_time_ns": 0,
+            "histogram_dispatches": 0,
+            "leaf_update_dispatches": 0,
+            "objective_dispatches": 0,
+            "objective_gpu_time_ns": 0,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 0,
+            "quantization_dispatches": 0,
+            "readback_time_ns": 0,
+            "rows_processed": 0,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 0,
+            "transform_dispatches": 0,
+            "wait_time_ns": 0
+          },
+          {
+            "gpu_time_ns": 0,
+            "histogram_dispatches": 0,
+            "leaf_update_dispatches": 0,
+            "objective_dispatches": 0,
+            "objective_gpu_time_ns": 0,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 0,
+            "quantization_dispatches": 0,
+            "readback_time_ns": 0,
+            "rows_processed": 0,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 0,
+            "transform_dispatches": 0,
+            "wait_time_ns": 0
+          },
+          {
+            "gpu_time_ns": 0,
+            "histogram_dispatches": 0,
+            "leaf_update_dispatches": 0,
+            "objective_dispatches": 0,
+            "objective_gpu_time_ns": 0,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 0,
+            "quantization_dispatches": 0,
+            "readback_time_ns": 0,
+            "rows_processed": 0,
+            "shared_histogram_dispatches": 0,
+            "staging_time_ns": 0,
+            "transform_dispatches": 0,
+            "wait_time_ns": 0
+          }
+        ],
+        "mps": [
+          {
+            "gpu_time_ns": 482203815,
+            "histogram_dispatches": 120,
+            "leaf_update_dispatches": 20,
+            "objective_dispatches": 20,
+            "objective_gpu_time_ns": 7161698,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 5273283,
+            "quantization_dispatches": 20,
+            "readback_time_ns": 11998330,
+            "rows_processed": 41126516,
+            "shared_histogram_dispatches": 118,
+            "staging_time_ns": 150475004,
+            "transform_dispatches": 0,
+            "wait_time_ns": 582539203
+          },
+          {
+            "gpu_time_ns": 397486818,
+            "histogram_dispatches": 120,
+            "leaf_update_dispatches": 20,
+            "objective_dispatches": 20,
+            "objective_gpu_time_ns": 6796198,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 3905946,
+            "quantization_dispatches": 20,
+            "readback_time_ns": 11681699,
+            "rows_processed": 41126516,
+            "shared_histogram_dispatches": 118,
+            "staging_time_ns": 133482254,
+            "transform_dispatches": 0,
+            "wait_time_ns": 483851286
+          },
+          {
+            "gpu_time_ns": 556788897,
+            "histogram_dispatches": 120,
+            "leaf_update_dispatches": 20,
+            "objective_dispatches": 20,
+            "objective_gpu_time_ns": 7984947,
+            "prediction_dispatches": 0,
+            "prediction_gpu_time_ns": 5995572,
+            "quantization_dispatches": 20,
+            "readback_time_ns": 11107414,
+            "rows_processed": 41126516,
+            "shared_histogram_dispatches": 118,
+            "staging_time_ns": 140366375,
+            "transform_dispatches": 0,
+            "wait_time_ns": 653202882
+          }
+        ]
+      },
+      "cpu_median": 0.8941726670600474,
+      "mps_median": 1.4998478330671787,
+      "speedup": 0.5961755901806854,
+      "max_prediction_difference": 0.0,
+      "cpu_rmse": 0.27819591760635376,
+      "mps_rmse": 0.27819591760635376
+    }
+  ],
+  "timing": "DMatrix construction + training with quantization; warmed Metal runtime; data generation excluded"
+}

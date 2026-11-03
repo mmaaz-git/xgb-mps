@@ -1,0 +1,81 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "cpu_threads": 8,
+  "features": 32,
+  "rounds": 20,
+  "repeats": 3,
+  "params": {
+    "tree_method": "hist",
+    "objective": "reg:squarederror",
+    "max_depth": 6,
+    "max_bin": 256,
+    "nthread": 8,
+    "seed": 7
+  },
+  "cases": [
+    {
+      "rows": 10000,
+      "seconds": {
+        "cpu": [
+          0.045526042114943266,
+          0.04289683303795755,
+          0.04452829109504819
+        ],
+        "mps": [
+          0.10583750018849969,
+          0.12386862491257489,
+          0.18909437488764524
+        ]
+      },
+      "cpu_median": 0.04452829109504819,
+      "mps_median": 0.12386862491257489,
+      "speedup": 0.3594799823318921,
+      "max_prediction_difference": 0.0,
+      "cpu_rmse": 0.20267006754875183,
+      "mps_rmse": 0.20267006754875183
+    },
+    {
+      "rows": 100000,
+      "seconds": {
+        "cpu": [
+          0.1347648750524968,
+          0.1293642078526318,
+          0.11459520808421075
+        ],
+        "mps": [
+          0.19976666709408164,
+          0.24941041599959135,
+          0.20284766680561006
+        ]
+      },
+      "cpu_median": 0.1293642078526318,
+      "mps_median": 0.20284766680561006,
+      "speedup": 0.6377406745161244,
+      "max_prediction_difference": 0.0,
+      "cpu_rmse": 0.2563616633415222,
+      "mps_rmse": 0.2563616633415222
+    },
+    {
+      "rows": 1000000,
+      "seconds": {
+        "cpu": [
+          1.1338242499623448,
+          0.9033616669476032,
+          0.9160299999639392
+        ],
+        "mps": [
+          1.299938416108489,
+          1.471497124992311,
+          1.530428625177592
+        ]
+      },
+      "cpu_median": 0.9160299999639392,
+      "mps_median": 1.471497124992311,
+      "speedup": 0.6225156572893241,
+      "max_prediction_difference": 0.0,
+      "cpu_rmse": 0.27819591760635376,
+      "mps_rmse": 0.27819591760635376
+    }
+  ],
+  "timing": "DMatrix construction + training with quantization; warmed Metal runtime; data generation excluded"
+}

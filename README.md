@@ -2,28 +2,20 @@
 
 **Porting XGBoost to MPS, by Codex.**
 
-An experimental Apple GPU training backend for XGBoost. Custom Metal compute
-kernels build gradient histograms; XGBoost's existing CPU code handles quantization,
-gradients, split selection, row partitioning, prediction, and model serialization.
-This is a working **hybrid backend**, not full CUDA feature parity.
+An experimental Apple GPU backend for XGBoost 3.4.2, using custom Metal compute
+kernels behind `device="mps"`. The goal is coverage of all CUDA-accelerated XGBoost
+operations, with measured performance. **Full CUDA parity is not implemented yet.**
 
-## Progress
+The current backend runs histograms, gradient quantization, several objectives,
+prediction transforms, tree traversal, prediction-cache updates, and common metrics
+on Metal. Quantile construction, split evaluation, row partitioning and several
+specialized features still run on the CPU. See the [coverage ledger](docs/CUDA_PARITY.md)
+and [105-file CUDA inventory](validation/cuda-inventory.json).
 
-- [x] Vendor upstream XGBoost 3.4.2 with its dependencies and licenses.
-- [x] Add `USE_METAL=ON`, `device="mps"`, and real Metal histogram kernels.
-- [x] Build the library and compile the shader on Apple Silicon.
-- [x] Pass CPU/Metal training comparisons on an Apple M3.
-- [x] Verify completed GPU dispatches; CPU fallback cannot satisfy a GPU test.
-- [x] Test histogram kernels against an independent integer CPU reference.
-- [x] Measure end-to-end performance against multithreaded CPU XGBoost.
-- [x] Add a shared-memory histogram kernel for large dense inputs.
-- [ ] Reduce CPU staging and synchronization overhead.
-- [x] Test multi-target trees, external-memory pages, ranking, and extreme gradient scales.
-- [ ] Expand randomized testing and validation across Apple GPU generations.
-- [ ] Accelerate additional training and prediction stages.
-
-**Current result:** correctness checks pass; the first implementation is slower
-than the CPU baseline. No speedup is claimed.
+**Measured on Apple M3:** large-batch prediction is faster than CPU; training is
+still slower. The latest million-row prediction benchmark is **2.51× faster**,
+including input staging and transfers. This does not establish CUDA-equivalent
+training performance or speedups on other hardware and workloads.
 
 ## Build and use
 
@@ -40,15 +32,37 @@ export PYTHONPATH="$PWD/xgboost/python-package"
 ```python
 import xgboost as xgb
 
-print(xgb.metal_info())  # device availability and completed GPU dispatch counters
+print(xgb.metal_info())
 model = xgb.XGBRegressor(device="mps", tree_method="hist")
 model.fit(X, y)
+prediction = model.predict(X)
 ```
 
-The `mps` selector currently supports histogram tree training on one Metal device.
 Explicit updater selection, `exact`/`approx` tree methods, linear boosters, and
-distributed training are rejected. Training with an inaccessible GPU errors rather
-than silently falling back. Prediction and metrics currently run on the CPU.
+distributed training are rejected for `mps`. Inaccessible Metal devices produce an
+error. Other features may use CPU implementations as recorded in the coverage ledger;
+selecting `mps` does not imply that every stage runs on the GPU.
+
+## Current Metal operations
+
+| Operation | Implemented coverage |
+| --- | --- |
+| Histograms | Dense/sparse compressed indices, external-memory pages, scaled integer sums, shared-memory dense kernel |
+| Gradient quantization | GPU integer bit conversion with CPU-selected scales; exact comparison against CPU double `llround` |
+| Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile |
+| Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile |
+| Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
+| Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
+| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error |
+
+Input views and categorical recoding remain on the host. GPU metric kernels produce
+scaled block sums, with the final small reduction in host FP64. Metal has no native
+FP64 arithmetic; tolerances and numerical edge cases are tested explicitly.
+
+`xgb.metal_info()` reports completed dispatch counters for each operation family.
+It also reports GPU durations and histogram staging/wait/readback wall times. Wait
+time overlaps GPU duration; adding those numbers would double-count time. Counters
+are process-wide, so concurrent models contribute to the same totals.
 
 ## Validation
 
@@ -58,61 +72,108 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **50 passed, 1 skipped**. All 44 GPU tests executed and passed. The
-  skipped test specifically requires a machine without an accessible GPU.
-- Native shader: **28 cases passed**, comparing every histogram bin exactly
-  against an independent CPU integer sum. Covers dense/sparse indices, 8/16/32-bit
-  storage, nonzero page offsets, high contention, negative sums, and carries,
-  for both global and shared-memory kernels.
-- Training comparisons cover regression, binary/multiclass classification,
-  missing values, CSR input, weights, categorical splits, quantile matrices,
-  sampling, constraints, cache eviction, continuation, model interchange,
-  multi-target trees, external memory, ranking, custom gradient scales, held-out
-  sklearn predictions, and concurrent independent models.
-- Numerical tolerances are explicit in the tests; general bitwise CPU/GPU
-  equivalence is not promised.
-- Selected upstream configuration, model, and serialization tests: **32 passed,
-  1 skipped**. A separate `USE_METAL=OFF` build also compiles; its API reports
-  Metal unavailable and rejects `device="mps"` with a clear build-option error.
+- Python: **192 passed, 1 skipped**. The skip requires a machine without an
+  accessible GPU. Positive GPU tests assert completed operation counters so CPU
+  fallback cannot satisfy them.
+- Native histograms: **28 cases**, with every bin compared exactly to independent
+  CPU integer sums. Covers dense/sparse indices, 8/16/32-bit storage, page offsets,
+  high contention, negative values and carries.
+- Native gradient quantization: **713,814 values across six scales**, including
+  subnormal floats, compared exactly against double-precision CPU rounding.
+- Native objectives: **20 cases / 131,968 gradient pairs** compared against
+  independent CPU mathematical references.
+- Integrated comparisons cover weighted/multi-target training, sampling,
+  constraints, categorical recoding, external memory, model interchange,
+  continuation, concurrent models, prediction chunks and base margins.
+- Metric tests include zero weights, weights from `1e-30` to `1e37`, parameterized
+  thresholds, multiclass reduction and log-gamma boundaries.
+- General bitwise CPU/GPU equivalence is not promised. Prediction differences in
+  the benchmark runs below were zero.
 
-## Performance measurements
+A separate `USE_METAL=OFF` build passes its availability/error checks. Selected
+upstream configuration/model/I/O tests pass: **32 passed, 1 skipped**. Build outputs
+and full logs are local under `results/`; benchmark JSON is committed under
+`validation/`.
 
-Apple M3, 8 CPU threads, 32 dense features, depth 6, 20 boosting rounds, 256 bins.
-Median of three runs; fresh DMatrix per run; includes matrix construction,
-quantization, and training, with the Metal runtime warmed first. Synthetic data
-generation is excluded. CPU and Metal predictions were identical in these runs.
+## Performance
+
+Apple M3, 8 CPU threads, 32 dense features; medians of three runs with alternating
+CPU/Metal order. Runtime compilation is warmed before timing. Synthetic data
+generation is excluded. These are local measurements with timing variability.
+
+### Training
+
+20 boosting rounds, depth 6, 256 bins. Includes fresh DMatrix construction,
+quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 10,000 | 0.048 s | 0.122 s | 0.39x |
-| 100,000 | 0.145 s | 0.255 s | 0.57x |
-| 1,000,000 | 1.457 s | 2.518 s | 0.58x |
+| 10,000 | 0.043 s | 0.090 s | 0.48× |
+| 100,000 | 0.114 s | 0.184 s | 0.62× |
+| 1,000,000 | 0.806 s | 1.057 s | 0.76× |
 
-[Current raw measurements](validation/benchmark-v2-m3.json), and the
-[first baseline](validation/benchmark-v1-m3.json). These are short local runs
-with substantial timing variability; they do not establish a speedup from the
-shared-memory optimization. Reproduce with:
+[Latest raw training results](validation/benchmark-v5-m3.json). Metal training is
+still slower than CPU. Reused buffers/queues, GPU gradient quantization and compact
+row staging reduce overhead, but the training pipeline still synchronizes with CPU
+split selection and partitioning at each level. The next major step is persistent
+GPU training state and Metal split/partition kernels.
+
+### Prediction
+
+300 depth-6 trees trained on CPU; identical model and prediction input for both
+backends. Uncached `inplace_predict`, including host staging and GPU transfers.
+Every Metal repetition must execute GPU traversal; prediction-cache hits cannot
+inflate the benchmark.
+
+| Rows | CPU | Metal | CPU / Metal |
+| ---: | ---: | ---: | ---: |
+| 1,000 | 0.00062 s | 0.00426 s | 0.14× |
+| 100,000 | 0.0449 s | 0.0248 s | 1.81× |
+| 1,000,000 | 0.416 s | 0.165 s | **2.51×** |
+
+[Latest raw prediction results](validation/benchmark-prediction-v2-m3.json).
+The [first run](validation/benchmark-prediction-v1-m3.json) measured 3.42× at one
+million rows. Both runs are retained; neither establishes a universal speedup.
+Small batches are slower because staging and dispatch overhead dominate.
 
 ```sh
-.venv/bin/python scripts/benchmark.py --output results/my-benchmark.json
+.venv/bin/python scripts/benchmark.py --threads 8 --output results/my-training.json
+.venv/bin/python scripts/benchmark_prediction.py --output results/my-prediction.json
 ```
 
-The script refuses to overwrite prior results. GPU histogram accumulation uses
-scaled integers and two 32-bit atomics per 64-bit sum, avoiding native FP64 and
-64-bit atomic requirements. Optimization and broader validation are ongoing.
+Both scripts refuse to overwrite prior measurements. Earlier training runs remain
+in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspection.
+
+## Progress
+
+- [x] Vendor upstream 3.4.2, build Metal and CPU-only configurations.
+- [x] Implement/test histogram kernels and shared-memory accumulation.
+- [x] Move gradient quantization onto the GPU; reduce host row staging.
+- [x] Port the objective and transform families listed above.
+- [x] Port batch/inplace/leaf traversal and training prediction-cache updates.
+- [x] Port common elementwise/multiclass metrics with bounded GPU reductions.
+- [x] Measure large-batch prediction gains and retain training regressions publicly.
+- [ ] Keep training data and intermediate state resident on Metal buffers.
+- [ ] Port split evaluation, row partitioning, sampling and histogram subtraction.
+- [ ] Port quantile construction, remaining objectives/metrics, SHAP and linear training.
+- [ ] Add Apple-device array interoperability and distributed GPU collectives.
+- [ ] Validate across Apple GPU generations and broader real datasets.
+- [ ] Reach complete CUDA-operation coverage and competitive training performance.
 
 ## Development log
 
 ### 2026-11-03
 
-Imported XGBoost 3.4.2, implemented the first Metal histogram backend, and added
-execution counters and equivalence tests. Initial sandbox restrictions prevented
-GPU access; after permissions were refreshed, the full GPU suite and native
-shader tests passed. Recorded the first performance baseline above. The public
-repository is maintained through normal Git commits. Added a shared-memory
-histogram path, GPU command-duration counters, and broader correctness tests.
-CPU/GPU predictions were identical in both benchmark runs, but Metal training
-remains slower overall.
+Imported XGBoost 3.4.2 and built the initial hybrid histogram backend. GPU tests
+became runnable after execution permissions were refreshed. Added native integer
+reference tests, shared-memory histograms and end-to-end benchmarks.
+
+Expanded the scope to all CUDA operations, inventoried 105 CUDA source/header files,
+and recorded remaining CPU paths. Added GPU gradient quantization, objective kernels,
+transforms, tree prediction, prediction-cache updates and common metrics. Removed
+per-row histogram work-item construction, reused histogram buffers and command queues,
+and added per-operation profiling. Large-batch prediction now shows measured CPU
+speedups; training and full parity remain open work.
 
 ## Source and license
 

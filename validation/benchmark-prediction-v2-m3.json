@@ -1,0 +1,84 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "params": {
+    "output": "results/benchmark-prediction-v2.json",
+    "rows": [
+      1000,
+      100000,
+      1000000
+    ],
+    "trees": 300,
+    "features": 32,
+    "threads": 8,
+    "repeats": 3
+  },
+  "timing": "Uncached inplace_predict; includes host input staging and GPU transfers; excludes training and data generation; warmed runtime",
+  "cases": [
+    {
+      "rows": 1000,
+      "seconds": {
+        "cpu": [
+          0.000871917000040412,
+          0.0006152500864118338,
+          0.0006050830706954002
+        ],
+        "mps": [
+          0.004402083111926913,
+          0.004129708977416158,
+          0.004256082931533456
+        ]
+      },
+      "gpu_seconds": [
+        0.003128499,
+        0.003216166,
+        0.003117708
+      ],
+      "speedup": 0.14455782378050624,
+      "max_prediction_difference": 0.0
+    },
+    {
+      "rows": 100000,
+      "seconds": {
+        "cpu": [
+          0.0384664589073509,
+          0.04491241695359349,
+          0.05021529202349484
+        ],
+        "mps": [
+          0.028531125048175454,
+          0.014218541095033288,
+          0.0247744161169976
+        ]
+      },
+      "gpu_seconds": [
+        0.023978499,
+        0.010569124,
+        0.02096454
+      ],
+      "speedup": 1.8128547103388368,
+      "max_prediction_difference": 0.0
+    },
+    {
+      "rows": 1000000,
+      "seconds": {
+        "cpu": [
+          0.3962742080911994,
+          0.4158130409196019,
+          0.5334572920110077
+        ],
+        "mps": [
+          0.19258549995720387,
+          0.1523612909950316,
+          0.16549383290112019
+        ]
+      },
+      "gpu_seconds": [
+        0.15885303,
+        0.120094909,
+        0.132366411
+      ],
+      "speedup": 2.5125591306356614,
+      "max_prediction_difference": 0.0
+    }
+  ]
+}
