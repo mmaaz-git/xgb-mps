@@ -14,7 +14,7 @@ listed below. This is not yet a complete GPU backend.
 | --- | --- | --- |
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | Implemented with a different bounded fixed-point scheme; GPU integer bit conversion, host scale selection |
-| Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | CPU |
+| Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, monotonic bounds and pooled vector weights; host column sampling, interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter, resident row IDs, GPU leaf positions; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu` | CPU |
@@ -68,11 +68,12 @@ count, repeated measurements, and accuracy alongside any speedup claim.
 The central training loop still crosses the CPU/GPU boundary at every tree level.
 The next architectural change is to retain quantized data, gradients, histograms,
 row positions and prediction state on Metal buffers. Split evaluation now executes
-on Metal for scalar and vector leaves, but still stages host histogram data. Row
+on Metal for scalar and vector leaves and gathers directly from resident histogram
+buffers. Histogram conversion, accumulation and subtraction also execute on Metal. Row
 partitioning and histogram reads share resident GPU row indices. Host orchestration and model serialization
 can remain on the CPU, as they also do in CUDA-backed software. Split tests include categorical partitions, missing directions, monotonic and
-interaction constraints, and vector leaves. GPU sampling, histogram subtraction,
-resident histograms and efficient external-memory staging remain required.
+interaction constraints, and vector leaves. GPU sampling, remaining training-state updates, fewer synchronization points
+and efficient external-memory staging remain required.
 
 Remaining ranking/survival/robust objectives, SHAP, specialized metrics, quantile
 construction, linear training and collectives are separate coverage requirements.

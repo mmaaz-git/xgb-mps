@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "hist_util.h"
+#include "metal_storage.h"
 #include "row_set.h"
 #include "xgboost/base.h"
 #include "xgboost/span.h"
@@ -30,6 +31,8 @@ struct Statistics {
       partition_dispatches, leaf_partition_dispatches, row_init_dispatches, partition_gpu_time_ns,
       index_gpu_time_ns;
   std::uint64_t split_dispatches, split_gpu_time_ns;
+  std::uint64_t histogram_conversion_dispatches, histogram_subtraction_dispatches,
+      resident_split_dispatches;
 };
 
 class Histogram {
@@ -39,7 +42,8 @@ class Histogram {
   virtual void Reset() = 0;
   virtual void Build(std::size_t page_idx, GHistIndexMatrix const& gidx,
                      RowSetCollection const& rows, std::vector<bst_node_t> const& nodes,
-                     Span<GradientPair const> gradients, std::vector<GHistRow> const& output) = 0;
+                     Span<GradientPair const> gradients, std::vector<GHistRow> const& output,
+                     HistogramBuffer* storage) = 0;
 };
 
 std::unique_ptr<Histogram> MakeHistogram();

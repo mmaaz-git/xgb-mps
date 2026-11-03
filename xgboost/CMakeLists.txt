@@ -50,7 +50,7 @@ include(CMakeDependentOption)
 ## User options
 option(BUILD_C_DOC "Build documentation for C APIs using Doxygen." OFF)
 option(USE_OPENMP "Build with OpenMP support." ON)
-option(USE_METAL "Build experimental Apple Metal histogram acceleration" OFF)
+option(USE_METAL "Build experimental Apple Metal compute acceleration" OFF)
 if(USE_METAL)
   if(NOT APPLE)
     message(FATAL_ERROR "USE_METAL requires macOS.")

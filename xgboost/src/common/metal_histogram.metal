@@ -1442,3 +1442,60 @@ kernel void xgb_evaluate_multi_splits(
     results[task_id] = result;
   }
 }
+
+// Convert a quantized signed integer to binary64 at a power-of-two scale.
+// The histogram scale keeps these values in the normal binary64 exponent range.
+inline ulong xgb_scaled_integer(ulong value, int unit) {
+  bool negative = bool(value & kDoubleSign);
+  ulong magnitude = negative ? 0ul - value : value;
+  if (!magnitude) return 0;
+  int high = 63 - int(clz(magnitude));
+  ulong sig = high > 55 ? xgb_shift_jam(magnitude, uint(high - 55)) : magnitude << uint(55 - high);
+  return xgb_dround(negative ? kDoubleSign : 0, high + unit + 1023, sig).bits;
+}
+struct DequantizeParams {
+  ulong count;
+  int grad_unit, hess_unit;
+  uint bins, add;
+};
+kernel void xgb_histogram_dequantize(device const ulong2* quantized [[buffer(0)]],
+                                     device ulong2* output [[buffer(1)]],
+                                     device const ulong* offsets [[buffer(2)]],
+                                     constant DequantizeParams& p [[buffer(3)]],
+                                     uint tid [[thread_position_in_grid]]) {
+  if (ulong(tid) >= p.count) return;
+  ulong2 raw = quantized[tid];
+  ulong2 value(xgb_scaled_integer(raw.x, p.grad_unit), xgb_scaled_integer(raw.y, p.hess_unit));
+  ulong out = offsets[tid / p.bins] + tid % p.bins;
+  if (p.add) {
+    ulong2 prior = output[out];
+    value = ulong2(xgb_dadd({prior.x}, {value.x}).bits, xgb_dadd({prior.y}, {value.y}).bits);
+  }
+  output[out] = value;
+}
+struct HistogramSubtraction {
+  ulong parent, sibling, output, bins;
+};
+kernel void xgb_histogram_subtract(device ulong2* histograms [[buffer(0)]],
+                                   device const HistogramSubtraction* tasks [[buffer(1)]],
+                                   uint2 tid [[thread_position_in_grid]]) {
+  HistogramSubtraction task = tasks[tid.y];
+  if (ulong(tid.x) >= task.bins) return;
+  ulong2 parent = histograms[task.parent + tid.x], sibling = histograms[task.sibling + tid.x];
+  histograms[task.output + tid.x] =
+      ulong2(xgb_dsub({parent.x}, {sibling.x}).bits, xgb_dsub({parent.y}, {sibling.y}).bits);
+}
+struct HistogramGather {
+  ulong source;
+  uint output, bins, stride, padding;
+};
+kernel void xgb_histogram_gather(device const ulong2* source [[buffer(0)]],
+                                 device ulong2* output [[buffer(1)]],
+                                 device const HistogramGather* segments [[buffer(2)]],
+                                 uint segment [[threadgroup_position_in_grid]],
+                                 uint tid [[thread_index_in_threadgroup]],
+                                 uint width [[threads_per_threadgroup]]) {
+  HistogramGather s = segments[segment];
+  for (uint i = tid; i < s.bins; i += width)
+    output[ulong(s.output) + ulong(i) * s.stride] = source[s.source + i];
+}

@@ -70,6 +70,9 @@ class HistogramBuilder {
              HistMakerTrainParam const *param) {
     n_threads_ = ctx->Threads();
     param_ = p;
+#if defined(XGBOOST_USE_METAL)
+    hist_.UseMetal(ctx->IsMPS());
+#endif
     hist_.Reset(total_bins, param->MaxCachedHistNodes(ctx->Device()));
     buffer_.Init(total_bins);
     is_distributed_ = is_distributed;
@@ -176,7 +179,8 @@ class HistogramBuilder {
         if (page_idx == 0) std::fill(hist.begin(), hist.end(), GradientPairPrecise{});
         output.push_back(hist);
       }
-      metal_->Build(page_idx, gidx, row_set_collection, nodes_to_build, gpair.Values(), output);
+      metal_->Build(page_idx, gidx, row_set_collection, nodes_to_build, gpair.Values(), output,
+                    hist_.MetalBuffer());
       monitor_.Stop(__func__);
       return;
     }
@@ -228,6 +232,19 @@ class HistogramBuilder {
       SafeColl(rc);
     }
 
+#if defined(XGBOOST_USE_METAL)
+    if (metal_) {
+      std::vector<common::metal::HistogramSubtraction> tasks;
+      for (auto node : nodes_to_trick) {
+        auto parent = tree.Parent(node);
+        auto sibling = tree.IsLeftChild(node) ? tree.RightChild(parent) : tree.LeftChild(parent);
+        tasks.push_back({hist_.Offset(parent), hist_.Offset(sibling), hist_.Offset(node),
+                         static_cast<std::uint64_t>(n_total_bins)});
+      }
+      common::metal::SubtractHistograms(hist_.MetalBuffer(), tasks);
+      return;
+    }
+#endif
     common::BlockedSpace2d const &subspace =
         nodes_to_trick.size() == nodes_to_build.size()
             ? space

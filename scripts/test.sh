@@ -23,5 +23,9 @@ echo "Checking scalar and vector split kernels against independent CPU reference
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_split.mm \
   -framework Metal -framework Foundation -o results/metal_split_test
 results/metal_split_test xgboost/src/common/metal_histogram.metal
+echo "Checking GPU histogram conversion, accumulation, subtraction and gathers"
+clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_storage.mm \
+  -framework Metal -framework Foundation -o results/metal_storage_test
+results/metal_storage_test xgboost/src/common/metal_histogram.metal
 echo "Running training equivalence tests; a real GPU is required"
 .venv/bin/python -m pytest -q tests --require-metal

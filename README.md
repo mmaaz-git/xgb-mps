@@ -9,7 +9,8 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning and scalar/vector split evaluation on Metal. Quantile construction,
-sampling, histogram subtraction and several specialized features still run on the CPU. See the [coverage ledger](docs/CUDA_PARITY.md)
+sampling and several specialized features still run on the CPU. Histogram conversion,
+subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
 
 **Measured on Apple M3:** large-batch prediction is faster than CPU; training is
@@ -47,7 +48,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 
 | Operation | Implemented coverage |
 | --- | --- |
-| Histograms | Dense/sparse compressed indices, external-memory pages, scaled integer sums, shared-memory dense kernel |
+| Histograms | Dense/sparse compressed indices, external-memory pages, scaled integer sums, shared-memory dense kernel, GPU binary64 conversion/subtraction and a resident cache |
 | Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps column sampling and interaction masks |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
@@ -77,7 +78,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **231 passed, 1 skipped**. The skip requires a machine without an
+- Python: **251 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **28 cases**, with every bin compared exactly to independent
@@ -86,6 +87,9 @@ On Apple M3, 2026-11-03:
 - Native gradient quantization: **713,814 values across six scales**, including
   subnormal floats, compared exactly against double-precision CPU rounding.
 - Native partition/transpose kernels: **256 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
+- Native histogram storage: **168 cases**, with 55,272 converted/accumulated pairs,
+  18,424 subtracted pairs and 82,908 gathered pairs checked against CPU references,
+  including signed integer limits, page accumulation, strided outputs and guard regions.
 - Native split selection: **3,780 scalar and 2,160 vector cases**, comparing selected
   splits, gains, child statistics and categorical ordering exactly against independent
   CPU references. Includes wide exponent ranges, ties, missing data, regularization,
@@ -120,23 +124,29 @@ quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 10,000 | 0.043 s | 0.255 s | 0.17× |
-| 100,000 | 0.115 s | 0.330 s | 0.35× |
-| 1,000,000 | 0.816 s | 1.158 s | 0.70× |
+| 10,000 | 0.047 s | 0.356 s | 0.13× |
+| 100,000 | 0.116 s | 0.384 s | 0.30× |
+| 1,000,000 | 0.814 s | 1.335 s | 0.61× |
 
-[Latest raw training results](validation/benchmark-split-scan-m3.json). Metal training
-is still slower than CPU. GPU split evaluation initially regressed million-row
+[Latest raw training results](validation/benchmark-hist-pool-m3.json), including
+resident histograms, GPU subtraction/gathering and reused split buffers. The
+[first resident-histogram run](validation/benchmark-hist-storage-m3.json) is also
+retained. Neither run shows an end-to-end training improvement; dispatch overhead
+and substantial GPU timing variability remain. Metal training is still slower than CPU.
+
+Before histogram residency, [split-evaluator optimization](validation/benchmark-split-scan-m3.json)
+measured 1.158 s at one million rows. GPU split evaluation initially regressed million-row
 training to 2.209 s. Parallel candidate scoring and checked exact integer scans
 reduced this to 1.158 s; measured split-kernel time fell from 0.857 s to 0.061 s.
 The [serial evaluator](validation/benchmark-split-fast-m3.json),
-[parallel evaluator](validation/benchmark-split-parallel-m3.json) and latest results
+[parallel evaluator](validation/benchmark-split-parallel-m3.json) and exact-scan results
 are retained. These separately timed runs are subject to system variability.
 
 The preceding hybrid version with CPU split selection measured 1.063 s Metal versus
 0.824 s CPU ([raw results](validation/benchmark-transpose-v2-m3.json)). Moving a stage
-to the GPU has not automatically improved training time. Histogram staging,
-subtraction, quantile construction, sampling and per-level synchronization remain
-optimization targets. Small workloads pay proportionately more dispatch overhead.
+to the GPU has not automatically improved training time. Quantile construction, sampling, kernel scheduling and per-level synchronization
+remain optimization targets. Histogram arithmetic now stays on the GPU, but
+adding GPU operations still has dispatch costs. Small workloads pay proportionately more dispatch overhead.
 
 ### Prediction
 
@@ -176,7 +186,9 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [ ] Keep training data and intermediate state resident on Metal buffers.
 - [x] Port stable row partitioning and leaf assignment; keep row indices on the GPU.
 - [x] Port scalar/vector split evaluation, including categorical ordering and constraints.
-- [ ] Port sampling and histogram subtraction; remove histogram round trips.
+- [x] Keep histograms in Metal shared memory; port conversion, subtraction and gathering.
+- [x] Reuse split workspaces across tree levels and boosting rounds.
+- [ ] Port sampling and remaining training-state updates.
 - [ ] Port quantile construction, remaining objectives/metrics, SHAP and linear training.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.
@@ -223,3 +235,14 @@ the precision used by CPU scoring; bounded integer prefix scans accelerate cases
 where parallel sums are provably exact. Winning candidates retain CPU tie order.
 All 231 Python tests and 5,940 native split cases pass. The training table above
 includes the new evaluator and its remaining performance cost.
+
+### Histogram residency update
+
+Histogram storage now uses Metal-owned shared allocations. GPU kernels perform
+integer-to-binary64 conversion, external-page accumulation, sibling subtraction
+and feature gathering. Cache growth uses GPU buffer copies, and scalar/vector
+split workspaces are reused. Host code maintains cache metadata and the model;
+it can inspect completed shared results without copying the entire histogram.
+Checks cover cache sizes 1/2/7/64, both growth policies, both output strategies
+and external-memory pages. All 251 Python tests and the native suites pass.
+The latest timing regression is retained in the performance table above.

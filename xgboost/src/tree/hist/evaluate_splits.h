@@ -47,6 +47,9 @@ class HistEvaluator {
   TreeEvaluator tree_evaluator_;
   FeatureInteractionConstraintHost interaction_constraints_;
   std::vector<NodeEntry> snode_;
+#if defined(XGBOOST_USE_METAL)
+  std::unique_ptr<common::metal::SplitWorkspace> metal_workspace_;
+#endif
 
   // if sum of statistics for non-missing values in the node
   // is equal to sum of statistics for all values:
@@ -281,25 +284,25 @@ class HistEvaluator {
     CHECK(!features.empty());
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
+      if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
       auto evaluator = tree_evaluator_.GetEvaluator();
       std::vector<common::metal::SplitTask> tasks;
-      std::vector<GradientPairPrecise> values;
+      std::size_t bins = 0;
+      std::vector<common::metal::HistogramInput> inputs{{hist.MetalBuffer(), {}}};
       std::vector<std::pair<std::size_t, bst_feature_t>> mapping;
       auto const &ptr = cut.Ptrs();
       for (std::size_t i = 0; i < entries.size(); ++i) {
         auto nid = entries[i].nid;
-        auto histogram = hist[nid];
         for (auto f : features[i]->ConstHostSpan()) {
           if (!interaction_constraints_.Query(nid, f)) continue;
           auto n = ptr[f + 1] - ptr[f];
           if (!n) continue;
-          CHECK_LE(values.size() + n, std::numeric_limits<std::uint32_t>::max());
+          CHECK_LE(bins + n, std::numeric_limits<std::uint32_t>::max());
           bool categorical = common::IsCat(feature_types, f);
           std::uint32_t kind =
               categorical ? (common::UseOneHot(n, param_->max_cat_to_onehot) ? 1 : 2) : 0;
-          tasks.push_back({static_cast<std::uint32_t>(values.size()),
-                           static_cast<std::uint32_t>(values.size() + n), kind,
-                           static_cast<std::uint32_t>(param_->max_cat_threshold),
+          tasks.push_back({static_cast<std::uint32_t>(bins), static_cast<std::uint32_t>(bins + n),
+                           kind, static_cast<std::uint32_t>(param_->max_cat_threshold),
                            snode_[nid].stats.GetGrad(), snode_[nid].stats.GetHess(),
                            snode_[nid].root_gain,
                            evaluator.has_constraint ? evaluator.lower[nid]
@@ -307,8 +310,9 @@ class HistEvaluator {
                            evaluator.has_constraint ? evaluator.upper[nid]
                                                     : std::numeric_limits<float>::infinity(),
                            evaluator.has_constraint ? evaluator.constraints[f] : 0});
-          auto feature = histogram.subspan(ptr[f], n);
-          values.insert(values.end(), feature.begin(), feature.end());
+          inputs[0].segments.push_back(
+              {hist.Offset(nid) + ptr[f], static_cast<std::uint32_t>(bins), n, 1, 0});
+          bins += n;
           mapping.emplace_back(i, f);
         }
       }
@@ -316,7 +320,8 @@ class HistEvaluator {
                                                 param_->max_delta_step, param_->min_child_weight};
       std::vector<common::metal::SplitResult> results;
       std::vector<std::uint32_t> order;
-      common::metal::EvaluateSplits(values, tasks, parameters, &results, &order);
+      common::metal::EvaluateSplits(inputs, tasks, parameters, &results, &order,
+                                    metal_workspace_.get());
       for (std::size_t i = 0; i < tasks.size(); ++i) {
         auto const &r = results[i];
         if (r.bin < 0) continue;
@@ -492,6 +497,10 @@ class HistMultiEvaluator {
   FeatureInteractionConstraintHost interaction_constraints_;
   std::shared_ptr<common::ColumnSampler> column_sampler_;
   Context const *ctx_;
+
+#if defined(XGBOOST_USE_METAL)
+  std::unique_ptr<common::metal::SplitWorkspace> metal_workspace_;
+#endif
 
  private:
   template <bst_bin_t d_step>
@@ -695,10 +704,14 @@ class HistMultiEvaluator {
     CHECK(!features.empty());
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
+      if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
       auto evaluator = tree_evaluator_.GetEvaluator();
       auto targets = hist.size();
       std::vector<common::metal::MultiSplitTask> tasks;
-      std::vector<GradientPairPrecise> values, parents;
+      std::vector<GradientPairPrecise> parents;
+      std::size_t bins = 0;
+      std::vector<common::metal::HistogramInput> inputs;
+      for (auto target : hist) inputs.push_back({target->MetalBuffer(), {}});
       std::vector<common::metal::SplitBounds> bounds;
       std::vector<std::pair<std::size_t, bst_feature_t>> mapping;
       auto const &ptr = cut.Ptrs();
@@ -708,18 +721,17 @@ class HistMultiEvaluator {
           if (!interaction_constraints_.Query(nid, f)) continue;
           auto n = ptr[f + 1] - ptr[f];
           if (!n) continue;
-          CHECK_LE(values.size() + n * targets, std::numeric_limits<std::uint32_t>::max());
+          CHECK_LE(bins + n * targets, std::numeric_limits<std::uint32_t>::max());
           CHECK_LE(parents.size() + targets, std::numeric_limits<std::uint32_t>::max());
           bool categorical = common::IsCat(feature_types, f);
           std::uint32_t kind =
               categorical ? (common::UseOneHot(n, param_->max_cat_to_onehot) ? 1 : 2) : 0;
-          tasks.push_back({static_cast<std::uint32_t>(values.size()),
-                           static_cast<std::uint32_t>(values.size() + n * targets), kind,
-                           static_cast<std::uint32_t>(param_->max_cat_threshold),
-                           static_cast<std::uint32_t>(parents.size()),
-                           static_cast<std::uint32_t>(targets), gain_[nid],
-                           evaluator.has_constraint ? evaluator.constraints[f] : 0,
-                           static_cast<std::uint32_t>(evaluator.has_constraint)});
+          tasks.push_back(
+              {static_cast<std::uint32_t>(bins), static_cast<std::uint32_t>(bins + n * targets),
+               kind, static_cast<std::uint32_t>(param_->max_cat_threshold),
+               static_cast<std::uint32_t>(parents.size()), static_cast<std::uint32_t>(targets),
+               gain_[nid], evaluator.has_constraint ? evaluator.constraints[f] : 0,
+               static_cast<std::uint32_t>(evaluator.has_constraint)});
           for (std::size_t t = 0; t < targets; ++t) {
             parents.push_back(stats_(nid, t));
             bounds.push_back({evaluator.has_constraint ? evaluator.lower[nid * targets + t]
@@ -727,8 +739,11 @@ class HistMultiEvaluator {
                               evaluator.has_constraint ? evaluator.upper[nid * targets + t]
                                                        : std::numeric_limits<float>::infinity()});
           }
-          for (std::size_t bin = ptr[f]; bin < ptr[f + 1]; ++bin)
-            for (std::size_t t = 0; t < targets; ++t) values.push_back((*hist[t])[nid][bin]);
+          for (std::size_t t = 0; t < targets; ++t)
+            inputs[t].segments.push_back({hist[t]->Offset(nid) + ptr[f],
+                                          static_cast<std::uint32_t>(bins + t), n,
+                                          static_cast<std::uint32_t>(targets), 0});
+          bins += n * targets;
           mapping.emplace_back(i, f);
         }
       }
@@ -737,8 +752,8 @@ class HistMultiEvaluator {
       std::vector<common::metal::SplitResult> results;
       std::vector<GradientPairPrecise> children;
       std::vector<std::uint32_t> order;
-      common::metal::EvaluateMultiSplits(values, tasks, parents, bounds, parameters, &results,
-                                         &children, &order);
+      common::metal::EvaluateMultiSplits(inputs, tasks, parents, bounds, parameters, &results,
+                                         &children, &order, metal_workspace_.get());
       for (std::size_t i = 0; i < tasks.size(); ++i) {
         auto const &r = results[i];
         if (r.bin < 0) continue;

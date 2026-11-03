@@ -14,6 +14,10 @@
 #include "xgboost/logging.h"                 // for CHECK_EQ
 #include "xgboost/span.h"                    // for Span
 
+#if defined(XGBOOST_USE_METAL)
+#include "../../common/metal_storage.h"
+#endif
+
 namespace xgboost::tree {
 /**
  * @brief A persistent cache for CPU histogram.
@@ -37,6 +41,22 @@ class BoundedHistCollection {
   using Vec = common::ReallocVector<GradientPairPrecise>;
   std::unique_ptr<Vec> data_{new Vec{}};  // nvcc 12.1 trips over std::make_unique
 
+#if defined(XGBOOST_USE_METAL)
+  std::unique_ptr<common::metal::HistogramBuffer> metal_data_;
+#endif
+  common::GHistRow Data() {
+#if defined(XGBOOST_USE_METAL)
+    if (metal_data_) return metal_data_->Data();
+#endif
+    return {data_->data(), static_cast<std::size_t>(data_->size())};
+  }
+  common::ConstGHistRow Data() const {
+#if defined(XGBOOST_USE_METAL)
+    if (metal_data_) return metal_data_->Data();
+#endif
+    return {data_->data(), static_cast<std::size_t>(data_->size())};
+  }
+
   // number of histogram bins across all features
   bst_bin_t n_total_bins_{0};
   // limits the number of nodes that can be in the cache for each tree
@@ -46,15 +66,23 @@ class BoundedHistCollection {
 
  public:
   BoundedHistCollection() = default;
+#if defined(XGBOOST_USE_METAL)
+  void UseMetal(bool enabled) {
+    if (enabled) {
+      if (!metal_data_) metal_data_ = common::metal::MakeHistogramBuffer();
+    } else
+      metal_data_.reset();
+  }
+  common::metal::HistogramBuffer* MetalBuffer() const { return metal_data_.get(); }
+  std::size_t Offset(bst_node_t node) const { return node_map_.at(node); }
+#endif
   common::GHistRow operator[](std::size_t idx) {
     auto offset = node_map_.at(idx);
-    return common::Span{data_->data(), static_cast<size_t>(data_->size())}.subspan(
-        offset, n_total_bins_);
+    return this->Data().subspan(offset, n_total_bins_);
   }
   common::ConstGHistRow operator[](std::size_t idx) const {
     auto offset = node_map_.at(idx);
-    return common::Span{data_->data(), static_cast<size_t>(data_->size())}.subspan(
-        offset, n_total_bins_);
+    return this->Data().subspan(offset, n_total_bins_);
   }
   void Reset(bst_bin_t n_total_bins, std::size_t n_cached_nodes) {
     n_total_bins_ = n_total_bins;
@@ -87,8 +115,13 @@ class BoundedHistCollection {
     auto n_new_nodes = nodes_to_build.size() + nodes_to_sub.size();
     auto alloc_size = n_new_nodes * n_total_bins_;
     auto new_size = alloc_size + current_size_;
-    if (new_size > data_->size()) {
-      data_->Resize(new_size);
+    if (new_size > this->Data().size()) {
+#if defined(XGBOOST_USE_METAL)
+      if (metal_data_)
+        metal_data_->Resize(new_size);
+      else
+#endif
+        data_->Resize(new_size);
     }
     for (auto nidx : nodes_to_build) {
       node_map_[nidx] = current_size_;

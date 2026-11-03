@@ -22,6 +22,8 @@
 namespace xgboost::common::metal {
 namespace {
 std::atomic<std::uint64_t> split_dispatches{0}, split_gpu_time_ns{0};
+std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
+    resident_split_dispatches{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
 std::atomic<std::uint64_t> index_uploads{0}, index_uploaded_bytes{0},
     resident_histogram_dispatches{0};
@@ -63,6 +65,8 @@ class Runtime {
   id<MTLCommandQueue> queue;
   id<MTLComputePipelineState> pipeline;
   id<MTLComputePipelineState> split_pipeline, multi_split_pipeline;
+  id<MTLComputePipelineState> dequantize_hist_pipeline, subtract_hist_pipeline,
+      gather_hist_pipeline;
   id<MTLComputePipelineState> shared_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
@@ -113,6 +117,9 @@ class Runtime {
       transpose_index_pipeline = make_pipeline(@"xgb_transpose_index");
       split_pipeline = make_pipeline(@"xgb_evaluate_splits");
       multi_split_pipeline = make_pipeline(@"xgb_evaluate_multi_splits");
+      dequantize_hist_pipeline = make_pipeline(@"xgb_histogram_dequantize");
+      subtract_hist_pipeline = make_pipeline(@"xgb_histogram_subtract");
+      gather_hist_pipeline = make_pipeline(@"xgb_histogram_gather");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
       LOG(INFO) << "Metal compute backend: " << device.name.UTF8String;
     }
@@ -137,6 +144,98 @@ id<MTLBuffer> Upload(Runtime const& rt, void const* data, std::size_t bytes) {
   auto buffer = Allocate(rt, bytes);
   if (bytes != 0) std::memcpy(buffer.contents, data, bytes);
   return buffer;
+}
+
+class MetalHistogramBuffer final : public HistogramBuffer {
+  std::size_t size_{0};
+
+ public:
+  id<MTLBuffer> buffer;
+  void Resize(std::size_t size) override {
+    if (size <= size_) return;
+    auto& rt = GetRuntime();
+    CHECK_LE(size, rt.device.maxBufferLength / sizeof(GradientPairPrecise));
+    if (!buffer || buffer.length / sizeof(GradientPairPrecise) < size) {
+      auto capacity = std::min<std::size_t>(
+          std::max(size, size_ * 2), rt.device.maxBufferLength / sizeof(GradientPairPrecise));
+      auto next = Allocate(rt, capacity * sizeof(GradientPairPrecise));
+      if (size_) {
+        auto command = [rt.queue commandBuffer];
+        CHECK(command);
+        auto encoder = [command blitCommandEncoder];
+        CHECK(encoder);
+        [encoder copyFromBuffer:buffer
+                   sourceOffset:0
+                       toBuffer:next
+              destinationOffset:0
+                           size:size_ * sizeof(GradientPairPrecise)];
+        [encoder endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      }
+      buffer = next;
+    }
+    size_ = size;
+  }
+  Span<GradientPairPrecise> Data() override {
+    return {static_cast<GradientPairPrecise*>(buffer.contents), size_};
+  }
+  Span<GradientPairPrecise const> Data() const override {
+    return {static_cast<GradientPairPrecise const*>(buffer.contents), size_};
+  }
+};
+
+void EnsureBuffer(Runtime const& rt, id<MTLBuffer> __strong* buffer, std::size_t bytes) {
+  if (!*buffer || (*buffer).length < bytes) *buffer = Allocate(rt, bytes);
+}
+
+struct BufferHolder {
+  id<MTLBuffer> value;
+};
+class MetalSplitWorkspace final : public SplitWorkspace {
+ public:
+  id<MTLBuffer> hist, input, output, order, weights, scans, parent, bounds, children;
+  std::vector<BufferHolder> metadata;
+};
+id<MTLBuffer> Scratch(Runtime const& rt, id<MTLBuffer> __strong* buffer, std::size_t bytes,
+                      void const* data = nullptr) {
+  EnsureBuffer(rt, buffer, bytes);
+  if (data && bytes) std::memcpy((*buffer).contents, data, bytes);
+  return *buffer;
+}
+id<MTLBuffer> GatherHistograms(Runtime const& rt, Span<HistogramInput const> inputs,
+                               std::size_t size, id<MTLCommandBuffer> command,
+                               MetalSplitWorkspace* workspace) {
+  static_assert(sizeof(HistogramGather) == 24);
+  auto output = Scratch(rt, &workspace->hist, size * sizeof(GradientPairPrecise));
+  workspace->metadata.resize(inputs.size());
+  std::size_t index = 0;
+  for (auto const& input : inputs) {
+    auto& metadata = workspace->metadata[index++].value;
+    if (input.segments.empty()) continue;
+    CHECK(input.source);
+    auto source = static_cast<MetalHistogramBuffer const*>(input.source)->buffer;
+    for (auto const& segment : input.segments) {
+      CHECK_LE(segment.source + segment.bins, input.source->Data().size());
+      CHECK_GT(segment.stride, 0);
+      CHECK(segment.bins == 0 ||
+            std::uint64_t(segment.output) + std::uint64_t(segment.bins - 1) * segment.stride <
+                size);
+    }
+    auto segments = Scratch(rt, &metadata, input.segments.size() * sizeof(HistogramGather),
+                            input.segments.data());
+    auto encoder = [command computeCommandEncoder];
+    CHECK(encoder);
+    [encoder setComputePipelineState:rt.gather_hist_pipeline];
+    [encoder setBuffer:source offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBuffer:segments offset:0 atIndex:2];
+    [encoder dispatchThreadgroups:MTLSizeMake(input.segments.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder endEncoding];
+  }
+  return output;
 }
 
 class Page final : public QuantizedPage {
@@ -191,9 +290,7 @@ std::shared_ptr<Page> GetPage(Runtime const& rt, GHistIndexMatrix const& gidx) {
   }
   return std::static_pointer_cast<Page>(cached);
 }
-void EnsureBuffer(Runtime const& rt, id<MTLBuffer> __strong* buffer, std::size_t bytes) {
-  if (!*buffer || (*buffer).length < bytes) *buffer = Allocate(rt, bytes);
-}
+
 void CompleteTraining(id<MTLCommandBuffer> command) {
   [command commit];
   [command waitUntilCompleted];
@@ -397,7 +494,7 @@ class MetalHistogram final : public Histogram {
   id<MTLBuffer> gradients_, raw_gradients_, histogram_buffer_, row_buffer_, node_buffer_;
   bool gradients_ready_{false};
 
-  double inverse_scale_[2]{1.0, 1.0};
+  std::int32_t inverse_units_[2]{0, 0};
 
   void UploadGradients(Span<GradientPair const> gradients, id<MTLCommandBuffer> command) {
     // Use independent power-of-two scales. Bound every possible subset by
@@ -416,7 +513,7 @@ class MetalHistogram final : public Histogram {
       double bound = maxima[i] * static_cast<double>(gradients.size());
       int exponent = bound > 0.0 ? 60 - static_cast<int>(std::ceil(std::log2(bound))) : 0;
       exponents[i] = exponent;
-      inverse_scale_[i] = std::ldexp(1.0, -exponent);
+      inverse_units_[i] = -exponent;
     }
     if (!gradients_ || gradients_.length < gradients.size() * sizeof(QuantizedPair))
       gradients_ = Allocate(rt_, gradients.size() * sizeof(QuantizedPair));
@@ -450,7 +547,7 @@ class MetalHistogram final : public Histogram {
 
   void Build(std::size_t page_idx, GHistIndexMatrix const& gidx, RowSetCollection const& rows,
              std::vector<bst_node_t> const& nodes, Span<GradientPair const> gradients,
-             std::vector<GHistRow> const& output) override {
+             std::vector<GHistRow> const& output, HistogramBuffer* storage) override {
     @autoreleasepool {
       CHECK_EQ(nodes.size(), output.size());
       CHECK_LE(nodes.size(), std::numeric_limits<std::uint32_t>::max());
@@ -548,6 +645,29 @@ class MetalHistogram final : public Histogram {
             threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
       }
       [encoder endEncoding];
+      CHECK(storage);
+      auto shared = static_cast<MetalHistogramBuffer*>(storage);
+      std::vector<std::uint64_t> output_offsets;
+      for (auto out : output) output_offsets.push_back(out.data() - storage->Data().data());
+      auto offset_buffer =
+          Upload(rt_, output_offsets.data(), output_offsets.size() * sizeof(std::uint64_t));
+      struct {
+        std::uint64_t count;
+        std::int32_t grad, hess;
+        std::uint32_t bins, add;
+      } dequantize{nodes.size() * bins, inverse_units_[0], inverse_units_[1],
+                   static_cast<std::uint32_t>(bins), page_idx != 0};
+      CHECK_LE(dequantize.count, std::numeric_limits<std::uint32_t>::max());
+      encoder = [command computeCommandEncoder];
+      CHECK(encoder);
+      [encoder setComputePipelineState:rt_.dequantize_hist_pipeline];
+      [encoder setBuffer:histogram offset:0 atIndex:0];
+      [encoder setBuffer:shared->buffer offset:0 atIndex:1];
+      [encoder setBuffer:offset_buffer offset:0 atIndex:2];
+      [encoder setBytes:&dequantize length:sizeof(dequantize) atIndex:3];
+      [encoder dispatchThreads:MTLSizeMake(dequantize.count, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [encoder endEncoding];
       staging_time_ns.fetch_add(Elapsed(staging_start), std::memory_order_relaxed);
       auto wait_start = Clock::now();
       [command commit];
@@ -559,20 +679,11 @@ class MetalHistogram final : public Histogram {
         resident_histogram_dispatches.fetch_add(1, std::memory_order_relaxed);
       }
       wait_time_ns.fetch_add(Elapsed(wait_start), std::memory_order_relaxed);
-      auto readback_start = Clock::now();
       if (quantized) {
         quantization_dispatches.fetch_add(1, std::memory_order_relaxed);
         gradients_ready_ = true;
       }
-      auto const* values = static_cast<QuantizedPair const*>(histogram.contents);
-      for (std::size_t node = 0; node < nodes.size(); ++node) {
-        for (std::size_t bin = 0; bin < bins; ++bin) {
-          auto const& v = values[node * bins + bin];
-          output[node][bin] +=
-              GradientPairPrecise{v.grad * inverse_scale_[0], v.hess * inverse_scale_[1]};
-        }
-      }
-      readback_time_ns.fetch_add(Elapsed(readback_start), std::memory_order_relaxed);
+      histogram_conversion_dispatches.fetch_add(1, std::memory_order_relaxed);
       dispatches.fetch_add(1, std::memory_order_relaxed);
       processed_rows.fetch_add(total_rows, std::memory_order_relaxed);
       if (use_shared) shared_dispatches.fetch_add(1, std::memory_order_relaxed);
@@ -584,6 +695,44 @@ class MetalHistogram final : public Histogram {
 };
 }  // namespace
 
+std::unique_ptr<SplitWorkspace> MakeSplitWorkspace() {
+  return std::make_unique<MetalSplitWorkspace>();
+}
+std::unique_ptr<HistogramBuffer> MakeHistogramBuffer() {
+  return std::make_unique<MetalHistogramBuffer>();
+}
+void SubtractHistograms(HistogramBuffer* storage, Span<HistogramSubtraction const> tasks) {
+  static_assert(sizeof(HistogramSubtraction) == 32);
+  if (tasks.empty()) return;
+  CHECK(storage);
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto buffer = static_cast<MetalHistogramBuffer*>(storage)->buffer;
+    std::uint64_t bins = 0;
+    for (auto const& task : tasks) {
+      bins = std::max(bins, task.bins);
+      CHECK_LE(task.parent + task.bins, storage->Data().size());
+      CHECK_LE(task.sibling + task.bins, storage->Data().size());
+      CHECK_LE(task.output + task.bins, storage->Data().size());
+    }
+    if (!bins) return;
+    auto input = Upload(rt, tasks.data(), tasks.size_bytes());
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto encoder = [command computeCommandEncoder];
+    CHECK(encoder);
+    [encoder setComputePipelineState:rt.subtract_hist_pipeline];
+    [encoder setBuffer:buffer offset:0 atIndex:0];
+    [encoder setBuffer:input offset:0 atIndex:1];
+    [encoder dispatchThreads:MTLSizeMake(bins, tasks.size(), 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    histogram_subtraction_dispatches.fetch_add(1, std::memory_order_relaxed);
+  }
+}
 std::unique_ptr<DeviceRows> MakeDeviceRows() { return std::make_unique<MetalRows>(); }
 std::unique_ptr<Histogram> MakeHistogram() { return std::make_unique<MetalHistogram>(); }
 bool IsAvailable() {
@@ -617,7 +766,10 @@ Statistics GetStatistics() {
           partition_gpu_time_ns.load(std::memory_order_relaxed),
           index_gpu_time_ns.load(std::memory_order_relaxed),
           split_dispatches.load(std::memory_order_relaxed),
-          split_gpu_time_ns.load(std::memory_order_relaxed)};
+          split_gpu_time_ns.load(std::memory_order_relaxed),
+          histogram_conversion_dispatches.load(std::memory_order_relaxed),
+          histogram_subtraction_dispatches.load(std::memory_order_relaxed),
+          resident_split_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -933,25 +1085,30 @@ std::array<double, 2> MetricSums(char const* name, Span<float const> predictions
   }
 }
 
-void EvaluateSplits(Span<GradientPairPrecise const> histograms, Span<SplitTask const> tasks,
+void EvaluateSplits(Span<HistogramInput const> histograms, Span<SplitTask const> tasks,
                     SplitParameters const& parameters, std::vector<SplitResult>* results,
-                    std::vector<std::uint32_t>* sorted_categories) {
+                    std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace) {
   static_assert(sizeof(SplitTask) == 48 && sizeof(SplitResult) == 48 &&
                 sizeof(SplitParameters) == 16);
   results->resize(tasks.size());
-  sorted_categories->resize(histograms.size());
+  auto bins = tasks.empty() ? 0 : tasks.back().end;
+  bool categorical =
+      std::any_of(tasks.begin(), tasks.end(), [](auto const& task) { return task.kind == 2; });
+  sorted_categories->resize(categorical ? bins : 0);
   if (tasks.empty()) return;
   CHECK_LE(tasks.size(), std::numeric_limits<std::uint32_t>::max());
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto hist = Upload(rt, histograms.data(), histograms.size_bytes());
-    auto input = Upload(rt, tasks.data(), tasks.size_bytes());
-    auto output = Allocate(rt, tasks.size() * sizeof(SplitResult));
-    auto order = Allocate(rt, histograms.size() * sizeof(std::uint32_t));
-    auto weights = Allocate(rt, histograms.size() * sizeof(float));
-    auto scans = Allocate(rt, histograms.size() * 4 * sizeof(std::uint64_t));
+    CHECK(workspace);
+    auto scratch = static_cast<MetalSplitWorkspace*>(workspace);
     auto command = [rt.queue commandBuffer];
     CHECK(command);
+    auto hist = GatherHistograms(rt, histograms, bins, command, scratch);
+    auto input = Scratch(rt, &scratch->input, tasks.size_bytes(), tasks.data());
+    auto output = Scratch(rt, &scratch->output, tasks.size() * sizeof(SplitResult));
+    auto order = Scratch(rt, &scratch->order, (categorical ? bins : 0) * sizeof(std::uint32_t));
+    auto weights = Scratch(rt, &scratch->weights, (categorical ? bins : 0) * sizeof(float));
+    auto scans = Scratch(rt, &scratch->scans, bins * 4 * sizeof(std::uint64_t));
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
     [encoder setComputePipelineState:rt.split_pipeline];
@@ -980,37 +1137,42 @@ void EvaluateSplits(Span<GradientPairPrecise const> histograms, Span<SplitTask c
                     (task.end - task.begin) * sizeof(std::uint32_t));
       }
     split_dispatches.fetch_add(1, std::memory_order_relaxed);
+    resident_split_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     if (elapsed > 0)
       split_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                   std::memory_order_relaxed);
   }
 }
-void EvaluateMultiSplits(Span<GradientPairPrecise const> histograms,
-                         Span<MultiSplitTask const> tasks, Span<GradientPairPrecise const> parents,
-                         Span<SplitBounds const> bounds, SplitParameters const& parameters,
-                         std::vector<SplitResult>* results,
+void EvaluateMultiSplits(Span<HistogramInput const> histograms, Span<MultiSplitTask const> tasks,
+                         Span<GradientPairPrecise const> parents, Span<SplitBounds const> bounds,
+                         SplitParameters const& parameters, std::vector<SplitResult>* results,
                          std::vector<GradientPairPrecise>* children,
-                         std::vector<std::uint32_t>* sorted_categories) {
+                         std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace) {
   static_assert(sizeof(MultiSplitTask) == 40 && sizeof(SplitBounds) == 8);
   results->resize(tasks.size());
-  sorted_categories->resize(histograms.size());
+  auto bins = tasks.empty() ? 0 : tasks.back().end;
+  bool categorical =
+      std::any_of(tasks.begin(), tasks.end(), [](auto const& task) { return task.kind == 2; });
+  sorted_categories->resize(categorical ? bins : 0);
   children->resize(parents.size() * 2);
   if (tasks.empty()) return;
   CHECK_EQ(parents.size(), bounds.size());
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto hist = Upload(rt, histograms.data(), histograms.size_bytes());
-    auto input = Upload(rt, tasks.data(), tasks.size_bytes());
-    auto parent = Upload(rt, parents.data(), parents.size_bytes());
-    auto bound = Upload(rt, bounds.data(), bounds.size_bytes());
-    auto output = Allocate(rt, tasks.size() * sizeof(SplitResult));
-    auto child = Allocate(rt, children->size() * sizeof(GradientPairPrecise));
-    auto order = Allocate(rt, histograms.size() * sizeof(std::uint32_t));
-    auto scores = Allocate(rt, histograms.size() * sizeof(std::uint64_t));
-    auto scans = Allocate(rt, histograms.size() * 4 * sizeof(std::uint64_t));
+    CHECK(workspace);
+    auto scratch = static_cast<MetalSplitWorkspace*>(workspace);
     auto command = [rt.queue commandBuffer];
     CHECK(command);
+    auto hist = GatherHistograms(rt, histograms, bins, command, scratch);
+    auto input = Scratch(rt, &scratch->input, tasks.size_bytes(), tasks.data());
+    auto parent = Scratch(rt, &scratch->parent, parents.size_bytes(), parents.data());
+    auto bound = Scratch(rt, &scratch->bounds, bounds.size_bytes(), bounds.data());
+    auto output = Scratch(rt, &scratch->output, tasks.size() * sizeof(SplitResult));
+    auto child = Scratch(rt, &scratch->children, children->size() * sizeof(GradientPairPrecise));
+    auto order = Scratch(rt, &scratch->order, (categorical ? bins : 0) * sizeof(std::uint32_t));
+    auto scores = Scratch(rt, &scratch->weights, (categorical ? bins : 0) * sizeof(std::uint64_t));
+    auto scans = Scratch(rt, &scratch->scans, bins * 4 * sizeof(std::uint64_t));
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
     [encoder setComputePipelineState:rt.multi_split_pipeline];
@@ -1047,6 +1209,7 @@ void EvaluateMultiSplits(Span<GradientPairPrecise const> histograms,
                     ((task.end - task.begin) / task.targets) * sizeof(std::uint32_t));
     }
     split_dispatches.fetch_add(1, std::memory_order_relaxed);
+    resident_split_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     if (elapsed > 0)
       split_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
