@@ -31,6 +31,7 @@ def test_ranking_training(metal, objective, method, largest):
     # Objective ranking, NDCG ideal order and all three metric orders use GPU.
     assert after["group_sort_dispatches"] - before["group_sort_dispatches"] >= 20
     assert after["float_sum_dispatches"] > before["float_sum_dispatches"]
+    assert after["ranking_metric_dispatches"] - before["ranking_metric_dispatches"] == 10
     assert (after["radix_sort_dispatches"] > before["radix_sort_dispatches"]) == (largest > 4096)
     np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
                                rtol=2e-5, atol=2e-5)
@@ -53,5 +54,34 @@ def test_ranking_metric_ties(metal, metric, largest):
     cpu = xgb.train(params | {"device": "cpu"}, d, 0)
     gpu = xgb.train(params | {"device": "mps"}, d, 0)
     before = xgb.metal_info()["group_sort_dispatches"]
-    assert gpu.eval(d) == cpu.eval(d)
+    gpu_value = float(gpu.eval(d).rsplit(":", 1)[1])
+    cpu_value = float(cpu.eval(d).rsplit(":", 1)[1])
+    np.testing.assert_allclose(gpu_value, cpu_value, rtol=2e-12, atol=2e-12)
     assert xgb.metal_info()["group_sort_dispatches"] > before
+
+
+@pytest.mark.parametrize("metric", ["ndcg@10", "ndcg@10-", "pre@10"])
+@pytest.mark.parametrize("mode", ["weighted", "zero_weights", "zero_labels", "linear_gain"])
+def test_ranking_score_edge_cases(metal, metric, mode):
+    rng = np.random.default_rng(7192)
+    sizes = np.array([3, 37, 4096, 19], dtype=np.uint32)
+    n = int(sizes.sum())
+    labels = rng.integers(0, 2, n).astype(np.float32)
+    if mode == "zero_labels":
+        labels.fill(0)
+    if mode == "linear_gain" and metric.startswith("ndcg"):
+        labels = rng.uniform(-.1, 3, n).astype(np.float32)
+    weights = rng.uniform(1, 3, len(sizes)).astype(np.float32)
+    if mode == "zero_weights":
+        weights.fill(0)
+    d = xgb.DMatrix(np.ones((n, 1)), label=labels, group=sizes, weight=weights,
+                    base_margin=rng.normal(size=n).astype(np.float32), nthread=2)
+    params = dict(objective="reg:squarederror", eval_metric=metric, nthread=2, base_score=.5,
+                  ndcg_exp_gain=mode != "linear_gain")
+    cpu = xgb.train(params | {"device": "cpu"}, d, 0)
+    gpu = xgb.train(params | {"device": "mps"}, d, 0)
+    before = xgb.metal_info()["ranking_metric_dispatches"]
+    gpu_value = float(gpu.eval(d).rsplit(":", 1)[1])
+    cpu_value = float(cpu.eval(d).rsplit(":", 1)[1])
+    np.testing.assert_allclose(gpu_value, cpu_value, rtol=2e-12, atol=2e-12)
+    assert xgb.metal_info()["ranking_metric_dispatches"] == before + 1

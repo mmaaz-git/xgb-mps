@@ -46,6 +46,7 @@ std::atomic<std::uint64_t> objective_shared_input_bytes{0}, objective_shared_out
 std::atomic<std::uint64_t> roc_auc_dispatches{0}, roc_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> pr_auc_dispatches{0}, pr_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> group_sort_dispatches{0}, group_sort_gpu_time_ns{0};
+std::atomic<std::uint64_t> ranking_metric_dispatches{0}, ranking_metric_gpu_time_ns{0};
 std::atomic<std::uint64_t> float_sum_dispatches{0}, float_sum_gpu_time_ns{0};
 std::atomic<std::uint64_t> row_workspace_allocations{0}, row_workspace_reuses{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
@@ -109,7 +110,7 @@ class Runtime {
   id<MTLComputePipelineState> roc_sort_init_pipeline, roc_counts_pipeline, roc_area_pipeline,
       pr_area_pipeline, prefix_double_pair_pipeline, prefix_double_pair_add_pipeline;
   id<MTLComputePipelineState> group_sort_small_pipeline, group_sort_medium_pipeline, group_sort_key_pipeline,
-      group_sort_export_pipeline;
+      group_sort_export_pipeline, ranking_score_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
@@ -201,6 +202,7 @@ class Runtime {
       group_sort_medium_pipeline = make_pipeline(@"xgb_group_sort_medium");
       group_sort_key_pipeline = make_pipeline(@"xgb_group_sort_key");
       group_sort_export_pipeline = make_pipeline(@"xgb_group_sort_export");
+      ranking_score_pipeline = make_pipeline(@"xgb_ranking_score");
       prefix_double_pair_pipeline = make_pipeline(@"xgb_prefix_double_pair");
       prefix_double_pair_add_pipeline = make_pipeline(@"xgb_prefix_double_pair_add");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
@@ -954,7 +956,9 @@ Statistics GetStatistics() {
           pr_auc_dispatches.load(std::memory_order_relaxed),
           pr_auc_gpu_time_ns.load(std::memory_order_relaxed),
           group_sort_dispatches.load(std::memory_order_relaxed),
-          group_sort_gpu_time_ns.load(std::memory_order_relaxed)};
+          group_sort_gpu_time_ns.load(std::memory_order_relaxed),
+          ranking_metric_dispatches.load(std::memory_order_relaxed),
+          ranking_metric_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1340,13 +1344,13 @@ id<MTLBuffer> EncodeColumnSort(Runtime& rt, id<MTLCommandBuffer> command, id<MTL
 }
 }  // namespace
 
-void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> groups,
-                Span<std::size_t> relative_indices) {
+namespace {
+std::uint32_t CheckGroupSort(linalg::VectorView<float const> values,
+                             Span<bst_group_t const> groups) {
   static_assert(sizeof(bst_group_t) == 4 && sizeof(std::size_t) == 8);
   CHECK_GE(groups.size(), 1);
   CHECK_EQ(groups.front(), 0);
   CHECK_EQ(groups.back(), values.Size());
-  CHECK_EQ(relative_indices.size(), values.Size());
   CHECK_LE(values.Size(), std::numeric_limits<std::uint32_t>::max());
   CHECK_LE(groups.size() - 1, std::numeric_limits<std::uint32_t>::max());
   std::uint32_t max_group_size = 0;
@@ -1354,87 +1358,192 @@ void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> 
     CHECK_LE(groups[i - 1], groups[i]);
     max_group_size = std::max(max_group_size, groups[i] - groups[i - 1]);
   }
-  if (values.Size() == 0) return;
+  return max_group_size;
+}
+struct GroupOrder {
+  id<MTLBuffer> records;
+  bool radix;
+};
+GroupOrder EncodeGroupSort(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuffer> input,
+                           id<MTLBuffer> offsets, std::uint64_t rows, std::uint64_t stride,
+                           std::uint32_t n_groups, std::uint32_t max_group_size) {
+  struct {
+    std::uint64_t rows, stride;
+    std::uint32_t groups, padding;
+  } p{rows, stride, n_groups, 0};
+  static_assert(sizeof(p) == 24);
+  id<MTLBuffer> records;
+  std::size_t shared_count = 1;
+  while (shared_count < max_group_size && shared_count < 4096) shared_count <<= 1;
+  bool medium = max_group_size <= 4096 &&
+                shared_count * 2 * sizeof(std::uint32_t) <= rt.device.maxThreadgroupMemoryLength;
+  bool radix_path = max_group_size > 256 && !medium;
+  if (max_group_size <= 256) {
+    records = Allocate(rt, rows * 2 * sizeof(std::uint32_t));
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.group_sort_small_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:offsets offset:0 atIndex:1];
+    [e setBuffer:records offset:0 atIndex:2];
+    [e setBytes:&p length:sizeof(p) atIndex:3];
+    std::uint32_t width = 32;
+    while (width < max_group_size) width <<= 1;
+    [e dispatchThreadgroups:MTLSizeMake(p.groups, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+    [e endEncoding];
+  } else if (medium) {
+    records = Allocate(rt, rows * 2 * sizeof(std::uint32_t));
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.group_sort_medium_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:offsets offset:0 atIndex:1];
+    [e setBuffer:records offset:0 atIndex:2];
+    [e setBytes:&p length:sizeof(p) atIndex:3];
+    [e setThreadgroupMemoryLength:shared_count * 2 * sizeof(std::uint32_t) atIndex:0];
+    [e dispatchThreadgroups:MTLSizeMake(p.groups, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+  } else {
+    SortShape shape{p.rows, p.stride, 1, 1, static_cast<std::uint32_t>((p.rows + 255) / 256)};
+    records = EncodeColumnSort(rt, command, input, shape, true);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.group_sort_key_pipeline];
+    [e setBuffer:records offset:0 atIndex:0];
+    [e setBuffer:offsets offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(p.rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    std::uint32_t bits = 0;
+    for (auto key = p.groups - 1; key; key >>= 1) ++bits;
+    // Stable group-key passes preserve the preceding score and row ordering.
+    if (bits) records = EncodeRadixRecords(rt, command, records, shape, bits);
+  }
+  return {records, radix_path};
+}
+void RecordGroupSort(bool radix, double seconds) {
+  group_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
+  if (radix) radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
+  if (seconds > 0)
+    group_sort_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(seconds * 1e9),
+                                     std::memory_order_relaxed);
+}
+}  // namespace
+void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> groups,
+                Span<std::size_t> relative_indices) {
+  auto max_group_size = CheckGroupSort(values, groups);
+  CHECK_EQ(relative_indices.size(), values.Size());
+  if (!values.Size()) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
     auto input = Upload(rt, values.Values().data(), values.Values().size_bytes());
     auto offsets = Upload(rt, groups.data(), groups.size_bytes());
     auto output = Allocate(rt, relative_indices.size_bytes());
-    struct {
-      std::uint64_t rows, stride;
-      std::uint32_t groups, padding;
-    } p{values.Size(), values.Stride(0), static_cast<std::uint32_t>(groups.size() - 1), 0};
-    static_assert(sizeof(p) == 24);
     auto command = [rt.queue commandBuffer];
     CHECK(command);
-    id<MTLBuffer> records;
-    std::size_t shared_count = 1;
-    while (shared_count < max_group_size && shared_count < 4096) shared_count <<= 1;
-    bool medium = max_group_size <= 4096 &&
-                  shared_count * 2 * sizeof(std::uint32_t) <= rt.device.maxThreadgroupMemoryLength;
-    bool radix_path = max_group_size > 256 && !medium;
-    if (max_group_size <= 256) {
-      records = Allocate(rt, values.Size() * 2 * sizeof(std::uint32_t));
-      auto e = [command computeCommandEncoder];
-      CHECK(e);
-      [e setComputePipelineState:rt.group_sort_small_pipeline];
-      [e setBuffer:input offset:0 atIndex:0];
-      [e setBuffer:offsets offset:0 atIndex:1];
-      [e setBuffer:records offset:0 atIndex:2];
-      [e setBytes:&p length:sizeof(p) atIndex:3];
-      std::uint32_t width = 32;
-      while (width < max_group_size) width <<= 1;
-      [e dispatchThreadgroups:MTLSizeMake(p.groups, 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
-      [e endEncoding];
-    } else if (medium) {
-      records = Allocate(rt, values.Size() * 2 * sizeof(std::uint32_t));
-      auto e = [command computeCommandEncoder];
-      CHECK(e);
-      [e setComputePipelineState:rt.group_sort_medium_pipeline];
-      [e setBuffer:input offset:0 atIndex:0];
-      [e setBuffer:offsets offset:0 atIndex:1];
-      [e setBuffer:records offset:0 atIndex:2];
-      [e setBytes:&p length:sizeof(p) atIndex:3];
-      [e setThreadgroupMemoryLength:shared_count * 2 * sizeof(std::uint32_t) atIndex:0];
-      [e dispatchThreadgroups:MTLSizeMake(p.groups, 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-      [e endEncoding];
-    } else {
-      SortShape shape{p.rows, p.stride, 1, 1, static_cast<std::uint32_t>((p.rows + 255) / 256)};
-      records = EncodeColumnSort(rt, command, input, shape, true);
-      auto e = [command computeCommandEncoder];
-      CHECK(e);
-      [e setComputePipelineState:rt.group_sort_key_pipeline];
-      [e setBuffer:records offset:0 atIndex:0];
-      [e setBuffer:offsets offset:0 atIndex:1];
-      [e setBytes:&p length:sizeof(p) atIndex:2];
-      [e dispatchThreads:MTLSizeMake(p.rows, 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-      [e endEncoding];
-      std::uint32_t bits = 0;
-      for (auto key = p.groups - 1; key; key >>= 1) ++bits;
-      // Stable group-key passes preserve the preceding score and row ordering.
-      if (bits) records = EncodeRadixRecords(rt, command, records, shape, bits);
-    }
+    auto order = EncodeGroupSort(rt, command, input, offsets, values.Size(), values.Stride(0),
+                                 groups.size() - 1, max_group_size);
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.group_sort_export_pipeline];
-    [e setBuffer:records offset:0 atIndex:0];
+    [e setBuffer:order.records offset:0 atIndex:0];
     [e setBuffer:offsets offset:0 atIndex:1];
     [e setBuffer:output offset:0 atIndex:2];
-    [e dispatchThreads:MTLSizeMake(p.rows, 1, 1)
+    [e dispatchThreads:MTLSizeMake(values.Size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
     std::memcpy(relative_indices.data(), output.contents, relative_indices.size_bytes());
-    group_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
-    if (radix_path) radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
+    RecordGroupSort(order.radix, command.GPUEndTime - command.GPUStartTime);
+  }
+}
+
+RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const> predictions,
+                         linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
+                         Span<float const> weights, std::uint32_t topk, bool minus,
+                         bool exponential, Span<double const> discounts,
+                         Span<double const> inverse_idcg) {
+  auto max_group_size = CheckGroupSort(predictions, groups);
+  auto n_groups = groups.size() - 1;
+  CHECK_EQ(labels.Size(), predictions.Size());
+  CHECK(weights.empty() || weights.size() == n_groups);
+  CHECK(kind == RankingMetricKind::kPrecision || kind == RankingMetricKind::kNDCG);
+  if (kind == RankingMetricKind::kNDCG) {
+    CHECK_GE(discounts.size(), std::min(max_group_size, topk));
+    CHECK_EQ(inverse_idcg.size(), n_groups);
+  }
+  if (!n_groups) return {0, 0};
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, predictions.Values().data(), predictions.Values().size_bytes());
+    auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto offsets = Upload(rt, groups.data(), groups.size_bytes());
+    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto discount = Upload(rt, discounts.data(), discounts.size_bytes());
+    auto inverse = Upload(rt, inverse_idcg.data(), inverse_idcg.size_bytes());
+    auto partial = Allocate(rt, n_groups * 2 * sizeof(double));
+    auto output = Allocate(rt, 2 * sizeof(double));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    GroupOrder order{Allocate(rt, 16), false};
+    if (predictions.Size()) {
+      order = EncodeGroupSort(rt, command, input, offsets, predictions.Size(),
+                              predictions.Stride(0), n_groups, max_group_size);
+    }
+    struct {
+      std::uint64_t rows, label_stride;
+      std::uint32_t groups, topk, kind, weighted, minus, exponential;
+    } p{predictions.Size(),
+        labels.Stride(0),
+        static_cast<std::uint32_t>(n_groups),
+        topk,
+        static_cast<std::uint32_t>(kind),
+        static_cast<std::uint32_t>(!weights.empty()),
+        static_cast<std::uint32_t>(minus),
+        static_cast<std::uint32_t>(exponential)};
+    static_assert(sizeof(p) == 40);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.ranking_score_pipeline];
+    [e setBuffer:order.records offset:0 atIndex:0];
+    [e setBuffer:response offset:0 atIndex:1];
+    [e setBuffer:offsets offset:0 atIndex:2];
+    [e setBuffer:weight offset:0 atIndex:3];
+    [e setBuffer:discount offset:0 atIndex:4];
+    [e setBuffer:inverse offset:0 atIndex:5];
+    [e setBuffer:partial offset:0 atIndex:6];
+    [e setBytes:&p length:sizeof(p) atIndex:7];
+    [e dispatchThreadgroups:MTLSizeMake((n_groups + 7) / 8, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    SortShape shape{n_groups, 1, 1, 1, static_cast<std::uint32_t>(n_groups)};
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.gradient_sum_finish_pipeline];
+    [e setBuffer:partial offset:0 atIndex:0];
+    [e setBuffer:output offset:0 atIndex:1];
+    [e setBytes:&shape length:sizeof(shape) atIndex:2];
+    [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    // Sort and score share a command; its duration overlaps both family counters.
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
-    if (elapsed > 0) group_sort_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
-                                                    std::memory_order_relaxed);
+    if (predictions.Size()) RecordGroupSort(order.radix, elapsed);
+    ranking_metric_dispatches.fetch_add(1, std::memory_order_relaxed);
+    metric_dispatches.fetch_add(1, std::memory_order_relaxed);
+    if (elapsed > 0) {
+      auto ns = static_cast<std::uint64_t>(elapsed * 1e9);
+      ranking_metric_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+      metric_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+    }
+    auto result = static_cast<double const*>(output.contents);
+    return {result[0], result[1]};
   }
 }
 

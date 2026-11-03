@@ -2968,3 +2968,54 @@ kernel void xgb_group_sort_export(device const uint2* records [[buffer(0)]],
   uint2 record = records[tid];
   output[tid] = ulong(record.y - groups[record.x]);
 }
+
+struct RankingScoreParams {
+  ulong rows, label_stride;
+  uint groups, topk, kind, weighted, minus, exponential;
+};
+// One SIMD group per query. Eight queries share a threadgroup without barriers;
+// sorted records stay on the GPU and only the final (score, weight) is read back.
+kernel void xgb_ranking_score(device const uint2* records [[buffer(0)]],
+                               device const uint* labels [[buffer(1)]],
+                               device const uint* offsets [[buffer(2)]],
+                               device const uint* weights [[buffer(3)]],
+                               device const ulong* discounts [[buffer(4)]],
+                               device const ulong* inverse_idcg [[buffer(5)]],
+                               device ulong2* partial [[buffer(6)]],
+                               constant RankingScoreParams& p [[buffer(7)]],
+                               uint block [[threadgroup_position_in_grid]],
+                               uint lane [[thread_index_in_simdgroup]],
+                               uint simd [[simdgroup_index_in_threadgroup]]) {
+  uint group = block * 8 + simd;
+  if (group >= p.groups) return;
+  using namespace xgb_survival;
+  uint begin = offsets[group], count = offsets[group + 1] - begin, n = min(count, p.topk);
+  D weight = p.weighted ? From(as_type<float>(weights[group])) : one;
+  D inverse = p.kind == 1 ? D{inverse_idcg[group]} : one;
+  D sum = zero;
+  if (p.kind == 0 || inverse > zero) {
+    for (ulong i = lane; i < n; i += 32) {
+      uint bits = labels[ulong(records[ulong(begin) + i].y) * p.label_stride];
+      D label = From(as_type<float>(bits));
+      if (p.kind == 0) {
+        // CPU precision multiplies labels and query weights in FP32 before
+        // accumulating in binary64. Preserve even subnormal product bits.
+        sum = sum + From(xgb_dto_float(label * weight));
+      } else {
+        D gain = p.exponential ? D{xgb_scaled_integer((1u << uint(as_type<float>(bits))) - 1, 0)}
+                               : label;
+        sum = sum + (D{discounts[i]} * gain) * inverse;
+      }
+    }
+  }
+  for (uint distance = 16; distance; distance >>= 1) {
+    D other = xgb_shuffle_down_double(sum, distance);
+    if (lane + distance < 32) sum = sum + other;
+  }
+  if (lane == 0) {
+    if (p.kind == 0) sum = sum / D{xgb_scaled_integer(n, 0)};
+    // Preserve upstream CPU's unweighted zero-IDCG fallback for NDCG.
+    else sum = inverse > zero ? sum * weight : (p.minus ? zero : one);
+    partial[group] = ulong2(sum.bits, weight.bits);
+  }
+}

@@ -49,6 +49,7 @@ struct Statistics {
   std::uint64_t roc_auc_dispatches, roc_auc_gpu_time_ns;
   std::uint64_t pr_auc_dispatches, pr_auc_gpu_time_ns;
   std::uint64_t group_sort_dispatches, group_sort_gpu_time_ns;
+  std::uint64_t ranking_metric_dispatches, ranking_metric_gpu_time_ns;
 };
 
 class Histogram {

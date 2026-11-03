@@ -35,6 +35,10 @@
 #include "xgboost/metric.h"              // for MetricReg, XGBOOST_REGISTER_METRIC, Metric
 #include "xgboost/string_view.h"         // for StringView
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ranking.h"
+#endif
+
 namespace {
 using PredIndPair = std::pair<xgboost::bst_float, xgboost::ltr::rel_degree_t>;
 using PredIndPairContainer = std::vector<PredIndPair>;
@@ -301,6 +305,17 @@ class EvalPrecision : public EvalRankWithCache<ltr::PreCache> {
       return Finalize(ctx_, info, pre.Residue(), pre.Weights());
     }
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      auto sums = common::metal::RankingScore(
+          common::metal::RankingMetricKind::kPrecision,
+          linalg::MakeTensorView(DeviceOrd::CPU(), predt.ConstHostSpan(), predt.Size()),
+          info.labels.HostView().Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
+          info.weights_.ConstHostSpan(), param_.TopK());
+      return Finalize(ctx_, info, sums.score, sums.weight);
+    }
+#endif
+
     auto gptr = p_cache->DataGroupPtr(ctx_);
     auto h_label = info.labels.HostView().Slice(linalg::All(), 0);
     auto rank_idx = p_cache->SortedIdx(ctx_, predt.ConstHostSpan());
@@ -358,6 +373,18 @@ class EvalNDCG : public EvalRankWithCache<ltr::NDCGCache> {
       return Finalize(ctx_, info, ndcg.Residue(), ndcg.Weights());
     }
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      auto sums = common::metal::RankingScore(
+          common::metal::RankingMetricKind::kNDCG,
+          linalg::MakeTensorView(DeviceOrd::CPU(), preds.ConstHostSpan(), preds.Size()),
+          info.labels.HostView().Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
+          info.weights_.ConstHostSpan(), param_.TopK(), minus_, param_.ndcg_exp_gain,
+          p_cache->Discount(ctx_), p_cache->InvIDCG(ctx_).Values());
+      return Finalize(ctx_, info, sums.score, sums.weight);
+    }
+#endif
+
     // group local ndcg
     auto group_ptr = p_cache->DataGroupPtr(ctx_);
     bst_group_t n_groups = group_ptr.size() - 1;
@@ -370,21 +397,12 @@ class EvalNDCG : public EvalRankWithCache<ltr::NDCGCache> {
     auto h_label = info.labels.HostView();
     auto h_predt = linalg::MakeTensorView(ctx_, &preds, preds.Size());
     auto weights = common::MakeOptionalWeights(ctx_->Device(), info.weights_);
-    common::Span<std::size_t const> metal_order;
-    if (ctx_->IsMPS()) metal_order = p_cache->SortedIdx(ctx_, preds.ConstHostSpan());
 
     common::ParallelFor(n_groups, ctx_->Threads(), [&](auto g) {
       auto g_predt = h_predt.Slice(linalg::Range(group_ptr[g], group_ptr[g + 1]));
       auto g_labels = h_label.Slice(linalg::Range(group_ptr[g], group_ptr[g + 1]), 0);
-      std::vector<std::size_t> cpu_order;
-      common::Span<std::size_t const> sorted_idx;
-      if (ctx_->IsMPS()) {
-        sorted_idx = metal_order.subspan(group_ptr[g], g_predt.Size());
-      } else {
-        cpu_order = common::ArgSort<std::size_t>(ctx_, linalg::cbegin(g_predt),
-                                                linalg::cend(g_predt), std::greater<>{});
-        sorted_idx = cpu_order;
-      }
+      auto sorted_idx = common::ArgSort<std::size_t>(ctx_, linalg::cbegin(g_predt),
+                                                     linalg::cend(g_predt), std::greater<>{});
       double ndcg{.0};
       double inv_idcg = h_inv_idcg(g);
       if (inv_idcg <= 0.0) {

@@ -201,7 +201,10 @@ def metal_info() -> dict:
     ``roc_auc_gpu_time_ns`` reports its GPU duration. ``pr_auc_dispatches`` and
     ``pr_auc_gpu_time_ns`` report the corresponding PR-AUC work.
     ``group_sort_dispatches`` and ``group_sort_gpu_time_ns`` count completed grouped
-    ranking sorts and their GPU duration. GPU durations exclude host work.
+    ranking sorts and their GPU duration. ``ranking_metric_dispatches`` and
+    ``ranking_metric_gpu_time_ns`` cover fused ranking sort-and-score commands.
+    These durations overlap grouped-sort and generic metric times; do not add
+    them together. GPU durations exclude host work.
     Histogram ``staging_time_ns``, ``wait_time_ns``, and ``readback_time_ns`` measure
     host wall time; wait time overlaps GPU duration and must not be added to it.
     ``survival_cpu_corrections`` and ``survival_cpu_time_ns`` report the explicit

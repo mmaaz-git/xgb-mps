@@ -66,10 +66,10 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
-| Ranking sorts | Stable per-query prediction order for pairwise/NDCG/MAP training and NDCG/MAP/precision metrics; NDCG ideal-label order and query-weight sums also use Metal; pair construction, gradients and metric scoring remain CPU |
+| Ranking sorts | Stable per-query prediction order for pairwise/NDCG/MAP training and NDCG/MAP/precision metrics; NDCG ideal-label order and query-weight sums also use Metal; pair construction and gradients remain CPU |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
-| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile and expectile |
+| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG and precision; NDCG discounts and inverse ideal gains remain CPU |
 
 AFT gradient evaluation is still hybrid for numerically sensitive censored rows.
 The GPU flags interval probabilities at or below `1e-5`; the host recomputes those
@@ -840,3 +840,39 @@ and remain variable. The expanded native test checks **120 cases / 7,518,270 row
 all **33 ranking integration tests** pass with Metal API Validation. The preceding
 full suite and CPU-only checks remain green; this optimization changes only the
 Metal sort path and its boundary tests.
+
+
+### GPU precision and NDCG scoring
+
+NDCG and precision now keep sorted records on Metal for query scoring and weighted
+query reduction. One command performs sorting and scoring; only the final two
+binary64 totals return to the host. The existing final normalization remains host.
+NDCG still obtains discounts and inverse ideal gains from its CPU cache; its ideal
+label ordering is GPU-sorted. MAP score accumulation and ranking gradients remain
+CPU at this stage.
+
+`ranking_metric_dispatches` and `ranking_metric_gpu_time_ns` count completed fused
+sort-and-score commands. Their durations overlap grouped-sort and generic metric
+times, so those fields must not be added together.
+
+The [NDCG benchmark](validation/benchmark-ranking-v3-m3.json) and
+[precision benchmark](validation/benchmark-pre-v3-m3.json) include sorting, scoring,
+staging, synchronization and final host normalization. They use fixed predictions,
+8 CPU threads and five alternating repeats; initial cache setup and training are
+excluded. At one million rows:
+
+| Metric | Query size | CPU | Metal | CPU / Metal |
+| --- | ---: | ---: | ---: | ---: |
+| NDCG@10 | 32 | 4.83 ms | 3.01 ms | 1.60× |
+| NDCG@10 | 256 | 6.39 ms | 2.58 ms | 2.47× |
+| NDCG@10 | 4,096 | 10.59 ms | 2.58 ms | **4.10×** |
+| Precision@10 | 32 | 3.03 ms | 3.15 ms | 0.96× |
+| Precision@10 | 256 | 5.43 ms | 2.59 ms | 2.10× |
+| Precision@10 | 4,096 | 7.67 ms | 2.49 ms | 3.08× |
+
+Smaller workloads and short-query precision can remain slower than CPU. All native
+suites and **543 Python tests** pass, with one skip, under Metal API Validation;
+the CPU-only checks also pass. The added **504 native score cases / 5,350,320 rows**
+cover empty/degenerate queries, strided labels, exponential and linear gain,
+near-binary labels, extreme query weights and top-k limits. Maximum scaled
+CPU score difference is `3.61e-15`.

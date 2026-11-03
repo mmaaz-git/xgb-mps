@@ -15,6 +15,119 @@
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
+void CheckScores() {
+  using namespace xgboost;
+  using common::metal::RankingMetricKind;
+  std::mt19937 rng(7182);
+  std::vector<std::vector<bst_group_t>> layouts{
+      {}, {0, 0}, {1}, {0, 31, 0, 257, 1}, {4096, 32, 0}, {0, 4097, 1}, {65537, 1, 256}};
+  size_t cases = 0, checked = 0;
+  double max_difference = 0;
+  for (auto const& sizes : layouts) {
+    std::vector<bst_group_t> groups{0};
+    for (auto size : sizes) groups.push_back(groups.back() + size);
+    size_t n = groups.back(),
+           maximum = sizes.empty() ? 0 : *std::max_element(sizes.begin(), sizes.end());
+    std::vector<double> discounts(maximum);
+    for (size_t i = 0; i < maximum; ++i) discounts[i] = 1 / std::log2(double(i) + 2);
+    for (int kind = 0; kind < 3; ++kind) {
+      for (size_t stride : {1, 3}) {
+        for (uint32_t topk : {1u, 10u, ~0u}) {
+          for (int mode = 0; mode < 4; ++mode) {
+            std::vector<float> pred(n * stride, NAN), label(n * stride, NAN), weight;
+            if (mode) weight.resize(sizes.size());
+            for (auto& w : weight) w = mode == 1 ? 0 : float(rng() % 101) / 7;
+            if (mode == 3)
+              for (auto& w : weight) w = std::ldexp(1.f, int(rng() % 241) - 120);
+            for (size_t i = 0; i < n; ++i) {
+              pred[i * stride] = float(int(rng() % 101) - 50) / 7;
+              constexpr float binary[]{0, 1, 0.99999994f, 1.e-7f, -1.e-7f};
+              constexpr float linear[]{-.4f, 0, .7f, 1.2f, 2.8f, 6.4f};
+              constexpr float exponential[]{0, 1, 2, 5, 15, 31, 1.e-7f, 1.0000001f};
+              float y = kind == 0   ? binary[rng() % 5]
+                        : kind == 1 ? exponential[rng() % 8]
+                                    : linear[rng() % 6];
+              if (kind == 0 && i % 17 == 0) y = std::numeric_limits<float>::denorm_min();
+              label[i * stride] = mode == 1 ? 0 : y;
+            }
+            auto scores =
+                linalg::MakeTensorView(DeviceOrd::CPU(), common::Span<float const>{pred}, n, stride)
+                    .Slice(linalg::All(), 0);
+            auto labels = linalg::MakeTensorView(DeviceOrd::CPU(), common::Span<float const>{label},
+                                                 n, stride)
+                              .Slice(linalg::All(), 0);
+            std::vector<double> inverse(sizes.size(), 0);
+            double expected_score = 0, expected_weight = 0;
+            bool minus = (mode & 1) != 0;
+            for (size_t g = 0; g < sizes.size(); ++g) {
+              auto begin = groups[g], count = sizes[g], k = std::min(topk, count);
+              std::vector<size_t> order(count);
+              std::iota(order.begin(), order.end(), 0);
+              auto gain = [&](float y) {
+                return kind == 1 ? double((1u << uint32_t(y)) - 1) : double(y);
+              };
+              if (kind != 0) {
+                std::stable_sort(order.begin(), order.end(), [&](auto a, auto b) {
+                  return labels(begin + a) > labels(begin + b);
+                });
+                double ideal = 0;
+                for (size_t i = 0; i < k; ++i)
+                  ideal += discounts[i] * gain(labels(begin + order[i]));
+                inverse[g] = ideal == 0 ? 0 : 1 / ideal;
+              }
+              std::iota(order.begin(), order.end(), 0);
+              std::stable_sort(order.begin(), order.end(), [&](auto a, auto b) {
+                return scores(begin + a) > scores(begin + b);
+              });
+              float w = weight.empty() ? 1 : weight[g];
+              double score = 0;
+              for (size_t i = 0; i < k; ++i) {
+                auto y = labels(begin + order[i]);
+                score += kind == 0 ? double(y * w) : discounts[i] * gain(y) * inverse[g];
+              }
+              if (kind == 0)
+                score /= double(k);
+              else
+                score = inverse[g] <= 0 ? (minus ? 0 : 1) : score * w;
+              expected_score += score;
+              expected_weight += w;
+            }
+            auto before = common::metal::GetStatistics();
+            auto result = common::metal::RankingScore(
+                kind == 0 ? RankingMetricKind::kPrecision : RankingMetricKind::kNDCG, scores,
+                labels, groups, weight, topk, minus, kind == 1, discounts, inverse);
+            auto after = common::metal::GetStatistics();
+            Check(after.ranking_metric_dispatches - before.ranking_metric_dispatches ==
+                      uint64_t(!sizes.empty()),
+                  "Ranking score did not run on GPU");
+            Check(after.group_sort_dispatches - before.group_sort_dispatches == uint64_t(n != 0),
+                  "Ranking score did not use GPU sort");
+            auto close = [&](double actual, double expected) {
+              if (actual == expected || (std::isnan(actual) && std::isnan(expected))) return;
+              double error = std::abs(actual - expected) / std::max(1., std::abs(expected));
+              max_difference = std::max(max_difference, error);
+              if (!std::isfinite(error) || error > 2e-12) {
+                std::fprintf(stderr,
+                             "score rows=%zu kind=%d stride=%zu k=%u mode=%d: %.17g != %.17g\n", n,
+                             kind, stride, topk, mode, actual, expected);
+                throw std::runtime_error("Ranking score differs from CPU");
+              }
+            };
+            close(result.score, expected_score);
+            close(result.weight, expected_weight);
+            ++cases;
+            checked += n;
+          }
+        }
+      }
+    }
+    std::printf("Checked %zu ranking score cases / %zu rows\n", cases, checked);
+    std::fflush(stdout);
+  }
+  std::printf("PASS %zu precision/NDCG cases / %zu rows; max scaled CPU difference %.9g\n", cases,
+              checked, max_difference);
+}
+
 int main() {
   try {
     using namespace xgboost;
@@ -95,6 +208,7 @@ int main() {
     }
     std::printf("PASS %zu grouped sort cases / %zu rows; %zu local-query and %zu radix launches\n",
                 count, checked, small, radix);
+    CheckScores();
   } catch (std::exception const& e) {
     std::fprintf(stderr, "%s\n", e.what());
     return 1;
