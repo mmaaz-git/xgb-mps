@@ -16,6 +16,7 @@
 #include "metal_histogram.h"
 #include "metal_ops.h"
 #include "metal_predictor.h"
+#include "metal_quantile.h"
 #include "metal_reduction.h"
 #include "metal_sampling.h"
 #include "metal_shader.h"
@@ -34,6 +35,8 @@ std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtrac
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
 std::atomic<std::uint64_t> binning_dispatches{0}, binning_gpu_time_ns{0};
 std::atomic<std::uint64_t> mean_dispatches{0}, mean_gpu_time_ns{0};
+std::atomic<std::uint64_t> radix_sort_dispatches{0}, quantile_dispatches{0},
+    quantile_gpu_time_ns{0};
 std::atomic<std::uint64_t> index_uploads{0}, index_uploaded_bytes{0},
     resident_histogram_dispatches{0};
 std::atomic<std::uint64_t> partition_dispatches{0}, leaf_partition_dispatches{0},
@@ -85,6 +88,8 @@ class Runtime {
   id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
   id<MTLComputePipelineState> quantile_metric_pipeline, binning_pipeline;
   id<MTLComputePipelineState> mean_weight_pipeline, mean_pipeline, mean_result_pipeline;
+  id<MTLComputePipelineState> sort_init_pipeline, radix_rank_pipeline, radix_scatter_pipeline,
+      prefix_u32_pipeline, prefix_add_pipeline, quantile_cdf_pipeline, quantile_select_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
@@ -156,6 +161,13 @@ class Runtime {
       mean_weight_pipeline = make_pipeline(@"xgb_mean_weight_reduce");
       mean_pipeline = make_pipeline(@"xgb_mean_reduce");
       mean_result_pipeline = make_pipeline(@"xgb_mean_result");
+      sort_init_pipeline = make_pipeline(@"xgb_sort_columns_init");
+      radix_rank_pipeline = make_pipeline(@"xgb_radix_rank");
+      radix_scatter_pipeline = make_pipeline(@"xgb_radix_scatter");
+      prefix_u32_pipeline = make_pipeline(@"xgb_prefix_u32");
+      prefix_add_pipeline = make_pipeline(@"xgb_prefix_add_u32");
+      quantile_cdf_pipeline = make_pipeline(@"xgb_quantile_weight_cdf");
+      quantile_select_pipeline = make_pipeline(@"xgb_quantile_select");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
       LOG(INFO) << "Metal compute backend: " << device.name.UTF8String;
     }
@@ -828,7 +840,10 @@ Statistics GetStatistics() {
           binning_dispatches.load(std::memory_order_relaxed),
           binning_gpu_time_ns.load(std::memory_order_relaxed),
           mean_dispatches.load(std::memory_order_relaxed),
-          mean_gpu_time_ns.load(std::memory_order_relaxed)};
+          mean_gpu_time_ns.load(std::memory_order_relaxed),
+          radix_sort_dispatches.load(std::memory_order_relaxed),
+          quantile_dispatches.load(std::memory_order_relaxed),
+          quantile_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1077,6 +1092,164 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
     if (elapsed > 0)
       mean_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                  std::memory_order_relaxed);
+  }
+}
+
+namespace {
+id<MTLBuffer> EncodePrefixSum(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuffer> input,
+                              std::uint32_t count) {
+  CHECK_GT(count, 0);
+  auto groups = (std::uint64_t{count} + 255) / 256;
+  auto output = Allocate(rt, std::size_t{count} * sizeof(std::uint32_t));
+  auto totals = Allocate(rt, groups * sizeof(std::uint32_t));
+  auto e = [command computeCommandEncoder];
+  CHECK(e);
+  [e setComputePipelineState:rt.prefix_u32_pipeline];
+  [e setBuffer:input offset:0 atIndex:0];
+  [e setBuffer:output offset:0 atIndex:1];
+  [e setBuffer:totals offset:0 atIndex:2];
+  [e setBytes:&count length:sizeof(count) atIndex:3];
+  [e dispatchThreadgroups:MTLSizeMake(groups, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  if (groups > 1) {
+    auto upper = EncodePrefixSum(rt, command, totals, static_cast<std::uint32_t>(groups));
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.prefix_add_pipeline];
+    [e setBuffer:output offset:0 atIndex:0];
+    [e setBuffer:upper offset:0 atIndex:1];
+    [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+  }
+  return output;
+}
+struct SortShape {
+  std::uint64_t rows, stride0, stride1;
+  std::uint32_t targets, blocks;
+};
+static_assert(sizeof(SortShape) == 32);
+id<MTLBuffer> EncodeColumnSort(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuffer> input,
+                               SortShape shape) {
+  auto size = shape.rows * shape.targets;
+  CHECK_LE(size, std::numeric_limits<std::uint32_t>::max());
+  auto source = Allocate(rt, size * 2 * sizeof(std::uint32_t));
+  auto target = Allocate(rt, source.length);
+  auto ranks = Allocate(rt, size * sizeof(std::uint32_t));
+  auto count_size = std::uint64_t{shape.targets} * 16 * shape.blocks;
+  CHECK_LE(count_size, std::numeric_limits<std::uint32_t>::max());
+  auto counts = Allocate(rt, count_size * sizeof(std::uint32_t));
+  auto e = [command computeCommandEncoder];
+  CHECK(e);
+  [e setComputePipelineState:rt.sort_init_pipeline];
+  [e setBuffer:input offset:0 atIndex:0];
+  [e setBuffer:source offset:0 atIndex:1];
+  [e setBytes:&shape length:sizeof(shape) atIndex:2];
+  [e dispatchThreads:MTLSizeMake(shape.rows, shape.targets, 1)
+      threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  for (std::uint32_t shift = 0; shift < 32; shift += 4) {
+    struct {
+      std::uint32_t rows, targets, blocks, shift;
+    } p{static_cast<std::uint32_t>(shape.rows), shape.targets, shape.blocks, shift};
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.radix_rank_pipeline];
+    [e setBuffer:source offset:0 atIndex:0];
+    [e setBuffer:ranks offset:0 atIndex:1];
+    [e setBuffer:counts offset:0 atIndex:2];
+    [e setBytes:&p length:sizeof(p) atIndex:3];
+    [e dispatchThreadgroups:MTLSizeMake(shape.blocks, shape.targets, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    auto prefix = EncodePrefixSum(rt, command, counts, static_cast<std::uint32_t>(count_size));
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.radix_scatter_pipeline];
+    [e setBuffer:source offset:0 atIndex:0];
+    [e setBuffer:ranks offset:0 atIndex:1];
+    [e setBuffer:prefix offset:0 atIndex:2];
+    [e setBuffer:target offset:0 atIndex:3];
+    [e setBytes:&p length:sizeof(p) atIndex:4];
+    [e dispatchThreads:MTLSizeMake(shape.rows, shape.targets, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    std::swap(source, target);
+  }
+  return source;
+}
+}  // namespace
+
+void Quantiles(linalg::MatrixView<float const> values, Span<float const> weights,
+               Span<QuantileRequest const> requests, Span<float> output) {
+  static_assert(sizeof(QuantileRequest) == 16);
+  CHECK_EQ(requests.size(), output.size());
+  CHECK_LE(requests.size(), std::numeric_limits<std::uint32_t>::max());
+  if (requests.empty()) return;
+  auto rows = values.Shape(0), targets = values.Shape(1);
+  CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(targets, 65535);
+  CHECK(weights.empty() || weights.size() == rows);
+  for (auto const& request : requests) {
+    CHECK_LT(request.target, targets);
+    CHECK_GE(request.alpha, 0);
+    CHECK_LE(request.alpha, 1);
+  }
+  if (!rows) {
+    std::fill(output.begin(), output.end(), std::numeric_limits<float>::quiet_NaN());
+    return;
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, values.Values().data(), values.Values().size_bytes());
+    SortShape shape{rows, values.Stride(0), values.Stride(1), static_cast<std::uint32_t>(targets),
+                    static_cast<std::uint32_t>((rows + 255) / 256)};
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto sorted = EncodeColumnSort(rt, command, input, shape);
+    auto cdf = Allocate(rt, weights.empty() ? 4 : rows * targets * sizeof(std::uint32_t));
+    if (!weights.empty()) {
+      auto weight = Upload(rt, weights.data(), weights.size_bytes());
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      auto n = static_cast<std::uint32_t>(rows);
+      [e setComputePipelineState:rt.quantile_cdf_pipeline];
+      [e setBuffer:sorted offset:0 atIndex:0];
+      [e setBuffer:weight offset:0 atIndex:1];
+      [e setBuffer:cdf offset:0 atIndex:2];
+      [e setBytes:&n length:sizeof(n) atIndex:3];
+      [e dispatchThreadgroups:MTLSizeMake(targets, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    auto task = Upload(rt, requests.data(), requests.size_bytes());
+    auto result = Allocate(rt, output.size_bytes());
+    struct {
+      std::uint32_t rows, targets, weighted, requests;
+    } p{static_cast<std::uint32_t>(rows), shape.targets,
+        static_cast<std::uint32_t>(!weights.empty()), static_cast<std::uint32_t>(requests.size())};
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.quantile_select_pipeline];
+    [e setBuffer:sorted offset:0 atIndex:0];
+    [e setBuffer:input offset:0 atIndex:1];
+    [e setBuffer:cdf offset:0 atIndex:2];
+    [e setBuffer:task offset:0 atIndex:3];
+    [e setBuffer:result offset:0 atIndex:4];
+    [e setBytes:&p length:sizeof(p) atIndex:5];
+    [e setBytes:&shape length:sizeof(shape) atIndex:6];
+    [e dispatchThreads:MTLSizeMake(requests.size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    std::memcpy(output.data(), result.contents, output.size_bytes());
+    radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
+    quantile_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      quantile_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                     std::memory_order_relaxed);
   }
 }
 

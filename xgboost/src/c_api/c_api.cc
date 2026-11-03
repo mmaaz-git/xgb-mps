@@ -171,6 +171,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["histogram_dispatches"] = Integer{static_cast<std::int64_t>(stats.histogram_dispatches)};
   info["rows_processed"] = Integer{static_cast<std::int64_t>(stats.rows_processed)};
   info["shared_histogram_dispatches"] = Integer{static_cast<std::int64_t>(stats.shared_histogram_dispatches)};
+  info["radix_sort_dispatches"] = Integer{static_cast<std::int64_t>(stats.radix_sort_dispatches)};
+  info["quantile_dispatches"] = Integer{static_cast<std::int64_t>(stats.quantile_dispatches)};
+  info["quantile_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.quantile_gpu_time_ns)};
   info["mean_dispatches"] = Integer{static_cast<std::int64_t>(stats.mean_dispatches)};
   info["mean_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.mean_gpu_time_ns)};
   info["binning_dispatches"] = Integer{static_cast<std::int64_t>(stats.binning_dispatches)};
@@ -225,6 +228,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["histogram_dispatches"] = Integer{0};
   info["rows_processed"] = Integer{0};
   info["shared_histogram_dispatches"] = Integer{0};
+  info["radix_sort_dispatches"] = Integer{0};
+  info["quantile_dispatches"] = Integer{0};
+  info["quantile_gpu_time_ns"] = Integer{0};
   info["mean_dispatches"] = Integer{0};
   info["mean_gpu_time_ns"] = Integer{0};
   info["binning_dispatches"] = Integer{0};

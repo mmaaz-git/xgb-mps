@@ -9,7 +9,7 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums and stump
-fitting on Metal. Quantile construction,
+fitting, means, stable column sorting and quantile/median estimation on Metal. Feature quantile sketching,
 gradient-based sampling and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
@@ -57,7 +57,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
 | Gradient quantization | GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales stay on GPU |
 | Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights; other leaf fitting still uses CPU |
-| Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; quantile/median estimation and other initialization work remain CPU |
+| Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; other objective-specific initialization work remains CPU |
+| Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
@@ -83,7 +84,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **369 passed, 1 skipped**. The skip requires a machine without an
+- Python: **384 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **192 cases**, with every bin compared exactly to independent
@@ -107,6 +108,10 @@ On Apple M3, 2026-11-03:
   per-term division, multiple targets, matrix strides, constant values, zeros,
   subnormals and wide exponent ranges. The scalar mean uses binary64 accumulation
   of FP32 terms, so its rounding order can differ from CPU FP32 accumulation.
+- Native quantiles/sorting: **240 cases / 4,227,960 stable records and exact CDF
+  entries / 8,640 exact quantiles**, plus **2,140,938 integer prefix values**.
+  Covers ties, signed zeros, subnormals, extreme values, multiple columns, strides
+  and recursive scan boundaries. **56 production median/mean API cases** also pass.
 - Native gradient quantization: **713,814 values across six scales**, including
   subnormal floats, compared exactly against double-precision CPU rounding.
 - Native partition/transpose kernels: **256 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
@@ -195,24 +200,32 @@ training speedup yet.
 | --- | ---: | ---: | ---: |
 | Absolute error / 100,000 | 0.091 s | 0.214 s | 0.43× |
 | Absolute error / 1,000,000 | 0.717 s | 0.986 s | 0.73× |
-| Quantile / 100,000 | 0.105 s | 0.211 s | 0.49× |
-| Quantile / 1,000,000 | 0.892 s | 1.108 s | 0.81× |
+| Quantile / 100,000 | 0.107 s | 0.216 s | 0.50× |
+| Quantile / 1,000,000 | 0.856 s | 0.970 s | 0.88× |
 
 [Absolute-error results](validation/benchmark-absolute-v3-m3.json) and
-[quantile results](validation/benchmark-quantile-v2-m3.json). Checked exact integer
+[quantile results](validation/benchmark-quantile-v3-m3.json). Checked exact integer
 reductions accelerate common residual scales and metric sums, with software
 binary64 retained for wide exponent ranges. In the preceding
-[absolute-error run](validation/benchmark-absolute-v2-m3.json) and the quantile run,
+[absolute-error run](validation/benchmark-absolute-v2-m3.json) and [preceding quantile run](validation/benchmark-quantile-v2-m3.json),
 at one million rows objective GPU time fell from 0.083 to 0.052 s for absolute error and from 0.068 to 0.055 s for
 quantile; end-to-end Metal training fell from 0.999 to 0.882 s and from 1.164 to
 1.108 s respectively. The [first absolute-error](validation/benchmark-absolute-v1-m3.json)
 and [first quantile](validation/benchmark-quantile-v1-m3.json) runs remain available.
 These are separate runs, subject to system timing variability.
 
-Means now execute on Metal; quantile estimation remains on CPU. Gradient aggregation and weight
+Means and initial quantile estimation now execute on Metal. Gradient aggregation and weight
 calculation for Newton stump fitting now execute on Metal, as do per-iteration
 residual-scale reduction and gradient calculation. These implement the adaptive losses in the
 vendored source.
+
+With three quantile levels (`0.1, 0.5, 0.9`) and one million rows, training takes
+**2.107 s Metal versus 1.878 s CPU** (0.89×). Adding random sample weights takes
+**2.238 s versus 1.903 s** (0.85×). Maximum prediction differences are `9.54e-7`.
+The initial GPU sort serves all three levels; weighted quantiles preserve CPU
+sequential FP32 cumulative sums. [Multiple-level results](validation/benchmark-quantile-multi-v1-m3.json)
+and [weighted results](validation/benchmark-quantile-weighted-v1-m3.json) include
+all repetitions and operation timings.
 
 ### Uniform sampling
 
@@ -426,3 +439,16 @@ suites and CPU-only build checks. Zero-total-weight errors are preserved.
 The [latest training run](validation/benchmark-mean-v1-m3.json) measured 1.143 s
 Metal versus 0.797 s CPU at one million rows (0.70×), with identical predictions.
 This remains slower than CPU, with substantial run-to-run timing variation.
+
+### Quantile statistics update
+
+Added stable GPU radix sorting and recursive integer prefix scans, then used them
+for scalar/vector medians and initial quantile estimation. Multiple quantile levels
+share a sort. Weighted cumulative sums preserve CPU sequential FP32 order, including
+subnormals, so rounding cannot silently choose a different observation. All 384
+Python tests, 240 native sort/quantile cases and 56 production statistics API cases
+pass; CPU-only compatibility checks pass. Feature quantile sketches remain CPU work.
+
+The latest single-quantile million-row benchmark takes 0.970 s Metal versus 0.856 s
+CPU (0.88×). The three-level weighted benchmark remains slower and exposes the
+sequential weighted CDF as an optimization target. Raw results are linked above.

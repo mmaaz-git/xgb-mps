@@ -20,6 +20,7 @@ def main():
                         default="reg:squarederror")
     parser.add_argument("--quantile-levels", type=float, nargs="+", default=[0.5])
     parser.add_argument("--subsample", type=float, default=1.0)
+    parser.add_argument("--weighted", action="store_true")
     parser.add_argument("--features", type=int, default=32)
     parser.add_argument("--rounds", type=int, default=20)
     parser.add_argument("--repeats", type=int, default=3)
@@ -34,11 +35,12 @@ def main():
     if args.objective == "reg:quantileerror":
         p["quantile_alpha"] = args.quantile_levels
     # Compile the shader and initialize the runtime before timing either device.
-    warm = xgb.DMatrix(np.arange(64, dtype=np.float32).reshape(32, 2), label=np.arange(32))
+    warm = xgb.DMatrix(np.arange(64, dtype=np.float32).reshape(32, 2), label=np.arange(32),
+                       weight=np.ones(32) if args.weighted else None)
     for device in ["cpu", "mps"]:
         xgb.train(p | {"device": device}, warm, num_boost_round=1)
     report = dict(platform=platform.platform(), cpu_threads=args.threads, features=args.features,
-                  rounds=args.rounds, repeats=args.repeats, params=p, cases=[],
+                  rounds=args.rounds, repeats=args.repeats, weighted=args.weighted, params=p, cases=[],
                   timing="DMatrix construction + training with quantization; warmed Metal runtime; data generation excluded")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for n in args.rows:
@@ -46,6 +48,7 @@ def main():
         rng = np.random.default_rng(17)
         x = rng.normal(size=(n, args.features)).astype(np.float32)
         y = (x[:, 0] * 2 - x[:, 1] + x[:, 2] ** 2 + rng.normal(scale=0.1, size=n)).astype(np.float32)
+        weights = rng.uniform(0.1, 3, n).astype(np.float32) if args.weighted else None
         timings = {"cpu": [], "mps": []}
         preds = {}
         dispatch_statistics = {"cpu": [], "mps": []}
@@ -54,7 +57,7 @@ def main():
             for device in order:
                 before = xgb.metal_info()
                 start = time.perf_counter()
-                d = xgb.DMatrix(x, label=y, nthread=args.threads)
+                d = xgb.DMatrix(x, label=y, weight=weights, nthread=args.threads)
                 model = xgb.train(p | {"device": device}, d, num_boost_round=args.rounds)
                 elapsed = time.perf_counter() - start
                 after = xgb.metal_info()

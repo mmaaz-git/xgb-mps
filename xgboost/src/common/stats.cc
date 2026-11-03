@@ -18,11 +18,21 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "metal_reduction.h"
+#include "metal_quantile.h"
 #endif
 
 namespace xgboost::common {
 void Median(Context const* ctx, linalg::Matrix<float> const& t,
             HostDeviceVector<float> const& weights, linalg::Tensor<float, 1>* out) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    out->Reshape(t.Shape(1));
+    std::vector<metal::QuantileRequest> requests;
+    for (std::uint32_t i = 0; i < t.Shape(1); ++i) requests.push_back({i, 0, 0.5});
+    metal::Quantiles(t.HostView(), weights.ConstHostSpan(), requests, out->HostView().Values());
+    return;
+  }
+#endif
   if (ctx->IsCUDA()) {
     weights.SetDevice(ctx->Device());
     auto opt_weights = OptionalWeights(weights.ConstDeviceSpan());

@@ -29,6 +29,7 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_ops.h"
+#include "../common/metal_quantile.h"
 #endif
 
 namespace xgboost::obj {
@@ -225,6 +226,14 @@ class QuantileRegression : public ObjFunction {
     base_score->SetDevice(ctx_->Device());
     base_score->Reshape(n_targets);
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      std::vector<common::metal::QuantileRequest> requests;
+      for (auto alpha : param_.quantile_alpha.Get()) requests.push_back({0, 0, alpha});
+      common::metal::Quantiles(info.labels.HostView(), info.weights_.ConstHostSpan(), requests,
+                                base_score->HostView().Values());
+    } else
+#endif
     if (ctx_->IsCUDA()) {
 #if defined(XGBOOST_USE_CUDA)
       alpha_.SetDevice(ctx_->Device());

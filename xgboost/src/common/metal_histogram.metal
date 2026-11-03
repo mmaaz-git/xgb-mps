@@ -1959,3 +1959,179 @@ kernel void xgb_mean_result(device const ulong2* sums [[buffer(0)]],
                             uint tid [[thread_position_in_grid]]) {
   output[tid] = xgb_dto_float({sums[tid].x});
 }
+
+// Stable 4-bit radix sorting of column-wise (ordered-float-key, original-row)
+// records. Counts are laid out target/bucket/block, so a single integer prefix
+// gives globally disjoint destinations for every target and bucket.
+struct RadixParams {
+  uint rows, targets, blocks, shift;
+};
+kernel void xgb_sort_columns_init(device const uint* values [[buffer(0)]],
+                                  device uint2* records [[buffer(1)]],
+                                  constant GradientSumParams& p [[buffer(2)]],
+                                  uint2 tid [[thread_position_in_grid]]) {
+  uint bits = values[ulong(tid.x) * p.stride0 + ulong(tid.y) * p.stride1];
+  uint key =
+      (bits & 0x7fffffffu) == 0 ? 0x80000000u : (bits & 0x80000000u ? ~bits : bits ^ 0x80000000u);
+  records[ulong(tid.y) * p.rows + tid.x] = uint2(key, tid.x);
+}
+kernel void xgb_radix_rank(device const uint2* records [[buffer(0)]],
+                           device uint* ranks [[buffer(1)]], device uint* counts [[buffer(2)]],
+                           constant RadixParams& p [[buffer(3)]],
+                           uint2 group [[threadgroup_position_in_grid]],
+                           uint tid [[thread_index_in_threadgroup]],
+                           uint lane [[thread_index_in_simdgroup]],
+                           uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong row = ulong(group.x) * 256 + tid, index = ulong(group.y) * p.rows + row;
+  bool valid = row < p.rows;
+  uint bucket = valid ? (records[index].x >> p.shift) & 15 : 0;
+  uint rank = 0;
+  threadgroup uint hist[128];
+  for (uint b = 0; b < 16; ++b) {
+    uint match = uint(valid && bucket == b);
+    uint prefix = simd_prefix_exclusive_sum(match);
+    if (bucket == b) rank = prefix;
+    if (lane == 31) hist[simd * 16 + b] = prefix + match;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (valid) {
+    for (uint prior = 0; prior < simd; ++prior) rank += hist[prior * 16 + bucket];
+    ranks[index] = rank;
+  }
+  if (tid < 16) {
+    uint sum = 0;
+    for (uint i = 0; i < 8; ++i) sum += hist[i * 16 + tid];
+    counts[(ulong(group.y) * 16 + tid) * p.blocks + group.x] = sum;
+  }
+}
+kernel void xgb_prefix_u32(device const uint* input [[buffer(0)]],
+                           device uint* output [[buffer(1)]], device uint* totals [[buffer(2)]],
+                           constant uint& n [[buffer(3)]],
+                           uint group [[threadgroup_position_in_grid]],
+                           uint tid [[thread_index_in_threadgroup]],
+                           uint lane [[thread_index_in_simdgroup]],
+                           uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong index = ulong(group) * 256 + tid;
+  uint value = index < n ? input[index] : 0;
+  uint prefix = simd_prefix_exclusive_sum(value);
+  threadgroup uint sums[8];
+  if (lane == 31) sums[simd] = prefix + value;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint i = 0; i < simd; ++i) prefix += sums[i];
+  if (index < n) output[index] = prefix;
+  if (tid == 255) totals[group] = prefix + value;
+}
+kernel void xgb_prefix_add_u32(device uint* output [[buffer(0)]],
+                               device const uint* block_prefix [[buffer(1)]],
+                               uint tid [[thread_position_in_grid]]) {
+  output[tid] += block_prefix[tid / 256];
+}
+kernel void xgb_radix_scatter(device const uint2* input [[buffer(0)]],
+                              device const uint* ranks [[buffer(1)]],
+                              device const uint* prefix [[buffer(2)]],
+                              device uint2* output [[buffer(3)]],
+                              constant RadixParams& p [[buffer(4)]],
+                              uint2 tid [[thread_position_in_grid]]) {
+  ulong index = ulong(tid.y) * p.rows + tid.x;
+  uint2 record = input[index];
+  uint bucket = (record.x >> p.shift) & 15;
+  ulong count_index = (ulong(tid.y) * 16 + bucket) * p.blocks + tid.x / 256;
+  output[prefix[count_index] + ranks[index]] = record;
+}
+inline float xgb_fadd_preserve(float a, float b) {
+  uint aa = as_type<uint>(a) & 0x7fffffffu, bb = as_type<uint>(b) & 0x7fffffffu;
+  float result = a + b;
+  uint rr = as_type<uint>(result) & 0x7fffffffu;
+  if ((aa && aa < 0x00800000u) || (bb && bb < 0x00800000u) || (rr < 0x00800000u && aa && bb))
+    return xgb_dto_float(xgb_dadd(xgb_dfrom_float(a), xgb_dfrom_float(b)));
+  return result;
+}
+// WeightedQuantile uses a *sequential FP32* cumulative sum on CPU. Parallel
+// floating scans can change the selected observation; retain that order while
+// gathering and storing each 256-value tile cooperatively.
+kernel void xgb_quantile_weight_cdf(device const uint2* records [[buffer(0)]],
+                                    device const uint* weights [[buffer(1)]],
+                                    device uint* cdf [[buffer(2)]],
+                                    constant uint& rows [[buffer(3)]],
+                                    uint target [[threadgroup_position_in_grid]],
+                                    uint tid [[thread_index_in_threadgroup]]) {
+  threadgroup float tile[256];
+  threadgroup uint accumulated;
+  if (tid == 0) accumulated = 0;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (ulong begin = 0; begin < rows; begin += 256) {
+    ulong index = ulong(target) * rows + begin + tid;
+    uint length = uint(min(256ul, ulong(rows) - begin));
+    tile[tid] = tid < length ? as_type<float>(weights[records[index].y]) : 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+      float sum = as_type<float>(accumulated);
+      for (uint i = 0; i < length; ++i) {
+        sum = (begin == 0 && i == 0) ? tile[i] : xgb_fadd_preserve(sum, tile[i]);
+        tile[i] = sum;
+      }
+      accumulated = as_type<uint>(sum);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < length) cdf[index] = as_type<uint>(tile[tid]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+}
+struct QuantileRequest {
+  uint target, padding;
+  ulong alpha;
+};
+struct QuantileParams {
+  uint rows, targets, weighted, requests;
+};
+inline ulong xgb_positive_floor(XGBDouble value) {
+  int exponent = int((value.bits >> 52) & 2047) - 1023;
+  if (exponent < 0) return 0;
+  ulong significand = (value.bits & kDoubleFrac) | (1ul << 52);
+  return exponent < 52 ? significand >> (52 - exponent) : significand << (exponent - 52);
+}
+kernel void xgb_quantile_select(
+    device const uint2* records [[buffer(0)]], device const uint* values [[buffer(1)]],
+    device const uint* cdf [[buffer(2)]], device const QuantileRequest* requests [[buffer(3)]],
+    device uint* output [[buffer(4)]], constant QuantileParams& p [[buffer(5)]],
+    constant GradientSumParams& shape [[buffer(6)]], uint tid [[thread_position_in_grid]]) {
+  QuantileRequest request = requests[tid];
+  ulong base = ulong(request.target) * p.rows;
+  XGBDouble alpha{request.alpha};
+  uint index;
+  if (p.weighted) {
+    XGBDouble total = xgb_dfrom_float(as_type<float>(cdf[base + p.rows - 1]));
+    uint threshold = as_type<uint>(xgb_dto_float(xgb_dmul(total, alpha)));
+    uint lo = 0, hi = p.rows;
+    while (lo < hi) {
+      uint mid = lo + (hi - lo) / 2;
+      if (xgb_float_less(cdf[base + mid], threshold))
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    index = min(lo, p.rows - 1);
+  } else {
+    XGBDouble one = xgb_dfrom_float(1.0f), n{xgb_scaled_integer(p.rows, 0)},
+              n1{xgb_scaled_integer(ulong(p.rows) + 1, 0)};
+    if (!xgb_dlt(xgb_ddiv(one, n1), alpha))
+      index = 0;
+    else if (!xgb_dlt(alpha, xgb_ddiv(n, n1)))
+      index = p.rows - 1;
+    else {
+      XGBDouble x = xgb_dmul(alpha, n1);
+      ulong k = xgb_positive_floor(x) - 1;
+      XGBDouble d = xgb_dsub(xgb_dsub(x, one), {xgb_scaled_integer(k, 0)});
+      uint row0 = records[base + k].y, row1 = records[base + k + 1].y;
+      float v0 = as_type<float>(
+          values[ulong(row0) * shape.stride0 + ulong(request.target) * shape.stride1]);
+      float v1 = as_type<float>(
+          values[ulong(row1) * shape.stride0 + ulong(request.target) * shape.stride1]);
+      XGBDouble diff = xgb_dfrom_float(xgb_fsub_preserve(v1, v0));
+      output[tid] = as_type<uint>(xgb_dto_float(xgb_dadd(xgb_dfrom_float(v0), xgb_dmul(d, diff))));
+      return;
+    }
+  }
+  output[tid] = values[ulong(records[base + index].y) * shape.stride0 +
+                       ulong(request.target) * shape.stride1];
+}

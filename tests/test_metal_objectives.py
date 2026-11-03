@@ -46,6 +46,9 @@ def test_objectives_execute_on_metal(metal, objective, extra, weighted):
     assert after["stump_dispatches"] - before["stump_dispatches"] == int(uses_stump)
     if objective.startswith("multi:"):
         assert after["mean_dispatches"] > before["mean_dispatches"]
+    if objective == "reg:quantileerror":
+        assert after["quantile_dispatches"] - before["quantile_dispatches"] == 1
+        assert after["radix_sort_dispatches"] - before["radix_sort_dispatches"] == 1
     np.testing.assert_allclose(gpu.predict(d, output_margin=True),
                                cpu.predict(d, output_margin=True), rtol=2e-5, atol=2e-5)
     before = xgb.metal_info()

@@ -43,6 +43,19 @@ echo "Checking GPU means, weighted means and FP32 mean terms"
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_mean.mm \
   -framework Metal -framework Foundation -o results/metal_mean_test
 results/metal_mean_test xgboost/src/common/metal_histogram.metal
+echo "Checking integer prefixes, full stable sorts, weighted CDFs and quantiles"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_quantile.mm \
+  -framework Metal -framework Foundation -o results/metal_quantile_test
+results/metal_quantile_test xgboost/src/common/metal_histogram.metal
+echo "Checking production median and mean APIs, including strided and empty inputs"
+libomp_root="${LIBOMP_ROOT:-$(brew --prefix libomp)}"
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_stats_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_stats_api_test
+results/metal_stats_api_test
 echo "Checking adaptive objective scales and gradients against CPU references"
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_adaptive.mm \
   -framework Metal -framework Foundation -o results/metal_adaptive_test
