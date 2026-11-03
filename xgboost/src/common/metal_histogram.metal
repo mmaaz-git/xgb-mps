@@ -2903,6 +2903,50 @@ kernel void xgb_group_sort_small(device const uint* values [[buffer(0)]],
   }
   if (valid) records[row] = uint2(group, value.y);
 }
+// Queries up to 4096 records fit in Apple GPU threadgroup memory. Assign each
+// comparator pair to one thread; pairs are disjoint within a network stage.
+kernel void xgb_group_sort_medium(device const uint* values [[buffer(0)]],
+                                   device const uint* groups [[buffer(1)]],
+                                   device uint2* records [[buffer(2)]],
+                                   constant GroupSortParams& p [[buffer(3)]],
+                                   threadgroup uint2* shared [[threadgroup(0)]],
+                                   uint group [[threadgroup_position_in_grid]],
+                                   uint tid [[thread_index_in_threadgroup]]) {
+  uint begin = groups[group], count = groups[group + 1] - begin;
+  if (count <= 1) {
+    if (count && tid == 0) records[begin] = uint2(group, begin);
+    return;
+  }
+  uint padded = 2;
+  while (padded < count) padded <<= 1;
+  for (uint i = tid; i < padded; i += 256) {
+    uint2 value = uint2(0xffffffffu);
+    if (i < count) {
+      uint bits = values[(ulong(begin) + i) * p.stride];
+      uint key = (bits & 0x7fffffffu) == 0 ? 0x80000000u
+                   : (bits & 0x80000000u ? ~bits : bits ^ 0x80000000u);
+      value = uint2(~key, begin + i);
+    }
+    shared[i] = value;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint size = 2; size <= padded; size <<= 1) {
+    for (uint distance = size >> 1; distance; distance >>= 1) {
+      for (uint pair = tid; pair < padded / 2; pair += 256) {
+        uint low = ((pair & ~(distance - 1)) << 1) | (pair & (distance - 1));
+        uint high = low + distance;
+        uint2 a = shared[low], b = shared[high];
+        bool ascending = (low & size) == 0;
+        if (ascending ? xgb_rank_less(b, a) : xgb_rank_less(a, b)) {
+          shared[low] = b;
+          shared[high] = a;
+        }
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+  }
+  for (uint i = tid; i < count; i += 256) records[begin + i] = uint2(group, shared[i].y);
+}
 // For large/skewed queries, first sort all scores, then stably radix-sort by
 // query ID. Binary search handles empty groups without expanding IDs on CPU.
 kernel void xgb_group_sort_key(device uint2* records [[buffer(0)]],

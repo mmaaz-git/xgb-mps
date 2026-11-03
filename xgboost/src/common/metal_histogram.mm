@@ -108,7 +108,7 @@ class Runtime {
       prefix_u32_pipeline, prefix_add_pipeline, quantile_cdf_pipeline, quantile_select_pipeline;
   id<MTLComputePipelineState> roc_sort_init_pipeline, roc_counts_pipeline, roc_area_pipeline,
       pr_area_pipeline, prefix_double_pair_pipeline, prefix_double_pair_add_pipeline;
-  id<MTLComputePipelineState> group_sort_small_pipeline, group_sort_key_pipeline,
+  id<MTLComputePipelineState> group_sort_small_pipeline, group_sort_medium_pipeline, group_sort_key_pipeline,
       group_sort_export_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
@@ -198,6 +198,7 @@ class Runtime {
       roc_area_pipeline = make_pipeline(@"xgb_roc_area");
       pr_area_pipeline = make_pipeline(@"xgb_pr_area");
       group_sort_small_pipeline = make_pipeline(@"xgb_group_sort_small");
+      group_sort_medium_pipeline = make_pipeline(@"xgb_group_sort_medium");
       group_sort_key_pipeline = make_pipeline(@"xgb_group_sort_key");
       group_sort_export_pipeline = make_pipeline(@"xgb_group_sort_export");
       prefix_double_pair_pipeline = make_pipeline(@"xgb_prefix_double_pair");
@@ -1367,6 +1368,11 @@ void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> 
     auto command = [rt.queue commandBuffer];
     CHECK(command);
     id<MTLBuffer> records;
+    std::size_t shared_count = 1;
+    while (shared_count < max_group_size && shared_count < 4096) shared_count <<= 1;
+    bool medium = max_group_size <= 4096 &&
+                  shared_count * 2 * sizeof(std::uint32_t) <= rt.device.maxThreadgroupMemoryLength;
+    bool radix_path = max_group_size > 256 && !medium;
     if (max_group_size <= 256) {
       records = Allocate(rt, values.Size() * 2 * sizeof(std::uint32_t));
       auto e = [command computeCommandEncoder];
@@ -1380,6 +1386,19 @@ void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> 
       while (width < max_group_size) width <<= 1;
       [e dispatchThreadgroups:MTLSizeMake(p.groups, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+      [e endEncoding];
+    } else if (medium) {
+      records = Allocate(rt, values.Size() * 2 * sizeof(std::uint32_t));
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.group_sort_medium_pipeline];
+      [e setBuffer:input offset:0 atIndex:0];
+      [e setBuffer:offsets offset:0 atIndex:1];
+      [e setBuffer:records offset:0 atIndex:2];
+      [e setBytes:&p length:sizeof(p) atIndex:3];
+      [e setThreadgroupMemoryLength:shared_count * 2 * sizeof(std::uint32_t) atIndex:0];
+      [e dispatchThreadgroups:MTLSizeMake(p.groups, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
     } else {
       SortShape shape{p.rows, p.stride, 1, 1, static_cast<std::uint32_t>((p.rows + 255) / 256)};
@@ -1412,7 +1431,7 @@ void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> 
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
     std::memcpy(relative_indices.data(), output.contents, relative_indices.size_bytes());
     group_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
-    if (max_group_size > 256) radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
+    if (radix_path) radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     if (elapsed > 0) group_sort_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                                     std::memory_order_relaxed);

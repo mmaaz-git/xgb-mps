@@ -828,3 +828,15 @@ and excludes training/model construction and initial ideal-order cache setup.
 
 These are metric timings, not ranking-training speedups. Individual timings vary;
 all repeats, first-evaluation times and GPU counters are retained in the JSON.
+
+
+The next [ranking-sort benchmark](validation/benchmark-ranking-v2-m3.json) adds
+an on-chip network for queries of 257–4,096 rows, retaining the global radix path
+for larger queries. For one million rows in 4,096-row queries, warmed NDCG@10
+medians are **9.92 ms CPU / 3.16 ms Metal-sort-plus-host-score (3.14×)**. The earlier
+Metal median was 10.63 ms; CPU timing also changed between sessions, so the raw
+repeats should be used when comparing results. Small-query workloads are unchanged
+and remain variable. The expanded native test checks **120 cases / 7,518,270 rows**;
+all **33 ranking integration tests** pass with Metal API Validation. The preceding
+full suite and CPU-only checks remain green; this optimization changes only the
+Metal sort path and its boundary tests.

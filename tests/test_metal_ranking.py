@@ -6,10 +6,10 @@ import xgboost as xgb
 
 @pytest.mark.parametrize("objective", ["rank:pairwise", "rank:ndcg", "rank:map"])
 @pytest.mark.parametrize("method", ["topk", "mean"])
-@pytest.mark.parametrize("large", [False, True])
-def test_ranking_training(metal, objective, method, large):
+@pytest.mark.parametrize("largest", [63, 257, 4097])
+def test_ranking_training(metal, objective, method, largest):
     rng = np.random.default_rng(786)
-    sizes = np.array([1, 7, 32, 256, 257 if large else 63, 19], dtype=np.uint32)
+    sizes = np.array([1, 7, 32, 256, largest, 19], dtype=np.uint32)
     n = int(sizes.sum())
     x = rng.normal(size=(n, 8)).astype(np.float32)
     y = (x[:, 0] + .3 * x[:, 1] > 0).astype(np.float32)
@@ -31,7 +31,7 @@ def test_ranking_training(metal, objective, method, large):
     # Objective ranking, NDCG ideal order and all three metric orders use GPU.
     assert after["group_sort_dispatches"] - before["group_sort_dispatches"] >= 20
     assert after["float_sum_dispatches"] > before["float_sum_dispatches"]
-    assert (after["radix_sort_dispatches"] > before["radix_sort_dispatches"]) == large
+    assert (after["radix_sort_dispatches"] > before["radix_sort_dispatches"]) == (largest > 4096)
     np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
                                rtol=2e-5, atol=2e-5)
     for metric in params["eval_metric"]:
@@ -40,9 +40,9 @@ def test_ranking_training(metal, objective, method, large):
 
 
 @pytest.mark.parametrize("metric", ["ndcg", "ndcg@3-", "map", "map@3-", "pre@3"])
-@pytest.mark.parametrize("large", [False, True])
-def test_ranking_metric_ties(metal, metric, large):
-    sizes = np.array([5, 257 if large else 63, 3, 32], dtype=np.uint32)
+@pytest.mark.parametrize("largest", [63, 257, 4097])
+def test_ranking_metric_ties(metal, metric, largest):
+    sizes = np.array([5, largest, 3, 32], dtype=np.uint32)
     n = int(sizes.sum())
     rng = np.random.default_rng(342)
     labels = rng.integers(0, 2, n).astype(np.float32)
