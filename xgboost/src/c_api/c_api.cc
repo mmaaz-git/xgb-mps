@@ -182,6 +182,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["row_workspace_reuses"] = Integer{static_cast<std::int64_t>(stats.row_workspace_reuses)};
   info["float_sum_dispatches"] = Integer{static_cast<std::int64_t>(stats.float_sum_dispatches)};
   info["float_sum_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.float_sum_gpu_time_ns)};
+  info["objective_shared_input_bytes"] = Integer{static_cast<std::int64_t>(stats.objective_shared_input_bytes)};
+  info["objective_shared_output_bytes"] = Integer{static_cast<std::int64_t>(stats.objective_shared_output_bytes)};
+  info["objective_staging_bytes"] = Integer{static_cast<std::int64_t>(stats.objective_staging_bytes)};
+
 
 
 
@@ -251,6 +255,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["row_workspace_reuses"] = Integer{0};
   info["float_sum_dispatches"] = Integer{0};
   info["float_sum_gpu_time_ns"] = Integer{0};
+  info["objective_shared_input_bytes"] = Integer{0};
+  info["objective_shared_output_bytes"] = Integer{0};
+  info["objective_staging_bytes"] = Integer{0};
+
   info["mean_dispatches"] = Integer{0};
   info["mean_gpu_time_ns"] = Integer{0};
   info["binning_dispatches"] = Integer{0};

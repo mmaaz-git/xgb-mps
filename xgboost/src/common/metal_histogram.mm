@@ -14,6 +14,7 @@
 #include "../data/gradient_index.h"
 #include "metal_data.h"
 #include "metal_histogram.h"
+#include "metal_memory.h"
 #include "metal_ops.h"
 #include "metal_predictor.h"
 #include "metal_quantile.h"
@@ -36,6 +37,8 @@ std::atomic<std::uint64_t> gradient_sum_dispatches{0}, gradient_sum_gpu_time_ns{
 std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
+std::atomic<std::uint64_t> objective_shared_input_bytes{0}, objective_shared_output_bytes{0},
+    objective_staging_bytes{0};
 std::atomic<std::uint64_t> float_sum_dispatches{0}, float_sum_gpu_time_ns{0};
 std::atomic<std::uint64_t> row_workspace_allocations{0}, row_workspace_reuses{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
@@ -885,7 +888,10 @@ Statistics GetStatistics() {
           row_workspace_allocations.load(std::memory_order_relaxed),
           row_workspace_reuses.load(std::memory_order_relaxed),
           float_sum_dispatches.load(std::memory_order_relaxed),
-          float_sum_gpu_time_ns.load(std::memory_order_relaxed)};
+          float_sum_gpu_time_ns.load(std::memory_order_relaxed),
+          objective_shared_input_bytes.load(std::memory_order_relaxed),
+          objective_shared_output_bytes.load(std::memory_order_relaxed),
+          objective_staging_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1753,11 +1759,31 @@ void Gradients(Objective objective, Span<float const> predictions, Span<float co
     CHECK(command);
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
-    auto pred = Upload(rt, predictions.data(), predictions.size_bytes());
-    auto label = Upload(rt, labels.data(), labels.size_bytes());
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
-    auto levels = Upload(rt, alpha.data(), alpha.size_bytes());
-    auto out = Allocate(rt, output.size_bytes());
+    struct BoundMemory { id<MTLBuffer> buffer; std::size_t offset; bool shared; };
+    std::uint64_t shared_input = 0, shared_output = 0, staged = 0;
+    auto bind = [&](void const* data, std::size_t bytes, std::size_t alignment,
+                    bool is_output, bool allow_shared = true) -> BoundMemory {
+      auto view = allow_shared ? TryBorrowMemory(rt.device, data, bytes, alignment) : BorrowedMemory{};
+      if (view.buffer) {
+        (is_output ? shared_output : shared_input) += bytes;
+        return {view.buffer, view.offset, true};
+      }
+      staged += bytes;
+      return {is_output ? Allocate(rt, bytes) : Upload(rt, data, bytes), 0, false};
+    };
+    auto overlaps_output = [&](Span<float const> input) {
+      if (input.empty()) return false;
+      auto in = reinterpret_cast<std::uintptr_t>(input.data());
+      auto out = reinterpret_cast<std::uintptr_t>(output.data());
+      return in >= out ? in - out < output.size_bytes() : out - in < input.size_bytes();
+    };
+    bool output_disjoint = !overlaps_output(predictions) && !overlaps_output(labels) &&
+                           !overlaps_output(weights) && !overlaps_output(alpha);
+    auto pred = bind(predictions.data(), predictions.size_bytes(), 4, false);
+    auto label = bind(labels.data(), labels.size_bytes(), 4, false);
+    auto weight = bind(weights.data(), weights.size_bytes(), 4, false);
+    auto levels = bind(alpha.data(), alpha.size_bytes(), 4, false);
+    auto out = bind(output.data(), output.size_bytes(), 8, true, output_disjoint);
     struct {
       std::uint64_t n;
       std::uint32_t targets, kind, weighted, label_targets;
@@ -1770,17 +1796,20 @@ void Gradients(Objective objective, Span<float const> predictions, Span<float co
         parameter,
         scale_pos_weight};
     [encoder setComputePipelineState:rt.objective_pipeline];
-    [encoder setBuffer:pred offset:0 atIndex:0];
-    [encoder setBuffer:label offset:0 atIndex:1];
-    [encoder setBuffer:weight offset:0 atIndex:2];
-    [encoder setBuffer:levels offset:0 atIndex:3];
-    [encoder setBuffer:out offset:0 atIndex:4];
+    [encoder setBuffer:pred.buffer offset:pred.offset atIndex:0];
+    [encoder setBuffer:label.buffer offset:label.offset atIndex:1];
+    [encoder setBuffer:weight.buffer offset:weight.offset atIndex:2];
+    [encoder setBuffer:levels.buffer offset:levels.offset atIndex:3];
+    [encoder setBuffer:out.buffer offset:out.offset atIndex:4];
     [encoder setBytes:&p length:sizeof(p) atIndex:5];
     [encoder dispatchThreads:MTLSizeMake(predictions.size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
     CompleteOperation(command, &objective_dispatches);
-    std::memcpy(output.data(), out.contents, output.size_bytes());
+    if (!out.shared) std::memcpy(output.data(), out.buffer.contents, output.size_bytes());
+    objective_shared_input_bytes.fetch_add(shared_input, std::memory_order_relaxed);
+    objective_shared_output_bytes.fetch_add(shared_output, std::memory_order_relaxed);
+    objective_staging_bytes.fetch_add(staged, std::memory_order_relaxed);
   }
 }
 void TransformPredictions(Transform transform, Span<float> values, std::uint32_t targets) {

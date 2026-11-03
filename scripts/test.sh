@@ -5,6 +5,10 @@ mkdir -p results
 echo "Compiling standalone tests against the production Metal shader"
 clang++ -std=c++17 -fobjc-arc tests/metal_kernel.mm \
   -framework Metal -framework Foundation -o results/metal_kernel_test
+echo "Checking host-memory sharing, guards and VM-region fallback rules"
+clang++ -O2 -std=c++17 -fobjc-arc tests/metal_memory.mm \
+  -framework Metal -framework Foundation -o results/metal_memory_test
+MTL_DEBUG_LAYER=1 results/metal_memory_test
 echo "Checking GPU integer histograms against the independent CPU reference"
 results/metal_kernel_test xgboost/src/common/metal_histogram.metal
 echo "Checking gradient bounds, finite validation and quantization scales"
@@ -60,6 +64,14 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_stats_api_test
 results/metal_stats_api_test
+echo "Checking objective memory sharing and alias-safe copied fallbacks"
+clang++ -O2 -std=c++17 -fobjc-arc \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_memory_api.mm \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -framework Metal -framework Foundation -o results/metal_memory_api_test
+MTL_DEBUG_LAYER=1 results/metal_memory_api_test
 echo "Checking production AFT gradients, transforms, metrics and correction accounting"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

@@ -18,7 +18,7 @@ listed below. This is not yet a complete GPU backend.
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, monotonic bounds and pooled vector weights; host column sampling, interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu` | Metal uniform row sampling/replay with CPU-compatible LCG/Bernoulli draws, scalar/vector root-gradient sums and dense root histogram sums; gradient-based/column sampling remain CPU |
-| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels; means/weighted means and Newton stump fitting use Metal; label validation and other objective-specific initialization remain CPU |
+| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means and Newton stump fitting use Metal; label validation and other objective-specific initialization remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means/stump fitting and initial quantile estimation use Metal; other initialization work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | CPU |
@@ -39,7 +39,7 @@ listed below. This is not yet a complete GPU backend.
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, recursive integer prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
 | CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | NVIDIA-specific interfaces cannot consume Metal memory; corresponding Apple-device interoperability is missing |
-| CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Shared-memory Metal runtime, reused command queue and histogram buffers; persistent end-to-end device ownership and asynchronous scheduling missing |
+| CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Shared-memory Metal runtime, guarded host-memory views for ordinary gradients, model-local row workspaces, reused command queue and histogram buffers; persistent end-to-end device ownership and asynchronous scheduling missing |
 
 Paths in the table are relative to `xgboost/src` and denote starting points, not
 an exhaustive symbol audit. [The generated source inventory](../validation/cuda-inventory.json)
@@ -70,7 +70,7 @@ count, repeated measurements, and accuracy alongside any speedup claim.
 Quantized pages, row indices and histogram caches now persist on Metal buffers.
 Split selection, histogram conversion/accumulation/subtraction and uniform sampling
 and root-gradient/stump reductions also execute on Metal. Host orchestration still synchronizes at each tree level;
-gradients and prediction state still cross between host arrays and GPU buffers.
+ordinary gradient calls can share host arrays directly, while other gradient and prediction-state paths still stage data between host arrays and GPU buffers.
 Keeping those arrays resident and reducing synchronization are the next architectural
 steps. Host model construction and serialization can remain on the CPU.
 

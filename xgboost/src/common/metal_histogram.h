@@ -44,6 +44,7 @@ struct Statistics {
   std::uint64_t survival_cpu_corrections, survival_cpu_time_ns;
   std::uint64_t row_workspace_allocations, row_workspace_reuses;
   std::uint64_t float_sum_dispatches, float_sum_gpu_time_ns;
+  std::uint64_t objective_shared_input_bytes, objective_shared_output_bytes, objective_staging_bytes;
 };
 
 class Histogram {

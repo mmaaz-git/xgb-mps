@@ -83,6 +83,9 @@ numerical edge cases are tested explicitly.
 It also reports GPU durations and histogram staging/wait/readback wall times. Wait
 time overlaps GPU duration; adding those numbers would double-count time. Counters
 are process-wide, so concurrent models contribute to the same totals.
+`objective_shared_input_bytes`, `objective_shared_output_bytes` and
+`objective_staging_bytes` measure memory access for the ordinary gradient kernel.
+Adaptive and AFT stages have separate memory paths.
 
 ## Validation
 
@@ -92,7 +95,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **421 passed, 1 skipped**. The skip requires a machine without an
+- Python: **425 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **192 cases**, with every bin compared exactly to independent
@@ -145,6 +148,10 @@ On Apple M3, 2026-11-03:
   difference is `2.33e-10`. The deliberately extreme corpus uses 93,660 CPU
   corrections; uncensored cases require none. Ordinary integration cases use none
   except a sharp extreme-distribution case, which corrects 16/3,505 row updates.
+- Shared host-memory views: **36 cases / 4,313,492 values** plus six fallback
+  checks under Metal API Validation. **51 production objective API cases /
+  1,693,795 gradient pairs** cover offsets, guards, read-only inputs, split VM
+  regions and overlapping input/output storage.
 - Native objectives: **20 cases / 131,968 gradient pairs** compared against
   independent CPU mathematical references.
 - Native adaptive objectives: **180 cases / 1,260 residual scales / 452,592 gradient
@@ -179,10 +186,10 @@ quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 100,000 | 0.114 s | 0.323 s | 0.35× |
-| 1,000,000 | 0.795 s | 1.110 s | 0.72× |
+| 100,000 | 0.119 s | 0.294 s | 0.40× |
+| 1,000,000 | 0.799 s | 1.051 s | 0.76× |
 
-[Latest raw training results](validation/benchmark-row-workspaces-v1-m3.json), including
+[Latest raw training results](validation/benchmark-borrow-v1-m3.json), including
 GPU bin assignment, gradient bounds, root reductions, resident histograms, subtraction/gathering,
 reused split buffers and skipped zero atomic additions. The [preceding run](validation/benchmark-hist-pool-m3.json)
 and [first resident-histogram run](validation/benchmark-hist-storage-m3.json) are
@@ -578,3 +585,26 @@ The [weighted absolute-error benchmark](validation/benchmark-absolute-weighted-v
 rows (0.68×), with maximum prediction difference `1.91e-6`. The GPU weight sum
 itself takes about 0.72 ms. At 100,000 rows, training takes 0.256 versus 0.093 s.
 This expands GPU coverage; it does not establish a training speedup.
+
+### Shared objective memory update
+
+Ordinary objective kernels can now read predictions, labels and weights and write
+gradients directly through guarded Metal views over existing host arrays on a
+unified-memory GPU. The implementation checks alignment, writable mapping and
+single-VM-region coverage, retains storage until command and buffer references
+are released, and keeps the copied path for unsuitable mappings. Overlapping
+input/output spans use separate output staging to preserve snapshot behavior.
+Views are scoped to synchronous calls and are never stored in caches.
+
+The [implementation](xgboost/src/common/metal_memory.h) follows Apple's
+[buffer-wrapping requirements](https://developer.apple.com/documentation/metal/mtldevice/makebuffer(bytesnocopy:length:options:deallocator:)).
+All 425 Python tests, native suites and CPU-only checks pass. Metal API Validation
+also passes the new low-level and production memory tests, and the preceding
+421-test integration suite was run with validation enabled.
+
+The [latest training run](validation/benchmark-borrow-v1-m3.json) avoids 320 MB of
+explicit objective staging copies over 20 million row updates. It measures
+**1.051 s Metal versus 0.799 s CPU** (0.76×), with identical predictions. The
+preceding workspace run measured 1.110 s Metal; this comparison remains subject
+to timing variation. Full training-state residency and synchronization reduction
+are still open work, and training remains slower than CPU.

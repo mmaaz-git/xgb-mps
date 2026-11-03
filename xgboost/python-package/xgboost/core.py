@@ -199,6 +199,11 @@ def metal_info() -> dict:
     ``metric_gpu_time_ns`` covers metric kernels. GPU durations exclude host work.
     Histogram ``staging_time_ns``, ``wait_time_ns``, and ``readback_time_ns`` measure
     host wall time; wait time overlaps GPU duration and must not be added to it.
+    ``survival_cpu_corrections`` and ``survival_cpu_time_ns`` report the explicit
+    CPU correction of numerically sensitive AFT gradient rows. Shared-input,
+    shared-output and staging byte counters prefixed with ``objective_`` currently
+    cover the ordinary gradient kernel. ``row_workspace_allocations`` and
+    ``row_workspace_reuses`` describe model-local training workspaces.
     Counters are process-wide and the experimental schema may change.
     """
     j_info = ctypes.c_char_p()

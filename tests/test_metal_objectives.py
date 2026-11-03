@@ -115,3 +115,25 @@ def test_adaptive_scales_and_boundaries(metal, objective, case):
     assert xgb.metal_info()["residual_scale_dispatches"] - before["residual_scale_dispatches"] == 3
     np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5,
                                atol=2e-5 * max(1, float(np.max(np.abs(y)))))
+
+
+@pytest.mark.parametrize("targets", [1, 3])
+@pytest.mark.parametrize("weighted", [False, True])
+def test_objective_shared_memory_accounting(metal, targets, weighted):
+    rng = np.random.default_rng(315)
+    rows = 4097
+    x = rng.normal(size=(rows, 5)).astype(np.float32)
+    y = rng.normal(size=(rows, targets)).astype(np.float32)
+    w = rng.uniform(.1, 3, rows).astype(np.float32) if weighted else None
+    d = xgb.DMatrix(x, label=y, weight=w, nthread=2)
+    params = dict(nthread=2, base_score=.5, max_depth=3, objective="reg:squarederror")
+    cpu = xgb.train(params | {"device": "cpu"}, d, 3)
+    before = xgb.metal_info()
+    gpu = xgb.train(params | {"device": "mps"}, d, 3)
+    after = xgb.metal_info()
+    assert after["objective_dispatches"] - before["objective_dispatches"] == 3
+    shared = sum(after[k] - before[k] for k in
+                 ["objective_shared_input_bytes", "objective_shared_output_bytes"])
+    staged = after["objective_staging_bytes"] - before["objective_staging_bytes"]
+    assert shared + staged == 3*(rows*targets*16 + (rows*4 if weighted else 0))
+    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
