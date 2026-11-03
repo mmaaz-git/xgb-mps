@@ -708,3 +708,28 @@ remain unfinished.
   --eval-metric auc --weighted --rows 100000 1000000 \
   --output results/my-auc-training.json
 ```
+
+
+### Larger training baseline
+
+The workload suite now accepts deeper trees, longer runs, direct FP32 data
+generation, and periodic round-count progress. It records process peak RSS and
+system swap alongside timing; these measurements are not isolated per-device
+memory peaks. Larger jobs run sequentially in named `tmux` sessions.
+
+The [one-million-row, 128-column baseline](validation/benchmark-wide-long128-v1-m3.json)
+uses **200 rounds, depth 8**, 256 bins and all 8 CPU threads. Medians of three
+alternating runs are **17.84 s CPU / 25.39 s Metal (0.70×)**, with identical
+predictions. In the final Metal run, histogram commands account for 7.80 s and
+split evaluation for 6.96 s. This exposes split scoring as a substantial cost
+on wider, deeper training; increasing workload alone has not produced a speedup.
+
+Process peak RSS reaches 2.80 GB. The machine already had approximately 16.6 GB
+of system swap in use, rising to 18.5 GB during the run. These are measurements
+under existing memory pressure, not a claim of isolated hardware throughput.
+
+```sh
+.venv/bin/python scripts/benchmark.py --rows 1000000 --features 128 \
+  --rounds 200 --max-depth 8 --progress-every 20 --float32-generation \
+  --output results/my-wide-long.json
+```
