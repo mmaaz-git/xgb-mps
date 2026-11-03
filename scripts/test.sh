@@ -31,5 +31,9 @@ echo "Checking adaptive objective scales and gradients against CPU references"
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_adaptive.mm \
   -framework Metal -framework Foundation -o results/metal_adaptive_test
 results/metal_adaptive_test xgboost/src/common/metal_histogram.metal
+echo "Checking GPU sampling against the CPU random engine and Bernoulli distribution"
+clang++ -std=c++17 -fobjc-arc tests/metal_sampling.mm \
+  -framework Metal -framework Foundation -o results/metal_sampling_test
+results/metal_sampling_test xgboost/src/common/metal_histogram.metal
 echo "Running training equivalence tests; a real GPU is required"
 .venv/bin/python -m pytest -q tests --require-metal

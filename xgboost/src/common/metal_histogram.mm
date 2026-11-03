@@ -15,6 +15,7 @@
 #include "metal_histogram.h"
 #include "metal_ops.h"
 #include "metal_predictor.h"
+#include "metal_sampling.h"
 #include "metal_shader.h"
 #include "metal_split.h"
 #include "xgboost/logging.h"
@@ -23,6 +24,7 @@ namespace xgboost::common::metal {
 namespace {
 std::atomic<std::uint64_t> split_dispatches{0}, split_gpu_time_ns{0};
 std::atomic<std::uint64_t> residual_scale_dispatches{0};
+std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
@@ -70,6 +72,7 @@ class Runtime {
       gather_hist_pipeline;
   id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
   id<MTLComputePipelineState> quantile_metric_pipeline;
+  id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> shared_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
@@ -127,6 +130,7 @@ class Runtime {
       residual_finish_pipeline = make_pipeline(@"xgb_residual_scale_finish");
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
       quantile_metric_pipeline = make_pipeline(@"xgb_quantile_metric");
+      uniform_sampling_pipeline = make_pipeline(@"xgb_uniform_sample");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
       LOG(INFO) << "Metal compute backend: " << device.name.UTF8String;
     }
@@ -775,6 +779,8 @@ Statistics GetStatistics() {
           split_dispatches.load(std::memory_order_relaxed),
           split_gpu_time_ns.load(std::memory_order_relaxed),
           residual_scale_dispatches.load(std::memory_order_relaxed),
+          sampling_dispatches.load(std::memory_order_relaxed),
+          sampling_gpu_time_ns.load(std::memory_order_relaxed),
           histogram_conversion_dispatches.load(std::memory_order_relaxed),
           histogram_subtraction_dispatches.load(std::memory_order_relaxed),
           resident_split_dispatches.load(std::memory_order_relaxed)};
@@ -805,6 +811,53 @@ Transform TransformFromName(char const* name) {
   if (!strcmp(name, "reg:logistic") || !strcmp(name, "binary:logistic")) return Transform::kSigmoid;
   if (!strcmp(name, "reg:gamma")) return Transform::kExp;
   return Transform::kIdentity;
+}
+
+void UniformSample(linalg::MatrixView<GradientPair> gradients, float probability,
+                   std::uint64_t seed, std::uint32_t threads) {
+  CHECK_GT(threads, 0);
+  CHECK_GE(probability, 0.0f);
+  CHECK_LE(probability, 1.0f);
+  auto rows = gradients.Shape(0);
+  if (!rows) return;
+  CHECK_GT(gradients.Shape(1), 0);
+  CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto values = gradients.Values();
+    auto data = Upload(rt, values.data(), values.size_bytes());
+    struct {
+      std::uint64_t rows, stride0, stride1, seed;
+      std::uint32_t targets, threads;
+      float probability;
+      std::uint32_t padding;
+    } p{rows,
+        gradients.Stride(0),
+        gradients.Stride(1),
+        seed,
+        static_cast<std::uint32_t>(gradients.Shape(1)),
+        threads,
+        probability,
+        0};
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.uniform_sampling_pipeline];
+    [e setBuffer:data offset:0 atIndex:0];
+    [e setBytes:&p length:sizeof(p) atIndex:1];
+    [e dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    std::memcpy(values.data(), data.contents, values.size_bytes());
+    sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      sampling_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                     std::memory_order_relaxed);
+  }
 }
 
 std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predictions,

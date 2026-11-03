@@ -32,6 +32,7 @@ struct Statistics {
       index_gpu_time_ns;
   std::uint64_t split_dispatches, split_gpu_time_ns;
   std::uint64_t residual_scale_dispatches;
+  std::uint64_t sampling_dispatches, sampling_gpu_time_ns;
   std::uint64_t histogram_conversion_dispatches, histogram_subtraction_dispatches,
       resident_split_dispatches;
 };

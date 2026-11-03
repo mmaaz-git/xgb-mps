@@ -17,7 +17,7 @@ listed below. This is not yet a complete GPU backend.
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, monotonic bounds and pooled vector weights; host column sampling, interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter, resident row IDs, GPU leaf positions; supports numerical/categorical splits and missing values |
-| Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu` | CPU |
+| Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu` | Metal uniform row sampling and replay with CPU-compatible LCG/Bernoulli draws; gradient-based/column sampling and gradient sums remain CPU |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels; label validation and base-score estimation still CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; base-score estimation remains CPU |
@@ -73,7 +73,7 @@ on Metal for scalar and vector leaves and gathers directly from resident histogr
 buffers. Histogram conversion, accumulation and subtraction also execute on Metal. Row
 partitioning and histogram reads share resident GPU row indices. Host orchestration and model serialization
 can remain on the CPU, as they also do in CUDA-backed software. Split tests include categorical partitions, missing directions, monotonic and
-interaction constraints, and vector leaves. GPU sampling, remaining training-state updates, fewer synchronization points
+interaction constraints, and vector leaves. Gradient-based sampling, remaining training-state updates, fewer synchronization points
 and efficient external-memory staging remain required.
 
 Remaining ranking/survival objectives, SHAP, specialized metrics, quantile

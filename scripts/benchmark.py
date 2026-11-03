@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--objective", choices=["reg:squarederror", "reg:absoluteerror", "reg:quantileerror"],
                         default="reg:squarederror")
     parser.add_argument("--quantile-levels", type=float, nargs="+", default=[0.5])
+    parser.add_argument("--subsample", type=float, default=1.0)
     parser.add_argument("--features", type=int, default=32)
     parser.add_argument("--rounds", type=int, default=20)
     parser.add_argument("--repeats", type=int, default=3)
@@ -29,7 +30,7 @@ def main():
         parser.error(f"{args.output} exists; inspect it or choose a new output name")
     assert xgb.metal_info()["available"], "A visible Metal GPU is required"
     p = dict(tree_method="hist", objective=args.objective, max_depth=6,
-             max_bin=256, nthread=args.threads, seed=7)
+             max_bin=256, nthread=args.threads, seed=7, subsample=args.subsample)
     if args.objective == "reg:quantileerror":
         p["quantile_alpha"] = args.quantile_levels
     # Compile the shader and initialize the runtime before timing either device.

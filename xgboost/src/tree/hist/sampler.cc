@@ -16,6 +16,10 @@
 #include "xgboost/linalg.h"          // for MatrixView
 #include "xgboost/span.h"            // for Span
 
+#if defined(XGBOOST_USE_METAL)
+#include "../../common/metal_sampling.h"
+#endif
+
 namespace xgboost::tree::cpu_impl {
 template <typename Fn>
 void ParallelSampling(Context const* ctx, bst_idx_t n_samples, std::uint64_t initial_seed,
@@ -104,6 +108,15 @@ void ApplyMvsWeights(Context const* ctx, linalg::Matrix<GradientPair>* value_gpa
 
 void UniformSample(Context const* ctx, linalg::MatrixView<GradientPair> out, float subsample,
                    std::uint64_t initial_seed) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    static_assert(RandomReplace::kBase == 16807 && RandomReplace::kMod == (std::uint64_t{1} << 63));
+    static_assert(RandomReplace::EngineT::min() == 1 &&
+                  RandomReplace::EngineT::max() == RandomReplace::kMod - 1);
+    common::metal::UniformSample(out, subsample, initial_seed, ctx->Threads());
+    return;
+  }
+#endif
   auto n_samples = out.Shape(0);
   auto n_targets = out.Shape(1);
   CHECK_GE(n_targets, 1);

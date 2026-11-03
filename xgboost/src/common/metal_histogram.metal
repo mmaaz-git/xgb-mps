@@ -1685,3 +1685,38 @@ kernel void xgb_quantile_metric(
     if (lane == 0) partial[group] = ulong2(loss.bits, weight.bits);
   }
 }
+
+struct SamplingParams {
+  ulong rows, stride0, stride1, seed;
+  uint targets, threads;
+  float probability;
+  uint padding;
+};
+inline ulong xgb_lcg_skip(ulong index, ulong seed) {
+  ulong base = 16807, mask = 0x7ffffffffffffffful;
+  while (index) {
+    if (index & 1) seed = (seed * base) & mask;
+    base = (base * base) & mask;
+    index >>= 1;
+  }
+  return seed;
+}
+kernel void xgb_uniform_sample(device float2* gradients [[buffer(0)]],
+                               constant SamplingParams& p [[buffer(1)]],
+                               uint row [[thread_position_in_grid]]) {
+  ulong seed = p.seed & 0x7ffffffffffffffful, index = ulong(row) + 1;
+  // The CPU creates an LCG at each OpenMP partition. Its zero seed is replaced
+  // with one by std::linear_congruential_engine; preserve this rare edge case.
+  if (seed == 0) {
+    ulong chunk = p.rows / p.threads;
+    if (chunk) index = ulong(row) - min(ulong(row) / chunk, ulong(p.threads - 1)) * chunk + 1;
+    seed = 1;
+  }
+  ulong state = xgb_lcg_skip(index, seed);
+  // libc++ generate_canonical<double> takes one draw, subtracts engine.min()
+  // (one), rounds to double, then divides by the range rounded to 2^63.
+  XGBDouble random{xgb_scaled_integer(state - 1, -63)};
+  if (!xgb_dlt(random, xgb_dfrom_float(p.probability)))
+    for (uint target = 0; target < p.targets; ++target)
+      gradients[ulong(row) * p.stride0 + ulong(target) * p.stride1] = float2(0);
+}

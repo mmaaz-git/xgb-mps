@@ -9,7 +9,7 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning and scalar/vector split evaluation on Metal. Quantile construction,
-sampling and several specialized features still run on the CPU. Histogram conversion,
+gradient-based sampling and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
 
@@ -52,6 +52,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps column sampling and interaction masks |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
+| Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
 | Gradient quantization | GPU integer bit conversion with CPU-selected scales; exact comparison against CPU double `llround` |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
@@ -78,12 +79,15 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **291 passed, 1 skipped**. The skip requires a machine without an
+- Python: **309 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **28 cases**, with every bin compared exactly to independent
   CPU integer sums. Covers dense/sparse indices, 8/16/32-bit storage, page offsets,
   high contention, negative values and carries.
+- Native sampling: **3,780 exact cases / 1,019,088 Bernoulli draws** against the
+  CPU standard-library implementation, including zero seeds, rounding boundaries,
+  strided matrices, guard regions and CPU thread partitions.
 - Native gradient quantization: **713,814 values across six scales**, including
   subnormal floats, compared exactly against double-precision CPU rounding.
 - Native partition/transpose kernels: **256 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
@@ -173,6 +177,15 @@ training speedup yet.
 remains on CPU; per-iteration residual-scale reduction and gradient calculation
 execute on Metal. These implement the adaptive losses in the vendored source.
 
+### Uniform sampling
+
+With 50% uniform row sampling, 20 rounds and otherwise the same squared-error
+benchmark settings, one million rows took **1.498 s Metal versus 0.833 s CPU**
+(0.56×); 100,000 rows took 0.302 s versus 0.112 s (0.37×). Predictions matched
+exactly. [Raw sampled-training results](validation/benchmark-sampling-v1-m3.json)
+include the completed sampling dispatches and GPU duration. This port adds GPU
+coverage but has not established a training speedup.
+
 ### Prediction
 
 300 depth-6 trees trained on CPU; identical model and prediction input for both
@@ -213,7 +226,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port scalar/vector split evaluation, including categorical ordering and constraints.
 - [x] Keep histograms in Metal shared memory; port conversion, subtraction and gathering.
 - [x] Reuse split workspaces across tree levels and boosting rounds.
-- [ ] Port sampling and remaining training-state updates.
+- [x] Port uniform sampling, including random-stream compatibility and replay.
+- [ ] Port gradient-based sampling and remaining training-state updates.
 - [ ] Port quantile construction, remaining objectives/metrics, SHAP and linear training.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.
@@ -281,3 +295,11 @@ host reduction. Added explicit subnormal preservation after a native test expose
 Metal's FP32 underflow behavior. All 291 Python tests and native suites pass;
 CPU-only compatibility checks pass. The new objective benchmarks remain slower
 than CPU and are published above.
+
+### Uniform sampling update
+
+Moved uniform Bernoulli sampling to Metal with LCG skip-ahead. Preserved the CPU
+random sequence, its floating-point conversion, zero-seed behavior and replay for
+reduced-gradient leaf fitting. All 309 Python tests and the native suites pass;
+the CPU-only build still passes compatibility checks. Gradient-based sampling,
+column sampling and host gradient sums remain open work.
