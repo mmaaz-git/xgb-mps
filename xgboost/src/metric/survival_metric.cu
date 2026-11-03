@@ -7,6 +7,7 @@
 
 #include <dmlc/registry.h>
 
+#include <cstdint>
 #include <array>
 #include <memory>
 #include <numeric>  // for accumulate
@@ -23,6 +24,10 @@
 #if defined(XGBOOST_USE_CUDA)
 #include "../common/cuda_context.cuh"  // for CUDAContext
 #endif                                 // XGBOOST_USE_CUDA
+
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_survival.h"
+#endif
 
 using AFTParam = xgboost::common::AFTParam;
 using ProbabilityDistributionType = xgboost::common::ProbabilityDistributionType;
@@ -117,6 +122,14 @@ class ElementWiseSurvivalMetricsReduction {
                             const HostDeviceVector<bst_float>& preds) {
     PackedReduceResult result;
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) {
+      auto sums = common::metal::SurvivalMetricSums(policy_.MetalDistribution(), policy_.MetalScale(),
+          policy_.MetalAccuracy(), preds.ConstHostSpan(), labels_lower_bound.ConstHostSpan(),
+          labels_upper_bound.ConstHostSpan(), weights.ConstHostSpan());
+      return {sums[0], sums[1]};
+    }
+#endif
     if (ctx->IsCPU()) {
       result =
           CpuReduceMetrics(weights, labels_lower_bound, labels_upper_bound, preds, ctx->Threads());
@@ -141,6 +154,9 @@ class ElementWiseSurvivalMetricsReduction {
 
 struct EvalIntervalRegressionAccuracy {
   void Configure(const Args&) {}
+  std::uint32_t MetalDistribution() const { return 0; }
+  float MetalScale() const { return 1; }
+  bool MetalAccuracy() const { return true; }
 
   [[nodiscard]] const char* Name() const { return "interval-regression-accuracy"; }
 
@@ -157,6 +173,9 @@ struct EvalIntervalRegressionAccuracy {
 template <typename Distribution>
 struct EvalAFTNLogLik {
   void Configure(const Args& args) { param_.UpdateAllowUnknown(args); }
+  std::uint32_t MetalDistribution() const { return static_cast<std::uint32_t>(Distribution::Type()); }
+  float MetalScale() const { return param_.aft_loss_distribution_scale; }
+  bool MetalAccuracy() const { return false; }
 
   [[nodiscard]] const char* Name() const { return "aft-nloglik"; }
 

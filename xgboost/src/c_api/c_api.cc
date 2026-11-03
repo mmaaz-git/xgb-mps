@@ -174,6 +174,12 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["radix_sort_dispatches"] = Integer{static_cast<std::int64_t>(stats.radix_sort_dispatches)};
   info["quantile_dispatches"] = Integer{static_cast<std::int64_t>(stats.quantile_dispatches)};
   info["quantile_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.quantile_gpu_time_ns)};
+  info["survival_gradient_dispatches"] = Integer{static_cast<std::int64_t>(stats.survival_gradient_dispatches)};
+  info["survival_metric_dispatches"] = Integer{static_cast<std::int64_t>(stats.survival_metric_dispatches)};
+  info["survival_cpu_corrections"] = Integer{static_cast<std::int64_t>(stats.survival_cpu_corrections)};
+  info["survival_cpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.survival_cpu_time_ns)};
+
+
   info["mean_dispatches"] = Integer{static_cast<std::int64_t>(stats.mean_dispatches)};
   info["mean_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.mean_gpu_time_ns)};
   info["binning_dispatches"] = Integer{static_cast<std::int64_t>(stats.binning_dispatches)};
@@ -231,6 +237,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["radix_sort_dispatches"] = Integer{0};
   info["quantile_dispatches"] = Integer{0};
   info["quantile_gpu_time_ns"] = Integer{0};
+  info["survival_gradient_dispatches"] = Integer{0};
+  info["survival_metric_dispatches"] = Integer{0};
+  info["survival_cpu_corrections"] = Integer{0};
+  info["survival_cpu_time_ns"] = Integer{0};
   info["mean_dispatches"] = Integer{0};
   info["mean_gpu_time_ns"] = Integer{0};
   info["binning_dispatches"] = Integer{0};

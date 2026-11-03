@@ -5,6 +5,7 @@
  * \author Avinash Barnwal, Hyunsu Cho and Toby Hocking
  */
 
+#include <cstdint>
 #include <cmath>    // for log
 #include <cstddef>  // for size_t
 
@@ -16,6 +17,10 @@
 #include "xgboost/logging.h"
 #include "xgboost/objective.h"
 #include "xgboost/span.h"
+
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_survival.h"
+#endif
 
 using AFTParam = xgboost::common::AFTParam;
 using ProbabilityDistributionType = xgboost::common::ProbabilityDistributionType;
@@ -80,6 +85,15 @@ class AFTObj : public ObjFunction {
         << "Number of weights should be equal to number of data points.";
     }
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::SurvivalGradients(static_cast<std::uint32_t>(param_.aft_loss_distribution),
+          aft_loss_distribution_scale, preds.ConstHostSpan(), info.labels_lower_bound_.ConstHostSpan(),
+          info.labels_upper_bound_.ConstHostSpan(), info.weights_.ConstHostSpan(),
+          out_gpair->Data()->HostSpan());
+      return;
+    }
+#endif
     switch (param_.aft_loss_distribution) {
     case common::ProbabilityDistributionType::kNormal:
       GetGradientImpl<common::NormalDistribution>(preds, info, out_gpair, ndata, device,
@@ -99,6 +113,12 @@ class AFTObj : public ObjFunction {
   }
 
   void PredTransform(HostDeviceVector<bst_float> *io_preds) const override {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::SurvivalTransform(false, io_preds->HostSpan());
+      return;
+    }
+#endif
     // Trees give us a prediction in log scale, so exponentiate
     common::Transform<>::Init(
         [] XGBOOST_DEVICE(size_t _idx, common::Span<bst_float> _preds) {
@@ -114,6 +134,12 @@ class AFTObj : public ObjFunction {
   }
 
   void ProbToMargin(linalg::Vector<float>* base_score) const override {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::SurvivalTransform(true, base_score->HostView().Values());
+      return;
+    }
+#endif
     auto intercept = base_score->View(this->ctx_->Device());
     linalg::ElementWiseKernel(ctx_, intercept, [=] XGBOOST_DEVICE(std::size_t i) mutable {
       intercept(i) = std::log(intercept(i));

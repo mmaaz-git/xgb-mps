@@ -22,7 +22,7 @@ listed below. This is not yet a complete GPU backend.
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error means/stump fitting and initial quantile estimation use Metal; other initialization work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | CPU |
-| AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | CPU |
+| AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients and prediction/base-score transforms; GPU identifies small censored probabilities for original CPU gradient recomputation, exposed through correction counters/time. Full GPU coverage remains incomplete |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; other initialization work and leaf fitting remain CPU |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; CPU input views stage dense chunks and recode categories |
 | Prediction cache from leaf IDs | `predictor/predictor.cu` | Metal; supports strided target slices and negated sampling positions |
@@ -30,7 +30,8 @@ listed below. This is not yet a complete GPU backend.
 | RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | Metal loss calculation and scaled block reductions; final small reduction in host FP64 |
 | Multiclass error and logloss | `metric/multiclass_metric.cu` | Metal loss calculation and scaled block reductions; final small reduction in host FP64 |
 | Quantile and expectile metrics | `metric/elementwise_metric.cu` | Metal loss calculation, subnormal-preserving products and binary64 block reductions; small final host sum |
-| Ranking, AUC and survival metrics | `metric/*.cu` | CPU |
+| AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and binary64 block sums; small final host reduction |
+| Ranking and AUC metrics | `metric/*.cu` | CPU |
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Quantile sketching/cut construction remain CPU; numeric/categorical bin assignment and hit counts for SparsePage-backed matrices use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
@@ -78,6 +79,17 @@ interaction constraints, vector leaves and external-memory pages. Gradient-based
 sampling, remaining training-state updates and more efficient external-memory
 staging remain required.
 
-Remaining ranking/survival objectives, SHAP, specialized metrics, quantile
-construction, linear training and collectives are separate coverage requirements.
+Remaining ranking objectives, sensitive AFT gradient corrections, SHAP, specialized
+metrics, quantile construction, linear training and collectives are separate coverage requirements.
 The observed prediction speedups do not establish any of those as complete.
+
+## Survival precision limitation
+
+AFT expressions subtract nearby CDF values. A few binary64 ULP of difference
+between CPU libm and GPU transcendental approximations can change gradient/Hessian
+clipping drastically in very small probabilities. Censored rows with computed
+probability at or below `1e-5` are compacted by the GPU and recomputed with the
+original CPU formula. `survival_cpu_corrections` counts rows; `survival_cpu_time_ns`
+measures that host work. These counters are separate from completed GPU dispatches.
+No hidden whole-objective CPU fallback is used. Removing the correction path while
+preserving a defensible numerical contract remains required for full AFT coverage.

@@ -21,10 +21,14 @@
 #include "metal_sampling.h"
 #include "metal_shader.h"
 #include "metal_split.h"
+#include "metal_survival.h"
+#include "survival_util.h"
 #include "xgboost/logging.h"
 
 namespace xgboost::common::metal {
 namespace {
+std::atomic<std::uint64_t> survival_gradient_dispatches{0}, survival_metric_dispatches{0},
+    survival_cpu_corrections{0}, survival_cpu_time_ns{0};
 std::atomic<std::uint64_t> split_dispatches{0}, split_gpu_time_ns{0};
 std::atomic<std::uint64_t> residual_scale_dispatches{0};
 std::atomic<std::uint64_t> gradient_sum_dispatches{0}, gradient_sum_gpu_time_ns{0},
@@ -90,6 +94,7 @@ class Runtime {
   id<MTLComputePipelineState> mean_weight_pipeline, mean_pipeline, mean_result_pipeline;
   id<MTLComputePipelineState> sort_init_pipeline, radix_rank_pipeline, radix_scatter_pipeline,
       prefix_u32_pipeline, prefix_add_pipeline, quantile_cdf_pipeline, quantile_select_pipeline;
+  id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
@@ -130,6 +135,9 @@ class Runtime {
         CHECK(pipeline) << ErrorText(error);
         return pipeline;
       };
+      aft_gradient_pipeline = make_pipeline(@"xgb_aft_gradient");
+      aft_metric_pipeline = make_pipeline(@"xgb_aft_metric");
+      aft_transform_pipeline = make_pipeline(@"xgb_aft_transform");
       objective_pipeline = make_pipeline(@"xgb_objective");
       transform_pipeline = make_pipeline(@"xgb_transform");
       prediction_pipeline = make_pipeline(@"xgb_predict");
@@ -843,7 +851,11 @@ Statistics GetStatistics() {
           mean_gpu_time_ns.load(std::memory_order_relaxed),
           radix_sort_dispatches.load(std::memory_order_relaxed),
           quantile_dispatches.load(std::memory_order_relaxed),
-          quantile_gpu_time_ns.load(std::memory_order_relaxed)};
+          quantile_gpu_time_ns.load(std::memory_order_relaxed),
+          survival_gradient_dispatches.load(std::memory_order_relaxed),
+          survival_metric_dispatches.load(std::memory_order_relaxed),
+          survival_cpu_corrections.load(std::memory_order_relaxed),
+          survival_cpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1423,6 +1435,159 @@ std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predi
       result[1] += values[2 * i + 1];
     }
     return result;
+  }
+}
+
+namespace {
+struct SurvivalCommand {
+  id<MTLCommandBuffer> command;
+  id<MTLBuffer> result, correction_count, correction_rows;
+  std::size_t blocks;
+};
+SurvivalCommand EncodeSurvival(bool metric, std::uint32_t distribution, float scale, bool accuracy,
+                               Span<float const> predictions, Span<float const> lower,
+                               Span<float const> upper, Span<float const> weights) {
+  CHECK_LE(distribution, 2);
+  CHECK_EQ(predictions.size(), lower.size());
+  CHECK_EQ(predictions.size(), upper.size());
+  CHECK(weights.empty() || weights.size() == predictions.size());
+  CHECK_LE(predictions.size(), std::numeric_limits<std::uint32_t>::max());
+  auto& rt = GetRuntime();
+  auto pred = Upload(rt, predictions.data(), predictions.size_bytes());
+  auto lo = Upload(rt, lower.data(), lower.size_bytes());
+  auto hi = Upload(rt, upper.data(), upper.size_bytes());
+  auto w = Upload(rt, weights.data(), weights.size_bytes());
+  auto blocks = (predictions.size() + 255) / 256;
+  auto result = Allocate(
+      rt, metric ? blocks * 2 * sizeof(double) : predictions.size() * sizeof(GradientPair));
+  auto count = metric ? nil : Allocate(rt, 4);
+  auto indices = metric ? nil : Allocate(rt, predictions.size() * sizeof(std::uint32_t));
+  struct {
+    std::uint64_t rows;
+    std::uint32_t distribution, weighted, accuracy;
+    float scale;
+  } p{predictions.size(), distribution, !weights.empty(), accuracy, scale};
+  static_assert(sizeof(p) == 24);
+  auto command = [rt.queue commandBuffer];
+  CHECK(command);
+  if (!metric) {
+    auto clear = [command blitCommandEncoder];
+    CHECK(clear);
+    [clear fillBuffer:count range:NSMakeRange(0, 4) value:0];
+    [clear endEncoding];
+  }
+  auto e = [command computeCommandEncoder];
+  CHECK(e);
+  [e setComputePipelineState:metric ? rt.aft_metric_pipeline : rt.aft_gradient_pipeline];
+  [e setBuffer:pred offset:0 atIndex:0];
+  [e setBuffer:lo offset:0 atIndex:1];
+  [e setBuffer:hi offset:0 atIndex:2];
+  [e setBuffer:w offset:0 atIndex:3];
+  [e setBuffer:result offset:0 atIndex:4];
+  [e setBytes:&p length:sizeof(p) atIndex:5];
+  if (!metric) {
+    [e setBuffer:count offset:0 atIndex:6];
+    [e setBuffer:indices offset:0 atIndex:7];
+  }
+  [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  return {command, result, count, indices, blocks};
+}
+template <typename Distribution>
+void CorrectSurvival(Span<std::uint32_t const> rows, float scale, Span<float const> predictions,
+                     Span<float const> lower, Span<float const> upper, Span<float const> weights,
+                     Span<GradientPair> output) {
+  for (auto row : rows) {
+    float gradient = static_cast<float>(
+        AFTLoss<Distribution>::Gradient(lower[row], upper[row], predictions[row], scale));
+    float hessian = static_cast<float>(
+        AFTLoss<Distribution>::Hessian(lower[row], upper[row], predictions[row], scale));
+    float weight = weights.empty() ? 1.0f : weights[row];
+    output[row] = GradientPair{gradient * weight, hessian * weight};
+  }
+}
+}  // namespace
+void SurvivalGradients(std::uint32_t distribution, float scale, Span<float const> predictions,
+                       Span<float const> lower, Span<float const> upper, Span<float const> weights,
+                       Span<GradientPair> output) {
+  CHECK_EQ(predictions.size(), output.size());
+  if (predictions.empty()) return;
+  @autoreleasepool {
+    auto op = EncodeSurvival(false, distribution, scale, false, predictions, lower, upper, weights);
+    CompleteOperation(op.command, &objective_dispatches);
+    std::memcpy(output.data(), op.result.contents, output.size_bytes());
+    auto count = *static_cast<std::uint32_t const*>(op.correction_count.contents);
+    CHECK_LE(count, predictions.size());
+    if (count) {
+      auto start = Clock::now();
+      Span<std::uint32_t const> rows{static_cast<std::uint32_t const*>(op.correction_rows.contents),
+                                     count};
+      switch (distribution) {
+        case 0:
+          CorrectSurvival<NormalDistribution>(rows, scale, predictions, lower, upper, weights,
+                                              output);
+          break;
+        case 1:
+          CorrectSurvival<LogisticDistribution>(rows, scale, predictions, lower, upper, weights,
+                                                output);
+          break;
+        case 2:
+          CorrectSurvival<ExtremeDistribution>(rows, scale, predictions, lower, upper, weights,
+                                               output);
+          break;
+      }
+      survival_cpu_time_ns.fetch_add(Elapsed(start), std::memory_order_relaxed);
+      survival_cpu_corrections.fetch_add(count, std::memory_order_relaxed);
+    }
+    survival_gradient_dispatches.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+std::array<double, 2> SurvivalMetricSums(std::uint32_t distribution, float scale, bool accuracy,
+                                         Span<float const> predictions, Span<float const> lower,
+                                         Span<float const> upper, Span<float const> weights) {
+  if (predictions.empty()) return {0, 0};
+  @autoreleasepool {
+    auto op =
+        EncodeSurvival(true, distribution, scale, accuracy, predictions, lower, upper, weights);
+    [op.command commit];
+    [op.command waitUntilCompleted];
+    CHECK(op.command.status == MTLCommandBufferStatusCompleted) << ErrorText(op.command.error);
+    auto values = static_cast<double const*>(op.result.contents);
+    std::array<double, 2> result{0, 0};
+    for (std::size_t i = 0; i < op.blocks; ++i) {
+      result[0] += values[2 * i];
+      result[1] += values[2 * i + 1];
+    }
+    metric_dispatches.fetch_add(1, std::memory_order_relaxed);
+    survival_metric_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = op.command.GPUEndTime - op.command.GPUStartTime;
+    if (elapsed > 0)
+      metric_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                   std::memory_order_relaxed);
+    return result;
+  }
+}
+void SurvivalTransform(bool to_margin, Span<float> values) {
+  if (values.empty()) return;
+  CHECK_LE(values.size(), std::numeric_limits<std::uint32_t>::max());
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, values.data(), values.size_bytes());
+    auto output = Allocate(rt, values.size_bytes());
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    std::uint32_t kind = to_margin;
+    [e setComputePipelineState:rt.aft_transform_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:output offset:0 atIndex:1];
+    [e setBytes:&kind length:sizeof(kind) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(values.size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &transform_dispatches);
+    std::memcpy(values.data(), output.contents, values.size_bytes());
   }
 }
 

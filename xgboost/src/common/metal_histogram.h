@@ -40,6 +40,8 @@ struct Statistics {
   std::uint64_t binning_dispatches, binning_gpu_time_ns;
   std::uint64_t mean_dispatches, mean_gpu_time_ns;
   std::uint64_t radix_sort_dispatches, quantile_dispatches, quantile_gpu_time_ns;
+  std::uint64_t survival_gradient_dispatches, survival_metric_dispatches;
+  std::uint64_t survival_cpu_corrections, survival_cpu_time_ns;
 };
 
 class Histogram {

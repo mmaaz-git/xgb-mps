@@ -2159,3 +2159,377 @@ kernel void xgb_quantile_select(
   output[tid] = values[ulong(records[base + index].y) * shape.stride0 +
                        ulong(request.target) * shape.stride1];
 }
+
+// Binary64 transcendental helpers for survival probability calculations. Metal
+// has no native double arithmetic; each operator uses the integer implementation
+// above. No reassociation or fused operations are used.
+namespace xgb_survival {
+using D = XGBDouble;
+inline D operator+(D a, D b) { return xgb_dadd(a, b); }
+inline D operator-(D a, D b) { return xgb_dsub(a, b); }
+inline D operator-(D a) { return xgb_dneg(a); }
+inline D operator*(D a, D b) { return xgb_dmul(a, b); }
+inline D operator/(D a, D b) { return xgb_ddiv(a, b); }
+inline bool operator<(D a, D b) { return xgb_dlt(a, b); }
+inline bool operator>(D a, D b) { return xgb_dlt(b, a); }
+inline D From(float a) { return xgb_dfrom_float(a); }
+inline bool IsNaN(D a) { return (a.bits & ~kDoubleSign) > kDoubleInf; }
+inline bool IsInf(D a) { return (a.bits & ~kDoubleSign) == kDoubleInf; }
+inline D Abs(D a) { return {a.bits & ~kDoubleSign}; }
+constant D zero{0}, one{0x3ff0000000000000ul}, two{0x4000000000000000ul},
+    half_value{0x3fe0000000000000ul};
+// Split ln(2), so integer multiplication of the high part is exact throughout
+// the exp/log ranges. Polynomial coefficients are rounded binary64 constants.
+constant D ln2_hi{0x3fe62e42fee00000ul}, ln2_lo{0x3dea39ef35793c76ul};
+constant ulong exp_coeff[] = {
+    0x3ff0000000000000ul,  // 1.0
+    0x3ff0000000000000ul,  // 1.0
+    0x3fe0000000000000ul,  // 0.5
+    0x3fc5555555555555ul,  // 0.16666666666666666
+    0x3fa5555555555555ul,  // 0.041666666666666664
+    0x3f81111111111111ul,  // 0.008333333333333333
+    0x3f56c16c16c16c17ul,  // 0.001388888888888889
+    0x3f2a01a01a01a01aul,  // 0.0001984126984126984
+    0x3efa01a01a01a01aul,  // 2.48015873015873e-05
+    0x3ec71de3a556c734ul,  // 2.7557319223985893e-06
+    0x3e927e4fb7789f5cul,  // 2.755731922398589e-07
+    0x3e5ae64567f544e4ul,  // 2.505210838544172e-08
+    0x3e21eed8eff8d898ul,  // 2.08767569878681e-09
+    0x3de6124613a86d09ul,  // 1.6059043836821613e-10
+    0x3da93974a8c07c9dul,  // 1.1470745597729725e-11
+    0x3d6ae7f3e733b81ful,  // 7.647163731819816e-13
+    0x3d2ae7f3e733b81ful,  // 4.779477332387385e-14
+    0x3ce952c77030ad4aul,  // 2.8114572543455206e-15
+    0x3ca6827863b97d97ul,  // 1.5619206968586225e-16
+};
+constant ulong log_coeff[] = {
+    0x3ff0000000000000ul,  // 1.0
+    0x3fd5555555555555ul,  // 0.3333333333333333
+    0x3fc999999999999aul,  // 0.2
+    0x3fc2492492492492ul,  // 0.14285714285714285
+    0x3fbc71c71c71c71cul,  // 0.1111111111111111
+    0x3fb745d1745d1746ul,  // 0.09090909090909091
+    0x3fb3b13b13b13b14ul,  // 0.07692307692307693
+    0x3fb1111111111111ul,  // 0.06666666666666667
+    0x3fae1e1e1e1e1e1eul,  // 0.058823529411764705
+    0x3faaf286bca1af28ul,  // 0.05263157894736842
+    0x3fa8618618618618ul,  // 0.047619047619047616
+    0x3fa642c8590b2164ul,  // 0.043478260869565216
+    0x3fa47ae147ae147bul,  // 0.04
+    0x3fa2f684bda12f68ul,  // 0.037037037037037035
+};
+
+inline D Polynomial(D x, constant ulong* c, uint n) {
+  D result{c[n - 1]};
+  for (uint i = n - 1; i; --i) result = D{c[i - 1]} + x * result;
+  return result;
+}
+inline D Exp(D x) {
+  if (IsNaN(x)) return x;
+  if (x > D{0x40862e42fefa39eful}) return {kDoubleInf};  // overflow threshold
+  if (x < D{0xc0874910d52d3052ul}) return zero;          // half of minimum subnormal
+  // An approximate integer is sufficient: either neighbor leaves a small
+  // reduced argument. Compute the remainder and polynomial in binary64.
+  int k = int(rint(xgb_dto_float(x) * 1.4426950408889634f));
+  D kd = From(float(k));
+  D r = (x - kd * ln2_hi) - kd * ln2_lo;
+  D value = Polynomial(r, exp_coeff, 19);
+  if (k > 1023) return (value * two) * D{0x7fe0000000000000ul};
+  if (k < -1022) return (value * D{ulong(k + 1077) << 52}) * D{0x3c90000000000000ul};
+  return value * D{ulong(k + 1023) << 52};
+}
+inline D Log(D x) {
+  ulong magnitude = x.bits & ~kDoubleSign;
+  if (!magnitude) return {kDoubleSign | kDoubleInf};
+  if (IsNaN(x)) return x;
+  if (x.bits & kDoubleSign) return {kDoubleNaN};
+  if (IsInf(x)) return x;
+  int exponent;
+  ulong significand;
+  xgb_dunpack(x.bits, exponent, significand);
+  int k = exponent - 1023;
+  D m{0x3ff0000000000000ul | (significand & kDoubleFrac)};
+  if (m > D{0x3ff6a09e667f3bcdul}) {
+    m = m * half_value;
+    ++k;
+  }
+  D t = (m - one) / (m + one);
+  D reduced = two * t * Polynomial(t * t, log_coeff, 14);
+  D kd = From(float(k));
+  return kd * ln2_hi + (reduced + kd * ln2_lo);
+}
+
+/*
+ * Error-function approximation adapted from OpenLibm src/s_erf.c (fdlibm).
+ * https://github.com/JuliaMath/openlibm/blob/master/src/s_erf.c
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this software is freely
+ * granted, provided that this notice is preserved.
+ * Coefficients retain their original binary64 bits; arithmetic uses Metal
+ * integer emulation. Floating-point exception flags are not exposed on Metal.
+ */
+constant ulong erf_pp[] = {
+    0x3fc06eba8214db68ul,  // 0.12837916709551256
+    0xbfd4cd7d691cb913ul,  // -0.3250421072470015
+    0xbf9d2a51dbd7194ful,  // -0.02848174957559851
+    0xbf77a291236668e4ul,  // -0.005770270296489442
+    0xbef8ead6120016acul,  // -2.3763016656650163e-05
+};
+constant ulong erf_qq[] = {
+    0x3ff0000000000000ul,  // 1
+    0x3fd97779cddadc09ul,  // 0.39791722395915535
+    0x3fb0a54c5536cebaul,  // 0.0650222499887673
+    0x3f74d022c4d36b0ful,  // 0.005081306281875766
+    0x3f215dc9221c1a10ul,  // 0.00013249473800432164
+    0xbed09c4342a26120ul,  // -3.960228278775368e-06
+};
+constant ulong erf_pa[] = {
+    0xbf6359b8bef77538ul,  // -0.0023621185607526594
+    0x3fda8d00ad92b34dul,  // 0.41485611868374833
+    0xbfd7d240fbb8c3f1ul,  // -0.3722078760357013
+    0x3fd45fca805120e4ul,  // 0.31834661990116175
+    0xbfbc63983d3e28ecul,  // -0.11089469428239668
+    0x3fa22a36599795ebul,  // 0.035478304325618236
+    0xbf61bf380a96073ful,  // -0.002166375594868791
+};
+constant ulong erf_qa[] = {
+    0x3ff0000000000000ul,  // 1
+    0x3fbb3e6618eee323ul,  // 0.10642088040084423
+    0x3fe14af092eb6f33ul,  // 0.540397917702171
+    0x3fb2635cd99fe9a7ul,  // 0.07182865441419627
+    0x3fc02660e763351ful,  // 0.12617121980876164
+    0x3f8bedc26b51dd1cul,  // 0.01363708391202905
+    0x3f888b545735151dul,  // 0.011984499846799107
+};
+constant ulong erf_ra[] = {
+    0xbf843412600d6435ul,  // -0.009864944034847148
+    0xbfe63416e4ba7360ul,  // -0.6938585727071818
+    0xc0251e0441b0e726ul,  // -10.558626225323291
+    0xc04f300ae4cba38dul,  // -62.375332450326006
+    0xc0644cb184282266ul,  // -162.39666946257347
+    0xc067135cebccabb2ul,  // -184.60509290671104
+    0xc054526557e4d2f2ul,  // -81.2874355063066
+    0xc023a0efc69ac25cul,  // -9.814329344169145
+};
+constant ulong erf_sa[] = {
+    0x3ff0000000000000ul,  // 1
+    0x4033a6b9bd707687ul,  // 19.651271667439257
+    0x4061350c526ae721ul,  // 137.65775414351904
+    0x407b290dd58a1a71ul,  // 434.56587747522923
+    0x40842b1921ec2868ul,  // 645.3872717332679
+    0x407ad02157700314ul,  // 429.00814002756783
+    0x405b28a3ee48ae2cul,  // 108.63500554177944
+    0x401a47ef8e484a93ul,  // 6.570249770319282
+    0xbfaeeff2ee749a62ul,  // -0.0604244152148581
+};
+constant ulong erf_rb[] = {
+    0xbf84341239e86f4aul,  // -0.0098649429247001
+    0xbfe993ba70c285deul,  // -0.799283237680523
+    0xc031c209555f995aul,  // -17.757954917754752
+    0xc064145d43c5ed98ul,  // -160.63638485582192
+    0xc083ec881375f228ul,  // -637.5664433683896
+    0xc09004616a2e5992ul,  // -1025.0951316110772
+    0xc07e384e9bdc383ful,  // -483.5191916086514
+};
+constant ulong erf_sb[] = {
+    0x3ff0000000000000ul,  // 1
+    0x403e568b261d5190ul,  // 30.33806074348246
+    0x40745cae221b9f0aul,  // 325.7925129965739
+    0x409802eb189d5118ul,  // 1536.729586084437
+    0x40a8ffb7688c246aul,  // 3199.8582195085955
+    0x40a3f219cedf3be6ul,  // 2553.0504064331644
+    0x407da874e79fe763ul,  // 474.52854120695537
+    0xc03670e242712d62ul,  // -22.44095244658582
+};
+
+inline D Erf(D x) {
+  uint high = uint((x.bits & ~kDoubleSign) >> 32);
+  bool negative = bool(x.bits & kDoubleSign);
+  if (IsNaN(x)) return x;
+  if (high >= 0x40180000u) return negative ? -one : one;  // |x| >= 6, including infinity
+  if (high < 0x3feb0000u) {
+    if (high < 0x3e300000u) {
+      if (high < 0x00800000u) return From(0.125f) * (From(8) * x + D{0x3ff06eba8214db69ul} * x);
+      return x + D{0x3fc06eba8214db69ul} * x;
+    }
+    D z = x * x;
+    return x + x * (Polynomial(z, erf_pp, 5) / Polynomial(z, erf_qq, 6));
+  }
+  D a = Abs(x);
+  if (high < 0x3ff40000u) {
+    D t = a - one;
+    D value = D{0x3feb0ac160000000ul} + Polynomial(t, erf_pa, 7) / Polynomial(t, erf_qa, 7);
+    return negative ? -value : value;
+  }
+  D t = one / (a * a);
+  D ratio = high < 0x4006db6eu ? Polynomial(t, erf_ra, 8) / Polynomial(t, erf_sa, 9)
+                               : Polynomial(t, erf_rb, 7) / Polynomial(t, erf_sb, 8);
+  D z{a.bits & 0xffffffff00000000ul};
+  D r = Exp(-z * z - From(0.5625f)) * Exp((z - a) * (z + a) + ratio);
+  return negative ? r / a - one : one - r / a;
+}
+}  // namespace xgb_survival
+
+namespace xgb_survival {
+struct Distribution {
+  D pdf, cdf, grad, hess;
+};
+inline Distribution Probability(uint kind, D z) {
+  if (kind == 0) {
+    D pdf = Exp(-z * z / two) / D{0x40040d931ff62705ul};  // sqrt(2*pi)
+    D cdf = half_value * (one + Erf(z / D{0x3ff6a09e667f3bcdul}));
+    return {pdf, cdf, -z * pdf, (z * z - one) * pdf};
+  }
+  D w = Exp(z), ww = w * w;
+  bool infinite = IsInf(w), squared_infinite = IsInf(ww);
+  if (kind == 1) {
+    D den = one + w;
+    D pdf = infinite || squared_infinite ? zero : w / (den * den);
+    D cdf = infinite ? one : w / den;
+    D grad = infinite ? zero : pdf * (one - w) / den;
+    D hess = infinite || squared_infinite ? zero : pdf * (ww - From(4) * w + one) / (den * den);
+    return {pdf, cdf, grad, hess};
+  }
+  D exp_minus_w = Exp(-w);
+  D pdf = infinite ? zero : w * exp_minus_w;
+  return {pdf, one - exp_minus_w, infinite ? zero : (one - w) * pdf,
+          infinite || squared_infinite ? zero : (ww - From(3) * w + one) * pdf};
+}
+// Censoring kinds match common::CensoringType: uncensored/right/left/interval.
+inline D LimitGradient(uint distribution, uint censoring, bool positive, D sigma) {
+  if ((censoring == 1 && !positive) || (censoring == 2 && positive)) return zero;
+  if (distribution == 0) return From(positive ? -15 : 15);
+  if (distribution == 1) return (positive ? -one : one) / sigma;
+  return positive ? From(-15) : one / sigma;
+}
+constant D min_hessian{0x3c9cd2b297d889bcul}, epsilon{0x3d719799812dea11ul};
+inline D LimitHessian(uint distribution, uint censoring, bool positive, D sigma) {
+  if (distribution == 1) return min_hessian;
+  if (distribution == 2) return censoring != 2 && positive ? From(15) : min_hessian;
+  if ((censoring == 1 && !positive) || (censoring == 2 && positive)) return min_hessian;
+  return one / (sigma * sigma);
+}
+inline D Clip(D value, D lower, D upper) {
+  return value < lower ? lower : value > upper ? upper : value;
+}
+struct AFTResult {
+  D gradient, hessian, likelihood;
+};
+inline AFTResult Evaluate(uint kind, D lower, D upper, D prediction, D sigma) {
+  D gn, gd, hn, hd, likelihood;
+  uint censoring = 0;
+  bool positive;
+  if (xgb_deq(lower, upper)) {
+    D z = (Log(lower) - prediction) / sigma;
+    auto d = Probability(kind, z);
+    gn = d.grad;
+    gd = sigma * d.pdf;
+    hn = -(d.pdf * d.hess - d.grad * d.grad);
+    hd = sigma * sigma * d.pdf * d.pdf;
+    likelihood = d.pdf / (sigma * lower);
+    positive = z > zero;
+  } else {
+    censoring = 3;
+    D zu = zero, zl = zero;
+    Distribution u{zero, one, zero, zero}, l{zero, zero, zero, zero};
+    if (IsInf(upper))
+      censoring = 1;
+    else {
+      zu = (Log(upper) - prediction) / sigma;
+      u = Probability(kind, zu);
+    }
+    if (!(lower > zero))
+      censoring = 2;
+    else {
+      zl = (Log(lower) - prediction) / sigma;
+      l = Probability(kind, zl);
+    }
+    D cdf = u.cdf - l.cdf, pdf = u.pdf - l.pdf, grad = u.grad - l.grad;
+    gn = pdf;
+    gd = sigma * cdf;
+    hn = -(cdf * grad - pdf * pdf);
+    hd = gd * gd;
+    likelihood = cdf;
+    positive = zu > zero || zl > zero;
+  }
+  D g = gn / gd, h = hn / hd;
+  if (gd < epsilon && (IsNaN(g) || IsInf(g))) g = LimitGradient(kind, censoring, positive, sigma);
+  if (hd < epsilon && (IsNaN(h) || IsInf(h))) h = LimitHessian(kind, censoring, positive, sigma);
+  return {Clip(g, From(-15), From(15)), Clip(h, min_hessian, From(15)), likelihood};
+}
+inline D Loss(uint kind, D lower, D upper, D prediction, D sigma) {
+  // Keep loss evaluation separate so metrics need no PDF derivatives.
+  D likelihood;
+  if (xgb_deq(lower, upper)) {
+    D z = (Log(lower) - prediction) / sigma;
+    likelihood = Probability(kind, z).pdf / (sigma * lower);
+  } else {
+    D u = IsInf(upper) ? one : Probability(kind, (Log(upper) - prediction) / sigma).cdf;
+    D l = lower > zero ? Probability(kind, (Log(lower) - prediction) / sigma).cdf : zero;
+    likelihood = u - l;
+  }
+  if (IsNaN(likelihood) || likelihood < epsilon) likelihood = epsilon;  // CPU fmax
+  return -Log(likelihood);
+}
+}  // namespace xgb_survival
+struct SurvivalParams {
+  ulong rows;
+  uint distribution, weighted, accuracy;
+  float scale;
+};
+kernel void xgb_aft_gradient(
+    device const uint* predictions [[buffer(0)]], device const uint* lower [[buffer(1)]],
+    device const uint* upper [[buffer(2)]], device const uint* weights [[buffer(3)]],
+    device uint2* output [[buffer(4)]], constant SurvivalParams& p [[buffer(5)]],
+    device atomic_uint* correction_count [[buffer(6)]], device uint* correction_rows [[buffer(7)]],
+    uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.rows) return;
+  using namespace xgb_survival;
+  auto value =
+      Evaluate(p.distribution, From(as_type<float>(lower[row])), From(as_type<float>(upper[row])),
+               From(as_type<float>(predictions[row])), From(p.scale));
+  // CPU libm and GPU approximations can differ by a few binary64 ULP. In
+  // very small CDF differences that changes gradient/Hessian clipping. Mark
+  // only these rows for the original host formula; do not hide the correction.
+  if (!xgb_deq(From(as_type<float>(lower[row])), From(as_type<float>(upper[row]))) &&
+      !(value.likelihood > From(1e-5f))) {
+    uint index = atomic_fetch_add_explicit(correction_count, 1u, memory_order_relaxed);
+    correction_rows[index] = row;
+  }
+  float w = p.weighted ? as_type<float>(weights[row]) : 1.0f;
+  output[row] = uint2(as_type<uint>(xgb_fmul_preserve(xgb_dto_float(value.gradient), w)),
+                      as_type<uint>(xgb_fmul_preserve(xgb_dto_float(value.hessian), w)));
+}
+kernel void xgb_aft_metric(
+    device const uint* predictions [[buffer(0)]], device const uint* lower [[buffer(1)]],
+    device const uint* upper [[buffer(2)]], device const uint* weights [[buffer(3)]],
+    device ulong2* partial [[buffer(4)]], constant SurvivalParams& p [[buffer(5)]],
+    uint row [[thread_position_in_grid]], uint group [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
+  using namespace xgb_survival;
+  D w = zero, loss = zero;
+  if (ulong(row) < p.rows) {
+    D l = From(as_type<float>(lower[row])), u = From(as_type<float>(upper[row])),
+      prediction = From(as_type<float>(predictions[row]));
+    w = p.weighted ? From(as_type<float>(weights[row])) : one;
+    if (p.accuracy) {
+      D v = Exp(prediction);
+      // Ordered comparisons: NaN must not count as inside the interval.
+      loss = (!IsNaN(v) && !IsNaN(l) && !IsNaN(u) && !(v < l) && !(u < v)) ? one : zero;
+    } else
+      loss = Loss(p.distribution, l, u, prediction, From(p.scale));
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 result = xgb_reduce_double_pair(loss * w, w, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[group] = result;
+}
+kernel void xgb_aft_transform(device const uint* input [[buffer(0)]],
+                              device uint* output [[buffer(1)]],
+                              constant uint& to_margin [[buffer(2)]],
+                              uint row [[thread_position_in_grid]]) {
+  auto value = xgb_survival::From(as_type<float>(input[row]));
+  output[row] =
+      as_type<uint>(xgb_dto_float(to_margin ? xgb_survival::Log(value) : xgb_survival::Exp(value)));
+}

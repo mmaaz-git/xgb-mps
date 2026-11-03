@@ -60,10 +60,17 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; other objective-specific initialization work remains CPU |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
+| AFT survival | GPU normal/logistic/extreme gradients, prediction/base-score transforms, likelihood and interval-accuracy metrics; numerically sensitive censored gradient rows are corrected on CPU and counted explicitly |
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile and expectile |
+
+AFT gradient evaluation is still hybrid for numerically sensitive censored rows.
+The GPU flags interval probabilities at or below `1e-5`; the host recomputes those
+rows with the original CPU formula. `survival_cpu_corrections` and
+`survival_cpu_time_ns` expose this work. Ordinary and uncensored rows stay on GPU;
+this is not complete AFT GPU coverage. AFT metrics and transforms execute on GPU.
 
 Input views and categorical recoding remain on the host. GPU metric kernels produce
 scaled block sums, with the final small reduction in host FP64. Metal has no native
@@ -84,7 +91,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **384 passed, 1 skipped**. The skip requires a machine without an
+- Python: **411 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **192 cases**, with every bin compared exactly to independent
@@ -124,6 +131,15 @@ On Apple M3, 2026-11-03:
   monotonic bounds, pooled vector weights and threadgroup boundaries.
 - Software binary64: **400,784 arithmetic operations, 200,392 narrowing conversions
   and 100,007 widening conversions** checked against CPU hardware arithmetic.
+- Survival mathematics: **240,180 binary64 exp/log/erf results** compared with
+  CPU libm; observed maximum differences are 1/3/3 representable steps respectively
+  (the test permits four). This is an observed test bound, not a proof for all inputs.
+- Production AFT APIs: **75 cases / 307,275 gradient pairs**, three distributions,
+  five scales, all censoring modes, narrow intervals, extreme margins, zero/tiny
+  weights, empty inputs, transforms and both metrics. Maximum gradient-pair
+  difference is `2.33e-10`. The deliberately extreme corpus uses 93,660 CPU
+  corrections; uncensored cases require none. Ordinary integration cases use none
+  except a sharp extreme-distribution case, which corrects 16/3,505 row updates.
 - Native objectives: **20 cases / 131,968 gradient pairs** compared against
   independent CPU mathematical references.
 - Native adaptive objectives: **180 cases / 1,260 residual scales / 452,592 gradient
@@ -227,6 +243,28 @@ sequential FP32 cumulative sums. [Multiple-level results](validation/benchmark-q
 and [weighted results](validation/benchmark-quantile-weighted-v2-m3.json) include
 all repetitions and operation timings.
 
+### AFT survival
+
+Ten rounds, depth 6, 32 features, random sample weights and a mix of uncensored,
+left/right/interval-censored labels. Includes fresh DMatrix construction and
+**two evaluation metrics every round**. Three alternating CPU/Metal repetitions.
+
+| Distribution / rows | CPU | Metal | CPU / Metal |
+| --- | ---: | ---: | ---: |
+| Normal / 100,000 | 0.126 s | 0.520 s | 0.24× |
+| Logistic / 100,000 | 0.121 s | 0.457 s | 0.27× |
+| Extreme / 100,000 | 0.115 s | 0.457 s | 0.25× |
+| Normal / 1,000,000 | 0.976 s | 2.243 s | 0.44× |
+| Logistic / 1,000,000 | 0.934 s | 1.980 s | 0.47× |
+| Extreme / 1,000,000 | 1.006 s | 2.175 s | 0.46× |
+
+[Raw AFT results](validation/benchmark-survival-v1-m3.json) record a maximum
+prediction difference of `2.38e-7`. Normal/logistic workloads need no CPU gradient
+corrections; extreme workloads correct 84/1,000,000 and 828/10,000,000 row updates.
+Software binary64 probability calculations add substantial GPU cost, and these
+AFT training runs are slower than CPU. The correction path remains an explicit
+coverage gap.
+
 ### Uniform sampling
 
 With 50% uniform row sampling, 20 rounds and otherwise the same squared-error
@@ -303,7 +341,9 @@ speedups; training and full parity remain open work.
 `xgboost/` contains upstream [XGBoost](https://github.com/dmlc/xgboost), version
 [3.4.2](https://github.com/dmlc/xgboost/releases/tag/v3.4.2), imported from the official
 source release. Upstream copyright notices and dependency licenses are retained.
-Project code is Apache-2.0 licensed; see [LICENSE](LICENSE). This is an independent
+Project code is Apache-2.0 licensed; see [LICENSE](LICENSE). The adapted
+fdlibm error-function approximation retains its Sun Microsystems permission notice
+in the Metal source. This is an independent
 experimental port.
 
 ### Training residency update
@@ -465,3 +505,20 @@ across the [baseline](validation/benchmark-quantile-weighted-v1-m3.json) and
 [tuned](validation/benchmark-quantile-weighted-v2-m3.json) runs. Full training changed
 from 2.238 to 2.221 seconds, while CPU timing also varied; this does not establish
 an end-to-end training speedup. Both measurements are retained.
+
+### AFT survival update
+
+Added Metal gradients for all three AFT distributions, censored likelihood and
+interval-accuracy metrics, exponentiation for predictions and logarithms for base
+scores. GPU probability functions use software binary64 arithmetic; `erf` adapts
+the permissively licensed fdlibm/OpenLibm approximation with its notice retained.
+The mathematical definitions follow the vendored XGBoost implementation and its
+[AFT paper](https://arxiv.org/abs/2006.04920).
+
+Stress testing exposed large gradient differences when small libm rounding errors
+are amplified by cancellation in tiny interval probabilities. The GPU now marks
+those rows for exact CPU recomputation, with visible correction counts and timing.
+This preserves tested CPU equivalence while leaving full AFT GPU coverage open.
+All 411 Python tests, native suites and CPU-only compatibility checks pass. The
+initial AFT benchmark above establishes a reproducible performance baseline,
+including its regression relative to CPU.
