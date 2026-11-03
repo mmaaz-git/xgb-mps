@@ -86,6 +86,9 @@ are process-wide, so concurrent models contribute to the same totals.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
+`histogram_shared_gradient_bytes` and `leaf_shared_gradient_bytes` count shared
+gradient-view extents; a leaf view can span the full matrix even for one page.
+`leaf_shared_output_bytes` counts shared output slices.
 
 ## Validation
 
@@ -608,3 +611,28 @@ explicit objective staging copies over 20 million row updates. It measures
 preceding workspace run measured 1.110 s Metal; this comparison remains subject
 to timing variation. Full training-state residency and synchronization reduction
 are still open work, and training remains slower than CPU.
+
+
+### Shared training-input and leaf-output update
+
+Gradient quantization and final leaf assignment now use the same guarded,
+synchronous host-memory views as ordinary objectives. Views are retained only
+until their command completes and its references are released. Owned staging
+remains available for read-only, split-region and overlapping mappings; cached
+buffers never retain borrowed host pointers. Leaf assignment also orders empty
+ranges before nonempty ranges with the same starting position.
+
+All 425 Python tests, native suites and CPU-only checks pass. The expanded
+production memory test adds **49 cases / 1,118,257 row positions**, checking
+strided targets, page offsets, sampled-row markers, empty leaves, read-only input,
+aliasing and guard values under Metal API Validation.
+
+The [new training measurement](validation/benchmark-borrow-training-v1-m3.json)
+retains a regression: at one million rows, 32 features and 20 rounds, Metal takes
+**1.176 s versus 0.810 s CPU** (0.69×), compared with 1.051 s Metal in the preceding
+run. Predictions are identical. At 100,000 rows the medians are 0.522 s Metal and
+0.123 s CPU; Metal repeats vary from 0.290 to 0.561 s. These measurements do not
+establish a speedup from sharing more arrays. The counters confirm another
+400 MB of explicit gradient/leaf staging copies avoided at one million rows,
+on top of the ordinary-objective sharing, but dispatch and synchronization
+costs remain and timing variability needs controlled profiling.

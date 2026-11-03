@@ -11,6 +11,12 @@
 #include <limits>
 
 namespace xgboost::common::metal {
+inline bool MemoryRangesOverlap(void const* a, std::size_t a_bytes, void const* b,
+                                std::size_t b_bytes) {
+  if (!a_bytes || !b_bytes) return false;
+  auto aa = reinterpret_cast<std::uintptr_t>(a), bb = reinterpret_cast<std::uintptr_t>(b);
+  return aa >= bb ? aa - bb < b_bytes : bb - aa < a_bytes;
+}
 struct BorrowedMemory {
   id<MTLBuffer> buffer{nil};
   std::size_t offset{0};

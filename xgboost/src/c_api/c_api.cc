@@ -185,6 +185,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["objective_shared_input_bytes"] = Integer{static_cast<std::int64_t>(stats.objective_shared_input_bytes)};
   info["objective_shared_output_bytes"] = Integer{static_cast<std::int64_t>(stats.objective_shared_output_bytes)};
   info["objective_staging_bytes"] = Integer{static_cast<std::int64_t>(stats.objective_staging_bytes)};
+  info["histogram_shared_gradient_bytes"] = Integer{static_cast<std::int64_t>(stats.histogram_shared_gradient_bytes)};
+  info["leaf_shared_gradient_bytes"] = Integer{static_cast<std::int64_t>(stats.leaf_shared_gradient_bytes)};
+  info["leaf_shared_output_bytes"] = Integer{static_cast<std::int64_t>(stats.leaf_shared_output_bytes)};
+
 
 
 
@@ -258,6 +262,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["objective_shared_input_bytes"] = Integer{0};
   info["objective_shared_output_bytes"] = Integer{0};
   info["objective_staging_bytes"] = Integer{0};
+  info["histogram_shared_gradient_bytes"] = Integer{0};
+  info["leaf_shared_gradient_bytes"] = Integer{0};
+  info["leaf_shared_output_bytes"] = Integer{0};
+
 
   info["mean_dispatches"] = Integer{0};
   info["mean_gpu_time_ns"] = Integer{0};

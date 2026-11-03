@@ -202,7 +202,10 @@ def metal_info() -> dict:
     ``survival_cpu_corrections`` and ``survival_cpu_time_ns`` report the explicit
     CPU correction of numerically sensitive AFT gradient rows. Shared-input,
     shared-output and staging byte counters prefixed with ``objective_`` currently
-    cover the ordinary gradient kernel. ``row_workspace_allocations`` and
+    cover the ordinary gradient kernel. ``histogram_shared_gradient_bytes`` and
+    ``leaf_shared_gradient_bytes`` count shared gradient-view extents; leaf views
+    can span the full matrix even for one page. ``leaf_shared_output_bytes`` counts
+    shared output slices. ``row_workspace_allocations`` and
     ``row_workspace_reuses`` describe model-local training workspaces.
     Counters are process-wide and the experimental schema may change.
     """

@@ -11,6 +11,7 @@
 #include <vector>
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/metal_ops.h"
+#include "../xgboost/src/common/metal_training.h"
 void Check(bool ok, char const* msg) {
   if (!ok) throw std::runtime_error(msg);
 }
@@ -115,6 +116,90 @@ int main() {
       std::printf("PASS %zu production objective memory cases / %zu gradient pairs, including "
                   "read-only, split-region and overlapping storage\n",
                   cases, values);
+      size_t leaf_cases = 0, leaf_values = 0;
+      for (size_t n : {1, 257, 65537})
+        for (size_t base : {0, 17})
+          for (size_t targets : {1, 3})
+            for (auto order : {linalg::Order::kC, linalg::Order::kF})
+              for (bool readonly : {false, true}) {
+                size_t total = base + n + 13;
+                size_t shape[2]{total, targets};
+                std::vector<GradientPair> gradients(total * targets);
+                linalg::MatrixView<GradientPair> view{gradients, shape, DeviceOrd::CPU(), order};
+                for (size_t r = 0; r < total; ++r)
+                  for (size_t t = 0; t < targets; ++t)
+                    view(r, t) = GradientPair{float(r % 19), float(r % 5 && t + 1 == targets)};
+                size_t bytes = gradients.size() * sizeof(GradientPair);
+                size_t mapped_bytes = (bytes + page - 1) / page * page;
+                void* mapping = nullptr;
+                auto input = gradients.data();
+                if (readonly) {
+                  mapping = mmap(nullptr, mapped_bytes, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANON, -1, 0);
+                  Check(mapping != MAP_FAILED, "Leaf mmap failed");
+                  std::memcpy(mapping, input, bytes);
+                  Check(mprotect(mapping, mapped_bytes, PROT_READ) == 0, "Leaf mprotect failed");
+                  input = static_cast<GradientPair*>(mapping);
+                }
+                linalg::MatrixView<GradientPair const> const_view{
+                    {input, gradients.size()}, shape, DeviceOrd::CPU(), order};
+                constexpr bst_node_t sentinel = -123456;
+                std::vector<bst_node_t> output(total + 2, sentinel);
+                // Unordered ranges include an empty leaf at the shared boundary.
+                std::vector<common::metal::LeafRange> leaves{
+                    {n / 2, n, 71}, {0, n / 2, 23}, {n / 2, n / 2, 99}};
+                auto rows = common::metal::MakeDeviceRows();
+                rows->Reset(n, base);
+                auto before = common::metal::GetStatistics();
+                rows->LeafPositions(leaves, const_view, {output.data() + 1, total});
+                auto after = common::metal::GetStatistics();
+                Check(after.leaf_partition_dispatches - before.leaf_partition_dispatches == 1,
+                      "Leaf assignment did not dispatch on GPU");
+                auto shared_in =
+                    after.leaf_shared_gradient_bytes - before.leaf_shared_gradient_bytes;
+                auto shared_out = after.leaf_shared_output_bytes - before.leaf_shared_output_bytes;
+                if (!unified || readonly)
+                  Check(shared_in == 0, "Ineligible leaf input was shared");
+                else
+                  Check(shared_in == bytes, "Leaf gradient sharing byte count differs");
+                Check(shared_out == (unified ? n * sizeof(bst_node_t) : 0),
+                      "Leaf output sharing byte count differs");
+                for (size_t r = 0; r < total + 2; ++r) {
+                  bst_node_t expected = sentinel;
+                  if (r > base && r <= base + n) {
+                    expected = r - base - 1 < n / 2 ? 23 : 71;
+                    if ((r - 1) % 5 == 0) expected = ~expected;
+                  }
+                  Check(output[r] == expected, "Leaf output or guard differs from CPU");
+                }
+                if (readonly) Check(munmap(mapping, mapped_bytes) == 0, "Leaf munmap failed");
+                ++leaf_cases;
+                leaf_values += n;
+              }
+      {
+        // A writable aliased output still requires staging so no GPU invocation
+        // overwrites gradient input while another invocation is reading it.
+        size_t n = 65537, shape[2]{n, 1};
+        std::vector<GradientPair> gradients(n, GradientPair{3, 1});
+        auto rows = common::metal::MakeDeviceRows();
+        rows->Reset(n, 0);
+        linalg::MatrixView<GradientPair const> view{gradients, shape, DeviceOrd::CPU()};
+        auto before = common::metal::GetStatistics();
+        rows->LeafPositions({{n / 2, n, 71}, {0, n / 2, 23}}, view,
+                            {reinterpret_cast<bst_node_t*>(gradients.data()), n});
+        auto after = common::metal::GetStatistics();
+        Check(after.leaf_shared_output_bytes == before.leaf_shared_output_bytes,
+              "Aliased leaf output must use staging");
+        std::vector<bst_node_t> result(n);
+        std::memcpy(result.data(), gradients.data(), n * sizeof(bst_node_t));
+        for (size_t i = 0; i < n; ++i)
+          Check(result[i] == (i < n / 2 ? 23 : 71), "Aliased leaf assignment corrupted input");
+        ++leaf_cases;
+        leaf_values += n;
+      }
+      std::printf("PASS %zu production leaf memory cases / %zu row positions, including "
+                  "strided gradients, page offsets, read-only inputs, empty leaves and aliases\n",
+                  leaf_cases, leaf_values);
       return 0;
     } catch (std::exception const& e) {
       std::fprintf(stderr, "FAIL: %s\n", e.what());

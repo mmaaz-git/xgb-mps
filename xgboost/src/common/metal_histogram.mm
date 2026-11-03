@@ -37,6 +37,8 @@ std::atomic<std::uint64_t> gradient_sum_dispatches{0}, gradient_sum_gpu_time_ns{
 std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
+std::atomic<std::uint64_t> histogram_shared_gradient_bytes{0}, leaf_shared_gradient_bytes{0},
+    leaf_shared_output_bytes{0};
 std::atomic<std::uint64_t> objective_shared_input_bytes{0}, objective_shared_output_bytes{0},
     objective_staging_bytes{0};
 std::atomic<std::uint64_t> float_sum_dispatches{0}, float_sum_gpu_time_ns{0};
@@ -107,8 +109,8 @@ class Runtime {
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
   id<MTLComputePipelineState> row_iota_pipeline, partition_classify_pipeline,
-      partition_prefix_pipeline, partition_prefix_serial_pipeline, partition_scatter_pipeline, leaf_positions_pipeline,
-      transpose_index_pipeline;
+      partition_prefix_pipeline, partition_prefix_serial_pipeline, partition_scatter_pipeline,
+      leaf_positions_pipeline, transpose_index_pipeline;
 
   Runtime() {
     @autoreleasepool {
@@ -367,10 +369,12 @@ class MetalRows final : public DeviceRows {
   id<MTLBuffer> rows_, saved_rows_, ranks_;
   id<MTLBuffer> splits_, blocks_, categories_, counts_, prefix_, left_;
   id<MTLBuffer> leaves_, leaf_gradients_, leaf_output_;
-  id<MTLBuffer> Workspace(id<MTLBuffer> __strong* buffer, std::size_t bytes, void const* data = nullptr) {
+  id<MTLBuffer> Workspace(id<MTLBuffer> __strong* buffer, std::size_t bytes,
+                          void const* data = nullptr) {
     bool allocated = !*buffer || (*buffer).length < bytes;
     auto result = Scratch(rt_, buffer, bytes, data);
-    (allocated ? row_workspace_allocations : row_workspace_reuses).fetch_add(1, std::memory_order_relaxed);
+    (allocated ? row_workspace_allocations : row_workspace_reuses)
+        .fetch_add(1, std::memory_order_relaxed);
     return result;
   }
   std::size_t size_{0};
@@ -438,7 +442,8 @@ class MetalRows final : public DeviceRows {
         blocks.push_back(
             {begin, std::min(begin + 256, split.end), static_cast<std::uint32_t>(node), 0});
       split.block_end = blocks.size();
-      largest_block_count = std::max(largest_block_count, std::size_t{split.block_end - split.block_begin});
+      largest_block_count =
+          std::max(largest_block_count, std::size_t{split.block_end - split.block_begin});
     }
     bool serial_prefix = largest_block_count <= 16;
     std::vector<std::uint64_t> result(splits.size(), 0);
@@ -450,7 +455,8 @@ class MetalRows final : public DeviceRows {
       this->EnsureReady(command);
       Workspace(&saved_rows_, size_ * sizeof(bst_idx_t));
       Workspace(&ranks_, size_ * sizeof(std::uint32_t));
-      auto split_buffer = Workspace(&splits_, splits.size() * sizeof(PartitionSplit), splits.data());
+      auto split_buffer =
+          Workspace(&splits_, splits.size() * sizeof(PartitionSplit), splits.data());
       auto block_buffer = Workspace(&blocks_, blocks.size() * sizeof(Block), blocks.data());
       auto cats = Workspace(&categories_, categories.size_bytes(), categories.data());
       auto counts = Workspace(&counts_, blocks.size() * sizeof(std::uint32_t));
@@ -482,7 +488,8 @@ class MetalRows final : public DeviceRows {
       [encoder endEncoding];
       encoder = [command computeCommandEncoder];
       CHECK(encoder);
-      [encoder setComputePipelineState:serial_prefix ? rt_.partition_prefix_serial_pipeline : rt_.partition_prefix_pipeline];
+      [encoder setComputePipelineState:serial_prefix ? rt_.partition_prefix_serial_pipeline
+                                                     : rt_.partition_prefix_pipeline];
       [encoder setBuffer:split_buffer offset:0 atIndex:0];
       [encoder setBuffer:counts offset:0 atIndex:1];
       [encoder setBuffer:prefix offset:0 atIndex:2];
@@ -493,7 +500,7 @@ class MetalRows final : public DeviceRows {
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       } else {
         [encoder dispatchThreadgroups:MTLSizeMake(splits.size(), 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       }
       [encoder endEncoding];
       encoder = [command computeCommandEncoder];
@@ -522,8 +529,10 @@ class MetalRows final : public DeviceRows {
     if (!size_) return;
     CHECK_GE(output.size(), base_ + size_);
     CHECK_GE(gradients.Shape(0), base_ + size_);
-    std::sort(leaves.begin(), leaves.end(),
-              [](auto const& a, auto const& b) { return a.begin < b.begin; });
+    std::sort(leaves.begin(), leaves.end(), [](auto const& a, auto const& b) {
+      // Empty leaves must precede a nonempty leaf starting at the same offset.
+      return a.begin < b.begin || (a.begin == b.begin && a.end < b.end);
+    });
     std::size_t end = 0;
     for (auto const& leaf : leaves) {
       CHECK_EQ(leaf.begin, end);
@@ -536,15 +545,29 @@ class MetalRows final : public DeviceRows {
       CHECK(command);
       this->EnsureReady(command);
       auto leaf_buffer = Workspace(&leaves_, leaves.size() * sizeof(LeafRange), leaves.data());
-      id<MTLBuffer> g;
-      if (base_ == 0 && size_ == gradients.Shape(0)) {
-        g = Workspace(&leaf_gradients_, gradients.Values().size_bytes(), gradients.Values().data());
+      auto values = gradients.Values();
+      auto g = TryBorrowMemory(rt_.device, values.data(), values.size_bytes(), 8);
+      bool shared_gradient = g.buffer != nil;
+      if (shared_gradient) {
+        leaf_gradients_ = nil;
+      } else if (base_ == 0 && size_ == gradients.Shape(0)) {
+        g = {Workspace(&leaf_gradients_, values.size_bytes(), values.data()), 0};
       } else {
         // External-memory pages must not each retain an entire gradient matrix.
         leaf_gradients_ = nil;
-        g = Upload(rt_, gradients.Values().data(), gradients.Values().size_bytes());
+        g = {Upload(rt_, values.data(), values.size_bytes()), 0};
       }
-      auto out = Workspace(&leaf_output_, size_ * sizeof(bst_node_t));
+      auto destination = output.data() + base_;
+      auto output_bytes = size_ * sizeof(bst_node_t);
+      bool disjoint =
+          !MemoryRangesOverlap(values.data(), values.size_bytes(), destination, output_bytes);
+      auto out =
+          disjoint ? TryBorrowMemory(rt_.device, destination, output_bytes, 4) : BorrowedMemory{};
+      bool shared_output = out.buffer != nil;
+      if (shared_output)
+        leaf_output_ = nil;
+      else
+        out = {Workspace(&leaf_output_, output_bytes), 0};
       struct {
         std::uint64_t rows, base, stride0, stride1;
         std::uint32_t targets, leaves;
@@ -559,15 +582,19 @@ class MetalRows final : public DeviceRows {
       [encoder setComputePipelineState:rt_.leaf_positions_pipeline];
       [encoder setBuffer:rows_ offset:0 atIndex:0];
       [encoder setBuffer:leaf_buffer offset:0 atIndex:1];
-      [encoder setBuffer:g offset:0 atIndex:2];
-      [encoder setBuffer:out offset:0 atIndex:3];
+      [encoder setBuffer:g.buffer offset:g.offset atIndex:2];
+      [encoder setBuffer:out.buffer offset:out.offset atIndex:3];
       [encoder setBytes:&p length:sizeof(p) atIndex:4];
       [encoder dispatchThreads:MTLSizeMake(size_, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [encoder endEncoding];
       CompleteTraining(command);
       this->MarkReady();
-      std::memcpy(output.data() + base_, out.contents, size_ * sizeof(bst_node_t));
+      if (!shared_output) std::memcpy(destination, out.buffer.contents, output_bytes);
+      if (shared_gradient)
+        leaf_shared_gradient_bytes.fetch_add(values.size_bytes(), std::memory_order_relaxed);
+      if (shared_output)
+        leaf_shared_output_bytes.fetch_add(output_bytes, std::memory_order_relaxed);
       leaf_partition_dispatches.fetch_add(1, std::memory_order_relaxed);
     }
   }
@@ -580,14 +607,20 @@ class MetalHistogram final : public Histogram {
       block_buffer_, gradient_maximum_, gradient_scale_;
   bool gradients_ready_{false};
 
-  void UploadGradients(Span<GradientPair const> gradients, id<MTLCommandBuffer> command) {
+  std::size_t UploadGradients(Span<GradientPair const> gradients, id<MTLCommandBuffer> command) {
     CHECK_LE(gradients.size(), std::numeric_limits<std::uint32_t>::max());
     if (!gradients_ || gradients_.length < gradients.size() * sizeof(QuantizedPair))
       gradients_ = Allocate(rt_, gradients.size() * sizeof(QuantizedPair));
     static_assert(sizeof(GradientPair) == 8);
-    if (!raw_gradients_ || raw_gradients_.length < gradients.size() * sizeof(GradientPair))
-      raw_gradients_ = Allocate(rt_, gradients.size() * sizeof(GradientPair));
-    std::memcpy(raw_gradients_.contents, gradients.data(), gradients.size() * sizeof(GradientPair));
+    // Only the command retains a borrowed view. The class caches GPU-owned
+    // quantized gradients and, when needed, a separate owned staging allocation.
+    auto input = TryBorrowMemory(rt_.device, gradients.data(), gradients.size_bytes(), 8);
+    auto shared_bytes = input.buffer ? gradients.size_bytes() : 0;
+    if (!input.buffer) {
+      input = {Scratch(rt_, &raw_gradients_, gradients.size_bytes(), gradients.data()), 0};
+    } else {
+      raw_gradients_ = nil;
+    }
     EnsureBuffer(rt_, &gradient_maximum_, 2 * sizeof(std::uint32_t));
     EnsureBuffer(rt_, &gradient_scale_, sizeof(GradientScale));
     auto clear = [command blitCommandEncoder];
@@ -598,7 +631,7 @@ class MetalHistogram final : public Histogram {
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
     [encoder setComputePipelineState:rt_.gradient_maximum_pipeline];
-    [encoder setBuffer:raw_gradients_ offset:0 atIndex:0];
+    [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
     [encoder setBuffer:gradient_maximum_ offset:0 atIndex:1];
     [encoder setBytes:&count length:sizeof(count) atIndex:2];
     [encoder dispatchThreadgroups:MTLSizeMake((count + 255) / 256, 1, 1)
@@ -615,12 +648,13 @@ class MetalHistogram final : public Histogram {
     encoder = [command computeCommandEncoder];
     CHECK(encoder);
     [encoder setComputePipelineState:rt_.quantize_pipeline];
-    [encoder setBuffer:raw_gradients_ offset:0 atIndex:0];
+    [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
     [encoder setBuffer:gradients_ offset:0 atIndex:1];
     [encoder setBytes:&count length:sizeof(count) atIndex:2];
     [encoder setBuffer:gradient_scale_ offset:0 atIndex:3];
     [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
+    return shared_bytes;
   }
 
  public:
@@ -694,7 +728,7 @@ class MetalHistogram final : public Histogram {
                     max_node_rows > gidx.Size() / 4 ? 32u : 8u};
 
       bool quantized = !gradients_ready_;
-      if (quantized) this->UploadGradients(gradients, command);
+      auto shared_gradient_bytes = quantized ? this->UploadGradients(gradients, command) : 0;
       id<MTLBlitCommandEncoder> clear = [command blitCommandEncoder];
       CHECK(clear) << "Metal blit encoder allocation failed.";
       [clear fillBuffer:histogram range:NSMakeRange(0, bytes) value:0];
@@ -778,6 +812,7 @@ class MetalHistogram final : public Histogram {
             << "Metal histograms require finite gradients and Hessians.";
         gradient_bound_dispatches.fetch_add(1, std::memory_order_relaxed);
         quantization_dispatches.fetch_add(1, std::memory_order_relaxed);
+        histogram_shared_gradient_bytes.fetch_add(shared_gradient_bytes, std::memory_order_relaxed);
         gradients_ready_ = true;
       }
       histogram_conversion_dispatches.fetch_add(1, std::memory_order_relaxed);
@@ -891,7 +926,10 @@ Statistics GetStatistics() {
           float_sum_gpu_time_ns.load(std::memory_order_relaxed),
           objective_shared_input_bytes.load(std::memory_order_relaxed),
           objective_shared_output_bytes.load(std::memory_order_relaxed),
-          objective_staging_bytes.load(std::memory_order_relaxed)};
+          objective_staging_bytes.load(std::memory_order_relaxed),
+          histogram_shared_gradient_bytes.load(std::memory_order_relaxed),
+          leaf_shared_gradient_bytes.load(std::memory_order_relaxed),
+          leaf_shared_output_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1076,7 +1114,9 @@ double Sum(Span<float const> values) {
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
     float_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
-    if (elapsed > 0) float_sum_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9), std::memory_order_relaxed);
+    if (elapsed > 0)
+      float_sum_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                      std::memory_order_relaxed);
     return static_cast<GradientPairPrecise const*>(result.contents)->GetGrad();
   }
 }
@@ -1759,11 +1799,16 @@ void Gradients(Objective objective, Span<float const> predictions, Span<float co
     CHECK(command);
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
-    struct BoundMemory { id<MTLBuffer> buffer; std::size_t offset; bool shared; };
+    struct BoundMemory {
+      id<MTLBuffer> buffer;
+      std::size_t offset;
+      bool shared;
+    };
     std::uint64_t shared_input = 0, shared_output = 0, staged = 0;
-    auto bind = [&](void const* data, std::size_t bytes, std::size_t alignment,
-                    bool is_output, bool allow_shared = true) -> BoundMemory {
-      auto view = allow_shared ? TryBorrowMemory(rt.device, data, bytes, alignment) : BorrowedMemory{};
+    auto bind = [&](void const* data, std::size_t bytes, std::size_t alignment, bool is_output,
+                    bool allow_shared = true) -> BoundMemory {
+      auto view =
+          allow_shared ? TryBorrowMemory(rt.device, data, bytes, alignment) : BorrowedMemory{};
       if (view.buffer) {
         (is_output ? shared_output : shared_input) += bytes;
         return {view.buffer, view.offset, true};
@@ -1772,10 +1817,8 @@ void Gradients(Objective objective, Span<float const> predictions, Span<float co
       return {is_output ? Allocate(rt, bytes) : Upload(rt, data, bytes), 0, false};
     };
     auto overlaps_output = [&](Span<float const> input) {
-      if (input.empty()) return false;
-      auto in = reinterpret_cast<std::uintptr_t>(input.data());
-      auto out = reinterpret_cast<std::uintptr_t>(output.data());
-      return in >= out ? in - out < output.size_bytes() : out - in < input.size_bytes();
+      return MemoryRangesOverlap(input.data(), input.size_bytes(), output.data(),
+                                 output.size_bytes());
     };
     bool output_disjoint = !overlaps_output(predictions) && !overlaps_output(labels) &&
                            !overlaps_output(weights) && !overlaps_output(alpha);

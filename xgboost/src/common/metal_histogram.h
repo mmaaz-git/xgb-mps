@@ -45,6 +45,7 @@ struct Statistics {
   std::uint64_t row_workspace_allocations, row_workspace_reuses;
   std::uint64_t float_sum_dispatches, float_sum_gpu_time_ns;
   std::uint64_t objective_shared_input_bytes, objective_shared_output_bytes, objective_staging_bytes;
+  std::uint64_t histogram_shared_gradient_bytes, leaf_shared_gradient_bytes, leaf_shared_output_bytes;
 };
 
 class Histogram {
