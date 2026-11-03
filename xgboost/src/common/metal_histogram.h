@@ -26,6 +26,9 @@ struct Statistics {
   std::uint64_t objective_dispatches, transform_dispatches, objective_gpu_time_ns;
   std::uint64_t prediction_dispatches, prediction_gpu_time_ns, leaf_update_dispatches;
   std::uint64_t metric_dispatches, metric_gpu_time_ns;
+  std::uint64_t index_uploads, index_uploaded_bytes, resident_histogram_dispatches,
+      partition_dispatches, leaf_partition_dispatches, row_init_dispatches, partition_gpu_time_ns,
+      index_gpu_time_ns;
 };
 
 class Histogram {

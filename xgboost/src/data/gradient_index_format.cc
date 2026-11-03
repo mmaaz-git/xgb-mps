@@ -20,6 +20,9 @@ namespace xgboost::data {
   xgboost_NVTX_FN_RANGE();
   CHECK(fi);
 
+#if defined(XGBOOST_USE_METAL)
+  page->InvalidateMetal();
+#endif
   page->Cuts() = this->cuts_;
   // indptr
   if (!common::ReadVec(fi, &page->row_ptr)) {

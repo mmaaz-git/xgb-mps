@@ -46,10 +46,29 @@ class CommonRowPartitioner {
     row_indices.resize(num_row);
 
     bst_idx_t* p_row_indices = row_indices.data();
-    common::Iota(ctx, p_row_indices, p_row_indices + num_row, base_rowid);
+    if (!ctx->IsMPS()) common::Iota(ctx, p_row_indices, p_row_indices + num_row, base_rowid);
 
     row_set_collection_.Clear();
     row_set_collection_.Init();
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) {
+      if (!row_set_collection_.metal_rows)
+        row_set_collection_.metal_rows = common::metal::MakeDeviceRows();
+      row_set_collection_.metal_rows->Reset(num_row, base_rowid);
+    } else {
+      row_set_collection_.metal_rows.reset();
+    }
+#endif
+  }
+
+  // Required only by host consumers of the row IDs (e.g. reduced-gradient leaf fitting).
+  void SyncHostRows() const {
+#if defined(XGBOOST_USE_METAL)
+    if (row_set_collection_.metal_rows) {
+      auto* rows = const_cast<common::RowSetCollection&>(row_set_collection_).Data();
+      row_set_collection_.metal_rows->CopyToHost(*rows);
+    }
+#endif
   }
 
   /* Making GHistIndexMatrix_t a templete parameter allows reuse this function for sycl-plugin */
@@ -96,6 +115,37 @@ class CommonRowPartitioner {
   template <typename ExpandEntry, typename TreeView>
   void UpdatePosition(Context const* ctx, GHistIndexMatrix const& gmat,
                       std::vector<ExpandEntry> const& nodes, TreeView const& tree) {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) {
+      CHECK(row_set_collection_.metal_rows);
+      std::vector<std::int32_t> conditions(nodes.size());
+      FindSplitConditions(nodes, tree, gmat, &conditions);
+      std::vector<common::metal::PartitionSplit> splits;
+      std::vector<std::uint32_t> categories;
+      auto const& ids = *row_set_collection_.Data();
+      for (std::size_t i = 0; i < nodes.size(); ++i) {
+        auto node = nodes[i].nid;
+        auto const& rows = row_set_collection_[node];
+        auto begin = rows.Size() ? rows.begin() - ids.data() : 0;
+        auto cat = tree.SplitType(node) == FeatureType::kCategorical;
+        auto bits = cat ? tree.NodeCats(node) : common::Span<std::uint32_t const>{};
+        CHECK_LE(categories.size() + bits.size(), std::numeric_limits<std::uint32_t>::max());
+        splits.push_back({static_cast<std::uint64_t>(begin), begin + rows.Size(),
+                          tree.SplitIndex(node), conditions[i], tree.DefaultLeft(node), cat,
+                          static_cast<std::uint32_t>(categories.size()),
+                          static_cast<std::uint32_t>(bits.size()), 0, 0});
+        categories.insert(categories.end(), bits.begin(), bits.end());
+      }
+      auto counts = row_set_collection_.metal_rows->Partition(gmat, std::move(splits), categories);
+      for (std::size_t i = 0; i < nodes.size(); ++i) {
+        auto nid = nodes[i].nid;
+        auto size = row_set_collection_[nid].Size();
+        row_set_collection_.AddSplit(nid, tree.LeftChild(nid), tree.RightChild(nid), counts[i],
+                                     size - counts[i]);
+      }
+      return;
+    }
+#endif
     auto const& column_matrix = gmat.Transpose();
     if (column_matrix.IsInitialized()) {
       if (gmat.cut.HasCategorical()) {
@@ -215,6 +265,21 @@ class CommonRowPartitioner {
   void LeafPartition(Context const* ctx, TreeView const& tree,
                      linalg::MatrixView<GradientPair const> gpair,
                      common::Span<bst_node_t> out_position) const {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) {
+      std::vector<common::metal::LeafRange> leaves;
+      auto const& ids = *row_set_collection_.Data();
+      for (auto const& rows : row_set_collection_)
+        if (rows.node_id >= 0 && rows.Size()) {
+          CHECK(tree.IsLeaf(rows.node_id));
+          auto begin = rows.begin() - ids.data();
+          leaves.push_back(
+              {static_cast<std::uint64_t>(begin), begin + rows.Size(), rows.node_id, 0});
+        }
+      row_set_collection_.metal_rows->LeafPositions(std::move(leaves), gpair, out_position);
+      return;
+    }
+#endif
     if (gpair.Shape(1) > 1) {
       partition_builder_.LeafPartition(
           ctx, tree, this->Partitions(), out_position, [&](std::size_t idx) -> bool {

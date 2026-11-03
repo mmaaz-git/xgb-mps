@@ -344,6 +344,7 @@ class MultiTargetHistBuilder {
     auto h_leaf_sums_tloc = leaf_sums_tloc.HostView();
 
     for (auto const &part : partitioner_) {
+      part.SyncHostRows();
       common::BlockedSpace2d space(
           n_leaves, [&](std::size_t leaf_idx) { return part[leaves_idx[leaf_idx]].Size(); }, 1024);
       // when Size() is 0 (node has no rows in a partition), no blocks are created for

@@ -26,6 +26,9 @@
 
 namespace xgboost {
 namespace common {
+namespace metal {
+class QuantizedPage;
+}
 class ColumnMatrix;
 class AlignedFileWriteStream;
 }  // namespace common
@@ -41,6 +44,16 @@ float GetFvalueImpl(std::vector<std::uint32_t> const& ptrs, std::vector<float> c
  *  index for CPU histogram.  On GPU ellpack page is used.
  */
 class GHistIndexMatrix {
+#if defined(XGBOOST_USE_METAL)
+ public:
+  mutable std::shared_ptr<common::metal::QuantizedPage> metal_page;
+  void InvalidateMetal() {
+    std::atomic_store(&metal_page, std::shared_ptr<common::metal::QuantizedPage>{});
+  }
+
+ private:
+#endif
+
   // Get the size of each row
   template <typename AdapterBatchT>
   static auto GetRowCounts(AdapterBatchT const& batch, float missing, int32_t n_threads) {

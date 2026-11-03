@@ -11,5 +11,9 @@ echo "Checking objective kernels against independent CPU mathematics"
 clang++ -std=c++17 -fobjc-arc tests/metal_objective.mm \
   -framework Metal -framework Foundation -o results/metal_objective_test
 results/metal_objective_test xgboost/src/common/metal_histogram.metal
+echo "Checking Metal partitioning and index transposition against CPU references"
+clang++ -std=c++17 -fobjc-arc tests/metal_partition.mm \
+  -framework Metal -framework Foundation -o results/metal_partition_test
+results/metal_partition_test xgboost/src/common/metal_histogram.metal
 echo "Running training equivalence tests; a real GPU is required"
 .venv/bin/python -m pytest -q tests --require-metal

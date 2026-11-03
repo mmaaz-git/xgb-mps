@@ -20,6 +20,11 @@
 
 namespace xgboost::common::metal {
 namespace {
+std::atomic<std::uint64_t> index_gpu_time_ns{0};
+std::atomic<std::uint64_t> index_uploads{0}, index_uploaded_bytes{0},
+    resident_histogram_dispatches{0};
+std::atomic<std::uint64_t> partition_dispatches{0}, leaf_partition_dispatches{0},
+    row_init_dispatches{0}, partition_gpu_time_ns{0};
 std::atomic<std::uint64_t> dispatches{0};
 std::atomic<std::uint64_t> processed_rows{0};
 std::atomic<std::uint64_t> shared_dispatches{0};
@@ -37,10 +42,10 @@ std::uint64_t Elapsed(Clock::time_point start) {
 }
 
 struct Params {
-  std::uint64_t n_rows, base_rowid;
+  std::uint64_t n_rows, base_rowid, page_rows;
   std::uint32_t n_bins, n_features, bin_bytes, dense, n_nodes, padding;
 };
-static_assert(sizeof(Params) == 40);
+static_assert(sizeof(Params) == 48);
 struct QuantizedPair {
   std::int64_t grad, hess;
 };
@@ -58,6 +63,9 @@ class Runtime {
   id<MTLComputePipelineState> shared_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
+  id<MTLComputePipelineState> row_iota_pipeline, partition_classify_pipeline,
+      partition_prefix_pipeline, partition_scatter_pipeline, leaf_positions_pipeline,
+      transpose_index_pipeline;
 
   Runtime() {
     @autoreleasepool {
@@ -94,7 +102,14 @@ class Runtime {
       prediction_pipeline = make_pipeline(@"xgb_predict");
       leaf_pipeline = make_pipeline(@"xgb_add_leaf");
       metric_pipeline = make_pipeline(@"xgb_metric");
-      LOG(INFO) << "Metal histogram backend: " << device.name.UTF8String;
+      row_iota_pipeline = make_pipeline(@"xgb_row_iota");
+      partition_classify_pipeline = make_pipeline(@"xgb_partition_classify");
+      partition_prefix_pipeline = make_pipeline(@"xgb_partition_prefix");
+      partition_scatter_pipeline = make_pipeline(@"xgb_partition_scatter");
+      leaf_positions_pipeline = make_pipeline(@"xgb_leaf_positions");
+      transpose_index_pipeline = make_pipeline(@"xgb_transpose_index");
+      CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
+      LOG(INFO) << "Metal compute backend: " << device.name.UTF8String;
     }
   }
 };
@@ -119,8 +134,256 @@ id<MTLBuffer> Upload(Runtime const& rt, void const* data, std::size_t bytes) {
   return buffer;
 }
 
-struct Page {
-  id<MTLBuffer> index, row_ptr, offsets;
+class Page final : public QuantizedPage {
+ public:
+  id<MTLBuffer> index, row_ptr, offsets, cuts;
+  Page(Runtime const& rt, GHistIndexMatrix const& gidx) {
+    auto bytes = gidx.index.Size() * gidx.index.GetBinTypeSize();
+    auto source = Upload(rt, gidx.index.data<std::uint8_t>(), bytes);
+    index = source;
+    if (gidx.IsDense() && gidx.Size() && gidx.Features()) {
+      index = Allocate(rt, bytes);
+      struct {
+        std::uint64_t rows;
+        std::uint32_t features, width;
+      } p{gidx.Size(), static_cast<std::uint32_t>(gidx.Features()),
+          static_cast<std::uint32_t>(gidx.index.GetBinTypeSize())};
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      auto encoder = [command computeCommandEncoder];
+      CHECK(encoder);
+      [encoder setComputePipelineState:rt.transpose_index_pipeline];
+      [encoder setBuffer:source offset:0 atIndex:0];
+      [encoder setBuffer:index offset:0 atIndex:1];
+      [encoder setBytes:&p length:sizeof(p) atIndex:2];
+      [encoder dispatchThreadgroups:MTLSizeMake((p.features + 31) / 32, (p.rows + 31) / 32, 1)
+              threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+      [encoder endEncoding];
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      auto elapsed = command.GPUEndTime - command.GPUStartTime;
+      if (elapsed > 0)
+        index_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                    std::memory_order_relaxed);
+    }
+    row_ptr = Upload(rt, gidx.row_ptr.data(), gidx.row_ptr.size() * sizeof(std::size_t));
+    offsets = Upload(rt, gidx.cut.Ptrs().data(), gidx.cut.Ptrs().size() * sizeof(std::uint32_t));
+    cuts = Upload(rt, gidx.cut.Values().data(), gidx.cut.Values().size() * sizeof(float));
+    index_uploads.fetch_add(1, std::memory_order_relaxed);
+    index_uploaded_bytes.fetch_add(bytes + gidx.row_ptr.size() * sizeof(std::size_t) +
+                                       gidx.cut.Ptrs().size() * sizeof(std::uint32_t) +
+                                       gidx.cut.Values().size() * sizeof(float),
+                                   std::memory_order_relaxed);
+  }
+};
+std::shared_ptr<Page> GetPage(Runtime const& rt, GHistIndexMatrix const& gidx) {
+  auto cached = std::atomic_load(&gidx.metal_page);
+  if (!cached) {
+    std::shared_ptr<QuantizedPage> created = std::make_shared<Page>(rt, gidx);
+    if (std::atomic_compare_exchange_strong(&gidx.metal_page, &cached, created))
+      cached = std::move(created);
+  }
+  return std::static_pointer_cast<Page>(cached);
+}
+void EnsureBuffer(Runtime const& rt, id<MTLBuffer> __strong* buffer, std::size_t bytes) {
+  if (!*buffer || (*buffer).length < bytes) *buffer = Allocate(rt, bytes);
+}
+void CompleteTraining(id<MTLCommandBuffer> command) {
+  [command commit];
+  [command waitUntilCompleted];
+  CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+  auto elapsed = command.GPUEndTime - command.GPUStartTime;
+  if (elapsed > 0)
+    partition_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                    std::memory_order_relaxed);
+}
+class MetalRows final : public DeviceRows {
+  Runtime& rt_{GetRuntime()};
+  id<MTLBuffer> rows_, saved_rows_, ranks_;
+  std::size_t size_{0};
+  bst_idx_t base_{0};
+  bool ready_{false};
+
+ public:
+  void Reset(std::size_t rows, bst_idx_t base) override {
+    size_ = rows;
+    base_ = base;
+    ready_ = false;
+  }
+  id<MTLBuffer> EnsureReady(id<MTLCommandBuffer> command) {
+    CHECK_LE(size_, std::numeric_limits<std::uint32_t>::max());
+    EnsureBuffer(rt_, &rows_, size_ * sizeof(bst_idx_t));
+    if (!ready_ && size_) {
+      struct {
+        std::uint64_t rows, base;
+      } p{size_, base_};
+      auto encoder = [command computeCommandEncoder];
+      CHECK(encoder);
+      [encoder setComputePipelineState:rt_.row_iota_pipeline];
+      [encoder setBuffer:rows_ offset:0 atIndex:0];
+      [encoder setBytes:&p length:sizeof(p) atIndex:1];
+      [encoder dispatchThreads:MTLSizeMake(size_, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [encoder endEncoding];
+    }
+    return rows_;
+  }
+  void MarkReady() {
+    if (!ready_ && size_) row_init_dispatches.fetch_add(1, std::memory_order_relaxed);
+    ready_ = true;
+  }
+  void CopyToHost(Span<bst_idx_t> output) const override {
+    CHECK_EQ(output.size(), size_);
+    if (size_) {
+      CHECK(ready_);
+      std::memcpy(output.data(), rows_.contents, output.size_bytes());
+    }
+  }
+  std::vector<std::uint64_t> Partition(GHistIndexMatrix const& gidx,
+                                       std::vector<PartitionSplit> splits,
+                                       Span<std::uint32_t const> categories) override {
+    struct Block {
+      std::uint64_t begin, end;
+      std::uint32_t node, padding;
+    };
+    struct Params {
+      std::uint64_t rows, base;
+      std::uint32_t bin_bytes, dense, nodes, blocks;
+    };
+    static_assert(sizeof(Block) == 24 && sizeof(PartitionSplit) == 48);
+    CHECK_EQ(gidx.Size(), size_);
+    CHECK_EQ(gidx.base_rowid, base_);
+    CHECK_LE(splits.size(), std::numeric_limits<std::uint32_t>::max());
+    std::vector<Block> blocks;
+    for (std::size_t node = 0; node < splits.size(); ++node) {
+      auto& split = splits[node];
+      CHECK_LE(split.end, size_);
+      CHECK_LE(split.begin, split.end);
+      split.block_begin = blocks.size();
+      for (auto begin = split.begin; begin < split.end; begin += 256)
+        blocks.push_back(
+            {begin, std::min(begin + 256, split.end), static_cast<std::uint32_t>(node), 0});
+      split.block_end = blocks.size();
+    }
+    std::vector<std::uint64_t> result(splits.size(), 0);
+    if (blocks.empty()) return result;
+    @autoreleasepool {
+      auto page = GetPage(rt_, gidx);
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      this->EnsureReady(command);
+      EnsureBuffer(rt_, &saved_rows_, size_ * sizeof(bst_idx_t));
+      EnsureBuffer(rt_, &ranks_, size_ * sizeof(std::uint32_t));
+      auto split_buffer = Upload(rt_, splits.data(), splits.size() * sizeof(PartitionSplit));
+      auto block_buffer = Upload(rt_, blocks.data(), blocks.size() * sizeof(Block));
+      auto cats = Upload(rt_, categories.data(), categories.size_bytes());
+      auto counts = Allocate(rt_, blocks.size() * sizeof(std::uint32_t));
+      auto prefix = Allocate(rt_, blocks.size() * sizeof(std::uint32_t));
+      auto left = Allocate(rt_, splits.size() * sizeof(std::uint64_t));
+      Params p{size_,
+               base_,
+               static_cast<std::uint32_t>(gidx.index.GetBinTypeSize()),
+               static_cast<std::uint32_t>(gidx.IsDense()),
+               static_cast<std::uint32_t>(splits.size()),
+               static_cast<std::uint32_t>(blocks.size())};
+      auto encoder = [command computeCommandEncoder];
+      CHECK(encoder);
+      [encoder setComputePipelineState:rt_.partition_classify_pipeline];
+      [encoder setBuffer:page->index offset:0 atIndex:0];
+      [encoder setBuffer:page->row_ptr offset:0 atIndex:1];
+      [encoder setBuffer:page->offsets offset:0 atIndex:2];
+      [encoder setBuffer:page->cuts offset:0 atIndex:3];
+      [encoder setBuffer:rows_ offset:0 atIndex:4];
+      [encoder setBuffer:split_buffer offset:0 atIndex:5];
+      [encoder setBuffer:block_buffer offset:0 atIndex:6];
+      [encoder setBuffer:cats offset:0 atIndex:7];
+      [encoder setBuffer:ranks_ offset:0 atIndex:8];
+      [encoder setBuffer:counts offset:0 atIndex:9];
+      [encoder setBuffer:saved_rows_ offset:0 atIndex:10];
+      [encoder setBytes:&p length:sizeof(p) atIndex:11];
+      [encoder dispatchThreadgroups:MTLSizeMake(blocks.size(), 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [encoder endEncoding];
+      encoder = [command computeCommandEncoder];
+      CHECK(encoder);
+      [encoder setComputePipelineState:rt_.partition_prefix_pipeline];
+      [encoder setBuffer:split_buffer offset:0 atIndex:0];
+      [encoder setBuffer:counts offset:0 atIndex:1];
+      [encoder setBuffer:prefix offset:0 atIndex:2];
+      [encoder setBuffer:left offset:0 atIndex:3];
+      [encoder setBytes:&p length:sizeof(p) atIndex:4];
+      [encoder dispatchThreads:MTLSizeMake(splits.size(), 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [encoder endEncoding];
+      encoder = [command computeCommandEncoder];
+      CHECK(encoder);
+      [encoder setComputePipelineState:rt_.partition_scatter_pipeline];
+      [encoder setBuffer:rows_ offset:0 atIndex:0];
+      [encoder setBuffer:saved_rows_ offset:0 atIndex:1];
+      [encoder setBuffer:split_buffer offset:0 atIndex:2];
+      [encoder setBuffer:block_buffer offset:0 atIndex:3];
+      [encoder setBuffer:ranks_ offset:0 atIndex:4];
+      [encoder setBuffer:prefix offset:0 atIndex:5];
+      [encoder setBuffer:left offset:0 atIndex:6];
+      [encoder dispatchThreadgroups:MTLSizeMake(blocks.size(), 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [encoder endEncoding];
+      CompleteTraining(command);
+      this->MarkReady();
+      std::memcpy(result.data(), left.contents, result.size() * sizeof(std::uint64_t));
+      partition_dispatches.fetch_add(1, std::memory_order_relaxed);
+      return result;
+    }
+  }
+  void LeafPositions(std::vector<LeafRange> leaves,
+                     linalg::MatrixView<GradientPair const> gradients,
+                     Span<bst_node_t> output) override {
+    if (!size_) return;
+    CHECK_GE(output.size(), base_ + size_);
+    CHECK_GE(gradients.Shape(0), base_ + size_);
+    std::sort(leaves.begin(), leaves.end(),
+              [](auto const& a, auto const& b) { return a.begin < b.begin; });
+    std::size_t end = 0;
+    for (auto const& leaf : leaves) {
+      CHECK_EQ(leaf.begin, end);
+      CHECK_GE(leaf.end, leaf.begin);
+      end = leaf.end;
+    }
+    CHECK_EQ(end, size_);
+    @autoreleasepool {
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      this->EnsureReady(command);
+      auto leaf_buffer = Upload(rt_, leaves.data(), leaves.size() * sizeof(LeafRange));
+      auto g = Upload(rt_, gradients.Values().data(), gradients.Values().size_bytes());
+      auto out = Allocate(rt_, size_ * sizeof(bst_node_t));
+      struct {
+        std::uint64_t rows, base, stride0, stride1;
+        std::uint32_t targets, leaves;
+      } p{size_,
+          base_,
+          gradients.Stride(0),
+          gradients.Stride(1),
+          static_cast<std::uint32_t>(gradients.Shape(1)),
+          static_cast<std::uint32_t>(leaves.size())};
+      auto encoder = [command computeCommandEncoder];
+      CHECK(encoder);
+      [encoder setComputePipelineState:rt_.leaf_positions_pipeline];
+      [encoder setBuffer:rows_ offset:0 atIndex:0];
+      [encoder setBuffer:leaf_buffer offset:0 atIndex:1];
+      [encoder setBuffer:g offset:0 atIndex:2];
+      [encoder setBuffer:out offset:0 atIndex:3];
+      [encoder setBytes:&p length:sizeof(p) atIndex:4];
+      [encoder dispatchThreads:MTLSizeMake(size_, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [encoder endEncoding];
+      CompleteTraining(command);
+      this->MarkReady();
+      std::memcpy(output.data() + base_, out.contents, size_ * sizeof(bst_node_t));
+      leaf_partition_dispatches.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
 };
 
 class MetalHistogram final : public Histogram {
@@ -128,7 +391,7 @@ class MetalHistogram final : public Histogram {
   id<MTLCommandQueue> queue_;
   id<MTLBuffer> gradients_, raw_gradients_, histogram_buffer_, row_buffer_, node_buffer_;
   bool gradients_ready_{false};
-  std::vector<Page> pages_;
+
   double inverse_scale_[2]{1.0, 1.0};
 
   void UploadGradients(Span<GradientPair const> gradients, id<MTLCommandBuffer> command) {
@@ -178,10 +441,7 @@ class MetalHistogram final : public Histogram {
     CHECK(queue_) << "Metal command queue creation failed.";
   }
 
-  void Reset() override {
-    gradients_ready_ = false;
-    pages_.clear();
-  }
+  void Reset() override { gradients_ready_ = false; }
 
   void Build(std::size_t page_idx, GHistIndexMatrix const& gidx, RowSetCollection const& rows,
              std::vector<bst_node_t> const& nodes, Span<GradientPair const> gradients,
@@ -190,15 +450,7 @@ class MetalHistogram final : public Histogram {
       CHECK_EQ(nodes.size(), output.size());
       CHECK_LE(nodes.size(), std::numeric_limits<std::uint32_t>::max());
       auto staging_start = Clock::now();
-      if (pages_.size() <= page_idx) pages_.resize(page_idx + 1);
-      auto& page = pages_[page_idx];
-      if (!page.index) {
-        page.index = Upload(rt_, gidx.index.data<std::uint8_t>(),
-                            gidx.index.Size() * gidx.index.GetBinTypeSize());
-        page.row_ptr = Upload(rt_, gidx.row_ptr.data(), gidx.row_ptr.size() * sizeof(std::size_t));
-        page.offsets =
-            Upload(rt_, gidx.cut.Ptrs().data(), gidx.cut.Ptrs().size() * sizeof(std::uint32_t));
-      }
+      auto page = GetPage(rt_, gidx);
       std::vector<std::uint64_t> node_ptr{0};
       std::size_t max_node_rows = 0;
       for (auto node : nodes) {
@@ -216,15 +468,28 @@ class MetalHistogram final : public Histogram {
       if (!histogram_buffer_ || histogram_buffer_.length < bytes)
         histogram_buffer_ = Allocate(rt_, bytes);
       auto histogram = histogram_buffer_;
-      auto row_bytes = total_rows * sizeof(bst_idx_t);
-      if (!row_buffer_ || row_buffer_.length < row_bytes) row_buffer_ = Allocate(rt_, row_bytes);
-      auto row_buffer = row_buffer_;
-      for (std::size_t node = 0; node < nodes.size(); ++node) {
-        auto size = rows[nodes[node]].Size();
-        if (size)
-          std::memcpy(static_cast<bst_idx_t*>(row_buffer.contents) + node_ptr[node],
-                      rows[nodes[node]].begin(), size * sizeof(bst_idx_t));
+      id<MTLCommandBuffer> command = [queue_ commandBuffer];
+      CHECK(command);
+      auto device_rows = static_cast<MetalRows*>(rows.metal_rows.get());
+      std::vector<std::uint64_t> row_begin;
+      id<MTLBuffer> row_buffer;
+      if (device_rows) {
+        row_buffer = device_rows->EnsureReady(command);
+        for (auto node : nodes)
+          row_begin.push_back(rows[node].Size() ? rows[node].begin() - rows.Data()->data() : 0);
+      } else {
+        EnsureBuffer(rt_, &row_buffer_, total_rows * sizeof(bst_idx_t));
+        row_buffer = row_buffer_;
+        for (std::size_t node = 0; node < nodes.size(); ++node) {
+          auto size = rows[nodes[node]].Size();
+          row_begin.push_back(node_ptr[node]);
+          if (size)
+            std::memcpy(static_cast<bst_idx_t*>(row_buffer.contents) + node_ptr[node],
+                        rows[nodes[node]].begin(), size * sizeof(bst_idx_t));
+        }
       }
+      auto row_begin_buffer =
+          Upload(rt_, row_begin.data(), row_begin.size() * sizeof(std::uint64_t));
       auto node_bytes = node_ptr.size() * sizeof(std::uint64_t);
       if (!node_buffer_ || node_buffer_.length < node_bytes)
         node_buffer_ = Allocate(rt_, node_bytes);
@@ -232,14 +497,14 @@ class MetalHistogram final : public Histogram {
       auto node_buffer = node_buffer_;
       Params params{total_rows,
                     gidx.base_rowid,
+                    gidx.Size(),
                     static_cast<std::uint32_t>(bins),
                     static_cast<std::uint32_t>(gidx.cut.Ptrs().size() - 1),
                     static_cast<std::uint32_t>(gidx.index.GetBinTypeSize()),
                     static_cast<std::uint32_t>(gidx.IsDense()),
                     static_cast<std::uint32_t>(nodes.size()),
-                    0};
-      id<MTLCommandBuffer> command = [queue_ commandBuffer];
-      CHECK(command) << "Metal command buffer allocation failed.";
+                    static_cast<std::uint32_t>(gidx.IsDense())};
+
       bool quantized = !gradients_ready_;
       if (quantized) this->UploadGradients(gradients, command);
       id<MTLBlitCommandEncoder> clear = [command blitCommandEncoder];
@@ -258,15 +523,16 @@ class MetalHistogram final : public Histogram {
                         params.n_features <= 65535 && nodes.size() <= 65535;
       auto pipeline = use_shared ? rt_.shared_pipeline : rt_.pipeline;
       [encoder setComputePipelineState:pipeline];
-      [encoder setBuffer:page.index offset:0 atIndex:0];
-      [encoder setBuffer:page.row_ptr offset:0 atIndex:1];
-      [encoder setBuffer:page.offsets offset:0 atIndex:2];
+      [encoder setBuffer:page->index offset:0 atIndex:0];
+      [encoder setBuffer:page->row_ptr offset:0 atIndex:1];
+      [encoder setBuffer:page->offsets offset:0 atIndex:2];
       [encoder setBuffer:gradients_ offset:0 atIndex:3];
       [encoder setBuffer:row_buffer offset:0 atIndex:4];
       [encoder setBuffer:histogram offset:0 atIndex:5];
       [encoder setBytes:&params length:sizeof(params) atIndex:6];
       auto threads = std::min<NSUInteger>(256, pipeline.maxTotalThreadsPerThreadgroup);
       [encoder setBuffer:node_buffer offset:0 atIndex:7];
+      [encoder setBuffer:row_begin_buffer offset:0 atIndex:8];
       if (use_shared) {
         [encoder setThreadgroupMemoryLength:shared_bytes atIndex:0];
         auto groups = (max_node_rows + threads * 8 - 1) / (threads * 8);
@@ -283,6 +549,10 @@ class MetalHistogram final : public Histogram {
       [command waitUntilCompleted];
       CHECK(command.status == MTLCommandBufferStatusCompleted)
           << "Metal histogram execution failed: " << ErrorText(command.error);
+      if (device_rows) {
+        device_rows->MarkReady();
+        resident_histogram_dispatches.fetch_add(1, std::memory_order_relaxed);
+      }
       wait_time_ns.fetch_add(Elapsed(wait_start), std::memory_order_relaxed);
       auto readback_start = Clock::now();
       if (quantized) {
@@ -309,6 +579,7 @@ class MetalHistogram final : public Histogram {
 };
 }  // namespace
 
+std::unique_ptr<DeviceRows> MakeDeviceRows() { return std::make_unique<MetalRows>(); }
 std::unique_ptr<Histogram> MakeHistogram() { return std::make_unique<MetalHistogram>(); }
 bool IsAvailable() {
   @autoreleasepool {
@@ -331,7 +602,15 @@ Statistics GetStatistics() {
           prediction_gpu_time_ns.load(std::memory_order_relaxed),
           leaf_update_dispatches.load(std::memory_order_relaxed),
           metric_dispatches.load(std::memory_order_relaxed),
-          metric_gpu_time_ns.load(std::memory_order_relaxed)};
+          metric_gpu_time_ns.load(std::memory_order_relaxed),
+          index_uploads.load(std::memory_order_relaxed),
+          index_uploaded_bytes.load(std::memory_order_relaxed),
+          resident_histogram_dispatches.load(std::memory_order_relaxed),
+          partition_dispatches.load(std::memory_order_relaxed),
+          leaf_partition_dispatches.load(std::memory_order_relaxed),
+          row_init_dispatches.load(std::memory_order_relaxed),
+          partition_gpu_time_ns.load(std::memory_order_relaxed),
+          index_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {

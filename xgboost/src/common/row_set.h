@@ -14,12 +14,19 @@
 #include "xgboost/base.h"     // for bst_node_t
 #include "xgboost/logging.h"  // for CHECK
 
+#if defined(XGBOOST_USE_METAL)
+#include "metal_training.h"
+#endif
+
 namespace xgboost::common {
 /**
  * @brief Collection of rows for each tree node.
  */
 class RowSetCollection {
  public:
+#if defined(XGBOOST_USE_METAL)
+  std::unique_ptr<metal::DeviceRows> metal_rows;
+#endif
   RowSetCollection() = default;
   RowSetCollection(RowSetCollection const&) = delete;
   RowSetCollection(RowSetCollection&&) = default;

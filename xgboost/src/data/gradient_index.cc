@@ -166,6 +166,9 @@ void GHistIndexMatrix::ResizeColumns(double sparse_thresh) {
 }
 
 void GHistIndexMatrix::ResizeIndex(Context const *ctx, const size_t n_index, const bool isDense) {
+#if defined(XGBOOST_USE_METAL)
+  this->InvalidateMetal();
+#endif
   auto make_index = [this, ctx, n_index](auto t, common::BinTypeSize t_size) {
     // Must resize instead of allocating a new one. This function is called everytime a
     // new batch is pushed, and we grow the size accordingly without loosing the data in

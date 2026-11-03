@@ -22,10 +22,10 @@ struct Pair {
   int64_t g, h;
 };
 struct Params {
-  uint64_t rows, base;
+  uint64_t rows, base, page_rows;
   uint32_t bins, features, width, dense, nodes, pad;
 };
-static_assert(sizeof(Row) == 16 && sizeof(Pair) == 16 && sizeof(Params) == 40);
+static_assert(sizeof(Row) == 16 && sizeof(Pair) == 16 && sizeof(Params) == 48);
 void Require(bool ok, char const *what) {
   if (!ok) throw std::runtime_error(what);
 }
@@ -121,7 +121,7 @@ int main(int argc, char **argv) {
                 auto rs = upload(row_ids.data(), row_ids.size() * sizeof(uint64_t));
                 std::vector<Pair> zero(reference.size(), {0, 0});
                 auto out = upload(zero.data(), zero.size() * sizeof(Pair));
-                Params p{n, base, bins, features, width, uint32_t(dense), nodes, 0};
+                Params p{n, base, n, bins, features, width, uint32_t(dense), nodes, 0};
                 auto command = [queue commandBuffer];
                 auto encoder = [command computeCommandEncoder];
                 [encoder setComputePipelineState:shared ? shared_pipeline : pipeline];
@@ -134,6 +134,7 @@ int main(int argc, char **argv) {
                 [encoder setBytes:&p length:sizeof(p) atIndex:6];
                 auto np = upload(node_ptr.data(), node_ptr.size() * sizeof(uint64_t));
                 [encoder setBuffer:np offset:0 atIndex:7];
+                [encoder setBuffer:np offset:0 atIndex:8];
                 if (shared) {
                   [encoder setThreadgroupMemoryLength:per_feature * sizeof(Pair) atIndex:0];
                   [encoder dispatchThreadgroups:MTLSizeMake((max_node_rows + 2047) / 2048, features,

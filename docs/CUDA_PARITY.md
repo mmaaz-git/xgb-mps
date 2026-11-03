@@ -16,7 +16,7 @@ listed below. This is not yet a complete GPU backend.
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | Implemented with a different bounded fixed-point scheme; GPU integer bit conversion, host scale selection |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | CPU |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | CPU |
-| Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | CPU |
+| Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter, resident row IDs, GPU leaf positions; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu` | CPU |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels; label validation and base-score estimation still CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
@@ -31,7 +31,7 @@ listed below. This is not yet a complete GPU backend.
 | Multiclass error and logloss | `metric/multiclass_metric.cu` | Metal loss calculation and scaled block reductions; final small reduction in host FP64 |
 | Quantile, expectile, ranking, AUC and survival metrics | `metric/*.cu` | CPU |
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | CPU |
-| Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix used; no Metal-resident matrix yet |
+| Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | `gblinear` rejected for `mps` |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Individual histogram primitives implemented; general Metal primitives missing |
@@ -67,8 +67,8 @@ count, repeated measurements, and accuracy alongside any speedup claim.
 
 The central training loop still crosses the CPU/GPU boundary at every tree level.
 The next architectural change is to retain quantized data, gradients, histograms,
-row positions and prediction state on Metal buffers, then implement split evaluation
-and partitioning against that representation. Host orchestration and model serialization
+row positions and prediction state on Metal buffers, then implement split evaluation against that representation. Row partitioning
+and histogram reads now share resident GPU row indices. Host orchestration and model serialization
 can remain on the CPU, as they also do in CUDA-backed software. Numeric-only split
 selection would not complete this step: categorical splits, missing directions,
 monotonic/interaction constraints, vector leaves, sampling and external-memory paging

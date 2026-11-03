@@ -184,6 +184,16 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["leaf_update_dispatches"] = Integer{static_cast<std::int64_t>(stats.leaf_update_dispatches)};
   info["metric_dispatches"] = Integer{static_cast<std::int64_t>(stats.metric_dispatches)};
   info["metric_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.metric_gpu_time_ns)};
+  info["index_uploads"] = Integer{static_cast<std::int64_t>(stats.index_uploads)};
+  info["index_uploaded_bytes"] = Integer{static_cast<std::int64_t>(stats.index_uploaded_bytes)};
+  info["resident_histogram_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.resident_histogram_dispatches)};
+  info["partition_dispatches"] = Integer{static_cast<std::int64_t>(stats.partition_dispatches)};
+  info["leaf_partition_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.leaf_partition_dispatches)};
+  info["row_init_dispatches"] = Integer{static_cast<std::int64_t>(stats.row_init_dispatches)};
+  info["partition_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.partition_gpu_time_ns)};
+  info["index_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.index_gpu_time_ns)};
   info["gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.gpu_time_ns)};
 #else
   info["built"] = Boolean{false};
@@ -203,6 +213,14 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["leaf_update_dispatches"] = Integer{0};
   info["metric_dispatches"] = Integer{0};
   info["metric_gpu_time_ns"] = Integer{0};
+  info["index_uploads"] = Integer{0};
+  info["index_uploaded_bytes"] = Integer{0};
+  info["resident_histogram_dispatches"] = Integer{0};
+  info["partition_dispatches"] = Integer{0};
+  info["leaf_partition_dispatches"] = Integer{0};
+  info["row_init_dispatches"] = Integer{0};
+  info["partition_gpu_time_ns"] = Integer{0};
+  info["index_gpu_time_ns"] = Integer{0};
   info["gpu_time_ns"] = Integer{0};
 #endif
   auto &out_str = GlobalConfigAPIThreadLocalStore::Get()->ret_str;

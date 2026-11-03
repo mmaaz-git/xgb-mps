@@ -190,7 +190,9 @@ def metal_info() -> dict:
     """Experimental Metal availability and process-wide successful dispatch counters.
 
     Counters cover completed histograms, gradient quantization, objectives,
-    transforms, prediction, leaf-cache updates, and supported metrics.
+    transforms, prediction, leaf-cache updates, supported metrics, row partitioning,
+    and leaf assignment. ``index_uploads`` counts cached quantized-page uploads;
+    ``resident_histogram_dispatches`` counts histograms using GPU-owned row indices.
     ``gpu_time_ns`` measures histogram commands including quantization and clearing.
     ``objective_gpu_time_ns`` includes objective and transform kernels;
     ``prediction_gpu_time_ns`` includes traversal and leaf-cache kernels.

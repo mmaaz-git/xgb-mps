@@ -5,6 +5,7 @@ using namespace metal;
 struct HistogramParams {
   ulong n_rows;
   ulong base_rowid;
+  ulong page_rows;
   uint n_bins;
   uint n_features;
   uint bin_bytes;
@@ -38,7 +39,7 @@ kernel void xgb_histogram(
     device const uint* offsets [[buffer(2)]], device const long2* gradients [[buffer(3)]],
     device const ulong* rows [[buffer(4)]], device atomic_uint* hist [[buffer(5)]],
     constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
-    uint tid [[thread_position_in_grid]]) {
+    device const ulong* row_begin [[buffer(8)]], uint tid [[thread_position_in_grid]]) {
   if (ulong(tid) >= p.n_rows) return;
   // Upper bound handles repeated offsets from empty nodes.
   uint lo = 0, hi = p.n_nodes;
@@ -50,18 +51,20 @@ kernel void xgb_histogram(
       hi = mid;
   }
   uint node = lo;
-  ulong local_row = rows[tid] - p.base_rowid;
-  long2 g = gradients[rows[tid]];
+  ulong row = rows[row_begin[node] + ulong(tid) - node_ptr[node]];
+  ulong local_row = row - p.base_rowid;
+  long2 g = gradients[row];
   ulong begin = row_ptr[local_row];
   ulong end = row_ptr[local_row + 1];
   for (ulong i = begin; i < end; ++i) {
+    ulong pos = p.padding ? (i - begin) * p.page_rows + local_row : i;
     uint bin;
     if (p.bin_bytes == 1) {
-      bin = uint(index[i]);
+      bin = uint(index[pos]);
     } else if (p.bin_bytes == 2) {
-      bin = uint(reinterpret_cast<device const ushort*>(index)[i]);
+      bin = uint(reinterpret_cast<device const ushort*>(index)[pos]);
     } else {
-      bin = reinterpret_cast<device const uint*>(index)[i];
+      bin = reinterpret_cast<device const uint*>(index)[pos];
     }
     if (p.dense) bin += offsets[i - begin];
     ulong dst = (ulong(node) * p.n_bins + bin) * 4;
@@ -78,6 +81,7 @@ kernel void xgb_histogram_dense_shared(
     device const uint* offsets [[buffer(2)]], device const long2* gradients [[buffer(3)]],
     device const ulong* rows [[buffer(4)]], device atomic_uint* hist [[buffer(5)]],
     constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
+    device const ulong* row_begin [[buffer(8)]],
     threadgroup atomic_uint* local_hist [[threadgroup(0)]],
     uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
     uint3 threads [[threads_per_threadgroup]]) {
@@ -92,8 +96,9 @@ kernel void xgb_histogram_dense_shared(
     atomic_store_explicit(local_hist + i, 0, memory_order_relaxed);
   threadgroup_barrier(mem_flags::mem_threadgroup);
   for (ulong r = begin + tid; r < end; r += threads.x) {
-    ulong row = rows[r];
-    ulong i = row_ptr[row - p.base_rowid] + feature;
+    ulong row = rows[row_begin[node] + r - node_ptr[node]];
+    ulong i = p.padding ? ulong(feature) * p.page_rows + (row - p.base_rowid)
+                        : row_ptr[row - p.base_rowid] + feature;
     uint bin;
     if (p.bin_bytes == 1)
       bin = uint(index[i]);
@@ -509,4 +514,181 @@ kernel void xgb_metric(device const float* predictions [[buffer(0)]],
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
   if (lane == 0) partial[group] = float4(scratch[0], magnitude);
+}
+
+struct RowInitParams {
+  ulong rows, base;
+};
+kernel void xgb_row_iota(device ulong* rows [[buffer(0)]], constant RowInitParams& p [[buffer(1)]],
+                         uint tid [[thread_position_in_grid]]) {
+  if (ulong(tid) < p.rows) rows[tid] = p.base + tid;
+}
+struct PartitionSplit {
+  ulong begin, end;
+  uint feature;
+  int split_bin;
+  uint default_left, categorical, cat_begin, cat_size, block_begin, block_end;
+};
+struct PartitionBlock {
+  ulong begin, end;
+  uint node, padding;
+};
+struct PartitionParams {
+  ulong rows, base;
+  uint bin_bytes, dense, nodes, blocks;
+};
+inline uint xgb_read_bin(device const uchar* index, ulong pos, uint width) {
+  if (width == 1) return index[pos];
+  if (width == 2) return reinterpret_cast<device const ushort*>(index)[pos];
+  return reinterpret_cast<device const uint*>(index)[pos];
+}
+kernel void xgb_partition_classify(
+    device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
+    device const uint* offsets [[buffer(2)]], device const float* cuts [[buffer(3)]],
+    device const ulong* rows [[buffer(4)]], device const PartitionSplit* splits [[buffer(5)]],
+    device const PartitionBlock* blocks [[buffer(6)]], device const uint* categories [[buffer(7)]],
+    device uint* ranks [[buffer(8)]], device uint* counts [[buffer(9)]],
+    device ulong* saved_rows [[buffer(10)]], constant PartitionParams& p [[buffer(11)]],
+    uint block_id [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]]) {
+  threadgroup uint sums[8];
+  PartitionBlock block = blocks[block_id];
+  PartitionSplit split = splits[block.node];
+  ulong pos = block.begin + lane;
+  bool valid = pos < block.end, left = false;
+  if (valid) {
+    ulong row = rows[pos], local = row - p.base;
+    ulong begin = row_ptr[local], end = row_ptr[local + 1];
+    uint bin = 0xffffffffu, first = offsets[split.feature], last = offsets[split.feature + 1];
+    if (p.dense)
+      bin = xgb_read_bin(index, ulong(split.feature) * p.rows + local, p.bin_bytes) + first;
+    else {
+      ulong lo = begin, hi = end;
+      while (lo < hi) {
+        ulong mid = lo + (hi - lo) / 2;
+        if (xgb_read_bin(index, mid, p.bin_bytes) < first)
+          lo = mid + 1;
+        else
+          hi = mid;
+      }
+      if (lo < end) {
+        uint candidate = xgb_read_bin(index, lo, p.bin_bytes);
+        if (candidate < last) bin = candidate;
+      }
+    }
+    left = split.default_left;
+    if (bin != 0xffffffffu) {
+      if (split.categorical) {
+        float value = cuts[bin];
+        left = true;
+        if (value >= 0.0f && value < 16777216.0f) {
+          uint category = uint(value), word = category / 32;
+          if (word < split.cat_size)
+            left = (categories[split.cat_begin + word] & (1u << (31 - category % 32))) == 0;
+        }
+      } else
+        left = long(bin) <= long(split.split_bin);
+    }
+    saved_rows[pos] = row;
+  }
+  uint count = simd_sum(uint(left)), rank = simd_prefix_inclusive_sum(uint(left));
+  if (simd_lane == 0) sums[simd_group] = count;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint g = 0; g < simd_group; ++g) rank += sums[g];
+  if (valid) ranks[pos] = rank | (uint(left) << 31);
+  if (lane == 255) counts[block_id] = rank;
+}
+kernel void xgb_partition_prefix(device const PartitionSplit* splits [[buffer(0)]],
+                                 device const uint* counts [[buffer(1)]],
+                                 device uint* prefix [[buffer(2)]],
+                                 device ulong* left_counts [[buffer(3)]],
+                                 constant PartitionParams& p [[buffer(4)]],
+                                 uint node [[thread_position_in_grid]]) {
+  if (node >= p.nodes) return;
+  PartitionSplit split = splits[node];
+  uint sum = 0;
+  for (uint b = split.block_begin; b < split.block_end; ++b) {
+    prefix[b] = sum;
+    sum += counts[b];
+  }
+  left_counts[node] = sum;
+}
+kernel void xgb_partition_scatter(
+    device ulong* rows [[buffer(0)]], device const ulong* saved_rows [[buffer(1)]],
+    device const PartitionSplit* splits [[buffer(2)]],
+    device const PartitionBlock* blocks [[buffer(3)]], device const uint* ranks [[buffer(4)]],
+    device const uint* prefix [[buffer(5)]], device const ulong* left_counts [[buffer(6)]],
+    uint block_id [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]) {
+  PartitionBlock block = blocks[block_id];
+  ulong pos = block.begin + lane;
+  if (pos >= block.end) return;
+  PartitionSplit split = splits[block.node];
+  uint encoded = ranks[pos];
+  ulong left = prefix[block_id] + (encoded & 0x7fffffffu);
+  ulong dst = (encoded >> 31) ? split.begin + left - 1
+                              : split.begin + left_counts[block.node] + (pos - split.begin) - left;
+  rows[dst] = saved_rows[pos];
+}
+struct LeafRange {
+  ulong begin, end;
+  int node;
+  uint padding;
+};
+struct LeafPositionParams {
+  ulong rows, base, stride0, stride1;
+  uint targets, leaves;
+};
+kernel void xgb_leaf_positions(device const ulong* rows [[buffer(0)]],
+                               device const LeafRange* leaves [[buffer(1)]],
+                               device const float2* gradients [[buffer(2)]],
+                               device int* positions [[buffer(3)]],
+                               constant LeafPositionParams& p [[buffer(4)]],
+                               uint tid [[thread_position_in_grid]]) {
+  if (ulong(tid) >= p.rows) return;
+  uint lo = 0, hi = p.leaves;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (leaves[mid].end <= tid)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  ulong row = rows[tid];
+  bool invalid = true;
+  for (uint t = 0; t < p.targets; ++t)
+    invalid = invalid && gradients[row * p.stride0 + t * p.stride1].y == 0.0f;
+  int node = leaves[lo].node;
+  positions[row - p.base] = invalid ? ~node : node;
+}
+
+struct TransposeIndexParams {
+  ulong rows;
+  uint features, width;
+};
+kernel void xgb_transpose_index(device const uchar* source [[buffer(0)]],
+                                device uchar* target [[buffer(1)]],
+                                constant TransposeIndexParams& p [[buffer(2)]],
+                                uint2 group [[threadgroup_position_in_grid]],
+                                uint2 tid [[thread_position_in_threadgroup]]) {
+  threadgroup uint tile[32][33];
+  ulong row = ulong(group.y) * 32 + tid.y;
+  uint feature = group.x * 32 + tid.x;
+  for (uint j = 0; j < 32; j += 8)
+    if (row + j < p.rows && feature < p.features)
+      tile[tid.y + j][tid.x] = xgb_read_bin(source, (row + j) * p.features + feature, p.width);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  row = ulong(group.y) * 32 + tid.x;
+  feature = group.x * 32 + tid.y;
+  for (uint j = 0; j < 32; j += 8)
+    if (row < p.rows && feature + j < p.features) {
+      ulong out = ulong(feature + j) * p.rows + row;
+      uint value = tile[tid.x][tid.y + j];
+      if (p.width == 1)
+        target[out] = uchar(value);
+      else if (p.width == 2)
+        reinterpret_cast<device ushort*>(target)[out] = ushort(value);
+      else
+        reinterpret_cast<device uint*>(target)[out] = value;
+    }
 }
