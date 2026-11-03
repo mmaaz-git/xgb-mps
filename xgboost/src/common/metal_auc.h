@@ -11,4 +11,7 @@ struct ROCAUCSums {
 // Predictions must not contain NaNs (sorting has no CPU reference ordering).
 void ROCAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
             Span<float const> weights, bool multiclass, Span<ROCAUCSums> output);
+// PR returns (1, 1, normalized area), matching the CPU aggregation convention.
+void PRAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
+           Span<float const> weights, bool multiclass, Span<ROCAUCSums> output);
 }  // namespace xgboost::common::metal

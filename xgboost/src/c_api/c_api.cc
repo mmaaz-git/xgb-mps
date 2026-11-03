@@ -188,6 +188,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["histogram_shared_gradient_bytes"] = Integer{static_cast<std::int64_t>(stats.histogram_shared_gradient_bytes)};
   info["leaf_shared_gradient_bytes"] = Integer{static_cast<std::int64_t>(stats.leaf_shared_gradient_bytes)};
   info["leaf_shared_output_bytes"] = Integer{static_cast<std::int64_t>(stats.leaf_shared_output_bytes)};
+  info["pr_auc_dispatches"] = Integer{static_cast<std::int64_t>(stats.pr_auc_dispatches)};
+  info["pr_auc_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.pr_auc_gpu_time_ns)};
   info["roc_auc_dispatches"] = Integer{static_cast<std::int64_t>(stats.roc_auc_dispatches)};
   info["roc_auc_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.roc_auc_gpu_time_ns)};
 

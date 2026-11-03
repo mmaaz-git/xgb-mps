@@ -20,27 +20,28 @@ def main():
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--threads", type=int, default=os.cpu_count())
     parser.add_argument("--weighted", action="store_true")
+    parser.add_argument("--metric", choices=["auc", "aucpr"], default="auc")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
         parser.error(f"{args.output} exists; inspect it or choose a new output name")
     assert xgb.metal_info()["available"]
     report = dict(platform=platform.platform(), cpu_threads=args.threads, repeats=args.repeats,
-                  weighted=args.weighted, cases=[],
+                  weighted=args.weighted, metric=args.metric, cases=[],
                   timing="model.eval on fixed margins and labels, warmed prediction cache/runtime; "
                          "includes metric staging, sorting, GPU work and synchronization; "
                          "excludes DMatrix/model construction, data generation and training")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for rows in args.rows:
         for targets in args.targets:
-            print(f"Generating {rows:,} rows x {targets} ROC targets", flush=True)
+            print(f"Generating {rows:,} rows x {targets} AUC targets", flush=True)
             rng = np.random.default_rng(371)
             scores = rng.normal(size=(rows, targets)).astype(np.float32)
             labels = rng.integers(0, 2, size=(rows, targets)).astype(np.float32)
             weights = rng.uniform(0, 3, rows).astype(np.float32) if args.weighted else None
             d = xgb.DMatrix(np.zeros((rows, 1), dtype=np.float32), label=labels,
                              base_margin=scores, weight=weights, nthread=args.threads)
-            params = dict(objective="reg:squarederror", eval_metric="auc", num_target=targets,
+            params = dict(objective="reg:squarederror", eval_metric=args.metric, num_target=targets,
                           nthread=args.threads, base_score=.5)
             models = {device: xgb.train(params | {"device": device}, d, 0)
                       for device in ["cpu", "mps"]}
@@ -60,7 +61,7 @@ def main():
                     seconds = time.perf_counter() - start
                     after = xgb.metal_info()
                     delta = {k: after[k] - before[k] for k in after if k not in {"built", "available"}}
-                    assert delta["roc_auc_dispatches"] == int(device == "mps")
+                    assert delta["roc_auc_dispatches" if args.metric == "auc" else "pr_auc_dispatches"] == int(device == "mps")
                     timings[device].append(seconds)
                     counters[device].append(delta)
                     print(f"  {device} {repeat+1}/{args.repeats}: {seconds:.6f} s", flush=True)

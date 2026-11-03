@@ -35,6 +35,10 @@ echo "Checking binary64 exp/log/erf against CPU libm"
 clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_transcendental.mm \
   -framework Metal -framework Foundation -o results/metal_transcendental_test
 results/metal_transcendental_test xgboost/src/common/metal_histogram.metal
+echo "Checking conservative split bounds against one million CPU gains"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_split_bounds.mm \
+  -framework Metal -framework Foundation -o results/metal_split_bounds_test
+MTL_DEBUG_LAYER=1 results/metal_split_bounds_test xgboost/src/common/metal_histogram.metal
 echo "Checking scalar and vector split kernels against independent CPU references"
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_split.mm \
   -framework Metal -framework Foundation -o results/metal_split_test
@@ -64,7 +68,7 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_stats_api_test
 results/metal_stats_api_test
-echo "Checking production ROC-AUC against CPU and independent weighted pairs"
+echo "Checking production ROC/PR-AUC against CPU and independent references"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
   -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \

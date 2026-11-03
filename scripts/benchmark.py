@@ -1,5 +1,6 @@
 """Compare fresh CPU and Metal training jobs; write measured timings as JSON."""
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -70,7 +71,7 @@ def main():
                        weight=np.ones(32) if args.weighted else None)
     for device in ["cpu", "mps"]:
         xgb.train(p | {"device": device}, warm, num_boost_round=1)
-    report = dict(platform=platform.platform(), cpu_threads=args.threads, features=args.features,
+    report = dict(status="in_progress", platform=platform.platform(), cpu_threads=args.threads, features=args.features,
                   rounds=args.rounds, repeats=args.repeats, weighted=args.weighted, params=p, cases=[],
                   float32_generation=args.float32_generation, progress_every=args.progress_every,
                   memory_note="RSS is the process lifetime peak; swap is system-wide, not isolated to this benchmark",
@@ -90,11 +91,13 @@ def main():
         metric_histories = {"cpu": [], "mps": []}
         memory = {"cpu": [], "mps": []}
         dispatch_statistics = {"cpu": [], "mps": []}
+        clock_checks = {"cpu": [], "mps": []}
         for repeat in range(args.repeats):
             order = ["cpu", "mps"] if repeat % 2 == 0 else ["mps", "cpu"]
             for device in order:
                 before = xgb.metal_info()
                 memory_before = memory_snapshot()
+                wall_start = time.time()
                 start = time.perf_counter()
                 d = xgb.DMatrix(x, label=y, weight=weights, nthread=args.threads)
                 history = {}
@@ -104,6 +107,17 @@ def main():
                                   callbacks=[Progress(device, args.rounds, args.progress_every, start)]
                                   if args.progress_every else None)
                 elapsed = time.perf_counter() - start
+                wall_elapsed = time.time() - wall_start
+                clock_checks[device].append(dict(
+                    started_utc=datetime.fromtimestamp(wall_start, timezone.utc).isoformat(),
+                    wall_seconds=wall_elapsed, monotonic_seconds=elapsed))
+                # macOS's monotonic clock can stop during sleep. Do not silently
+                # publish a measurement spanning sleep or a wall-clock adjustment.
+                if abs(wall_elapsed - elapsed) > 1:
+                    report["status"] = "invalid_clock_discontinuity"
+                    report["in_progress"] = dict(rows=n, seconds=timings, clock_checks=clock_checks)
+                    args.output.write_text(json.dumps(report, indent=2) + "\n")
+                    raise RuntimeError("Benchmark crossed sleep or a clock adjustment; timings invalid")
                 memory[device].append({"before": memory_before, "after": memory_snapshot()})
                 after = xgb.metal_info()
                 stats = {k: after[k] - before[k] for k in after if k not in {"built", "available"}}
@@ -117,6 +131,9 @@ def main():
                 timings[device].append(elapsed)
                 preds[device] = model.predict(d)
                 print(f"  {device} repeat {repeat+1}/{args.repeats}: {elapsed:.3f}s, {completed} GPU dispatches, {gpu_seconds:.3f}s GPU time", flush=True)
+                report["in_progress"] = dict(rows=n, seconds=timings, memory=memory,
+                                              dispatch_statistics=dispatch_statistics, clock_checks=clock_checks)
+                args.output.write_text(json.dumps(report, indent=2) + "\n")
                 del d, model
         cpu = statistics.median(timings["cpu"])
         mps = statistics.median(timings["mps"])
@@ -126,15 +143,20 @@ def main():
                                        metric_histories["cpu"][-1]["train"][args.eval_metric],
                                        rtol=2e-5, atol=2e-5)
         truth = y[:, None] if preds["cpu"].ndim == 2 else y
-        case = dict(rows=n, seconds=timings, memory=memory, dispatch_statistics=dispatch_statistics, cpu_median=cpu, mps_median=mps,
+        case = dict(rows=n, seconds=timings, memory=memory, dispatch_statistics=dispatch_statistics,
+                    clock_checks=clock_checks, cpu_median=cpu, mps_median=mps,
                     speedup=cpu/mps, max_prediction_difference=float(np.max(np.abs(preds["cpu"]-preds["mps"]))),
                     cpu_rmse=float(np.sqrt(np.mean((preds["cpu"]-truth)**2))),
                     mps_rmse=float(np.sqrt(np.mean((preds["mps"]-truth)**2))))
         if args.eval_metric:
             case["metric_histories"] = metric_histories
+        report.pop("in_progress", None)
         report["cases"].append(case)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(f"  CPU/Metal speedup: {cpu/mps:.3f}x; wrote {args.output}", flush=True)
+
+    report["status"] = "complete"
+    args.output.write_text(json.dumps(report, indent=2) + "\n")
 
 
 if __name__ == "__main__":

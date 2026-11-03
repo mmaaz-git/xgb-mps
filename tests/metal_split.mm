@@ -386,24 +386,30 @@ int main(int argc, char** argv) {
         std::vector<std::vector<uint32_t>> orders;
         for (uint32_t n : {1, 2, 7, 31, 32, 33, 127, 128, 129, 255, 256, 257, 511, 1025})
           for (uint32_t kind = 0; kind < 3; ++kind)
-            for (int c = 0; c < 18; ++c) {
+            for (int c = 0; c < 30; ++c) {
               uint32_t begin = hist.size();
               Pair sum{0, 0};
               for (uint32_t i = 0; i < n; ++i) {
-                double scale = std::ldexp(1.0, (c % 3 - 1) * 28);
+                double scale = std::ldexp(1.0, c < 18 ? (c % 3 - 1) * 28 : (c - 18) % 7 - 3);
                 Pair bin{double(int(rng() % 2001) - 1000) / 8 * scale,
                          double(rng() % 201) / 8 * scale};
                 if (c == 3) bin = {0, 1};  // Exact gain and category-order ties.
                 if (c == 4) bin = {i % 2 ? 1.0 : -1.0, 1};
                 if (c == 5) bin.h = 0;
-                if (c >= 12) {
+                if (c == 24) bin.g = bin.h;
+                if (c == 25) bin.g = bin.h * 3.141592653589793;
+                if (c == 26) bin.g = bin.h * (3.0 + (i % 2 ? 1e-7 : -1e-7));
+                if (c == 27 && i % 3) bin = {0, 0};
+                if (c == 28) bin.g = 1e-9;
+                if (c == 29) bin.h = 1e-9;
+                if (c >= 12 && c < 18) {
                   bin.g = std::ldexp(bin.g, int(rng() % 80) - 40);
                   bin.h = std::ldexp(bin.h, int(rng() % 80) - 40);
                 }
                 hist.push_back(bin);
                 sum = Add(sum, bin);
               }
-              if (c % 2) sum = Add(sum, Pair{double(int(rng() % 101) - 50), double(rng() % 100)});
+              if (c < 18 && c % 2) sum = Add(sum, Pair{double(int(rng() % 101) - 50), double(rng() % 100)});
               Task t{begin,
                      uint32_t(hist.size()),
                      kind,
@@ -411,9 +417,9 @@ int main(int argc, char** argv) {
                      sum.g,
                      sum.h,
                      Gain(sum, Weight(sum, p), p),
-                     c % 4 == 0 ? -0.1f : -INFINITY,
-                     c % 4 == 0 ? 0.3f : INFINITY,
-                     c % 3 - 1};
+                     c < 18 && c % 4 == 0 ? -0.1f : -INFINITY,
+                     c < 18 && c % 4 == 0 ? 0.3f : INFINITY,
+                     c < 18 ? c % 3 - 1 : 0};
               tasks.push_back(t);
               orders.emplace_back();
               expected.push_back(Reference(hist, t, p, orders.back()));

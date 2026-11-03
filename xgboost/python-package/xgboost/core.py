@@ -196,9 +196,10 @@ def metal_info() -> dict:
     ``gpu_time_ns`` measures histogram commands including quantization and clearing.
     ``objective_gpu_time_ns`` includes objective and transform kernels;
     ``prediction_gpu_time_ns`` includes traversal and leaf-cache kernels.
-    ``metric_gpu_time_ns`` covers metric kernels, including ROC-AUC sorting and
+    ``metric_gpu_time_ns`` covers metric kernels, including ROC/PR-AUC sorting and
     scans. ``roc_auc_dispatches`` counts one batched operation across all outputs;
-    ``roc_auc_gpu_time_ns`` reports its GPU duration. GPU durations exclude host work.
+    ``roc_auc_gpu_time_ns`` reports its GPU duration. ``pr_auc_dispatches`` and
+    ``pr_auc_gpu_time_ns`` report the corresponding PR-AUC work. GPU durations exclude host work.
     Histogram ``staging_time_ns``, ``wait_time_ns``, and ``readback_time_ns`` measure
     host wall time; wait time overlaps GPU duration and must not be added to it.
     ``survival_cpu_corrections`` and ``survival_cpu_time_ns`` report the explicit

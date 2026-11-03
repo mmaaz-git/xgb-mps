@@ -9,7 +9,7 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums and stump
-fitting, means, stable column sorting, ROC-AUC and quantile/median estimation on Metal. Feature quantile sketching,
+fitting, means, stable column sorting, ROC/PR-AUC and quantile/median estimation on Metal. Feature quantile sketching,
 gradient-based sampling and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
@@ -67,6 +67,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
+| PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile and expectile |
 
 AFT gradient evaluation is still hybrid for numerically sensitive censored rows.
@@ -654,7 +655,7 @@ All columns share one command and batched stable radix sort; no per-row host sor
 scan or class-indicator expansion is needed. Prefixes and integration use software
 binary64; normalization, multiclass prevalence weighting and multilabel macro
 averaging retain the existing host behavior. `roc_auc_dispatches` and
-`roc_auc_gpu_time_ns` expose completed work. PR-AUC and ranking metrics remain CPU.
+`roc_auc_gpu_time_ns` expose completed work. Ranking metrics, including grouped ROC/PR-AUC, remain CPU.
 NaN score ordering has no defined CPU equivalence contract.
 
 The [weighted metric-only benchmark](validation/benchmark-roc-v1-m3.json) uses five
@@ -733,3 +734,51 @@ under existing memory pressure, not a claim of isolated hardware throughput.
   --rounds 200 --max-depth 8 --progress-every 20 --float32-generation \
   --output results/my-wide-long.json
 ```
+
+
+### PR-AUC and split-scoring update
+
+`eval_metric="aucpr"` now runs classification sorting, tied-score scans and
+continuous PR integration on Metal. The [weighted metric-only benchmark](validation/benchmark-pr-v1-m3.json)
+uses the same five alternating repeats and 8 CPU threads as ROC-AUC above:
+
+| Rows | Outputs | CPU | Metal | CPU / Metal |
+| ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 1 | 7.75 ms | 2.20 ms | 3.52× |
+| 100,000 | 3 | 7.95 ms | 5.45 ms | 1.46× |
+| 1,000,000 | 1 | 96.12 ms | 18.88 ms | **5.09×** |
+| 1,000,000 | 3 | 114.01 ms | 56.17 ms | 2.03× |
+
+Maximum metric difference is `1.35e-14`. These gains cover metric evaluation,
+not full training. The 432 native PR cases cover 6.76 million score-label pairs
+and include 672 independent long-double integral checks. A separate extreme-weight
+case exposes cancellation in upstream CPU PR-AUC: a negative example weighted
+`1e30` above a positive example weighted `1` produces CPU area `1`, whereas the
+stable GPU integral is approximately `5e-31`. Four other extreme-weight test cases
+also differ from the unstable CPU formula; these are checked against the independent
+integral instead. The public metric text rounds the `5e-31` result to zero.
+
+Numerical split candidates now use [conservative gain bounds](docs/METAL_SPLIT_BOUNDS.md)
+to skip software-binary64 scoring only when they provably cannot win. Survivors
+retain the original precise evaluation and tie order. Missing-value directions
+are included; categorical, constrained and unsupported numerical ranges keep
+full evaluation. One million bound checks and 6,300 exact scalar split comparisons
+pass, along with 2,160 vector cases and the integration suite.
+
+The [paired kernel benchmark](validation/benchmark-split-filter-kernel-v3-m3.json)
+compiles screening on and off from the same source and verifies both against CPU.
+At 8,192 feature tasks, split scoring improves **1.69× without missing values** and
+**1.81× with missing values**. Smaller launches improve 1.25–1.63×.
+
+For [one million rows × 128 columns, 200 rounds, depth 8](validation/benchmark-wide-long128-filter-v3-m3.json),
+current medians are **18.83 s CPU / 21.94 s Metal (0.86×)** with identical predictions.
+Metal time is lower than the earlier 25.39 s baseline, but this still does not meet
+the goal of faster general training. Runs occurred under substantial existing system
+memory pressure; all repeats and swap telemetry are retained. A 256-column run
+crossed laptop sleep and is excluded pending a clean rerun. The benchmark now records
+wall and monotonic times and rejects a run when their difference indicates sleep
+or a clock adjustment; it also checkpoints completed repetitions.
+
+Current validation: 498 Python tests pass (497 in the full run plus the corrected
+metric-format test rerun), one skip; native tests pass with Metal API Validation,
+and the CPU-only build checks pass. Full CUDA parity remains in progress.

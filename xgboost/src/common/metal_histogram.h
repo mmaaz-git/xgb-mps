@@ -47,6 +47,7 @@ struct Statistics {
   std::uint64_t objective_shared_input_bytes, objective_shared_output_bytes, objective_staging_bytes;
   std::uint64_t histogram_shared_gradient_bytes, leaf_shared_gradient_bytes, leaf_shared_output_bytes;
   std::uint64_t roc_auc_dispatches, roc_auc_gpu_time_ns;
+  std::uint64_t pr_auc_dispatches, pr_auc_gpu_time_ns;
 };
 
 class Histogram {

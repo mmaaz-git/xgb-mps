@@ -1081,6 +1081,56 @@ inline void xgb_consider_split(DoublePair left, DoublePair right, SplitTask task
   if (isfinite(gain) && gain > best.gain)
     best = {left.g.bits, left.h.bits, right.g.bits, right.h.bits, gain, bin, missing, partition};
 }
+// Outward FP32 bounds used only to reject candidates whose upper bound is
+// below a valid candidate's lower bound. Survivors use the unchanged binary64
+// evaluator, including float weight/square rounding and CPU tie order.
+#ifndef XGB_METAL_SPLIT_FILTER
+#define XGB_METAL_SPLIT_FILTER 1
+#endif
+inline float xgb_round_down(float v) {
+  uint bits = as_type<uint>(v), mag = bits & 0x7fffffffu;
+  if (mag >= 0x7f800000u) return v;
+  if (mag < 0x00800000u) return as_type<float>(0x80800000u);
+  return as_type<float>(bits & 0x80000000u ? bits + 1 : bits - 1);
+}
+inline float xgb_round_up(float v) {
+  uint bits = as_type<uint>(v), mag = bits & 0x7fffffffu;
+  if (mag >= 0x7f800000u) return v;
+  if (mag < 0x00800000u) return as_type<float>(0x00800000u);
+  return as_type<float>(bits & 0x80000000u ? bits - 1 : bits + 1);
+}
+inline float2 xgb_unconstrained_gain_bound(DoublePair sum, float lambda) {
+  float g = abs(xgb_dto_float(sum.g)), h = xgb_dto_float(sum.h);
+  if (!(h >= 1.0e-8f && h <= 1.0e8f && lambda >= 0.0f && lambda <= 1.0e8f))
+    return float2(-INFINITY, INFINITY);
+  if (xgb_dzero(sum.g)) return float2(0);
+  // This restricted range keeps every square, denominator, quotient and float
+  // weight square normal and finite. Other values receive an unbounded interval.
+  if (!(g >= 1.0e-8f && g <= 1.0e8f && h >= 1.0e-8f && h <= 1.0e8f &&
+        lambda >= 0.0f && lambda <= 1.0e8f)) return float2(-INFINITY, INFINITY);
+  float gl = xgb_round_down(g), gh = xgb_round_up(g);
+  float al = xgb_round_down(xgb_round_down(h) + lambda);
+  float ah = xgb_round_up(xgb_round_up(h) + lambda);
+  float lo = xgb_round_down(xgb_round_down(gl * gl) / ah);
+  float hi = xgb_round_up(xgb_round_up(gh * gh) / al);
+  // For w = round_float(-g/(h+lambda)), the CPU gain differs from g*g/(h+lambda)
+  // by < 4*FLT_EPSILON relatively in this range. 32 eps also covers binary64
+  // operation rounding and the outward interval arithmetic above.
+  constexpr float margin = 0x1p-18f;  // 32 * 2^-23
+  return float2(xgb_round_down(lo * (1.0f - margin)),
+                xgb_round_up(hi * (1.0f + margin)));
+}
+inline float2 xgb_split_gain_bound(DoublePair left, DoublePair right, SplitTask task,
+                                   SplitParameters p) {
+  XGBDouble minimum = xgb_dfrom_float(p.min_child_weight);
+  if (!xgb_dlt({0}, left.h) || !xgb_dlt({0}, right.h) || xgb_dlt(left.h, minimum) ||
+      xgb_dlt(right.h, minimum)) return float2(-INFINITY);
+  float2 l = xgb_unconstrained_gain_bound(left, p.reg_lambda);
+  float2 r = xgb_unconstrained_gain_bound(right, p.reg_lambda);
+  return float2(xgb_round_down(xgb_round_down(l.x + r.x) - task.root_gain),
+                xgb_round_up(xgb_round_up(l.y + r.y) - task.root_gain));
+}
+
 // If a complete feature sum fits in 53 integer bits at its finest input unit,
 // every possible prefix is exactly representable as binary64. In that case an
 // integer parallel scan is equivalent to the CPU's sequential double additions.
@@ -1241,16 +1291,56 @@ kernel void xgb_evaluate_splits(
     }
   }
   threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+  uint root_bits = as_type<uint>(task.root_gain) & 0x7fffffffu;
+  bool screen = XGB_METAL_SPLIT_FILTER && task.kind == 0 &&
+                task.monotone == 0 && task.lower == -INFINITY && task.upper == INFINITY &&
+                (as_type<uint>(p.reg_alpha) & 0x7fffffffu) == 0 &&
+                (as_type<uint>(p.max_delta_step) & 0x7fffffffu) == 0 &&
+                isfinite(task.root_gain) && (!root_bits || root_bits >= 0x00800000u);
+  threadgroup float cutoff;
+  if (screen) {
+    float lower = 0.0f;  // The original evaluator accepts only positive gains.
+    for (uint i = tid; i < n; i += width) {
+      DoublePair sum = xgb_pair_read(scans[task.begin + i].xy);
+      float2 bound = xgb_split_gain_bound(sum, xgb_pair_sub(parent, sum), task, p);
+      lower = max(lower, bound.x);
+      if (missing) {
+        DoublePair right = xgb_pair_read(scans[task.begin + i].zw);
+        float2 backward = xgb_split_gain_bound(xgb_pair_sub(parent, right), right, task, p);
+        lower = max(lower, backward.x);
+      } else {
+        // Numeric features without missing rows do not need the suffix scan.
+        // Category-only scratch may be a dummy allocation in the real runtime.
+        scans[task.begin + i].z = ulong(as_type<uint>(bound.y));
+      }
+    }
+    float best_lower = simd_max(lower);
+    if (lane == 0) gains[simd] = best_lower;
+    threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);
+    if (tid == 0) {
+      cutoff = 0.0f;
+      for (uint j = 0; j < width / 32; ++j) cutoff = max(cutoff, gains[j]);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
   SplitResult best{0, 0, 0, 0, 0.0f, -1, 0, 0};
   if (task.kind == 0) {
     for (uint i = tid; i < n; i += width) {
       DoublePair sum = xgb_pair_read(scans[task.begin + i].xy);
-      xgb_consider_split(sum, xgb_pair_sub(parent, sum), task, p, int(i), 0, 0, best);
+      DoublePair right = xgb_pair_sub(parent, sum);
+      if (screen) {
+        float upper = missing ? xgb_split_gain_bound(sum, right, task, p).y
+                              : as_type<float>(uint(scans[task.begin + i].z));
+        if (upper < cutoff) continue;
+      }
+      xgb_consider_split(sum, right, task, p, int(i), 0, 0, best);
     }
     if (missing)
       for (int i = int(n) - 1 - int(tid); i >= 0; i -= int(width)) {
         DoublePair sum = xgb_pair_read(scans[task.begin + i].zw);
-        xgb_consider_split(xgb_pair_sub(parent, sum), sum, task, p, i, 1, 0, best);
+        DoublePair left = xgb_pair_sub(parent, sum);
+        if (screen && xgb_split_gain_bound(left, sum, task, p).y < cutoff) continue;
+        xgb_consider_split(left, sum, task, p, i, 1, 0, best);
       }
   } else if (task.kind == 1) {
     DoublePair absent = xgb_pair_read(missing_sum);
@@ -2681,6 +2771,87 @@ kernel void xgb_roc_area(device const uint2* sorted [[buffer(0)]],
     XGBDouble width = xgb_dsub({end.x}, {prev.x});
     width.bits &= ~kDoubleSign;
     area = xgb_dmul(xgb_dmul(width, xgb_dadd({end.y}, {prev.y})), xgb_dfrom_float(0.5f));
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(area, {0}, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[ulong(group.y) * p.blocks + group.x] = total;
+}
+
+// Stable integral of precision over recall. The CPU's difference of two logs
+// can cancel completely for highly unequal weights. This form uses nonnegative
+// terms and evaluates 1-log(1+x)/x directly for small x.
+constant ulong xgb_pr_log_ratio_coeff[] = {
+    0x3fe0000000000000ul,
+    0xbfd5555555555555ul,
+    0x3fd0000000000000ul,
+    0xbfc999999999999aul,
+    0x3fc5555555555555ul,
+    0xbfc2492492492492ul,
+    0x3fc0000000000000ul,
+    0xbfbc71c71c71c71cul,
+    0x3fb999999999999aul,
+    0xbfb745d1745d1746ul,
+    0x3fb5555555555555ul,
+    0xbfb3b13b13b13b14ul,
+    0x3fb2492492492492ul,
+    0xbfb1111111111111ul,
+    0x3fb0000000000000ul,
+    0xbfae1e1e1e1e1e1eul,
+    0x3fac71c71c71c71cul,
+    0xbfaaf286bca1af28ul,
+    0x3fa999999999999aul,
+    0xbfa8618618618618ul
+};
+inline XGBDouble xgb_pr_integral(XGBDouble fp0, XGBDouble fp1, XGBDouble tp0,
+                                XGBDouble tp1, XGBDouble total) {
+  using namespace xgb_survival;
+  D dt = tp1 - tp0, df = fp1 - fp0;
+  if (!(dt > zero)) return zero;
+  // Parallel positive prefixes can differ by a rounding unit at block edges.
+  if (df < zero) df = zero;
+  D ds = dt + df, fraction = dt / ds, recall = dt / total, start = fp0 + tp0;
+  if (xgb_dzero(start)) return recall * fraction;
+  D x = ds / start, q, l;
+  if (x < From(0.125f)) {
+    q = x * Polynomial(x, xgb_pr_log_ratio_coeff, 20);
+    l = one - q;
+  } else {
+    l = Log(one + x) / x;
+    q = one - l;
+  }
+  return recall * ((tp0 / start) * l + fraction * q);
+}
+
+// Continuous precision-recall interpolation, following metric/auc.h.
+kernel void xgb_pr_area(device const uint2* sorted [[buffer(0)]],
+                         device const ulong2* prefix [[buffer(1)]],
+                         device ulong2* partial [[buffer(2)]],
+                         constant ROCParams& p [[buffer(3)]],
+                         uint2 group [[threadgroup_position_in_grid]],
+                         uint tid [[thread_index_in_threadgroup]],
+                         uint lane [[thread_index_in_simdgroup]],
+                         uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong row = ulong(group.x) * 256 + tid, base = ulong(group.y) * p.rows;
+  XGBDouble area{0};
+  if (row < p.rows && (row + 1 == p.rows || sorted[base + row].x != sorted[base + row + 1].x)) {
+    uint start = uint(row), key = sorted[base + row].x;
+    if (row && sorted[base + row - 1].x == key) {
+      uint lo = 0, hi = uint(row);
+      while (lo < hi) {
+        uint mid = lo + (hi - lo) / 2;
+        if (sorted[base + mid].x < key) lo = mid + 1;
+        else hi = mid;
+      }
+      start = lo;
+    }
+    ulong2 prev = start ? prefix[base + start - 1] : ulong2(0), end = prefix[base + row];
+    using namespace xgb_survival;
+    D total{prefix[base + p.rows - 1].y};
+    D fp0{prev.x}, tp0{prev.y}, fp1{end.x}, tp1{end.y};
+    if (total > zero && D{prefix[base + p.rows - 1].x} > zero && !xgb_deq(tp0, tp1)) {
+      area = xgb_pr_integral(fp0, fp1, tp0, tp1, total);
+    }
   }
   threadgroup int4 bounds[8];
   threadgroup ulong2 sums[8];

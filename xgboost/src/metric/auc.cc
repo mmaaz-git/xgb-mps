@@ -109,9 +109,10 @@ double MultiAUC(Context const *ctx, common::Span<float const> predts, MetaInfo c
 
   if (n_samples != 0) {
 #if defined(XGBOOST_USE_METAL)
-    if (ctx->IsMPS() && is_roc) {
+    if (ctx->IsMPS()) {
       std::vector<common::metal::ROCAUCSums> sums(n_targets);
-      common::metal::ROCAUC(predts_t, labels, info.weights_.ConstHostSpan(),
+      auto operation = is_roc ? common::metal::ROCAUC : common::metal::PRAUC;
+      operation(predts_t, labels, info.weights_.ConstHostSpan(),
                             type == MultiAUCType::kMultiClass, sums);
       for (std::size_t c = 0; c < n_targets; ++c) {
         tp(c) = sums[c].tp;
@@ -481,7 +482,17 @@ class EvalPRAUC : public EvalAUC<EvalPRAUC> {
     if (ctx_->IsCUDA()) {
       std::tie(pr, re, auc) =
           cuda_impl::BinaryPRAUC(ctx_, predts.ConstDeviceSpan(), info, &this->d_cache_);
-    } else {
+    }
+#if defined(XGBOOST_USE_METAL)
+    else if (ctx_->IsMPS()) {
+      common::metal::ROCAUCSums sums;
+      common::metal::PRAUC(
+          linalg::MakeTensorView(DeviceOrd::CPU(), predts.ConstHostSpan(), predts.Size(), 1),
+          info.labels.HostView(), info.weights_.ConstHostSpan(), false, {&sums, 1});
+      std::tie(pr, re, auc) = std::make_tuple(sums.fp, sums.tp, sums.area);
+    }
+#endif
+    else {
       std::tie(pr, re, auc) =
           BinaryPRAUC(ctx_, predts.ConstHostSpan(), info.labels.HostView().Slice(linalg::All(), 0),
                       common::OptionalWeights{info.weights_.ConstHostSpan()});

@@ -43,6 +43,7 @@ std::atomic<std::uint64_t> histogram_shared_gradient_bytes{0}, leaf_shared_gradi
 std::atomic<std::uint64_t> objective_shared_input_bytes{0}, objective_shared_output_bytes{0},
     objective_staging_bytes{0};
 std::atomic<std::uint64_t> roc_auc_dispatches{0}, roc_auc_gpu_time_ns{0};
+std::atomic<std::uint64_t> pr_auc_dispatches{0}, pr_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> float_sum_dispatches{0}, float_sum_gpu_time_ns{0};
 std::atomic<std::uint64_t> row_workspace_allocations{0}, row_workspace_reuses{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
@@ -104,7 +105,7 @@ class Runtime {
   id<MTLComputePipelineState> sort_init_pipeline, radix_rank_pipeline, radix_scatter_pipeline,
       prefix_u32_pipeline, prefix_add_pipeline, quantile_cdf_pipeline, quantile_select_pipeline;
   id<MTLComputePipelineState> roc_sort_init_pipeline, roc_counts_pipeline, roc_area_pipeline,
-      prefix_double_pair_pipeline, prefix_double_pair_add_pipeline;
+      pr_area_pipeline, prefix_double_pair_pipeline, prefix_double_pair_add_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
@@ -191,6 +192,7 @@ class Runtime {
       roc_sort_init_pipeline = make_pipeline(@"xgb_roc_sort_init");
       roc_counts_pipeline = make_pipeline(@"xgb_roc_counts");
       roc_area_pipeline = make_pipeline(@"xgb_roc_area");
+      pr_area_pipeline = make_pipeline(@"xgb_pr_area");
       prefix_double_pair_pipeline = make_pipeline(@"xgb_prefix_double_pair");
       prefix_double_pair_add_pipeline = make_pipeline(@"xgb_prefix_double_pair_add");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
@@ -940,7 +942,9 @@ Statistics GetStatistics() {
           leaf_shared_gradient_bytes.load(std::memory_order_relaxed),
           leaf_shared_output_bytes.load(std::memory_order_relaxed),
           roc_auc_dispatches.load(std::memory_order_relaxed),
-          roc_auc_gpu_time_ns.load(std::memory_order_relaxed)};
+          roc_auc_gpu_time_ns.load(std::memory_order_relaxed),
+          pr_auc_dispatches.load(std::memory_order_relaxed),
+          pr_auc_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1350,8 +1354,10 @@ id<MTLBuffer> EncodeDoublePrefix(Runtime& rt, id<MTLCommandBuffer> command, id<M
   return output;
 }
 }  // namespace
-void ROCAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
-            Span<float const> weights, bool multiclass, Span<ROCAUCSums> output) {
+namespace {
+void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
+         Span<float const> weights, bool multiclass, bool precision_recall,
+         Span<ROCAUCSums> output) {
   auto rows = predictions.Shape(0), targets = predictions.Shape(1);
   CHECK_EQ(labels.Shape(0), rows);
   CHECK_EQ(labels.Shape(1), multiclass ? 1 : targets);
@@ -1360,7 +1366,9 @@ void ROCAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<floa
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
   CHECK_LE(targets, 65535);
   if (!rows || !targets) {
-    std::fill(output.begin(), output.end(), ROCAUCSums{});
+    std::fill(output.begin(), output.end(),
+              precision_recall ? ROCAUCSums{1, 1, std::numeric_limits<double>::quiet_NaN()}
+                               : ROCAUCSums{});
     return;
   }
   @autoreleasepool {
@@ -1401,7 +1409,7 @@ void ROCAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<floa
     auto area = Allocate(rt, targets * 2 * sizeof(double));
     e = [command computeCommandEncoder];
     CHECK(e);
-    [e setComputePipelineState:rt.roc_area_pipeline];
+    [e setComputePipelineState:precision_recall ? rt.pr_area_pipeline : rt.roc_area_pipeline];
     [e setBuffer:sorted offset:0 atIndex:0];
     [e setBuffer:prefix offset:0 atIndex:1];
     [e setBuffer:partial offset:0 atIndex:2];
@@ -1426,18 +1434,34 @@ void ROCAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<floa
     for (std::size_t t = 0; t < targets; ++t) {
       auto offset = 2 * ((t + 1) * rows - 1);
       output[t] = {sums[offset], sums[offset + 1], areas[2 * t]};
-      if (output[t].fp <= 0 || output[t].tp <= 0) output[t] = {};
+      bool invalid = output[t].fp <= 0 || output[t].tp <= 0;
+      if (precision_recall) {
+        output[t] = {1, 1, invalid ? std::numeric_limits<double>::quiet_NaN() : output[t].area};
+      } else if (invalid)
+        output[t] = {};
     }
-    roc_auc_dispatches.fetch_add(1, std::memory_order_relaxed);
+    (precision_recall ? pr_auc_dispatches : roc_auc_dispatches)
+        .fetch_add(1, std::memory_order_relaxed);
     radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
     metric_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     if (elapsed > 0) {
       auto ns = static_cast<std::uint64_t>(elapsed * 1e9);
-      roc_auc_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+      (precision_recall ? pr_auc_gpu_time_ns : roc_auc_gpu_time_ns)
+          .fetch_add(ns, std::memory_order_relaxed);
       metric_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
     }
   }
+}
+
+}  // namespace
+void ROCAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
+            Span<float const> weights, bool multiclass, Span<ROCAUCSums> output) {
+  AUC(predictions, labels, weights, multiclass, false, output);
+}
+void PRAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
+           Span<float const> weights, bool multiclass, Span<ROCAUCSums> output) {
+  AUC(predictions, labels, weights, multiclass, true, output);
 }
 
 void Quantiles(linalg::MatrixView<float const> values, Span<float const> weights,
