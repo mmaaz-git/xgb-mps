@@ -35,7 +35,7 @@ listed below. This is not yet a complete GPU backend.
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | `gblinear` rejected for `mps` |
-| Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Individual histogram primitives implemented; general Metal primitives missing |
+| Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric reductions, checked exact scans, category/quantile-row sorting and sampling-specific random generation implemented; general Metal primitives missing |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
 | CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | NVIDIA-specific interfaces cannot consume Metal memory; corresponding Apple-device interoperability is missing |
 | CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Shared-memory Metal runtime, reused command queue and histogram buffers; persistent end-to-end device ownership and asynchronous scheduling missing |
@@ -66,15 +66,17 @@ count, repeated measurements, and accuracy alongside any speedup claim.
 
 ## Next major training work
 
-The central training loop still crosses the CPU/GPU boundary at every tree level.
-The next architectural change is to retain quantized data, gradients, histograms,
-row positions and prediction state on Metal buffers. Split evaluation now executes
-on Metal for scalar and vector leaves and gathers directly from resident histogram
-buffers. Histogram conversion, accumulation and subtraction also execute on Metal. Row
-partitioning and histogram reads share resident GPU row indices. Host orchestration and model serialization
-can remain on the CPU, as they also do in CUDA-backed software. Split tests include categorical partitions, missing directions, monotonic and
-interaction constraints, and vector leaves. Gradient-based sampling, remaining training-state updates, fewer synchronization points
-and efficient external-memory staging remain required.
+Quantized pages, row indices and histogram caches now persist on Metal buffers.
+Split selection, histogram conversion/accumulation/subtraction and uniform sampling
+also execute on Metal. Host orchestration still synchronizes at each tree level;
+gradients and prediction state still cross between host arrays and GPU buffers.
+Keeping those arrays resident and reducing synchronization are the next architectural
+steps. Host model construction and serialization can remain on the CPU.
+
+Split tests include categorical partitions, missing directions, monotonic and
+interaction constraints, vector leaves and external-memory pages. Gradient-based
+sampling, remaining training-state updates and more efficient external-memory
+staging remain required.
 
 Remaining ranking/survival objectives, SHAP, specialized metrics, quantile
 construction, linear training and collectives are separate coverage requirements.

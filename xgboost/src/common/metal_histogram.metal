@@ -1520,6 +1520,63 @@ inline XGBDouble xgb_shuffle_down_double(XGBDouble value, uint delta) {
        high = simd_shuffle_down(uint(value.bits >> 32), delta);
   return {(ulong(high) << 32) | low};
 }
+// A checked integer path accelerates sums without sacrificing binary64 results.
+// With at most 256 inputs, this bound proves every subset sum is exact in FP64.
+inline ulong2 xgb_reduce_double_pair(XGBDouble a, XGBDouble b, threadgroup int4* bounds,
+                                     threadgroup ulong2* sums, uint lane, uint simd) {
+  int2 ga = xgb_exact_span(a.bits), gb = xgb_exact_span(b.bits);
+  int4 extent(simd_min(ga.x), simd_min(gb.x), simd_max(ga.y), simd_max(gb.y));
+  if (lane == 0) bounds[simd] = extent;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd == 0 && lane == 0) {
+    int2 lo(4096), hi(-4096);
+    for (uint i = 0; i < 8; ++i) {
+      lo = min(lo, bounds[i].xy);
+      hi = max(hi, bounds[i].zw);
+    }
+    bool exact = all(hi - lo + 8 <= 52) && all(hi + 8 < 1024);
+    lo = select(lo, int2(0), lo == int2(4096));
+    bounds[0] = int4(lo, int(exact), 0);
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  ulong2 result(0);
+  if (bounds[0].z) {
+    int2 unit = bounds[0].xy;
+    ulong2 integer(xgb_exact_integer(a.bits, unit.x), xgb_exact_integer(b.bits, unit.y));
+    ulong2 prefix(xgb_simd_prefix64(integer.x), xgb_simd_prefix64(integer.y));
+    if (lane == 31) sums[simd] = prefix;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (simd == 0 && lane == 0) {
+      ulong2 sum(0);
+      for (uint i = 0; i < 8; ++i) sum += sums[i];
+      result = ulong2(xgb_exact_double(sum.x, unit.x), xgb_exact_double(sum.y, unit.y));
+    }
+  } else {
+    for (uint offset = 16; offset; offset >>= 1) {
+      XGBDouble x = xgb_shuffle_down_double(a, offset), y = xgb_shuffle_down_double(b, offset);
+      if (lane + offset < 32) {
+        a = xgb_dadd(a, x);
+        b = xgb_dadd(b, y);
+      }
+    }
+    if (lane == 0) sums[simd] = ulong2(a.bits, b.bits);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (simd == 0) {
+      a = {lane < 8 ? sums[lane].x : 0};
+      b = {lane < 8 ? sums[lane].y : 0};
+      for (uint offset = 4; offset; offset >>= 1) {
+        XGBDouble x = xgb_shuffle_down_double(a, offset), y = xgb_shuffle_down_double(b, offset);
+        if (lane + offset < 8) {
+          a = xgb_dadd(a, x);
+          b = xgb_dadd(b, y);
+        }
+      }
+      if (lane == 0) result = ulong2(a.bits, b.bits);
+    }
+  }
+  return result;
+}
+
 kernel void xgb_residual_scale_reduce(
     device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
     device const float* weights [[buffer(2)]], device ulong2* partial [[buffer(3)]],
@@ -1536,30 +1593,10 @@ kernel void xgb_residual_scale_reduce(
     root = xgb_dfrom_float(w * sqrt(abs(residual)));
     weight = xgb_dfrom_float(w);
   }
-  for (uint offset = 16; offset; offset >>= 1) {
-    XGBDouble r = xgb_shuffle_down_double(root, offset),
-              w = xgb_shuffle_down_double(weight, offset);
-    if (lane + offset < 32) {
-      root = xgb_dadd(root, r);
-      weight = xgb_dadd(weight, w);
-    }
-  }
+  threadgroup int4 bounds[8];
   threadgroup ulong2 sums[8];
-  if (lane == 0) sums[simd] = ulong2(root.bits, weight.bits);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  if (simd == 0) {
-    root = {lane < 8 ? sums[lane].x : 0};
-    weight = {lane < 8 ? sums[lane].y : 0};
-    for (uint offset = 4; offset; offset >>= 1) {
-      XGBDouble r = xgb_shuffle_down_double(root, offset),
-                w = xgb_shuffle_down_double(weight, offset);
-      if (lane + offset < 8) {
-        root = xgb_dadd(root, r);
-        weight = xgb_dadd(weight, w);
-      }
-    }
-    if (lane == 0) partial[ulong(group.x) * p.targets + target] = ulong2(root.bits, weight.bits);
-  }
+  ulong2 total = xgb_reduce_double_pair(root, weight, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[ulong(group.x) * p.targets + target] = total;
 }
 kernel void xgb_residual_scale_finish(device const ulong2* partial [[buffer(0)]],
                                       device float* scales [[buffer(1)]],
@@ -1660,30 +1697,10 @@ kernel void xgb_quantile_metric(
     loss = xgb_dfrom_float(value);
     weight = xgb_dfrom_float(w);
   }
-  for (uint offset = 16; offset; offset >>= 1) {
-    XGBDouble l = xgb_shuffle_down_double(loss, offset),
-              w = xgb_shuffle_down_double(weight, offset);
-    if (lane + offset < 32) {
-      loss = xgb_dadd(loss, l);
-      weight = xgb_dadd(weight, w);
-    }
-  }
+  threadgroup int4 bounds[8];
   threadgroup ulong2 sums[8];
-  if (lane == 0) sums[simd] = ulong2(loss.bits, weight.bits);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  if (simd == 0) {
-    loss = {lane < 8 ? sums[lane].x : 0};
-    weight = {lane < 8 ? sums[lane].y : 0};
-    for (uint offset = 4; offset; offset >>= 1) {
-      XGBDouble l = xgb_shuffle_down_double(loss, offset),
-                w = xgb_shuffle_down_double(weight, offset);
-      if (lane + offset < 8) {
-        loss = xgb_dadd(loss, l);
-        weight = xgb_dadd(weight, w);
-      }
-    }
-    if (lane == 0) partial[group] = ulong2(loss.bits, weight.bits);
-  }
+  ulong2 total = xgb_reduce_double_pair(loss, weight, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[group] = total;
 }
 
 struct SamplingParams {

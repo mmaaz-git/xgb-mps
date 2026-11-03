@@ -158,6 +158,12 @@ to the GPU has not automatically improved training time. Quantile construction, 
 remain optimization targets. Histogram arithmetic now stays on the GPU, but
 adding GPU operations still has dispatch costs. Small workloads pay proportionately more dispatch overhead.
 
+A wider **128-feature** squared-error workload was also measured with 20 rounds:
+1,000,000 rows took **3.839 s Metal versus 3.254 s CPU** (0.85×), and 100,000 rows
+took 0.850 versus 0.420 s (0.49×). Predictions matched exactly.
+[Raw wider-workload results](validation/benchmark-wide-v1-m3.json) are retained;
+this workload also remains below CPU training speed.
+
 ### Adaptive objectives
 
 Same hardware, 32 features and three alternating repetitions; **10** boosting
@@ -167,15 +173,24 @@ training speedup yet.
 
 | Objective / rows | CPU | Metal | CPU / Metal |
 | --- | ---: | ---: | ---: |
-| Absolute error / 100,000 | 0.090 s | 0.194 s | 0.46× |
-| Absolute error / 1,000,000 | 0.743 s | 0.999 s | 0.74× |
-| Quantile / 100,000 | 0.127 s | 0.220 s | 0.58× |
-| Quantile / 1,000,000 | 0.895 s | 1.164 s | 0.77× |
+| Absolute error / 100,000 | 0.097 s | 0.267 s | 0.36× |
+| Absolute error / 1,000,000 | 0.747 s | 0.882 s | 0.85× |
+| Quantile / 100,000 | 0.105 s | 0.211 s | 0.49× |
+| Quantile / 1,000,000 | 0.892 s | 1.108 s | 0.81× |
 
-[Absolute-error results](validation/benchmark-absolute-v1-m3.json) and
-[quantile results](validation/benchmark-quantile-v1-m3.json). Base-score estimation
-remains on CPU; per-iteration residual-scale reduction and gradient calculation
-execute on Metal. These implement the adaptive losses in the vendored source.
+[Absolute-error results](validation/benchmark-absolute-v2-m3.json) and
+[quantile results](validation/benchmark-quantile-v2-m3.json). Checked exact integer
+reductions accelerate common residual scales and metric sums, with software
+binary64 retained for wide exponent ranges. At one million rows, objective GPU
+time fell from 0.083 to 0.052 s for absolute error and from 0.068 to 0.055 s for
+quantile; end-to-end Metal training fell from 0.999 to 0.882 s and from 1.164 to
+1.108 s respectively. The [first absolute-error](validation/benchmark-absolute-v1-m3.json)
+and [first quantile](validation/benchmark-quantile-v1-m3.json) runs remain available.
+These are separate runs, subject to system timing variability.
+
+Base-score estimation remains on CPU; per-iteration residual-scale reduction and
+gradient calculation execute on Metal. These implement the adaptive losses in the
+vendored source.
 
 ### Uniform sampling
 
