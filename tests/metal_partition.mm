@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
         return p;
       };
       auto classify = pipeline(@"xgb_partition_classify"),
-           prefix = pipeline(@"xgb_partition_prefix"), scatter = pipeline(@"xgb_partition_scatter"),
+           prefix = pipeline(@"xgb_partition_prefix"), serial_prefix = pipeline(@"xgb_partition_prefix_serial"), scatter = pipeline(@"xgb_partition_scatter"),
            transpose = pipeline(@"xgb_transpose_index");
       auto queue = [device newCommandQueue];
       auto upload = [&](void const* data, size_t bytes) {
@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
             for (bool missing_left : {false, true})
               for (uint64_t base : {0ull, 17ull})
                 for (uint64_t active :
-                     {1ull, 255ull, 256ull, 257ull, 511ull, 512ull, 513ull, 4097ull}) {
+                     {1ull, 255ull, 256ull, 257ull, 511ull, 512ull, 513ull, 4097ull, 131071ull, 131075ull}) {
                   uint64_t n = active + 3;
                   constexpr uint32_t features = 5;
                   uint32_t bins = width == 1 ? 9 : 513;
@@ -197,14 +197,20 @@ int main(int argc, char** argv) {
                       threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
                   [e endEncoding];
                   e = [command computeCommandEncoder];
-                  [e setComputePipelineState:prefix];
+                  bool serial = std::all_of(splits.begin(), splits.end(), [](auto const& s) { return s.block_end-s.block_begin <= 16; });
+                  [e setComputePipelineState:serial ? serial_prefix : prefix];
                   [e setBuffer:split offset:0 atIndex:0];
                   [e setBuffer:counts offset:0 atIndex:1];
                   [e setBuffer:prefixes offset:0 atIndex:2];
                   [e setBuffer:left offset:0 atIndex:3];
                   [e setBytes:&p length:sizeof(p) atIndex:4];
-                  [e dispatchThreads:MTLSizeMake(splits.size(), 1, 1)
-                      threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                  if (serial) {
+                    [e dispatchThreads:MTLSizeMake(splits.size(), 1, 1)
+                        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                  } else {
+                    [e dispatchThreadgroups:MTLSizeMake(splits.size(), 1, 1)
+                        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                  }
                   [e endEncoding];
                   e = [command computeCommandEncoder];
                   [e setComputePipelineState:scatter];

@@ -102,7 +102,7 @@ class Runtime {
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
   id<MTLComputePipelineState> row_iota_pipeline, partition_classify_pipeline,
-      partition_prefix_pipeline, partition_scatter_pipeline, leaf_positions_pipeline,
+      partition_prefix_pipeline, partition_prefix_serial_pipeline, partition_scatter_pipeline, leaf_positions_pipeline,
       transpose_index_pipeline;
 
   Runtime() {
@@ -146,6 +146,7 @@ class Runtime {
       row_iota_pipeline = make_pipeline(@"xgb_row_iota");
       partition_classify_pipeline = make_pipeline(@"xgb_partition_classify");
       partition_prefix_pipeline = make_pipeline(@"xgb_partition_prefix");
+      partition_prefix_serial_pipeline = make_pipeline(@"xgb_partition_prefix_serial");
       partition_scatter_pipeline = make_pipeline(@"xgb_partition_scatter");
       leaf_positions_pipeline = make_pipeline(@"xgb_leaf_positions");
       transpose_index_pipeline = make_pipeline(@"xgb_transpose_index");
@@ -414,6 +415,7 @@ class MetalRows final : public DeviceRows {
     CHECK_EQ(gidx.base_rowid, base_);
     CHECK_LE(splits.size(), std::numeric_limits<std::uint32_t>::max());
     std::vector<Block> blocks;
+    std::size_t largest_block_count = 0;
     for (std::size_t node = 0; node < splits.size(); ++node) {
       auto& split = splits[node];
       CHECK_LE(split.end, size_);
@@ -423,7 +425,9 @@ class MetalRows final : public DeviceRows {
         blocks.push_back(
             {begin, std::min(begin + 256, split.end), static_cast<std::uint32_t>(node), 0});
       split.block_end = blocks.size();
+      largest_block_count = std::max(largest_block_count, std::size_t{split.block_end - split.block_begin});
     }
+    bool serial_prefix = largest_block_count <= 16;
     std::vector<std::uint64_t> result(splits.size(), 0);
     if (blocks.empty()) return result;
     @autoreleasepool {
@@ -465,14 +469,19 @@ class MetalRows final : public DeviceRows {
       [encoder endEncoding];
       encoder = [command computeCommandEncoder];
       CHECK(encoder);
-      [encoder setComputePipelineState:rt_.partition_prefix_pipeline];
+      [encoder setComputePipelineState:serial_prefix ? rt_.partition_prefix_serial_pipeline : rt_.partition_prefix_pipeline];
       [encoder setBuffer:split_buffer offset:0 atIndex:0];
       [encoder setBuffer:counts offset:0 atIndex:1];
       [encoder setBuffer:prefix offset:0 atIndex:2];
       [encoder setBuffer:left offset:0 atIndex:3];
       [encoder setBytes:&p length:sizeof(p) atIndex:4];
-      [encoder dispatchThreads:MTLSizeMake(splits.size(), 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      if (serial_prefix) {
+        [encoder dispatchThreads:MTLSizeMake(splits.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      } else {
+        [encoder dispatchThreadgroups:MTLSizeMake(splits.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      }
       [encoder endEncoding];
       encoder = [command computeCommandEncoder];
       CHECK(encoder);

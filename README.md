@@ -121,7 +121,7 @@ On Apple M3, 2026-11-03:
   and recursive scan boundaries. **56 production median/mean API cases** also pass.
 - Native gradient quantization: **713,814 values across six scales**, including
   subnormal floats, compared exactly against double-precision CPU rounding.
-- Native partition/transpose kernels: **256 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
+- Native partition/transpose kernels: **320 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
 - Native histogram storage: **168 cases**, with 55,272 converted/accumulated pairs,
   18,424 subtracted pairs and 82,908 gathered pairs checked against CPU references,
   including signed integer limits, page accumulation, strided outputs and guard regions.
@@ -174,10 +174,10 @@ quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 100,000 | 0.112 s | 0.318 s | 0.35× |
-| 1,000,000 | 0.797 s | 1.143 s | 0.70× |
+| 100,000 | 0.115 s | 0.393 s | 0.29× |
+| 1,000,000 | 0.796 s | 1.207 s | 0.66× |
 
-[Latest raw training results](validation/benchmark-mean-v1-m3.json), including
+[Latest raw training results](validation/benchmark-prefix-v2-m3.json), including
 GPU bin assignment, gradient bounds, root reductions, resident histograms, subtraction/gathering,
 reused split buffers and skipped zero atomic additions. The [preceding run](validation/benchmark-hist-pool-m3.json)
 and [first resident-histogram run](validation/benchmark-hist-storage-m3.json) are
@@ -522,3 +522,24 @@ This preserves tested CPU equivalence while leaving full AFT GPU coverage open.
 All 411 Python tests, native suites and CPU-only compatibility checks pass. The
 initial AFT benchmark above establishes a reproducible performance baseline,
 including its regression relative to CPU.
+
+### Row-partition prefix tuning
+
+Large-node partition counts now use cooperative SIMD prefix scans instead of one
+serial GPU lane. Nodes with at most 16 count blocks retain the serial kernel,
+which is faster for small branches. The [benchmark source](scripts/metal_partition_prefix_benchmark.mm)
+compares both production kernels in randomized order and checks every integer
+prefix, node total and guard region against CPU references.
+
+At a million-row root (3,907 count blocks), prefix time falls from **248.2 to
+14.9 microseconds** in the [within-process comparison](validation/benchmark-prefix-kernel-v2-m3.json).
+With 256 small balanced nodes, serial is faster (2.7 versus 6.3 microseconds),
+which motivates the adaptive selection. The
+[initial kernel measurement](validation/benchmark-prefix-kernel-v1-m3.json) is retained.
+
+All 411 Python tests and 320 exact native partition cases pass, including empty
+nodes, partial tiles, sparse/categorical splits and multiple scan tiles. Full
+training remains slower than CPU: the [parallel run](validation/benchmark-prefix-v1-m3.json)
+takes 1.169 seconds and the [adaptive run](validation/benchmark-prefix-v2-m3.json)
+takes 1.207 seconds at one million rows. The faster prefix kernel does not establish
+an end-to-end improvement; GPU timing variability remains substantial.

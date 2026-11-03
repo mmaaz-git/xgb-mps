@@ -671,7 +671,7 @@ kernel void xgb_partition_classify(
   if (valid) ranks[pos] = rank | (uint(left) << 31);
   if (lane == 255) counts[block_id] = rank;
 }
-kernel void xgb_partition_prefix(device const PartitionSplit* splits [[buffer(0)]],
+kernel void xgb_partition_prefix_serial(device const PartitionSplit* splits [[buffer(0)]],
                                  device const uint* counts [[buffer(1)]],
                                  device uint* prefix [[buffer(2)]],
                                  device ulong* left_counts [[buffer(3)]],
@@ -685,6 +685,38 @@ kernel void xgb_partition_prefix(device const PartitionSplit* splits [[buffer(0)
     sum += counts[b];
   }
   left_counts[node] = sum;
+}
+
+// One workgroup scans each node's block counts. A serial lane previously read
+// thousands of device values for large roots; SIMD scans now process 256 at once.
+kernel void xgb_partition_prefix(device const PartitionSplit* splits [[buffer(0)]],
+                                 device const uint* counts [[buffer(1)]],
+                                 device uint* prefix [[buffer(2)]],
+                                 device ulong* left_counts [[buffer(3)]],
+                                 constant PartitionParams& p [[buffer(4)]],
+                                 uint node [[threadgroup_position_in_grid]],
+                                 uint tid [[thread_index_in_threadgroup]],
+                                 uint lane [[thread_index_in_simdgroup]],
+                                 uint simd [[simdgroup_index_in_threadgroup]]) {
+  if (node >= p.nodes) return;
+  threadgroup uint sums[8], accumulated;
+  if (tid == 0) accumulated = 0;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  PartitionSplit split = splits[node];
+  for (ulong begin = split.block_begin; begin < split.block_end; begin += 256) {
+    ulong block = begin + tid;
+    uint value = block < split.block_end ? counts[block] : 0;
+    uint rank = simd_prefix_inclusive_sum(value);
+    if (lane == 31) sums[simd] = rank;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = 0; i < simd; ++i) rank += sums[i];
+    if (block < split.block_end) prefix[block] = accumulated + rank - value;
+    // All lanes must read the old carry before lane 255 updates it.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 255) accumulated += rank;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (tid == 0) left_counts[node] = accumulated;
 }
 kernel void xgb_partition_scatter(
     device ulong* rows [[buffer(0)]], device const ulong* saved_rows [[buffer(1)]],
