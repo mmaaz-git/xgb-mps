@@ -21,17 +21,25 @@ struct HistogramParams {
 inline void add_i64(device atomic_uint* dst, long value) {
   ulong bits = as_type<ulong>(value);
   uint low = uint(bits);
-  uint previous = atomic_fetch_add_explicit(dst, low, memory_order_relaxed);
-  uint carry = uint(previous > (0xffffffffu - low));
-  atomic_fetch_add_explicit(dst + 1, uint(bits >> 32) + carry, memory_order_relaxed);
+  uint carry = 0;
+  if (low) {
+    uint previous = atomic_fetch_add_explicit(dst, low, memory_order_relaxed);
+    carry = uint(previous > 0xffffffffu - low);
+  }
+  uint high = uint(bits >> 32) + carry;
+  if (high) atomic_fetch_add_explicit(dst + 1, high, memory_order_relaxed);
 }
 
 inline void add_i64(threadgroup atomic_uint* dst, long value) {
   ulong bits = as_type<ulong>(value);
   uint low = uint(bits);
-  uint previous = atomic_fetch_add_explicit(dst, low, memory_order_relaxed);
-  uint carry = uint(previous > (0xffffffffu - low));
-  atomic_fetch_add_explicit(dst + 1, uint(bits >> 32) + carry, memory_order_relaxed);
+  uint carry = 0;
+  if (low) {
+    uint previous = atomic_fetch_add_explicit(dst, low, memory_order_relaxed);
+    carry = uint(previous > 0xffffffffu - low);
+  }
+  uint high = uint(bits >> 32) + carry;
+  if (high) atomic_fetch_add_explicit(dst + 1, high, memory_order_relaxed);
 }
 
 kernel void xgb_histogram(
@@ -54,6 +62,7 @@ kernel void xgb_histogram(
   ulong row = rows[row_begin[node] + ulong(tid) - node_ptr[node]];
   ulong local_row = row - p.base_rowid;
   long2 g = gradients[row];
+  if (g.x == 0 && g.y == 0) return;
   ulong begin = row_ptr[local_row];
   ulong end = row_ptr[local_row + 1];
   for (ulong i = begin; i < end; ++i) {
@@ -97,6 +106,8 @@ kernel void xgb_histogram_dense_shared(
   threadgroup_barrier(mem_flags::mem_threadgroup);
   for (ulong r = begin + tid; r < end; r += threads.x) {
     ulong row = rows[row_begin[node] + r - node_ptr[node]];
+    long2 g = gradients[row];
+    if (g.x == 0 && g.y == 0) continue;
     ulong i = p.padding ? ulong(feature) * p.page_rows + (row - p.base_rowid)
                         : row_ptr[row - p.base_rowid] + feature;
     uint bin;
@@ -106,7 +117,6 @@ kernel void xgb_histogram_dense_shared(
       bin = uint(reinterpret_cast<device const ushort*>(index)[i]);
     else
       bin = reinterpret_cast<device const uint*>(index)[i];
-    long2 g = gradients[row];
     add_i64(local_hist + bin * 4, g.x);
     add_i64(local_hist + bin * 4 + 2, g.y);
   }

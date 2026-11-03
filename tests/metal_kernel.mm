@@ -69,100 +69,131 @@ int main(int argc, char **argv) {
             if (shared && !dense) continue;
             for (uint64_t base : {0ull, 11ull}) {
               for (bool contention : {false, true}) {
-                uint64_t n = shared ? 16385 : 4097;
-                constexpr uint32_t features = 7, nodes = 3;
-                uint32_t per_feature = width == 1 ? 17 : 513;
-                uint32_t bins = per_feature * features;
-                std::mt19937 rng(71);
-                std::vector<uint8_t> indices;
-                std::vector<uint64_t> rowptr{0};
-                std::vector<uint32_t> offsets;
-                for (uint32_t f = 0; f < features; ++f) offsets.push_back(f * per_feature);
-                offsets.push_back(bins);
-                std::vector<Pair> gradients(n + base);
-                std::vector<Pair> reference(nodes * bins, {0, 0});
-                std::vector<Row> rows;
-                for (uint64_t r = 0; r < n; ++r) {
-                  // Large signed integers exercise both high-word addition and
-                  // carry.
-                  auto signed_value = static_cast<int64_t>(rng()) - (int64_t{1} << 31);
-                  Pair g{signed_value * (int64_t{1} << 17) + int64_t(r % 11),
-                         (int64_t{1} << 35) + int64_t(rng())};
-                  gradients[r + base] = g;
-                  uint32_t node = r % nodes;
-                  rows.push_back({r + base, node, 0});
-                  for (uint32_t f = 0; f < features; ++f) {
-                    if (!dense && (r % 13 == 0 || rng() % 3 == 0)) continue;
-                    uint32_t local = contention ? 0 : rng() % per_feature;
-                    uint32_t global = offsets[f] + local;
-                    uint32_t stored = dense ? local : global;
-                    for (uint32_t byte = 0; byte < width; ++byte)
-                      indices.push_back(uint8_t(stored >> (8 * byte)));
-                    reference[node * bins + global].g += g.g;
-                    reference[node * bins + global].h += g.h;
+                for (uint32_t mode : {0u, 1u, 2u}) {
+                  uint64_t n = shared ? 16385 : 4097;
+                  constexpr uint32_t features = 7, nodes = 3;
+                  uint32_t per_feature = width == 1 ? 17 : 513;
+                  uint32_t bins = per_feature * features;
+                  std::mt19937 rng(71);
+                  std::vector<uint8_t> indices;
+                  std::vector<uint64_t> rowptr{0};
+                  std::vector<uint32_t> offsets;
+                  for (uint32_t f = 0; f < features; ++f) offsets.push_back(f * per_feature);
+                  offsets.push_back(bins);
+                  std::vector<Pair> gradients(n + base);
+                  std::vector<Pair> reference(nodes * bins, {0, 0});
+                  std::vector<Row> rows;
+                  for (uint64_t r = 0; r < n; ++r) {
+                    // Large signed integers exercise both high-word addition and
+                    // carry.
+                    auto signed_value = static_cast<int64_t>(rng()) - (int64_t{1} << 31);
+                    Pair g{signed_value * (int64_t{1} << 17) + int64_t(r % 11),
+                           (int64_t{1} << 35) + int64_t(rng())};
+                    if (mode == 1) {
+                      switch (r % 8) {
+                        case 0:
+                          g = {0, 0};
+                          break;
+                        case 1:
+                          g = {int64_t(r + 1), 0};
+                          break;
+                        case 2:
+                          g = {-int64_t(r + 1), int64_t{1} << 40};
+                          break;
+                        case 3:
+                          g = {int64_t{1} << 40, int64_t{1} << 40};
+                          break;
+                        case 4:
+                          g = {0, int64_t{1} << 40};
+                          break;
+                        case 5:
+                          g = {-(int64_t{1} << 32), 0};
+                          break;
+                        case 6:
+                          g = {0xffffffffll, 0};
+                          break;
+                        case 7:
+                          g = {1, 0};
+                          break;
+                      }
+                    } else if (mode == 2)
+                      g = {0, 0};
+                    gradients[r + base] = g;
+                    uint32_t node = r % nodes;
+                    rows.push_back({r + base, node, 0});
+                    for (uint32_t f = 0; f < features; ++f) {
+                      if (!dense && (r % 13 == 0 || rng() % 3 == 0)) continue;
+                      uint32_t local = contention ? 0 : rng() % per_feature;
+                      uint32_t global = offsets[f] + local;
+                      uint32_t stored = dense ? local : global;
+                      for (uint32_t byte = 0; byte < width; ++byte)
+                        indices.push_back(uint8_t(stored >> (8 * byte)));
+                      reference[node * bins + global].g += g.g;
+                      reference[node * bins + global].h += g.h;
+                    }
+                    rowptr.push_back(indices.size() / width);
                   }
-                  rowptr.push_back(indices.size() / width);
-                }
-                std::stable_sort(rows.begin(), rows.end(),
-                                 [](Row a, Row b) { return a.node < b.node; });
-                std::vector<uint64_t> node_ptr(nodes + 1, 0);
-                for (auto row : rows) ++node_ptr[row.node + 1];
-                uint64_t max_node_rows = 0;
-                for (size_t node = 1; node < node_ptr.size(); ++node) {
-                  max_node_rows = std::max(max_node_rows, node_ptr[node]);
-                  node_ptr[node] += node_ptr[node - 1];
-                }
-                auto idx = upload(indices.data(), indices.size());
-                auto ptr = upload(rowptr.data(), rowptr.size() * sizeof(uint64_t));
-                auto off = upload(offsets.data(), offsets.size() * sizeof(uint32_t));
-                auto gp = upload(gradients.data(), gradients.size() * sizeof(Pair));
-                std::vector<uint64_t> row_ids;
-                for (auto row : rows) row_ids.push_back(row.row);
-                auto rs = upload(row_ids.data(), row_ids.size() * sizeof(uint64_t));
-                std::vector<Pair> zero(reference.size(), {0, 0});
-                auto out = upload(zero.data(), zero.size() * sizeof(Pair));
-                Params p{n, base, n, bins, features, width, uint32_t(dense), nodes, 0};
-                auto command = [queue commandBuffer];
-                auto encoder = [command computeCommandEncoder];
-                [encoder setComputePipelineState:shared ? shared_pipeline : pipeline];
-                [encoder setBuffer:idx offset:0 atIndex:0];
-                [encoder setBuffer:ptr offset:0 atIndex:1];
-                [encoder setBuffer:off offset:0 atIndex:2];
-                [encoder setBuffer:gp offset:0 atIndex:3];
-                [encoder setBuffer:rs offset:0 atIndex:4];
-                [encoder setBuffer:out offset:0 atIndex:5];
-                [encoder setBytes:&p length:sizeof(p) atIndex:6];
-                auto np = upload(node_ptr.data(), node_ptr.size() * sizeof(uint64_t));
-                [encoder setBuffer:np offset:0 atIndex:7];
-                [encoder setBuffer:np offset:0 atIndex:8];
-                if (shared) {
-                  [encoder setThreadgroupMemoryLength:per_feature * sizeof(Pair) atIndex:0];
-                  [encoder dispatchThreadgroups:MTLSizeMake((max_node_rows + 2047) / 2048, features,
-                                                            nodes)
-                          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-                } else {
-                  [encoder dispatchThreads:MTLSizeMake(n, 1, 1)
-                      threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-                }
-                [encoder endEncoding];
-                [command commit];
-                [command waitUntilCompleted];
-                Require(command.status == MTLCommandBufferStatusCompleted, "GPU command failed");
-                auto actual = static_cast<Pair const *>(out.contents);
-                for (size_t i = 0; i < reference.size(); ++i) {
-                  if (actual[i].g != reference[i].g || actual[i].h != reference[i].h) {
-                    fprintf(stderr,
-                            "Mismatch: width=%u dense=%d base=%llu "
-                            "contention=%d bin=%zu\n",
-                            width, dense, (unsigned long long)base, contention, i);
-                    throw std::runtime_error("GPU histogram differs from "
-                                             "independent integer reference");
+                  std::stable_sort(rows.begin(), rows.end(),
+                                   [](Row a, Row b) { return a.node < b.node; });
+                  std::vector<uint64_t> node_ptr(nodes + 1, 0);
+                  for (auto row : rows) ++node_ptr[row.node + 1];
+                  uint64_t max_node_rows = 0;
+                  for (size_t node = 1; node < node_ptr.size(); ++node) {
+                    max_node_rows = std::max(max_node_rows, node_ptr[node]);
+                    node_ptr[node] += node_ptr[node - 1];
                   }
+                  auto idx = upload(indices.data(), indices.size());
+                  auto ptr = upload(rowptr.data(), rowptr.size() * sizeof(uint64_t));
+                  auto off = upload(offsets.data(), offsets.size() * sizeof(uint32_t));
+                  auto gp = upload(gradients.data(), gradients.size() * sizeof(Pair));
+                  std::vector<uint64_t> row_ids;
+                  for (auto row : rows) row_ids.push_back(row.row);
+                  auto rs = upload(row_ids.data(), row_ids.size() * sizeof(uint64_t));
+                  std::vector<Pair> zero(reference.size(), {0, 0});
+                  auto out = upload(zero.data(), zero.size() * sizeof(Pair));
+                  Params p{n, base, n, bins, features, width, uint32_t(dense), nodes, 0};
+                  auto command = [queue commandBuffer];
+                  auto encoder = [command computeCommandEncoder];
+                  [encoder setComputePipelineState:shared ? shared_pipeline : pipeline];
+                  [encoder setBuffer:idx offset:0 atIndex:0];
+                  [encoder setBuffer:ptr offset:0 atIndex:1];
+                  [encoder setBuffer:off offset:0 atIndex:2];
+                  [encoder setBuffer:gp offset:0 atIndex:3];
+                  [encoder setBuffer:rs offset:0 atIndex:4];
+                  [encoder setBuffer:out offset:0 atIndex:5];
+                  [encoder setBytes:&p length:sizeof(p) atIndex:6];
+                  auto np = upload(node_ptr.data(), node_ptr.size() * sizeof(uint64_t));
+                  [encoder setBuffer:np offset:0 atIndex:7];
+                  [encoder setBuffer:np offset:0 atIndex:8];
+                  if (shared) {
+                    [encoder setThreadgroupMemoryLength:per_feature * sizeof(Pair) atIndex:0];
+                    [encoder dispatchThreadgroups:MTLSizeMake((max_node_rows + 2047) / 2048,
+                                                              features, nodes)
+                            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                  } else {
+                    [encoder dispatchThreads:MTLSizeMake(n, 1, 1)
+                        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                  }
+                  [encoder endEncoding];
+                  [command commit];
+                  [command waitUntilCompleted];
+                  Require(command.status == MTLCommandBufferStatusCompleted, "GPU command failed");
+                  auto actual = static_cast<Pair const *>(out.contents);
+                  for (size_t i = 0; i < reference.size(); ++i) {
+                    if (actual[i].g != reference[i].g || actual[i].h != reference[i].h) {
+                      fprintf(stderr,
+                              "Mismatch: width=%u dense=%d base=%llu "
+                              "contention=%d bin=%zu\n",
+                              width, dense, (unsigned long long)base, contention, i);
+                      throw std::runtime_error("GPU histogram differs from "
+                                               "independent integer reference");
+                    }
+                  }
+                  ++cases;
+                  printf("PASS case %d: width=%u dense=%d shared=%d base=%llu "
+                         "contention=%d\n",
+                         cases, width, dense, shared, (unsigned long long)base, contention);
                 }
-                ++cases;
-                printf("PASS case %d: width=%u dense=%d shared=%d base=%llu "
-                       "contention=%d\n",
-                       cases, width, dense, shared, (unsigned long long)base, contention);
               }
             }
           }

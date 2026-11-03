@@ -82,9 +82,9 @@ On Apple M3, 2026-11-03:
 - Python: **309 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
-- Native histograms: **28 cases**, with every bin compared exactly to independent
+- Native histograms: **84 cases**, with every bin compared exactly to independent
   CPU integer sums. Covers dense/sparse indices, 8/16/32-bit storage, page offsets,
-  high contention, negative values and carries.
+  high contention, negative values, carries, zero words and sampled-out rows.
 - Native sampling: **3,780 exact cases / 1,019,088 Bernoulli draws** against the
   CPU standard-library implementation, including zero seeds, rounding boundaries,
   strided matrices, guard regions and CPU thread partitions.
@@ -134,15 +134,15 @@ quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 10,000 | 0.047 s | 0.356 s | 0.13× |
-| 100,000 | 0.116 s | 0.384 s | 0.30× |
-| 1,000,000 | 0.814 s | 1.335 s | 0.61× |
+| 100,000 | 0.114 s | 0.385 s | 0.30× |
+| 1,000,000 | 0.794 s | 1.183 s | 0.67× |
 
-[Latest raw training results](validation/benchmark-hist-pool-m3.json), including
-resident histograms, GPU subtraction/gathering and reused split buffers. The
-[first resident-histogram run](validation/benchmark-hist-storage-m3.json) is also
-retained. Neither run shows an end-to-end training improvement; dispatch overhead
-and substantial GPU timing variability remain. Metal training is still slower than CPU.
+[Latest raw training results](validation/benchmark-hist-skip-zero-v1-m3.json), including
+resident histograms, GPU subtraction/gathering, reused split buffers and skipped
+zero atomic additions. The [preceding run](validation/benchmark-hist-pool-m3.json)
+and [first resident-histogram run](validation/benchmark-hist-storage-m3.json) are
+retained. Dispatch overhead and substantial GPU timing variability remain.
+Metal training is still slower than CPU.
 
 Before histogram residency, [split-evaluator optimization](validation/benchmark-split-scan-m3.json)
 measured 1.158 s at one million rows. GPU split evaluation initially regressed million-row
@@ -195,9 +195,9 @@ vendored source.
 ### Uniform sampling
 
 With 50% uniform row sampling, 20 rounds and otherwise the same squared-error
-benchmark settings, one million rows took **1.498 s Metal versus 0.833 s CPU**
-(0.56×); 100,000 rows took 0.302 s versus 0.112 s (0.37×). Predictions matched
-exactly. [Raw sampled-training results](validation/benchmark-sampling-v1-m3.json)
+benchmark settings, one million rows took **1.191 s Metal versus 0.817 s CPU**
+(0.69×); 100,000 rows took 0.294 s versus 0.118 s (0.40×). Predictions matched
+exactly. [Raw sampled-training results](validation/benchmark-sampling-v2-m3.json)
 include the completed sampling dispatches and GPU duration. This port adds GPU
 coverage but has not established a training speedup.
 
@@ -318,3 +318,13 @@ random sequence, its floating-point conversion, zero-seed behavior and replay fo
 reduced-gradient leaf fitting. All 309 Python tests and the native suites pass;
 the CPU-only build still passes compatibility checks. Gradient-based sampling,
 column sampling and host gradient sums remain open work.
+
+### Histogram atomic update
+
+Histogram kernels skip zero integer words and rows with zero gradient and Hessian,
+while preserving exact two-word atomic sums. Expanded the native histogram suite
+to 84 cases; all 309 Python tests still pass. Sampled million-row training changed
+from [1.498 s](validation/benchmark-sampling-v1-m3.json) to
+[1.191 s](validation/benchmark-sampling-v2-m3.json) across these runs; CPU remains
+faster. Both measurements are retained rather than treating timing variability as
+a guaranteed improvement.
