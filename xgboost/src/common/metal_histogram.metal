@@ -1912,3 +1912,50 @@ kernel void xgb_bin_entries(
     reinterpret_cast<device uint*>(output)[tid] = bin;
   atomic_fetch_add_explicit(counts + global, 1u, memory_order_relaxed);
 }
+
+struct MeanParams {
+  GradientSumParams shape;
+  uint weighted, float32_terms;
+};
+kernel void xgb_mean_weight_reduce(device const uint* weights [[buffer(0)]],
+                                   device ulong2* partial [[buffer(1)]],
+                                   constant GradientSumParams& p [[buffer(2)]],
+                                   uint group [[threadgroup_position_in_grid]],
+                                   uint tid [[thread_index_in_threadgroup]],
+                                   uint lane [[thread_index_in_simdgroup]],
+                                   uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong row = ulong(group) * 256 + tid;
+  XGBDouble value = row < p.rows ? xgb_dfrom_float(as_type<float>(weights[row])) : XGBDouble{0};
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(value, {0}, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[group] = total;
+}
+kernel void xgb_mean_reduce(
+    device const uint* input [[buffer(0)]], device const uint* weights [[buffer(1)]],
+    device const ulong2* weight_sum [[buffer(2)]], device ulong2* partial [[buffer(3)]],
+    constant MeanParams& p [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+    uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong row = ulong(group.x) * 256 + tid;
+  XGBDouble denominator = p.weighted
+                              ? XGBDouble{weight_sum[0].x}
+                              : (p.float32_terms ? xgb_dfrom_float(float(p.shape.rows))
+                                                 : XGBDouble{xgb_scaled_integer(p.shape.rows, 0)});
+  XGBDouble value{0};
+  if (row < p.shape.rows && xgb_dlt({0}, denominator)) {
+    ulong index = row * p.shape.stride0 + ulong(group.y) * p.shape.stride1;
+    value = xgb_ddiv(xgb_dfrom_float(as_type<float>(input[index])), denominator);
+    if (p.weighted) value = xgb_dmul(value, xgb_dfrom_float(as_type<float>(weights[row])));
+    if (p.float32_terms) value = xgb_dfrom_float(xgb_dto_float(value));
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(value, {0}, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[ulong(group.y) * p.shape.blocks + group.x] = total;
+}
+kernel void xgb_mean_result(device const ulong2* sums [[buffer(0)]],
+                            device float* output [[buffer(1)]],
+                            uint tid [[thread_position_in_grid]]) {
+  output[tid] = xgb_dto_float({sums[tid].x});
+}

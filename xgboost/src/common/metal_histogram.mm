@@ -33,6 +33,7 @@ std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtrac
     resident_split_dispatches{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
 std::atomic<std::uint64_t> binning_dispatches{0}, binning_gpu_time_ns{0};
+std::atomic<std::uint64_t> mean_dispatches{0}, mean_gpu_time_ns{0};
 std::atomic<std::uint64_t> index_uploads{0}, index_uploaded_bytes{0},
     resident_histogram_dispatches{0};
 std::atomic<std::uint64_t> partition_dispatches{0}, leaf_partition_dispatches{0},
@@ -83,6 +84,7 @@ class Runtime {
       gather_hist_pipeline;
   id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
   id<MTLComputePipelineState> quantile_metric_pipeline, binning_pipeline;
+  id<MTLComputePipelineState> mean_weight_pipeline, mean_pipeline, mean_result_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
@@ -151,6 +153,9 @@ class Runtime {
       histogram_sum_pipeline = make_pipeline(@"xgb_histogram_sum");
       stump_weight_pipeline = make_pipeline(@"xgb_stump_weight");
       binning_pipeline = make_pipeline(@"xgb_bin_entries");
+      mean_weight_pipeline = make_pipeline(@"xgb_mean_weight_reduce");
+      mean_pipeline = make_pipeline(@"xgb_mean_reduce");
+      mean_result_pipeline = make_pipeline(@"xgb_mean_result");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
       LOG(INFO) << "Metal compute backend: " << device.name.UTF8String;
     }
@@ -821,7 +826,9 @@ Statistics GetStatistics() {
           gradient_sum_gpu_time_ns.load(std::memory_order_relaxed),
           stump_dispatches.load(std::memory_order_relaxed),
           binning_dispatches.load(std::memory_order_relaxed),
-          binning_gpu_time_ns.load(std::memory_order_relaxed)};
+          binning_gpu_time_ns.load(std::memory_order_relaxed),
+          mean_dispatches.load(std::memory_order_relaxed),
+          mean_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -967,6 +974,109 @@ GradientPairPrecise SumHistogram(HistogramBuffer const* storage, std::size_t off
     [e endEncoding];
     CompleteGradientSum(command);
     return *static_cast<GradientPairPrecise const*>(output.contents);
+  }
+}
+
+void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float const> weights,
+          linalg::VectorView<float> output) {
+  bool weighted = kind == MeanKind::kWeightedSample;
+  auto rows = values.Shape(0), targets = values.Shape(1);
+  CHECK_EQ(output.Size(), std::max<std::size_t>(targets, 1));
+  if (weighted) {
+    CHECK_EQ(weights.size(), rows);
+    CHECK_GT(rows, 0) << "weights must contain at least one non-zero value.";
+  }
+  if (!rows || (!targets && !weighted)) {
+    for (std::size_t t = 0; t < output.Size(); ++t) output(t) = 0;
+    return;
+  }
+  CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(targets, 65535);
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto input = Upload(rt, values.Values().data(), values.Values().size_bytes());
+    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    struct Shape {
+      std::uint64_t rows, stride0, stride1;
+      std::uint32_t targets, blocks;
+    } shape{rows, values.Stride(0), values.Stride(1), static_cast<std::uint32_t>(targets),
+            static_cast<std::uint32_t>((rows + 255) / 256)};
+    static_assert(sizeof(Shape) == 32);
+    auto finish = [&](id<MTLBuffer> partial, Shape p) {
+      auto result = Allocate(rt, p.targets * sizeof(GradientPairPrecise));
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.gradient_sum_finish_pipeline];
+      [e setBuffer:partial offset:0 atIndex:0];
+      [e setBuffer:result offset:0 atIndex:1];
+      [e setBytes:&p length:sizeof(p) atIndex:2];
+      [e dispatchThreadgroups:MTLSizeMake(p.targets, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      return result;
+    };
+    auto denominator = Allocate(rt, sizeof(GradientPairPrecise));
+    if (weighted) {
+      auto partial = Allocate(rt, shape.blocks * sizeof(GradientPairPrecise));
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.mean_weight_pipeline];
+      [e setBuffer:weight offset:0 atIndex:0];
+      [e setBuffer:partial offset:0 atIndex:1];
+      [e setBytes:&shape length:sizeof(shape) atIndex:2];
+      [e dispatchThreadgroups:MTLSizeMake(shape.blocks, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      auto weight_shape = shape;
+      weight_shape.targets = 1;
+      denominator = finish(partial, weight_shape);
+    }
+    id<MTLBuffer> result;
+    if (targets) {
+      auto partial = Allocate(rt, shape.blocks * targets * sizeof(GradientPairPrecise));
+      struct {
+        Shape shape;
+        std::uint32_t weighted, float32_terms;
+      } p{shape, static_cast<std::uint32_t>(weighted),
+          static_cast<std::uint32_t>(kind == MeanKind::kFloat32)};
+      static_assert(sizeof(p) == 40);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.mean_pipeline];
+      [e setBuffer:input offset:0 atIndex:0];
+      [e setBuffer:weight offset:0 atIndex:1];
+      [e setBuffer:denominator offset:0 atIndex:2];
+      [e setBuffer:partial offset:0 atIndex:3];
+      [e setBytes:&p length:sizeof(p) atIndex:4];
+      [e dispatchThreadgroups:MTLSizeMake(shape.blocks, targets, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      auto sums = finish(partial, shape);
+      result = Allocate(rt, targets * sizeof(float));
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.mean_result_pipeline];
+      [e setBuffer:sums offset:0 atIndex:0];
+      [e setBuffer:result offset:0 atIndex:1];
+      [e dispatchThreads:MTLSizeMake(targets, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    if (weighted) {
+      CHECK_GT(static_cast<GradientPairPrecise const*>(denominator.contents)->GetGrad(), 0.0)
+          << "weights must contain at least one non-zero value.";
+    }
+    for (std::size_t t = 0; t < output.Size(); ++t)
+      output(t) = targets ? static_cast<float const*>(result.contents)[t] : 0;
+    mean_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      mean_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                 std::memory_order_relaxed);
   }
 }
 

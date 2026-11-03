@@ -16,6 +16,10 @@
 #include "xgboost/linalg.h"              // Tensor, UnravelIndex, Apply
 #include "xgboost/logging.h"             // CHECK_EQ
 
+#if defined(XGBOOST_USE_METAL)
+#include "metal_reduction.h"
+#endif
+
 namespace xgboost::common {
 void Median(Context const* ctx, linalg::Matrix<float> const& t,
             HostDeviceVector<float> const& weights, linalg::Tensor<float, 1>* out) {
@@ -50,6 +54,14 @@ void Mean(Context const* ctx, linalg::VectorView<float const> v, linalg::Vector<
   out->SetDevice(ctx->Device());
   out->Reshape(1);
 
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    std::size_t shape[2]{v.Size(), 1}, strides[2]{v.Stride(0), 1};
+    linalg::MatrixView<float const> matrix{v.Values(), shape, strides, ctx->Device()};
+    metal::Mean(metal::MeanKind::kFloat32, matrix, {}, out->HostView());
+    return;
+  }
+#endif
   if (ctx->IsCUDA()) {
     cuda_impl::Mean(ctx, v, out->View(ctx->Device()));
   } else if (ctx->IsSycl()) {
@@ -67,6 +79,12 @@ void Mean(Context const* ctx, linalg::VectorView<float const> v, linalg::Vector<
 
 void SampleMean(Context const* ctx, linalg::Matrix<float> const& v, linalg::Vector<float>* out) {
   *out = linalg::Zeros<float>(ctx, std::max(v.Shape(1), decltype(v.Shape(1)){1}));
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    metal::Mean(metal::MeanKind::kSample, v.HostView(), {}, out->HostView());
+    return;
+  }
+#endif
   if (!ctx->IsCUDA()) {
     auto h_v = v.HostView();
     CHECK(h_v.CContiguous());
@@ -95,6 +113,12 @@ void WeightedSampleMean(Context const* ctx, linalg::Matrix<float> const& v,
                         HostDeviceVector<float> const& w, linalg::Vector<float>* out) {
   *out = linalg::Zeros<float>(ctx, std::max(v.Shape(1), decltype(v.Shape(1)){1}));
   CHECK_EQ(v.Shape(0), w.Size());
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    metal::Mean(metal::MeanKind::kWeightedSample, v.HostView(), w.ConstHostSpan(), out->HostView());
+    return;
+  }
+#endif
   if (!ctx->IsCUDA()) {
     auto h_v = v.HostView();
     auto h_w = w.ConstHostSpan();

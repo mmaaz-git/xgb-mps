@@ -39,6 +39,10 @@ echo "Checking root-gradient sums and stump weights"
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_reduction.mm \
   -framework Metal -framework Foundation -o results/metal_reduction_test
 results/metal_reduction_test xgboost/src/common/metal_histogram.metal
+echo "Checking GPU means, weighted means and FP32 mean terms"
+clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_mean.mm \
+  -framework Metal -framework Foundation -o results/metal_mean_test
+results/metal_mean_test xgboost/src/common/metal_histogram.metal
 echo "Checking adaptive objective scales and gradients against CPU references"
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_adaptive.mm \
   -framework Metal -framework Foundation -o results/metal_adaptive_test

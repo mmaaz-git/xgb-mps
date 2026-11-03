@@ -38,6 +38,7 @@ struct Statistics {
   std::uint64_t gradient_bound_dispatches;
   std::uint64_t gradient_sum_dispatches, gradient_sum_gpu_time_ns, stump_dispatches;
   std::uint64_t binning_dispatches, binning_gpu_time_ns;
+  std::uint64_t mean_dispatches, mean_gpu_time_ns;
 };
 
 class Histogram {

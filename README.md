@@ -56,7 +56,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
 | Gradient quantization | GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales stay on GPU |
-| Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights; mean/quantile estimation and remaining leaf fitting still use CPU |
+| Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights; other leaf fitting still uses CPU |
+| Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; quantile/median estimation and other initialization work remain CPU |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
@@ -82,7 +83,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **351 passed, 1 skipped**. The skip requires a machine without an
+- Python: **369 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **192 cases**, with every bin compared exactly to independent
@@ -102,6 +103,10 @@ On Apple M3, 2026-11-03:
   both matrix layouts, padded strides, cancellation and subnormal inputs; exact
   representable sums, compensated CPU references, and bitwise stump weights.
   **168 root histogram sums** also match CPU left-to-right addition exactly.
+- Native means: **1,080 cases / 34,880,670 values**, covering weights, FP32
+  per-term division, multiple targets, matrix strides, constant values, zeros,
+  subnormals and wide exponent ranges. The scalar mean uses binary64 accumulation
+  of FP32 terms, so its rounding order can differ from CPU FP32 accumulation.
 - Native gradient quantization: **713,814 values across six scales**, including
   subnormal floats, compared exactly against double-precision CPU rounding.
 - Native partition/transpose kernels: **256 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
@@ -148,10 +153,10 @@ quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 100,000 | 0.120 s | 0.463 s | 0.26× |
-| 1,000,000 | 0.793 s | 1.209 s | 0.66× |
+| 100,000 | 0.112 s | 0.318 s | 0.35× |
+| 1,000,000 | 0.797 s | 1.143 s | 0.70× |
 
-[Latest raw training results](validation/benchmark-hist-adaptive-v1-m3.json), including
+[Latest raw training results](validation/benchmark-mean-v1-m3.json), including
 GPU bin assignment, gradient bounds, root reductions, resident histograms, subtraction/gathering,
 reused split buffers and skipped zero atomic additions. The [preceding run](validation/benchmark-hist-pool-m3.json)
 and [first resident-histogram run](validation/benchmark-hist-storage-m3.json) are
@@ -204,7 +209,7 @@ quantile; end-to-end Metal training fell from 0.999 to 0.882 s and from 1.164 to
 and [first quantile](validation/benchmark-quantile-v1-m3.json) runs remain available.
 These are separate runs, subject to system timing variability.
 
-Mean and quantile estimation remain on CPU. Gradient aggregation and weight
+Means now execute on Metal; quantile estimation remains on CPU. Gradient aggregation and weight
 calculation for Newton stump fitting now execute on Metal, as do per-iteration
 residual-scale reduction and gradient calculation. These implement the adaptive losses in the
 vendored source.
@@ -409,3 +414,15 @@ All 351 Python tests and 192 native histogram cases pass. The
 [adaptive run](validation/benchmark-hist-adaptive-v1-m3.json) are retained. The
 adaptive million-row median is 1.209 s Metal versus 0.793 s CPU (0.66×), so the
 kernel tuning has not established a full training speedup.
+
+### Mean statistics update
+
+Ported scalar means, per-target sample means and weighted means, including GPU
+weight totals, binary64 normalization and final FP32 results. CPU label validation,
+quantile/median estimation and other objective-specific initialization remain.
+All 369 Python tests and 1,080 native mean cases pass, as do the other native
+suites and CPU-only build checks. Zero-total-weight errors are preserved.
+
+The [latest training run](validation/benchmark-mean-v1-m3.json) measured 1.143 s
+Metal versus 0.797 s CPU at one million rows (0.70×), with identical predictions.
+This remains slower than CPU, with substantial run-to-run timing variation.
