@@ -1,6 +1,6 @@
 /**
  * Copyright 2026, XGBoost Contributors
- * Experimental Metal histogram backend. Other training stages use host memory.
+ * Experimental Metal compute backend with host orchestration.
  */
 #pragma once
 
@@ -29,6 +29,7 @@ struct Statistics {
   std::uint64_t index_uploads, index_uploaded_bytes, resident_histogram_dispatches,
       partition_dispatches, leaf_partition_dispatches, row_init_dispatches, partition_gpu_time_ns,
       index_gpu_time_ns;
+  std::uint64_t split_dispatches, split_gpu_time_ns;
 };
 
 class Histogram {

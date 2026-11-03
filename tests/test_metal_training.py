@@ -26,6 +26,7 @@ def test_resident_rows_and_page_cache(metal, layout, growth):
     assert after["row_init_dispatches"] - before["row_init_dispatches"] == 7
     assert after["leaf_partition_dispatches"] - before["leaf_partition_dispatches"] == 7
     assert after["partition_dispatches"] > before["partition_dispatches"]
+    assert after["split_dispatches"] > before["split_dispatches"]
     assert after["resident_histogram_dispatches"] - before["resident_histogram_dispatches"] == after["histogram_dispatches"] - before["histogram_dispatches"]
     np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
     # Reuse the source page in a different booster without reuploading immutable bins.

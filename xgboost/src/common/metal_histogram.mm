@@ -16,10 +16,12 @@
 #include "metal_ops.h"
 #include "metal_predictor.h"
 #include "metal_shader.h"
+#include "metal_split.h"
 #include "xgboost/logging.h"
 
 namespace xgboost::common::metal {
 namespace {
+std::atomic<std::uint64_t> split_dispatches{0}, split_gpu_time_ns{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
 std::atomic<std::uint64_t> index_uploads{0}, index_uploaded_bytes{0},
     resident_histogram_dispatches{0};
@@ -60,6 +62,7 @@ class Runtime {
   id<MTLDevice> device;
   id<MTLCommandQueue> queue;
   id<MTLComputePipelineState> pipeline;
+  id<MTLComputePipelineState> split_pipeline, multi_split_pipeline;
   id<MTLComputePipelineState> shared_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
@@ -108,6 +111,8 @@ class Runtime {
       partition_scatter_pipeline = make_pipeline(@"xgb_partition_scatter");
       leaf_positions_pipeline = make_pipeline(@"xgb_leaf_positions");
       transpose_index_pipeline = make_pipeline(@"xgb_transpose_index");
+      split_pipeline = make_pipeline(@"xgb_evaluate_splits");
+      multi_split_pipeline = make_pipeline(@"xgb_evaluate_multi_splits");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
       LOG(INFO) << "Metal compute backend: " << device.name.UTF8String;
     }
@@ -610,7 +615,9 @@ Statistics GetStatistics() {
           leaf_partition_dispatches.load(std::memory_order_relaxed),
           row_init_dispatches.load(std::memory_order_relaxed),
           partition_gpu_time_ns.load(std::memory_order_relaxed),
-          index_gpu_time_ns.load(std::memory_order_relaxed)};
+          index_gpu_time_ns.load(std::memory_order_relaxed),
+          split_dispatches.load(std::memory_order_relaxed),
+          split_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -923,6 +930,127 @@ std::array<double, 2> MetricSums(char const* name, Span<float const> predictions
         sum[k] += static_cast<double>(values[i * 4 + k]) * scale;
       }
     return sum;
+  }
+}
+
+void EvaluateSplits(Span<GradientPairPrecise const> histograms, Span<SplitTask const> tasks,
+                    SplitParameters const& parameters, std::vector<SplitResult>* results,
+                    std::vector<std::uint32_t>* sorted_categories) {
+  static_assert(sizeof(SplitTask) == 48 && sizeof(SplitResult) == 48 &&
+                sizeof(SplitParameters) == 16);
+  results->resize(tasks.size());
+  sorted_categories->resize(histograms.size());
+  if (tasks.empty()) return;
+  CHECK_LE(tasks.size(), std::numeric_limits<std::uint32_t>::max());
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto hist = Upload(rt, histograms.data(), histograms.size_bytes());
+    auto input = Upload(rt, tasks.data(), tasks.size_bytes());
+    auto output = Allocate(rt, tasks.size() * sizeof(SplitResult));
+    auto order = Allocate(rt, histograms.size() * sizeof(std::uint32_t));
+    auto weights = Allocate(rt, histograms.size() * sizeof(float));
+    auto scans = Allocate(rt, histograms.size() * 4 * sizeof(std::uint64_t));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto encoder = [command computeCommandEncoder];
+    CHECK(encoder);
+    [encoder setComputePipelineState:rt.split_pipeline];
+    [encoder setBuffer:hist offset:0 atIndex:0];
+    [encoder setBuffer:input offset:0 atIndex:1];
+    [encoder setBytes:&parameters length:sizeof(parameters) atIndex:2];
+    [encoder setBuffer:output offset:0 atIndex:3];
+    [encoder setBuffer:order offset:0 atIndex:4];
+    [encoder setBuffer:weights offset:0 atIndex:5];
+    [encoder setBuffer:scans offset:0 atIndex:6];
+    CHECK_EQ(rt.split_pipeline.threadExecutionWidth, 32);
+    auto threads = std::min<NSUInteger>(128, rt.split_pipeline.maxTotalThreadsPerThreadgroup);
+    threads -= threads % 32;
+    CHECK_GT(threads, 0);
+    [encoder dispatchThreadgroups:MTLSizeMake(tasks.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    std::memcpy(results->data(), output.contents, tasks.size() * sizeof(SplitResult));
+    for (auto const& task : tasks)
+      if (task.kind == 2) {
+        std::memcpy(sorted_categories->data() + task.begin,
+                    static_cast<std::uint32_t const*>(order.contents) + task.begin,
+                    (task.end - task.begin) * sizeof(std::uint32_t));
+      }
+    split_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      split_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                  std::memory_order_relaxed);
+  }
+}
+void EvaluateMultiSplits(Span<GradientPairPrecise const> histograms,
+                         Span<MultiSplitTask const> tasks, Span<GradientPairPrecise const> parents,
+                         Span<SplitBounds const> bounds, SplitParameters const& parameters,
+                         std::vector<SplitResult>* results,
+                         std::vector<GradientPairPrecise>* children,
+                         std::vector<std::uint32_t>* sorted_categories) {
+  static_assert(sizeof(MultiSplitTask) == 40 && sizeof(SplitBounds) == 8);
+  results->resize(tasks.size());
+  sorted_categories->resize(histograms.size());
+  children->resize(parents.size() * 2);
+  if (tasks.empty()) return;
+  CHECK_EQ(parents.size(), bounds.size());
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto hist = Upload(rt, histograms.data(), histograms.size_bytes());
+    auto input = Upload(rt, tasks.data(), tasks.size_bytes());
+    auto parent = Upload(rt, parents.data(), parents.size_bytes());
+    auto bound = Upload(rt, bounds.data(), bounds.size_bytes());
+    auto output = Allocate(rt, tasks.size() * sizeof(SplitResult));
+    auto child = Allocate(rt, children->size() * sizeof(GradientPairPrecise));
+    auto order = Allocate(rt, histograms.size() * sizeof(std::uint32_t));
+    auto scores = Allocate(rt, histograms.size() * sizeof(std::uint64_t));
+    auto scans = Allocate(rt, histograms.size() * 4 * sizeof(std::uint64_t));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto encoder = [command computeCommandEncoder];
+    CHECK(encoder);
+    [encoder setComputePipelineState:rt.multi_split_pipeline];
+    [encoder setBuffer:hist offset:0 atIndex:0];
+    [encoder setBuffer:input offset:0 atIndex:1];
+    [encoder setBytes:&parameters length:sizeof(parameters) atIndex:2];
+    [encoder setBuffer:output offset:0 atIndex:3];
+    [encoder setBuffer:order offset:0 atIndex:4];
+    [encoder setBuffer:scores offset:0 atIndex:5];
+    [encoder setBuffer:scans offset:0 atIndex:6];
+    [encoder setBuffer:parent offset:0 atIndex:7];
+    [encoder setBuffer:bound offset:0 atIndex:8];
+    [encoder setBuffer:child offset:0 atIndex:9];
+    CHECK_EQ(rt.multi_split_pipeline.threadExecutionWidth, 32);
+    auto threads = std::min<NSUInteger>(128, rt.multi_split_pipeline.maxTotalThreadsPerThreadgroup);
+    threads -= threads % 32;
+    CHECK_GT(threads, 0);
+    [encoder dispatchThreadgroups:MTLSizeMake(tasks.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    std::memcpy(results->data(), output.contents, tasks.size() * sizeof(SplitResult));
+    for (std::size_t i = 0; i < tasks.size(); ++i) {
+      auto const& task = tasks[i];
+      if (results->at(i).bin >= 0)
+        std::memcpy(children->data() + 2 * task.parent_begin,
+                    static_cast<GradientPairPrecise const*>(child.contents) + 2 * task.parent_begin,
+                    2 * task.targets * sizeof(GradientPairPrecise));
+      if (task.kind == 2)
+        std::memcpy(sorted_categories->data() + task.begin,
+                    static_cast<std::uint32_t const*>(order.contents) + task.begin,
+                    ((task.end - task.begin) / task.targets) * sizeof(std::uint32_t));
+    }
+    split_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      split_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                  std::memory_order_relaxed);
   }
 }
 }  // namespace xgboost::common::metal

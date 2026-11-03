@@ -15,7 +15,7 @@ listed below. This is not yet a complete GPU backend.
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | Implemented with a different bounded fixed-point scheme; GPU integer bit conversion, host scale selection |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | CPU |
-| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | CPU |
+| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, monotonic bounds and pooled vector weights; host column sampling, interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter, resident row IDs, GPU leaf positions; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu` | CPU |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels; label validation and base-score estimation still CPU |
@@ -67,12 +67,12 @@ count, repeated measurements, and accuracy alongside any speedup claim.
 
 The central training loop still crosses the CPU/GPU boundary at every tree level.
 The next architectural change is to retain quantized data, gradients, histograms,
-row positions and prediction state on Metal buffers, then implement split evaluation against that representation. Row partitioning
-and histogram reads now share resident GPU row indices. Host orchestration and model serialization
-can remain on the CPU, as they also do in CUDA-backed software. Numeric-only split
-selection would not complete this step: categorical splits, missing directions,
-monotonic/interaction constraints, vector leaves, sampling and external-memory paging
-must be included and tested.
+row positions and prediction state on Metal buffers. Split evaluation now executes
+on Metal for scalar and vector leaves, but still stages host histogram data. Row
+partitioning and histogram reads share resident GPU row indices. Host orchestration and model serialization
+can remain on the CPU, as they also do in CUDA-backed software. Split tests include categorical partitions, missing directions, monotonic and
+interaction constraints, and vector leaves. GPU sampling, histogram subtraction,
+resident histograms and efficient external-memory staging remain required.
 
 Remaining ranking/survival/robust objectives, SHAP, specialized metrics, quantile
 construction, linear training and collectives are separate coverage requirements.

@@ -15,5 +15,13 @@ echo "Checking Metal partitioning and index transposition against CPU references
 clang++ -std=c++17 -fobjc-arc tests/metal_partition.mm \
   -framework Metal -framework Foundation -o results/metal_partition_test
 results/metal_partition_test xgboost/src/common/metal_histogram.metal
+echo "Checking software binary64 against CPU arithmetic"
+clang++ -std=c++17 -fobjc-arc tests/metal_fp64.mm \
+  -framework Metal -framework Foundation -o results/metal_fp64_test
+results/metal_fp64_test xgboost/src/common/metal_histogram.metal
+echo "Checking scalar and vector split kernels against independent CPU references"
+clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_split.mm \
+  -framework Metal -framework Foundation -o results/metal_split_test
+results/metal_split_test xgboost/src/common/metal_histogram.metal
 echo "Running training equivalence tests; a real GPU is required"
 .venv/bin/python -m pytest -q tests --require-metal

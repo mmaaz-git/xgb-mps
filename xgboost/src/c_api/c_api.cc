@@ -194,6 +194,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["row_init_dispatches"] = Integer{static_cast<std::int64_t>(stats.row_init_dispatches)};
   info["partition_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.partition_gpu_time_ns)};
   info["index_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.index_gpu_time_ns)};
+  info["split_dispatches"] = Integer{static_cast<std::int64_t>(stats.split_dispatches)};
+  info["split_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.split_gpu_time_ns)};
   info["gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.gpu_time_ns)};
 #else
   info["built"] = Boolean{false};
@@ -221,6 +223,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["row_init_dispatches"] = Integer{0};
   info["partition_gpu_time_ns"] = Integer{0};
   info["index_gpu_time_ns"] = Integer{0};
+  info["split_dispatches"] = Integer{0};
+  info["split_gpu_time_ns"] = Integer{0};
   info["gpu_time_ns"] = Integer{0};
 #endif
   auto &out_str = GlobalConfigAPIThreadLocalStore::Get()->ret_str;

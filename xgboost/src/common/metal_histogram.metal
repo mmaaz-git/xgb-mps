@@ -692,3 +692,753 @@ kernel void xgb_transpose_index(device const uchar* source [[buffer(0)]],
         reinterpret_cast<device uint*>(target)[out] = value;
     }
 }
+
+// Software IEEE-754 binary64 for split statistics. Integer arithmetic avoids
+// narrowing histograms to FP32; every operation rounds to nearest, ties to even.
+// Only split scoring uses this path, not the high-volume histogram accumulation.
+struct XGBDouble {
+  ulong bits;
+};
+constant ulong kDoubleSign = 0x8000000000000000ul;
+constant ulong kDoubleFrac = 0x000ffffffffffffful;
+constant ulong kDoubleInf = 0x7ff0000000000000ul;
+constant ulong kDoubleNaN = 0x7ff8000000000000ul;
+inline ulong xgb_shift_jam(ulong value, uint shift) {
+  if (!shift) return value;
+  if (shift >= 64) return ulong(value != 0);
+  return (value >> shift) | ulong((value & ((1ul << shift) - 1)) != 0);
+}
+inline XGBDouble xgb_dround(ulong sign, int exponent, ulong sig) {
+  if (!sig) return {sign};
+  if (exponent <= 0) {
+    sig = xgb_shift_jam(sig, uint(1 - exponent));
+    exponent = 0;
+  }
+  ulong tail = sig & 7, rounded = (sig >> 3) + ulong(tail > 4 || (tail == 4 && ((sig >> 3) & 1)));
+  if (exponent == 0) {
+    if (rounded & (1ul << 52)) exponent = 1;
+  } else if (rounded & (1ul << 53)) {
+    rounded >>= 1;
+    ++exponent;
+  }
+  if (exponent >= 2047) return {sign | kDoubleInf};
+  return {sign | (ulong(exponent) << 52) | (rounded & kDoubleFrac)};
+}
+inline XGBDouble xgb_dfrom_float(float value) {
+  uint bits = as_type<uint>(value), e = (bits >> 23) & 255, m = bits & 0x7fffff;
+  ulong sign = ulong(bits >> 31) << 63;
+  if (e == 255) return {sign | kDoubleInf | (m ? (ulong(m) << 29) | 0x8000000000000ul : 0ul)};
+  if (!e) {
+    if (!m) return {sign};
+    int shift = int(clz(m)) - 8;
+    m <<= shift;
+    return {sign | (ulong(897 - shift) << 52) | (ulong(m & 0x7fffff) << 29)};
+  }
+  return {sign | (ulong(int(e) + 896) << 52) | (ulong(m) << 29)};
+}
+inline float xgb_dto_float(XGBDouble value) {
+  ulong bits = value.bits, m = bits & kDoubleFrac;
+  int e = int((bits >> 52) & 2047);
+  uint sign = uint(bits >> 63) << 31;
+  if (e == 2047) return as_type<float>(sign | 0x7f800000u | (m ? 0x400000u : 0u));
+  if (!e) {
+    if (!m) return as_type<float>(sign);
+    e = 1;
+    int shift = int(clz(m)) - 11;
+    m <<= shift;
+    e -= shift;
+  } else
+    m |= 1ul << 52;
+  e = e - 1023 + 127;
+  ulong sig = xgb_shift_jam(m, 26);
+  if (e <= 0) {
+    sig = xgb_shift_jam(sig, uint(1 - e));
+    e = 0;
+  }
+  ulong tail = sig & 7, rounded = (sig >> 3) + ulong(tail > 4 || (tail == 4 && ((sig >> 3) & 1)));
+  if (e == 0) {
+    if (rounded & (1ul << 23)) e = 1;
+  } else if (rounded & (1ul << 24)) {
+    rounded >>= 1;
+    ++e;
+  }
+  if (e >= 255) return as_type<float>(sign | 0x7f800000u);
+  return as_type<float>(sign | (uint(e) << 23) | uint(rounded & 0x7fffff));
+}
+inline XGBDouble xgb_dneg(XGBDouble a) { return {a.bits ^ kDoubleSign}; }
+inline bool xgb_dzero(XGBDouble a) { return (a.bits & ~kDoubleSign) == 0; }
+inline bool xgb_deq(XGBDouble a, XGBDouble b) {
+  return a.bits == b.bits || (xgb_dzero(a) && xgb_dzero(b));
+}
+inline bool xgb_dlt(XGBDouble a, XGBDouble b) {
+  ulong aa = a.bits & ~kDoubleSign, bb = b.bits & ~kDoubleSign;
+  if (aa > kDoubleInf || bb > kDoubleInf) return false;
+  if (!aa && !bb) return false;
+  if ((a.bits ^ b.bits) & kDoubleSign) return bool(a.bits & kDoubleSign);
+  return (a.bits & kDoubleSign) ? aa > bb : aa < bb;
+}
+inline XGBDouble xgb_dadd(XGBDouble a, XGBDouble b) {
+  ulong aa = a.bits & ~kDoubleSign, bb = b.bits & ~kDoubleSign;
+  if (aa > kDoubleInf) return {a.bits | 0x8000000000000ul};
+  if (bb > kDoubleInf) return {b.bits | 0x8000000000000ul};
+  if (aa == kDoubleInf || bb == kDoubleInf) {
+    if (aa == kDoubleInf && bb == kDoubleInf && ((a.bits ^ b.bits) & kDoubleSign))
+      return {kDoubleNaN};
+    return aa == kDoubleInf ? a : b;
+  }
+  if (!aa && !bb) return {a.bits & b.bits & kDoubleSign};
+  if (!aa) return b;
+  if (!bb) return a;
+  if (aa < bb) {
+    XGBDouble temp = a;
+    a = b;
+    b = temp;
+    ulong t = aa;
+    aa = bb;
+    bb = t;
+  }
+  int ea = int(aa >> 52), eb = int(bb >> 52);
+  ulong ma = (aa & kDoubleFrac) | (ea ? (1ul << 52) : 0),
+        mb = (bb & kDoubleFrac) | (eb ? (1ul << 52) : 0);
+  ea = max(ea, 1);
+  eb = max(eb, 1);
+  ma <<= 3;
+  mb = xgb_shift_jam(mb << 3, uint(ea - eb));
+  ulong sign = a.bits & kDoubleSign, sig;
+  if ((a.bits ^ b.bits) & kDoubleSign) {
+    sig = ma - mb;
+    if (!sig) return {0};
+    int shift = int(clz(sig)) - 8;
+    sig <<= shift;
+    ea -= shift;
+  } else {
+    sig = ma + mb;
+    if (sig & (1ul << 56)) {
+      sig = xgb_shift_jam(sig, 1);
+      ++ea;
+    } else if (!(sig & (1ul << 55))) {
+      int shift = int(clz(sig)) - 8;
+      sig <<= shift;
+      ea -= shift;
+    }
+  }
+  return xgb_dround(sign, ea, sig);
+}
+inline XGBDouble xgb_dsub(XGBDouble a, XGBDouble b) { return xgb_dadd(a, xgb_dneg(b)); }
+inline void xgb_dunpack(ulong bits, thread int& exponent, thread ulong& mantissa) {
+  exponent = int((bits >> 52) & 2047);
+  mantissa = bits & kDoubleFrac;
+  if (exponent)
+    mantissa |= 1ul << 52;
+  else {
+    exponent = 1;
+    int shift = int(clz(mantissa)) - 11;
+    mantissa <<= shift;
+    exponent -= shift;
+  }
+}
+inline ulong xgb_mul_high(ulong a, ulong b, thread ulong& low) {
+  ulong p00 = ulong(uint(a)) * uint(b), p01 = ulong(uint(a)) * (b >> 32), p10 = (a >> 32) * uint(b),
+        p11 = (a >> 32) * (b >> 32);
+  ulong mid = (p00 >> 32) + uint(p01) + uint(p10);
+  low = (mid << 32) | uint(p00);
+  return p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+}
+inline XGBDouble xgb_dmul(XGBDouble a, XGBDouble b) {
+  ulong aa = a.bits & ~kDoubleSign, bb = b.bits & ~kDoubleSign,
+        sign = (a.bits ^ b.bits) & kDoubleSign;
+  if (aa > kDoubleInf || bb > kDoubleInf) return {kDoubleNaN};
+  if (aa == kDoubleInf || bb == kDoubleInf) return {(!aa || !bb) ? kDoubleNaN : sign | kDoubleInf};
+  if (!aa || !bb) return {sign};
+  int ea, eb;
+  ulong ma, mb;
+  xgb_dunpack(aa, ea, ma);
+  xgb_dunpack(bb, eb, mb);
+  ulong low, high = xgb_mul_high(ma, mb, low);
+  int exponent = ea + eb - 1023;
+  uint shift = 49;
+  if (high & (1ul << 41)) {
+    shift = 50;
+    ++exponent;
+  }
+  ulong sig = (high << (64 - shift)) | (low >> shift);
+  if (low & ((1ul << shift) - 1)) sig |= 1;
+  return xgb_dround(sign, exponent, sig);
+}
+inline XGBDouble xgb_ddiv(XGBDouble a, XGBDouble b) {
+  ulong aa = a.bits & ~kDoubleSign, bb = b.bits & ~kDoubleSign,
+        sign = (a.bits ^ b.bits) & kDoubleSign;
+  if (aa > kDoubleInf || bb > kDoubleInf || (!aa && !bb) || (aa == kDoubleInf && bb == kDoubleInf))
+    return {kDoubleNaN};
+  if (aa == kDoubleInf || !bb) return {sign | kDoubleInf};
+  if (bb == kDoubleInf || !aa) return {sign};
+  int ea, eb;
+  ulong ma, mb;
+  xgb_dunpack(aa, ea, ma);
+  xgb_dunpack(bb, eb, mb);
+  int exponent = ea - eb + 1023;
+  if (ma < mb) {
+    ma <<= 1;
+    --exponent;
+  }
+  ulong remainder = ma - mb, sig = 1;
+  // Generate ten quotient bits at a time. FP32 estimates the small quotient;
+  // exact integer residual checks correct its at-most-one-unit rounding error.
+  // The widened remainder and product fit in 63 bits (53-bit divisor + 10).
+  for (uint done = 0; done < 55; done += 10) {
+    uint shift = min(10u, 55 - done);
+    ulong numerator = remainder << shift;
+    ulong quotient = ulong((float(remainder) / float(mb)) * float(1u << shift));
+    ulong product = quotient * mb;
+    if (product > numerator) {
+      --quotient;
+      product -= mb;
+    }
+    if (numerator - product >= mb) {
+      ++quotient;
+      product += mb;
+    }
+    remainder = numerator - product;
+    sig = (sig << shift) | quotient;
+  }
+  if (remainder) sig |= 1;
+  return xgb_dround(sign, exponent, sig);
+}
+
+struct SplitTask {
+  uint begin, end, kind, limit;
+  ulong parent_grad, parent_hess;
+  float root_gain, lower, upper;
+  int monotone;
+};
+struct SplitParameters {
+  float reg_lambda, reg_alpha, max_delta_step, min_child_weight;
+};
+struct SplitResult {
+  ulong lg, lh, rg, rh;
+  float gain;
+  int bin;
+  uint missing, partition;
+};
+struct DoublePair {
+  XGBDouble g, h;
+};
+inline DoublePair xgb_pair_read(ulong2 bits) { return {{bits.x}, {bits.y}}; }
+inline DoublePair xgb_pair_add(DoublePair a, DoublePair b) {
+  return {xgb_dadd(a.g, b.g), xgb_dadd(a.h, b.h)};
+}
+inline DoublePair xgb_pair_sub(DoublePair a, DoublePair b) {
+  return {xgb_dsub(a.g, b.g), xgb_dsub(a.h, b.h)};
+}
+inline float xgb_split_weight(DoublePair sum, SplitParameters p, float lower, float upper) {
+  if (!xgb_dlt({0}, sum.h)) return 0.0f;
+  XGBDouble alpha = xgb_dfrom_float(p.reg_alpha), threshold{0};
+  if (xgb_dlt(alpha, sum.g))
+    threshold = xgb_dsub(sum.g, alpha);
+  else if (xgb_dlt(sum.g, xgb_dneg(alpha)))
+    threshold = xgb_dadd(sum.g, alpha);
+  XGBDouble weight = xgb_ddiv(xgb_dneg(threshold), xgb_dadd(sum.h, xgb_dfrom_float(p.reg_lambda)));
+  if (p.max_delta_step != 0.0f) {
+    XGBDouble delta = xgb_dfrom_float(p.max_delta_step);
+    if (xgb_dlt(delta, {weight.bits & ~kDoubleSign}))
+      weight = {delta.bits | (weight.bits & kDoubleSign)};
+  }
+  float value = xgb_dto_float(weight);
+  if (value < lower)
+    value = lower;
+  else if (value > upper)
+    value = upper;
+  return value;
+}
+inline float xgb_split_gain_weight(DoublePair sum, float weight, SplitParameters p) {
+  if (!xgb_dlt({0}, sum.h)) return 0.0f;
+  XGBDouble two = xgb_dfrom_float(2.0f), w = xgb_dfrom_float(weight);
+  // The upstream square of the float leaf weight rounds to FP32 before the
+  // enclosing double expression. Preserve that rounding boundary explicitly.
+  XGBDouble square = xgb_dfrom_float(xgb_dto_float(xgb_dmul(w, w)));
+  XGBDouble a = xgb_dmul(xgb_dmul(two, sum.g), w);
+  XGBDouble b = xgb_dmul(xgb_dadd(sum.h, xgb_dfrom_float(p.reg_lambda)), square);
+  XGBDouble c = xgb_dmul(xgb_dmul(two, xgb_dfrom_float(p.reg_alpha)), {w.bits & ~kDoubleSign});
+  return xgb_dto_float(xgb_dneg(xgb_dadd(xgb_dadd(a, b), c)));
+}
+inline void xgb_consider_split(DoublePair left, DoublePair right, SplitTask task, SplitParameters p,
+                               int bin, uint missing, uint partition, thread SplitResult& best) {
+  XGBDouble minimum = xgb_dfrom_float(p.min_child_weight);
+  if (!xgb_dlt({0}, left.h) || !xgb_dlt({0}, right.h) || xgb_dlt(left.h, minimum) ||
+      xgb_dlt(right.h, minimum))
+    return;
+  float wl = xgb_split_weight(left, p, task.lower, task.upper),
+        wr = xgb_split_weight(right, p, task.lower, task.upper);
+  if ((task.monotone > 0 && !(wl <= wr)) || (task.monotone < 0 && !(wl >= wr))) return;
+  float gain =
+      (xgb_split_gain_weight(left, wl, p) + xgb_split_gain_weight(right, wr, p)) - task.root_gain;
+  if (isfinite(gain) && gain > best.gain)
+    best = {left.g.bits, left.h.bits, right.g.bits, right.h.bits, gain, bin, missing, partition};
+}
+// If a complete feature sum fits in 53 integer bits at its finest input unit,
+// every possible prefix is exactly representable as binary64. In that case an
+// integer parallel scan is equivalent to the CPU's sequential double additions.
+inline ulong xgb_simd_prefix64(ulong value) {
+  uint low = simd_prefix_inclusive_sum(uint(value));
+  uint carry = simd_prefix_inclusive_sum(uint(low < uint(value)));
+  uint high = simd_prefix_inclusive_sum(uint(value >> 32)) + carry;
+  return (ulong(high) << 32) | low;
+}
+inline int2 xgb_exact_span(ulong bits) {
+  ulong magnitude = bits & ~kDoubleSign;
+  if (!magnitude) return int2(4096, -4096);
+  if (magnitude >= kDoubleInf) return int2(-4096, 4096);
+  int exponent;
+  ulong mantissa;
+  xgb_dunpack(magnitude, exponent, mantissa);
+  return int2(exponent - 1075 + int(ctz(mantissa)), exponent - 1023);
+}
+inline ulong xgb_exact_integer(ulong bits, int unit) {
+  if (!(bits & ~kDoubleSign)) return 0;
+  int exponent;
+  ulong mantissa;
+  xgb_dunpack(bits & ~kDoubleSign, exponent, mantissa);
+  int shift = exponent - 1075 - unit;
+  ulong value = shift >= 0 ? mantissa << uint(shift) : mantissa >> uint(-shift);
+  return bits & kDoubleSign ? 0ul - value : value;
+}
+inline ulong xgb_exact_double(ulong value, int unit) {
+  bool negative = bool(value & kDoubleSign);
+  ulong magnitude = negative ? 0ul - value : value;
+  if (!magnitude) return 0;
+  int high = 63 - int(clz(magnitude));
+  return xgb_dround(negative ? kDoubleSign : 0, high + unit + 1023, magnitude << uint(55 - high))
+      .bits;
+}
+
+// One threadgroup owns a feature. Preserve CPU scan order for the prefix sums,
+// then evaluate independent candidate gains across the entire threadgroup.
+kernel void xgb_evaluate_splits(
+    device const ulong2* hist [[buffer(0)]], device const SplitTask* tasks [[buffer(1)]],
+    constant SplitParameters& p [[buffer(2)]], device SplitResult* results [[buffer(3)]],
+    device uint* order [[buffer(4)]], device float* weights [[buffer(5)]],
+    device ulong4* scans [[buffer(6)]], uint task_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]], uint width [[threads_per_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
+  SplitTask task = tasks[task_id];
+  uint n = task.end - task.begin;
+  DoublePair parent{{task.parent_grad}, {task.parent_hess}};
+  threadgroup uint missing;
+  threadgroup ulong2 missing_sum;
+  threadgroup float gains[8];
+  threadgroup uint ranks[8];
+  if (task.kind == 2) {
+    for (uint i = tid; i < n; i += width) {
+      order[task.begin + i] = i;
+      weights[task.begin + i] =
+          xgb_split_weight(xgb_pair_read(hist[task.begin + i]), p, -INFINITY, INFINITY);
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+  threadgroup int2 units[8], tops[8];
+  threadgroup ulong2 chunk_totals[8], carry;
+  threadgroup atomic_uint exact;
+  if (tid == 0 && task.kind == 2) {
+    // Stable ordering is observable when categories have identical weights.
+    for (uint i = 1; i < n; ++i) {
+      uint value = order[task.begin + i], j = i;
+      float key = weights[task.begin + value];
+      while (j && key < weights[task.begin + order[task.begin + j - 1]]) {
+        order[task.begin + j] = order[task.begin + j - 1];
+        --j;
+      }
+      order[task.begin + j] = value;
+    }
+  }
+  int2 unit(4096), top(-4096);
+  for (uint i = tid; i < n; i += width) {
+    ulong2 value = hist[task.begin + i];
+    int2 g = xgb_exact_span(value.x), h = xgb_exact_span(value.y);
+    unit = min(unit, int2(g.x, h.x));
+    top = max(top, int2(g.y, h.y));
+  }
+  int2 minimum(simd_min(unit.x), simd_min(unit.y)), maximum(simd_max(top.x), simd_max(top.y));
+  if (lane == 0) {
+    units[simd] = minimum;
+    tops[simd] = maximum;
+  }
+  threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+  if (tid == 0) {
+    int2 lo(4096), hi(-4096);
+    for (uint j = 0; j < width / 32; ++j) {
+      lo = min(lo, units[j]);
+      hi = max(hi, tops[j]);
+    }
+    uint count_bits = n > 1 ? 32 - clz(n - 1) : 0;
+    atomic_store_explicit(
+        &exact, uint(all(hi - lo + int(count_bits) <= 52) && all(hi + int(count_bits) < 1024)),
+        memory_order_relaxed);
+    units[0] = select(lo, int2(0), lo == int2(4096));
+    carry = ulong2(0);
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (atomic_load_explicit(&exact, memory_order_relaxed)) {
+    int2 u = units[0];
+    for (uint base = 0; base < n; base += width) {
+      uint i = base + tid;
+      ulong2 value(0);
+      if (i < n) {
+        uint bin = task.kind == 2 ? order[task.begin + i] : i;
+        ulong2 bits = hist[task.begin + bin];
+        value = ulong2(xgb_exact_integer(bits.x, u.x), xgb_exact_integer(bits.y, u.y));
+      }
+      ulong2 prefix(xgb_simd_prefix64(value.x), xgb_simd_prefix64(value.y));
+      if (lane == 31) chunk_totals[simd] = prefix;
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      prefix += carry;
+      for (uint j = 0; j < simd; ++j) prefix += chunk_totals[j];
+      if (i < n)
+        scans[task.begin + i].xy =
+            ulong2(xgb_exact_double(prefix.x, u.x), xgb_exact_double(prefix.y, u.y));
+      // Every lane must read the old carry before the last lane updates it.
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      if (tid == width - 1) carry = prefix;
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    DoublePair total =
+        xgb_pair_read(ulong2(xgb_exact_double(carry.x, u.x), xgb_exact_double(carry.y, u.y)));
+    if (tid == 0) {
+      missing = (!xgb_deq(total.g, parent.g) || !xgb_deq(total.h, parent.h));
+      DoublePair absent = xgb_pair_sub(parent, total);
+      missing_sum = ulong2(absent.g.bits, absent.h.bits);
+    }
+    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+    if ((task.kind == 0 && missing) || task.kind == 2)
+      for (uint i = tid; i < n; i += width) {
+        DoublePair preceding =
+            i ? xgb_pair_read(scans[task.begin + i - 1].xy) : DoublePair{{0}, {0}};
+        DoublePair suffix = xgb_pair_sub(total, preceding);
+        scans[task.begin + i].zw = ulong2(suffix.g.bits, suffix.h.bits);
+      }
+  } else if (tid == 0) {
+    // Extreme exponent spreads retain the sequential, rounded binary64 scan.
+    DoublePair forward{{0}, {0}}, backward{{0}, {0}};
+    for (uint i = 0; i < n; ++i) {
+      uint bin = task.kind == 2 ? order[task.begin + i] : i;
+      forward = xgb_pair_add(forward, xgb_pair_read(hist[task.begin + bin]));
+      scans[task.begin + i].xy = ulong2(forward.g.bits, forward.h.bits);
+    }
+    missing = (!xgb_deq(forward.g, parent.g) || !xgb_deq(forward.h, parent.h));
+    DoublePair absent = xgb_pair_sub(parent, forward);
+    missing_sum = ulong2(absent.g.bits, absent.h.bits);
+    if ((task.kind == 0 && missing) || task.kind == 2) {
+      for (int i = int(n) - 1; i >= 0; --i) {
+        uint bin = task.kind == 2 ? order[task.begin + i] : uint(i);
+        backward = xgb_pair_add(backward, xgb_pair_read(hist[task.begin + bin]));
+        scans[task.begin + i].zw = ulong2(backward.g.bits, backward.h.bits);
+      }
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+  SplitResult best{0, 0, 0, 0, 0.0f, -1, 0, 0};
+  if (task.kind == 0) {
+    for (uint i = tid; i < n; i += width) {
+      DoublePair sum = xgb_pair_read(scans[task.begin + i].xy);
+      xgb_consider_split(sum, xgb_pair_sub(parent, sum), task, p, int(i), 0, 0, best);
+    }
+    if (missing)
+      for (int i = int(n) - 1 - int(tid); i >= 0; i -= int(width)) {
+        DoublePair sum = xgb_pair_read(scans[task.begin + i].zw);
+        xgb_consider_split(xgb_pair_sub(parent, sum), sum, task, p, i, 1, 0, best);
+      }
+  } else if (task.kind == 1) {
+    DoublePair absent = xgb_pair_read(missing_sum);
+    for (uint i = tid; i < n; i += width) {
+      DoublePair right = xgb_pair_read(hist[task.begin + i]);
+      xgb_consider_split(xgb_pair_sub(parent, right), right, task, p, int(i), 1, 0, best);
+      right = xgb_pair_add(right, absent);
+      xgb_consider_split(xgb_pair_sub(parent, right), right, task, p, int(i), 0, 0, best);
+    }
+  } else {
+    uint limit = min(n, task.limit);
+    for (uint i = tid; i + 1 < limit; i += width) {
+      DoublePair sum = xgb_pair_read(scans[task.begin + i].xy);
+      xgb_consider_split(xgb_pair_sub(parent, sum), sum, task, p, int(i), 1, i + 1, best);
+    }
+    for (int i = int(n) - 1 - int(tid); i > int(n - limit); i -= int(width)) {
+      DoublePair sum = xgb_pair_read(scans[task.begin + i].zw);
+      xgb_consider_split(sum, xgb_pair_sub(parent, sum), task, p, i, 0, uint(i), best);
+    }
+  }
+  // Gain ties retain the original CPU enumeration order, even across lanes.
+  uint rank = 0xffffffffu;
+  if (best.bin >= 0) {
+    if (task.kind == 0)
+      rank = best.missing ? 2 * n - 1 - uint(best.bin) : uint(best.bin);
+    else if (task.kind == 1)
+      rank = 2 * uint(best.bin) + (best.missing ? 0 : 1);
+    else
+      rank = best.missing ? uint(best.bin) : 2 * n - 1 - uint(best.bin);
+  }
+  float gain = simd_max(best.gain);
+  uint winner = simd_min(best.gain == gain ? rank : 0xffffffffu);
+  if (lane == 0) {
+    gains[simd] = gain;
+    ranks[simd] = winner;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd == 0) {
+    float g = lane < width / 32 ? gains[lane] : 0.0f;
+    uint r = lane < width / 32 ? ranks[lane] : 0xffffffffu;
+    float top = simd_max(g);
+    uint first = simd_min(g == top ? r : 0xffffffffu);
+    if (lane == 0) {
+      gains[0] = top;
+      ranks[0] = first;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if ((best.bin >= 0 && best.gain == gains[0] && rank == ranks[0]) ||
+      (ranks[0] == 0xffffffffu && tid == 0))
+    results[task_id] = best;
+}
+
+struct MultiSplitTask {
+  uint begin, end, kind, limit, parent_begin, targets;
+  ulong root_gain;
+  int monotone;
+  uint constrained;
+};
+inline XGBDouble xgb_weight_precise(DoublePair sum, SplitParameters p) {
+  if (!xgb_dlt({0}, sum.h)) return {0};
+  XGBDouble alpha = xgb_dfrom_float(p.reg_alpha), threshold{0};
+  if (xgb_dlt(alpha, sum.g))
+    threshold = xgb_dsub(sum.g, alpha);
+  else if (xgb_dlt(sum.g, xgb_dneg(alpha)))
+    threshold = xgb_dadd(sum.g, alpha);
+  XGBDouble w = xgb_ddiv(xgb_dneg(threshold), xgb_dadd(sum.h, xgb_dfrom_float(p.reg_lambda)));
+  XGBDouble delta = xgb_dfrom_float(p.max_delta_step);
+  if (p.max_delta_step && xgb_dlt(delta, {w.bits & ~kDoubleSign}))
+    w = {delta.bits | (w.bits & kDoubleSign)};
+  return w;
+}
+inline XGBDouble xgb_gain_precise(DoublePair sum, XGBDouble w, XGBDouble square,
+                                  SplitParameters p) {
+  XGBDouble two = xgb_dfrom_float(2.0f);
+  XGBDouble first = xgb_dmul(xgb_dmul(two, sum.g), w);
+  XGBDouble second = xgb_dmul(xgb_dadd(sum.h, xgb_dfrom_float(p.reg_lambda)), square);
+  XGBDouble penalty =
+      xgb_dmul(xgb_dmul(two, xgb_dfrom_float(p.reg_alpha)), {w.bits & ~kDoubleSign});
+  return xgb_dneg(xgb_dadd(xgb_dadd(first, second), penalty));
+}
+inline XGBDouble xgb_unconstrained_gain(DoublePair sum, SplitParameters p) {
+  if (!xgb_dlt({0}, sum.h)) return {0};
+  if (p.max_delta_step == 0.0f) {
+    XGBDouble g = sum.g, alpha = xgb_dfrom_float(p.reg_alpha);
+    if (p.reg_alpha) {
+      if (xgb_dlt(alpha, g))
+        g = xgb_dsub(g, alpha);
+      else if (xgb_dlt(g, xgb_dneg(alpha)))
+        g = xgb_dadd(g, alpha);
+      else
+        g = {0};
+    }
+    return xgb_ddiv(xgb_dmul(g, g), xgb_dadd(sum.h, xgb_dfrom_float(p.reg_lambda)));
+  }
+  XGBDouble w = xgb_weight_precise(sum, p);
+  return xgb_gain_precise(sum, w, xgb_dmul(w, w), p);
+}
+inline XGBDouble xgb_vector_gain_weight(DoublePair sum, float weight, SplitParameters p) {
+  XGBDouble w = xgb_dfrom_float(weight);
+  XGBDouble square = xgb_dfrom_float(xgb_dto_float(xgb_dmul(w, w)));
+  return xgb_gain_precise(sum, w, square, p);
+}
+inline void xgb_multi_sums(MultiSplitTask task, uint bin, uint missing, uint target,
+                           device const ulong2* hist, device const ulong4* scans,
+                           device const ulong2* parents, thread DoublePair& left,
+                           thread DoublePair& right) {
+  uint idx = task.begin + bin * task.targets + target;
+  DoublePair parent = xgb_pair_read(parents[task.parent_begin + target]);
+  if (task.kind == 0) {
+    if (missing) {
+      right = xgb_pair_read(scans[idx].zw);
+      left = xgb_pair_sub(parent, right);
+    } else {
+      left = xgb_pair_read(scans[idx].xy);
+      right = xgb_pair_sub(parent, left);
+    }
+  } else if (task.kind == 1) {
+    right = xgb_pair_read(hist[idx]);
+    if (!missing) {
+      DoublePair total = xgb_pair_read(scans[task.end - task.targets + target].xy);
+      right = xgb_pair_add(right, xgb_pair_sub(parent, total));
+    }
+    left = xgb_pair_sub(parent, right);
+  } else {
+    if (missing) {
+      right = xgb_pair_read(scans[idx].xy);
+      left = xgb_pair_sub(parent, right);
+    } else {
+      left = xgb_pair_read(scans[idx].zw);
+      right = xgb_pair_sub(parent, left);
+    }
+  }
+}
+inline float xgb_multi_gain(MultiSplitTask task, SplitParameters p, uint bin, uint missing,
+                            device const ulong2* hist, device const ulong4* scans,
+                            device const ulong2* parents, device const float2* bounds) {
+  XGBDouble gain{0}, lh{0}, rh{0};
+  for (uint t = 0; t < task.targets; ++t) {
+    DoublePair left, right;
+    xgb_multi_sums(task, bin, missing, t, hist, scans, parents, left, right);
+    lh = xgb_dadd(lh, left.h);
+    rh = xgb_dadd(rh, right.h);
+    if (!task.constrained) {
+      gain = xgb_dadd(gain, xgb_unconstrained_gain(left, p));
+      gain = xgb_dadd(gain, xgb_unconstrained_gain(right, p));
+    }
+  }
+  XGBDouble count = xgb_dfrom_float(float(task.targets)),
+            minimum = xgb_dfrom_float(p.min_child_weight);
+  lh = xgb_ddiv(lh, count);
+  rh = xgb_ddiv(rh, count);
+  if (!xgb_dlt({0}, lh) || !xgb_dlt({0}, rh) || xgb_dlt(lh, minimum) || xgb_dlt(rh, minimum))
+    return -INFINITY;
+  if (task.constrained)
+    for (uint t = 0; t < task.targets; ++t) {
+      DoublePair left, right;
+      xgb_multi_sums(task, bin, missing, t, hist, scans, parents, left, right);
+      float2 b = bounds[task.parent_begin + t];
+      float wl = xgb_split_weight(left, p, b.x, b.y), wr = xgb_split_weight(right, p, b.x, b.y);
+      if ((task.monotone > 0 && !(wl <= wr)) || (task.monotone < 0 && !(wl >= wr))) {
+        SplitParameters pooled = p;
+        pooled.reg_alpha = 2.0f * p.reg_alpha;
+        pooled.reg_lambda = 2.0f * p.reg_lambda;
+        wl = xgb_split_weight(xgb_pair_add(left, right), pooled, b.x, b.y);
+        wr = wl;
+      }
+      gain = xgb_dadd(gain, xgb_vector_gain_weight(left, wl, p));
+      gain = xgb_dadd(gain, xgb_vector_gain_weight(right, wr, p));
+    }
+  return xgb_dto_float(xgb_dsub(gain, {task.root_gain}));
+}
+kernel void xgb_evaluate_multi_splits(
+    device const ulong2* hist [[buffer(0)]], device const MultiSplitTask* tasks [[buffer(1)]],
+    constant SplitParameters& p [[buffer(2)]], device SplitResult* results [[buffer(3)]],
+    device uint* order [[buffer(4)]], device ulong* scores [[buffer(5)]],
+    device ulong4* scans [[buffer(6)]], device const ulong2* parents [[buffer(7)]],
+    device const float2* bounds [[buffer(8)]], device ulong2* children [[buffer(9)]],
+    uint task_id [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+    uint width [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+    uint simd [[simdgroup_index_in_threadgroup]]) {
+  MultiSplitTask task = tasks[task_id];
+  uint n = (task.end - task.begin) / task.targets;
+  threadgroup atomic_uint missing;
+  threadgroup float gains[8];
+  threadgroup uint ranks[8];
+  if (tid == 0) atomic_store_explicit(&missing, 0, memory_order_relaxed);
+  if (task.kind == 2)
+    for (uint i = tid; i < n; i += width) {
+      order[task.begin + i] = i;
+      XGBDouble score{0};
+      for (uint t = 0; t < task.targets; ++t) {
+        float parent =
+            xgb_split_weight(xgb_pair_read(parents[task.parent_begin + t]), p, -INFINITY, INFINITY);
+        float child = xgb_split_weight(xgb_pair_read(hist[task.begin + i * task.targets + t]), p,
+                                       -INFINITY, INFINITY);
+        // CPU category scores sum products rounded to FP32 into a double sum.
+        XGBDouble product = xgb_dfrom_float(
+            xgb_dto_float(xgb_dmul(xgb_dfrom_float(parent), xgb_dfrom_float(child))));
+        score = xgb_dadd(score, product);
+      }
+      scores[task.begin + i] = score.bits;
+    }
+  threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+  if (tid == 0 && task.kind == 2) {
+    for (uint i = 1; i < n; ++i) {
+      uint value = order[task.begin + i], j = i;
+      XGBDouble key{scores[task.begin + value]};
+      while (j && xgb_dlt(key, {scores[task.begin + order[task.begin + j - 1]]})) {
+        order[task.begin + j] = order[task.begin + j - 1];
+        --j;
+      }
+      order[task.begin + j] = value;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+  // Independent target scans retain each target's exact sequential sum order.
+  for (uint t = tid; t < task.targets; t += width) {
+    DoublePair forward{{0}, {0}}, backward{{0}, {0}},
+        parent = xgb_pair_read(parents[task.parent_begin + t]);
+    for (uint i = 0; i < n; ++i) {
+      uint bin = task.kind == 2 ? order[task.begin + i] : i;
+      forward = xgb_pair_add(forward, xgb_pair_read(hist[task.begin + bin * task.targets + t]));
+      scans[task.begin + i * task.targets + t].xy = ulong2(forward.g.bits, forward.h.bits);
+    }
+    bool absent = !xgb_deq(forward.g, parent.g) || !xgb_deq(forward.h, parent.h);
+    if (absent) atomic_store_explicit(&missing, 1, memory_order_relaxed);
+    // Another target may have missing data even if this one sums to the parent.
+    if (task.kind != 1)
+      for (int i = int(n) - 1; i >= 0; --i) {
+        uint bin = task.kind == 2 ? order[task.begin + i] : uint(i);
+        backward = xgb_pair_add(backward, xgb_pair_read(hist[task.begin + bin * task.targets + t]));
+        scans[task.begin + i * task.targets + t].zw = ulong2(backward.g.bits, backward.h.bits);
+      }
+  }
+  threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+  float best = 0.0f;
+  uint rank = 0xffffffffu;
+  uint limit = min(n, task.limit);
+  // Candidate rank is exactly the upstream enumeration order.
+  for (uint r = tid; r < 2 * n; r += width) {
+    uint bin, default_left;
+    if (task.kind == 0) {
+      if (r >= n && !atomic_load_explicit(&missing, memory_order_relaxed)) continue;
+      bin = r < n ? r : 2 * n - 1 - r;
+      default_left = r >= n;
+    } else if (task.kind == 1) {
+      bin = r / 2;
+      default_left = !(r % 2);
+    } else {
+      bin = r < n ? r : 2 * n - 1 - r;
+      default_left = r < n;
+      if ((r < n && bin + 1 >= limit) || (r >= n && bin <= n - limit)) continue;
+    }
+    float gain = xgb_multi_gain(task, p, bin, default_left, hist, scans, parents, bounds);
+    if (isfinite(gain) && gain > best) {
+      best = gain;
+      rank = r;
+    }
+  }
+  float gain = simd_max(best);
+  uint winner = simd_min(best == gain ? rank : 0xffffffffu);
+  if (lane == 0) {
+    gains[simd] = gain;
+    ranks[simd] = winner;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd == 0) {
+    float g = lane < width / 32 ? gains[lane] : 0.0f;
+    uint r = lane < width / 32 ? ranks[lane] : 0xffffffffu;
+    float top = simd_max(g);
+    uint first = simd_min(g == top ? r : 0xffffffffu);
+    if (lane == 0) {
+      gains[0] = top;
+      ranks[0] = first;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (tid == 0) {
+    uint r = ranks[0];
+    SplitResult result{0, 0, 0, 0, gains[0], -1, 0, 0};
+    if (r != 0xffffffffu) {
+      uint bin = task.kind == 1 ? r / 2 : (r < n ? r : 2 * n - 1 - r);
+      uint default_left = task.kind == 0 ? r >= n : (task.kind == 1 ? !(r % 2) : r < n);
+      result.bin = int(bin);
+      result.missing = default_left;
+      result.partition = task.kind == 2 ? bin + default_left : 0;
+      for (uint t = 0; t < task.targets; ++t) {
+        DoublePair left, right;
+        xgb_multi_sums(task, bin, default_left, t, hist, scans, parents, left, right);
+        children[2 * task.parent_begin + t] = ulong2(left.g.bits, left.h.bits);
+        children[2 * task.parent_begin + task.targets + t] = ulong2(right.g.bits, right.h.bits);
+      }
+    }
+    results[task_id] = result;
+  }
+}
