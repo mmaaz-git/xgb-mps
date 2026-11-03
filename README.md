@@ -52,6 +52,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Histograms | Dense/sparse compressed indices, external-memory pages, scaled integer sums, shared-memory dense kernel, GPU binary64 conversion/subtraction and a resident cache |
 | Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps column sampling and interaction masks |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
+| Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; quantile sketches and adapter-built QuantileDMatrix bins remain CPU |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
 | Gradient quantization | GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales stay on GPU |
@@ -81,7 +82,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **327 passed, 1 skipped**. The skip requires a machine without an
+- Python: **351 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **84 cases**, with every bin compared exactly to independent
@@ -90,6 +91,9 @@ On Apple M3, 2026-11-03:
 - Native sampling: **3,780 exact cases / 1,019,088 Bernoulli draws** against the
   CPU standard-library implementation, including zero seeds, rounding boundaries,
   strided matrices, guard regions and CPU thread partitions.
+- Native bin assignment: **168 exact cases / 216,600 entries / 38,616,312 hit
+  counts**, including all index widths, category truncation, subnormal/signed-zero
+  boundaries, invalid values and guard regions.
 - Native gradient bounds: **63 reductions / 1,015,196 quantized values** and
   **1,296 scale boundary cases**, including NaNs/infinities, subnormals and
   row-count limits. Scales are checked with independent CPU 128-bit arithmetic.
@@ -143,11 +147,11 @@ quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 100,000 | 0.110 s | 0.358 s | 0.31× |
-| 1,000,000 | 0.797 s | 1.246 s | 0.64× |
+| 100,000 | 0.122 s | 0.326 s | 0.37× |
+| 1,000,000 | 0.834 s | 1.208 s | 0.69× |
 
-[Latest raw training results](validation/benchmark-gradient-sums-v1-m3.json), including
-GPU gradient bounds, root reductions, resident histograms, subtraction/gathering,
+[Latest raw training results](validation/benchmark-binning-v1-m3.json), including
+GPU bin assignment, gradient bounds, root reductions, resident histograms, subtraction/gathering,
 reused split buffers and skipped zero atomic additions. The [preceding run](validation/benchmark-hist-pool-m3.json)
 and [first resident-histogram run](validation/benchmark-hist-storage-m3.json) are
 retained. Dispatch overhead and substantial GPU timing variability remain.
@@ -168,9 +172,10 @@ remain optimization targets. Histogram arithmetic now stays on the GPU, but
 adding GPU operations still has dispatch costs. Small workloads pay proportionately more dispatch overhead.
 
 A wider **128-feature** squared-error workload was also measured with 20 rounds:
-1,000,000 rows took **3.839 s Metal versus 3.254 s CPU** (0.85×), and 100,000 rows
-took 0.850 versus 0.420 s (0.49×). Predictions matched exactly.
-[Raw wider-workload results](validation/benchmark-wide-v1-m3.json) are retained;
+1,000,000 rows took **3.890 s Metal versus 3.225 s CPU** (0.83×), and 100,000 rows
+took 0.722 versus 0.412 s (0.57×). Predictions matched exactly.
+[Raw wider-workload results](validation/benchmark-wide-v2-m3.json) and the
+[preceding run](validation/benchmark-wide-v1-m3.json) are retained;
 this workload also remains below CPU training speed.
 
 ### Adaptive objectives
@@ -374,3 +379,17 @@ slower than CPU. A [single diagnostic profile](validation/profile-gradient-sums-
 records the remaining cost across quantile construction, histograms, split
 evaluation, row partitions and gradient staging. Its nested timings overlap and
 should not be added together.
+
+### Bin assignment update
+
+SparsePage-backed matrices now assign numeric/categorical bins and accumulate bin
+hit counts on Metal. Integer comparisons preserve signed-zero and subnormal cut
+boundaries. Quantile sketching and adapter-built QuantileDMatrix bins remain on
+CPU, and host column storage still receives completed bins. All 351 Python tests
+and native suites pass; CPU-only compatibility checks pass.
+
+[32-feature](validation/benchmark-binning-v1-m3.json) and
+[128-feature](validation/benchmark-wide-v2-m3.json) benchmarks retain exact CPU
+prediction agreement. Their latest speed ratios are 0.69× and 0.83× respectively
+at one million rows. The [diagnostic profile](validation/profile-binning-m3.txt)
+is retained; this port has not achieved a training speedup.

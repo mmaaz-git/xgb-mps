@@ -1,0 +1,39 @@
+"""Fresh matrices must assign their bins on Metal before GPU training."""
+import numpy as np
+import pytest
+import scipy.sparse as sp
+import xgboost as xgb
+
+
+@pytest.mark.parametrize("layout", ["dense", "missing", "sparse"])
+@pytest.mark.parametrize("bins", [3, 256, 257, 65537])
+@pytest.mark.parametrize("categorical", [False, True])
+def test_bin_assignment_matches_cpu(metal, layout, bins, categorical):
+    rng = np.random.default_rng(149)
+    x = rng.normal(size=(1027, 7)).astype(np.float32)
+    y = x[:, 0] * 2 - x[:, 1] + x[:, 2] ** 2
+    ft = ["q"] * x.shape[1]
+    if categorical:
+        x[:, 1] = rng.integers(0, 9, len(x)) * 2
+        x[:, 5] = rng.integers(0, 5, len(x))
+        ft[1] = ft[5] = "c"
+    else:
+        # Exercise bin comparisons around zero and FP32 subnormal cut values.
+        x[:, 4] = (np.arange(len(x)) % 17 - 8) * np.nextafter(np.float32(0), np.float32(1))
+    if layout == "missing":
+        x[rng.random(x.shape) < .25] = np.nan
+    elif layout == "sparse":
+        x[rng.random(x.shape) < .65] = 0
+        x = sp.csr_matrix(x)
+    cpu_data = xgb.DMatrix(x, label=y, feature_types=ft, nthread=2)
+    gpu_data = xgb.DMatrix(x, label=y, feature_types=ft, nthread=2)
+    p = dict(max_bin=bins, max_depth=3, nthread=2, seed=19)
+    cpu = xgb.train(p | {"device": "cpu"}, cpu_data, 3)
+    before = xgb.metal_info()
+    gpu = xgb.train(p | {"device": "mps"}, gpu_data, 3)
+    after = xgb.metal_info()
+    assert after["binning_dispatches"] - before["binning_dispatches"] == 1
+    assert after["binning_gpu_time_ns"] > before["binning_gpu_time_ns"]
+    for actual, expected in zip(gpu_data.get_quantile_cut(), cpu_data.get_quantile_cut()):
+        np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_allclose(gpu.predict(gpu_data), cpu.predict(cpu_data), atol=2e-5, rtol=2e-5)

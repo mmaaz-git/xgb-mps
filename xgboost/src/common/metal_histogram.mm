@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "../data/gradient_index.h"
+#include "metal_data.h"
 #include "metal_histogram.h"
 #include "metal_ops.h"
 #include "metal_predictor.h"
@@ -31,6 +32,7 @@ std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
+std::atomic<std::uint64_t> binning_dispatches{0}, binning_gpu_time_ns{0};
 std::atomic<std::uint64_t> index_uploads{0}, index_uploaded_bytes{0},
     resident_histogram_dispatches{0};
 std::atomic<std::uint64_t> partition_dispatches{0}, leaf_partition_dispatches{0},
@@ -80,7 +82,7 @@ class Runtime {
   id<MTLComputePipelineState> dequantize_hist_pipeline, subtract_hist_pipeline,
       gather_hist_pipeline;
   id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
-  id<MTLComputePipelineState> quantile_metric_pipeline;
+  id<MTLComputePipelineState> quantile_metric_pipeline, binning_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
@@ -148,6 +150,7 @@ class Runtime {
       gradient_sum_finish_pipeline = make_pipeline(@"xgb_gradient_sum_finish");
       histogram_sum_pipeline = make_pipeline(@"xgb_histogram_sum");
       stump_weight_pipeline = make_pipeline(@"xgb_stump_weight");
+      binning_pipeline = make_pipeline(@"xgb_bin_entries");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
       LOG(INFO) << "Metal compute backend: " << device.name.UTF8String;
     }
@@ -813,7 +816,9 @@ Statistics GetStatistics() {
           gradient_bound_dispatches.load(std::memory_order_relaxed),
           gradient_sum_dispatches.load(std::memory_order_relaxed),
           gradient_sum_gpu_time_ns.load(std::memory_order_relaxed),
-          stump_dispatches.load(std::memory_order_relaxed)};
+          stump_dispatches.load(std::memory_order_relaxed),
+          binning_dispatches.load(std::memory_order_relaxed),
+          binning_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -959,6 +964,76 @@ GradientPairPrecise SumHistogram(HistogramBuffer const* storage, std::size_t off
     [e endEncoding];
     CompleteGradientSum(command);
     return *static_cast<GradientPairPrecise const*>(output.contents);
+  }
+}
+
+void BinEntries(Span<Entry const> entries, Span<FeatureType const> feature_types,
+                GHistIndexMatrix* output) {
+  CHECK(output);
+  CHECK_EQ(entries.size(), output->index.Size());
+  if (entries.empty()) return;
+  static_assert(sizeof(Entry) == 8 && offsetof(Entry, fvalue) == 4);
+  CHECK_LE(entries.size(), std::numeric_limits<std::uint32_t>::max());
+  auto const& cuts = output->cut;
+  CHECK(!cuts.Ptrs().empty());
+  auto features = cuts.Ptrs().size() - 1;
+  CHECK(feature_types.empty() || feature_types.size() == features);
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, entries.data(), entries.size_bytes());
+    auto ptrs = Upload(rt, cuts.Ptrs().data(), cuts.Ptrs().size() * sizeof(std::uint32_t));
+    auto values = Upload(rt, cuts.Values().data(), cuts.Values().size() * sizeof(float));
+    std::vector<std::uint8_t> is_cat(features, 0);
+    for (std::size_t f = 0; f < feature_types.size(); ++f)
+      is_cat[f] = feature_types[f] == FeatureType::kCategorical;
+    auto categories = Upload(rt, is_cat.data(), is_cat.size());
+    auto bytes = entries.size() * output->index.GetBinTypeSize();
+    auto bins = Allocate(rt, bytes);
+    auto counts = Allocate(rt, output->hit_count.size() * sizeof(std::uint32_t));
+    auto status = Allocate(rt, sizeof(std::uint32_t));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto clear = [command blitCommandEncoder];
+    CHECK(clear);
+    [clear fillBuffer:counts range:NSMakeRange(0, counts.length) value:0];
+    [clear fillBuffer:status range:NSMakeRange(0, status.length) value:0];
+    [clear endEncoding];
+    struct {
+      std::uint64_t count;
+      std::uint32_t features, width, dense, padding;
+    } p{entries.size(), static_cast<std::uint32_t>(features),
+        static_cast<std::uint32_t>(output->index.GetBinTypeSize()),
+        static_cast<std::uint32_t>(output->IsDense()), 0};
+    static_assert(sizeof(p) == 24);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.binning_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:ptrs offset:0 atIndex:1];
+    [e setBuffer:values offset:0 atIndex:2];
+    [e setBuffer:categories offset:0 atIndex:3];
+    [e setBuffer:bins offset:0 atIndex:4];
+    [e setBuffer:counts offset:0 atIndex:5];
+    [e setBuffer:status offset:0 atIndex:6];
+    [e setBytes:&p length:sizeof(p) atIndex:7];
+    [e dispatchThreads:MTLSizeMake(entries.size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    auto flags = *static_cast<std::uint32_t const*>(status.contents);
+    CHECK(!(flags & 1)) << error::InfInData();
+    CHECK_EQ(flags, 0) << "Metal bin assignment found a feature without cut points.";
+    std::memcpy(output->index.data<std::uint8_t>(), bins.contents, bytes);
+    auto counts_data = static_cast<std::uint32_t const*>(counts.contents);
+    for (std::size_t i = 0; i < output->hit_count.size(); ++i)
+      output->hit_count[i] += counts_data[i];
+    binning_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      binning_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                    std::memory_order_relaxed);
   }
 }
 

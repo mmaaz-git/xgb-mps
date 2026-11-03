@@ -171,6 +171,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["histogram_dispatches"] = Integer{static_cast<std::int64_t>(stats.histogram_dispatches)};
   info["rows_processed"] = Integer{static_cast<std::int64_t>(stats.rows_processed)};
   info["shared_histogram_dispatches"] = Integer{static_cast<std::int64_t>(stats.shared_histogram_dispatches)};
+  info["binning_dispatches"] = Integer{static_cast<std::int64_t>(stats.binning_dispatches)};
+  info["binning_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.binning_gpu_time_ns)};
   info["gradient_sum_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.gradient_sum_dispatches)};
   info["gradient_sum_gpu_time_ns"] =
@@ -221,6 +223,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["histogram_dispatches"] = Integer{0};
   info["rows_processed"] = Integer{0};
   info["shared_histogram_dispatches"] = Integer{0};
+  info["binning_dispatches"] = Integer{0};
+  info["binning_gpu_time_ns"] = Integer{0};
   info["gradient_sum_dispatches"] = Integer{0};
   info["gradient_sum_gpu_time_ns"] = Integer{0};
   info["stump_dispatches"] = Integer{0};

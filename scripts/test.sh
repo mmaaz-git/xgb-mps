@@ -11,6 +11,10 @@ echo "Checking gradient bounds, finite validation and quantization scales"
 clang++ -std=c++17 -fobjc-arc tests/metal_bounds.mm \
   -framework Metal -framework Foundation -o results/metal_bounds_test
 results/metal_bounds_test xgboost/src/common/metal_histogram.metal
+echo "Checking compressed bin assignment and hit counts"
+clang++ -std=c++17 -fobjc-arc tests/metal_binning.mm \
+  -framework Metal -framework Foundation -o results/metal_binning_test
+results/metal_binning_test xgboost/src/common/metal_histogram.metal
 echo "Checking objective kernels against independent CPU mathematics"
 clang++ -std=c++17 -fobjc-arc tests/metal_objective.mm \
   -framework Metal -framework Foundation -o results/metal_objective_test

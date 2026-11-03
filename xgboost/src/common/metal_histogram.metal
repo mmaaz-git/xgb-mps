@@ -1858,3 +1858,56 @@ kernel void xgb_uniform_sample(device float2* gradients [[buffer(0)]],
     for (uint target = 0; target < p.targets; ++target)
       gradients[ulong(row) * p.stride0 + ulong(target) * p.stride1] = float2(0);
 }
+
+// IEEE comparisons via ordered integer bits preserve subnormal cut boundaries
+// on hardware that flushes subnormal FP32 arithmetic. Signed zeros compare equal.
+inline bool xgb_float_less(uint a, uint b) {
+  if ((a & 0x7fffffffu) > 0x7f800000u || (b & 0x7fffffffu) > 0x7f800000u) return false;
+  if (((a | b) & 0x7fffffffu) == 0) return false;
+  uint ka = a & 0x80000000u ? ~a : a ^ 0x80000000u;
+  uint kb = b & 0x80000000u ? ~b : b ^ 0x80000000u;
+  return ka < kb;
+}
+struct BinningParams {
+  ulong count;
+  uint features, width, dense, padding;
+};
+kernel void xgb_bin_entries(
+    device const uint2* entries [[buffer(0)]], device const uint* offsets [[buffer(1)]],
+    device const uint* cuts [[buffer(2)]], device const uchar* categorical [[buffer(3)]],
+    device uchar* output [[buffer(4)]], device atomic_uint* counts [[buffer(5)]],
+    device atomic_uint* status [[buffer(6)]], constant BinningParams& p [[buffer(7)]],
+    uint tid [[thread_position_in_grid]]) {
+  if (ulong(tid) >= p.count) return;
+  uint2 entry = entries[tid];
+  uint feature = entry.x, value = entry.y;
+  if ((value & 0x7fffffffu) == 0x7f800000u) {
+    atomic_fetch_or_explicit(status, 1u, memory_order_relaxed);
+    return;
+  }
+  if (feature >= p.features || offsets[feature] == offsets[feature + 1]) {
+    atomic_fetch_or_explicit(status, 2u, memory_order_relaxed);
+    return;
+  }
+  uint begin = offsets[feature], end = offsets[feature + 1];
+  bool cat = categorical[feature] != 0;
+  if (cat) value = as_type<uint>(float(int(as_type<float>(value))));
+  uint lo = begin, hi = end;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    bool advance = cat ? xgb_float_less(cuts[mid], value) : !xgb_float_less(value, cuts[mid]);
+    if (advance)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  uint global = min(lo, end - 1);
+  uint bin = p.dense ? global - begin : global;
+  if (p.width == 1)
+    output[tid] = uchar(bin);
+  else if (p.width == 2)
+    reinterpret_cast<device ushort*>(output)[tid] = ushort(bin);
+  else
+    reinterpret_cast<device uint*>(output)[tid] = bin;
+  atomic_fetch_add_explicit(counts + global, 1u, memory_order_relaxed);
+}

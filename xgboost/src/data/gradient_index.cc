@@ -13,6 +13,10 @@
 #include "../common/numeric.h"
 #include "../common/transform_iterator.h"  // for MakeIndexTransformIter
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_data.h"
+#endif
+
 namespace xgboost {
 
 GHistIndexMatrix::GHistIndexMatrix() : columns_{std::make_unique<common::ColumnMatrix>()} {}
@@ -88,6 +92,14 @@ void GHistIndexMatrix::PushBatch(Context const *ctx, SparsePage const &batch,
   auto page = batch.GetView();
   auto it = common::MakeIndexTransformIter([&](std::size_t ridx) { return page[ridx].size(); });
   common::PartialSum(ctx->Threads(), it, it + page.Size(), static_cast<size_t>(0), row_ptr.begin());
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    this->ResizeIndex(ctx, row_ptr[page.Size()], isDense_);
+    if (isDense_) this->index.SetBinOffset(cut.Ptrs());
+    common::metal::BinEntries(page.data, ft, this);
+    return;
+  }
+#endif
   data::SparsePageAdapterBatch adapter_batch{page};
   auto is_valid = [](auto) {
     return true;
