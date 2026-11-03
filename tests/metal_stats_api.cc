@@ -1,6 +1,8 @@
 // Exercise the production C++ statistics API, including empty and strided
 // inputs.
 #include "../xgboost/src/common/metal_histogram.h"
+#include "../xgboost/src/common/numeric.h"
+#include "../xgboost/src/common/optional_weight.h"
 #include "../xgboost/src/common/stats.h"
 #include "xgboost/context.h"
 #include "xgboost/linalg.h"
@@ -9,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -26,6 +29,84 @@ void Close(float actual, float expected) {
   Check(std::abs(actual - expected) <= 1e-6f + 2e-5f * std::abs(expected),
         "Mean API differs from CPU beyond rounding tolerance");
 }
+void CheckReductions(xgboost::Context const *cpu, xgboost::Context const *gpu) {
+  using namespace xgboost;
+  std::mt19937 random(615);
+  size_t cases = 0, values_checked = 0;
+  for (size_t rows : {0, 1, 2, 31, 256, 257, 4097, 65537, 1000003}) {
+    for (int mode = 0; mode < 7; ++mode) {
+      HostDeviceVector<float> input(rows);
+      auto &values = input.HostVector();
+      double sum = 0, correction = 0, absolute = 0;
+      for (size_t i = 0; i < rows; ++i) {
+        float value = float(int(random() % 2047) - 1023);
+        if (mode == 1)
+          value = std::ldexp(value, -148);
+        if (mode == 2)
+          value = std::ldexp(value, int(random() % 231) - 120);
+        if (mode == 3)
+          value = i % 2 ? -0.0f : 0.0f;
+        if (mode == 4 && i == 0)
+          value = INFINITY;
+        if (mode == 5 && i < 2)
+          value = i ? -INFINITY : INFINITY;
+        if (mode == 6 && i == rows / 2)
+          value = NAN;
+        values[i] = value;
+        double next = sum + value;
+        correction += std::abs(sum) >= std::abs(value) ? (sum - next) + value
+                                                       : (value - next) + sum;
+        sum = next;
+        absolute += std::abs(double(value));
+      }
+      auto compare = [&](double actual, double expected) {
+        if ((std::isnan(actual) && std::isnan(expected)) || actual == expected)
+          return;
+        Check(std::isfinite(actual) && std::isfinite(expected),
+              "Nonfinite sum differs from CPU");
+        if (mode != 2)
+          Check(false, "Exactly representable sum differs from CPU");
+        // Wide exponent ranges change summation order. Bound the error relative
+        // to input magnitudes, and check a compensated reference independently.
+        auto tolerance = 32 * std::numeric_limits<double>::epsilon() * absolute;
+        Check(std::abs(actual - expected) <= tolerance,
+              "Reduction differs beyond rounding bound");
+      };
+      double expected = common::Reduce(cpu, input);
+      auto before = common::metal::GetStatistics();
+      double actual = common::Reduce(gpu, input);
+      auto after = common::metal::GetStatistics();
+      Check(after.float_sum_dispatches - before.float_sum_dispatches ==
+                uint64_t(rows != 0),
+            "Generic reduction did not dispatch on GPU");
+      compare(actual, expected);
+      if (mode < 4)
+        compare(actual, sum + correction);
+      common::OptionalWeights weights{input.ConstHostSpan()};
+      expected = common::SumOptionalWeights(cpu, weights, rows);
+      before = common::metal::GetStatistics();
+      actual = common::SumOptionalWeights(gpu, weights, rows);
+      after = common::metal::GetStatistics();
+      Check(after.float_sum_dispatches - before.float_sum_dispatches ==
+                uint64_t(rows != 0),
+            "Optional-weight reduction did not dispatch on GPU");
+      compare(actual, expected);
+      values_checked += 2 * rows;
+      ++cases;
+    }
+  }
+  auto before = common::metal::GetStatistics();
+  Check(common::SumOptionalWeights(gpu, common::OptionalWeights{3.5f}, 11) ==
+            38.5,
+        "Scalar optional weight must use its default multiplier");
+  Check(common::metal::GetStatistics().float_sum_dispatches ==
+            before.float_sum_dispatches,
+        "Scalar optional weight should not dispatch an empty array");
+  printf("PASS %zu generic/optional-weight reduction cases / %zu values, "
+         "including nonfinite and empty inputs\n",
+         cases, values_checked);
+}
+
 int main() {
   try {
     using namespace xgboost;
@@ -113,6 +194,7 @@ int main() {
     printf("PASS %zu production median/mean API cases, including empty and "
            "strided inputs\n",
            cases);
+    CheckReductions(&cpu, &gpu);
     return 0;
   } catch (std::exception const &e) {
     fprintf(stderr, "FAIL: %s\n", e.what());

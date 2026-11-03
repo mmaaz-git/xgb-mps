@@ -8,9 +8,18 @@
 #include "xgboost/context.h"             // Context
 #include "xgboost/host_device_vector.h"  // HostDeviceVector
 
+#if defined(XGBOOST_USE_METAL)
+#include "metal_reduction.h"
+#endif
+
 namespace xgboost {
 namespace common {
 double Reduce(Context const* ctx, HostDeviceVector<float> const& values) {
+  // The additive identity also avoids requesting zero OpenMP threads on CPU.
+  if (values.Empty()) return 0.0;
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) return metal::Sum(values.ConstHostSpan());
+#endif
   if (ctx->IsCUDA()) {
     return cuda_impl::Reduce(ctx, values);
   } else {

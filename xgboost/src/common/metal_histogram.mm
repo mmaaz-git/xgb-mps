@@ -36,6 +36,7 @@ std::atomic<std::uint64_t> gradient_sum_dispatches{0}, gradient_sum_gpu_time_ns{
 std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
+std::atomic<std::uint64_t> float_sum_dispatches{0}, float_sum_gpu_time_ns{0};
 std::atomic<std::uint64_t> row_workspace_allocations{0}, row_workspace_reuses{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
 std::atomic<std::uint64_t> binning_dispatches{0}, binning_gpu_time_ns{0};
@@ -882,7 +883,9 @@ Statistics GetStatistics() {
           survival_cpu_corrections.load(std::memory_order_relaxed),
           survival_cpu_time_ns.load(std::memory_order_relaxed),
           row_workspace_allocations.load(std::memory_order_relaxed),
-          row_workspace_reuses.load(std::memory_order_relaxed)};
+          row_workspace_reuses.load(std::memory_order_relaxed),
+          float_sum_dispatches.load(std::memory_order_relaxed),
+          float_sum_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1028,6 +1031,47 @@ GradientPairPrecise SumHistogram(HistogramBuffer const* storage, std::size_t off
     [e endEncoding];
     CompleteGradientSum(command);
     return *static_cast<GradientPairPrecise const*>(output.contents);
+  }
+}
+
+double Sum(Span<float const> values) {
+  if (values.empty()) return 0.0;
+  CHECK_LE(values.size(), std::numeric_limits<std::uint32_t>::max());
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, values.data(), values.size_bytes());
+    auto blocks = (values.size() + 255) / 256;
+    auto partial = Allocate(rt, blocks * sizeof(GradientPairPrecise));
+    auto result = Allocate(rt, sizeof(GradientPairPrecise));
+    struct {
+      std::uint64_t rows, stride0, stride1;
+      std::uint32_t targets, blocks;
+    } p{values.size(), 1, 1, 1, static_cast<std::uint32_t>(blocks)};
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.mean_weight_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:partial offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.gradient_sum_finish_pipeline];
+    [e setBuffer:partial offset:0 atIndex:0];
+    [e setBuffer:result offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    float_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0) float_sum_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9), std::memory_order_relaxed);
+    return static_cast<GradientPairPrecise const*>(result.contents)->GetGrad();
   }
 }
 

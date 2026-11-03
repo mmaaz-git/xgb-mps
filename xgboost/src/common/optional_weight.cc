@@ -10,6 +10,10 @@
 
 #include "common.h"  // for AssertGPUSupport
 
+#if defined(XGBOOST_USE_METAL)
+#include "metal_reduction.h"
+#endif
+
 namespace xgboost::common {
 #if defined(XGBOOST_USE_CUDA)
 namespace cuda_impl {
@@ -28,6 +32,9 @@ double SumOptionalWeights(Context const* ctx, OptionalWeights const& weights);
   if (weights.Empty()) {
     return n_samples * weights.dft;
   }
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) return metal::Sum({weights.Data(), weights.Size()});
+#endif
   if (ctx->IsCUDA()) {
 #if defined(XGBOOST_USE_CUDA)
     return cuda_impl::SumOptionalWeights(ctx, weights);

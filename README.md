@@ -57,6 +57,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
 | Gradient quantization | GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales stay on GPU |
 | Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights; other leaf fitting still uses CPU |
+| Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
 | Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; other objective-specific initialization work remains CPU |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
@@ -91,7 +92,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **415 passed, 1 skipped**. The skip requires a machine without an
+- Python: **421 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **192 cases**, with every bin compared exactly to independent
@@ -119,6 +120,10 @@ On Apple M3, 2026-11-03:
   entries / 8,640 exact quantiles**, plus **2,140,938 integer prefix values**.
   Covers ties, signed zeros, subnormals, extreme values, multiple columns, strides
   and recursive scan boundaries. **56 production median/mean API cases** also pass.
+- Generic/optional-weight reductions: **63 production API cases / 14,982,576
+  values**, including empty inputs, signed values, exact subnormal sums, wide
+  exponent ranges, infinities and NaNs. Wide-range sums use documented rounding
+  bounds and an independent compensated reference.
 - Native gradient quantization: **713,814 values across six scales**, including
   subnormal floats, compared exactly against double-precision CPU rounding.
 - Native partition/transpose kernels: **320 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
@@ -558,3 +563,18 @@ Metal versus 0.795 s CPU (0.72×), compared with 1.207 s Metal in the preceding 
 Timing variability prevents attributing the full change to buffer reuse, and CPU
 training remains faster. All 415 Python tests and CPU-only checks pass, including
 new scalar/vector and dense/sparse tests that grow and shrink training matrices.
+
+### Generic reduction update
+
+Moved generic float sums and optional-weight array sums to the GPU, reusing the
+binary64 reduction kernels. This also moves the initial weight-total check for
+absolute-error regression to Metal. Empty generic reductions now return zero on
+both CPU and Metal; the prior CPU path attempted to launch zero OpenMP threads.
+Scalar default weights still use the existing constant-time calculation.
+
+All 421 Python tests, 63 new production reduction cases and CPU-only checks pass.
+The [weighted absolute-error benchmark](validation/benchmark-absolute-weighted-v1-m3.json)
+(10 rounds, 32 features) measures 1.121 s Metal versus 0.758 s CPU at one million
+rows (0.68×), with maximum prediction difference `1.91e-6`. The GPU weight sum
+itself takes about 0.72 ms. At 100,000 rows, training takes 0.256 versus 0.093 s.
+This expands GPU coverage; it does not establish a training speedup.
