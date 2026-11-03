@@ -19,6 +19,10 @@
 #include "xgboost/linalg.h"   // for All, TensorView, Range
 #include "xgboost/logging.h"  // for CHECK_EQ
 
+#if defined(XGBOOST_USE_METAL)
+#include "metal_ranking.h"
+#endif
+
 namespace xgboost::ltr {
 void RankingCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   if (info.group_ptr_.empty()) {
@@ -38,8 +42,15 @@ void RankingCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   auto n_groups = Groups();
   auto device = ctx->Device().IsSycl() ? DeviceOrd::CPU() : ctx->Device();
   auto weight = common::MakeOptionalWeights(device, info.weights_);
-  for (bst_omp_uint k = 0; k < n_groups; ++k) {
-    sum_weights += weight[k];
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    sum_weights = common::SumOptionalWeights(ctx, weight, n_groups);
+  } else
+#endif
+  {
+    for (bst_omp_uint k = 0; k < n_groups; ++k) {
+      sum_weights += weight[k];
+    }
   }
   weight_norm_ = static_cast<double>(n_groups) / sum_weights;
 }
@@ -49,6 +60,14 @@ common::Span<std::size_t const> RankingCache::MakeRankOnCPU(Context const* ctx,
   auto gptr = this->DataGroupPtr(ctx);
   auto rank = this->sorted_idx_cache_.HostSpan();
   CHECK_EQ(rank.size(), predt.size());
+
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    common::metal::SortGroups(linalg::MakeTensorView(DeviceOrd::CPU(), predt, predt.size()),
+                              gptr, rank);
+    return rank;
+  }
+#endif
 
   common::ParallelFor(this->Groups(), ctx->Threads(), [&](auto g) {
     auto cnt = gptr[g + 1] - gptr[g];
@@ -92,10 +111,26 @@ void NDCGCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   std::size_t topk = this->Param().TopK();
   auto const exp_gain = this->Param().ndcg_exp_gain;
 
+  std::vector<std::size_t> metal_order;
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    metal_order.resize(h_labels.Size());
+    common::metal::SortGroups(h_labels, h_group_ptr, metal_order);
+  }
+#endif
+
   common::ParallelFor(n_groups, ctx->Threads(), [&](auto g) {
     auto g_labels = h_labels.Slice(linalg::Range(h_group_ptr[g], h_group_ptr[g + 1]));
-    auto sorted_idx = common::ArgSort<std::size_t>(ctx, linalg::cbegin(g_labels),
-                                                   linalg::cend(g_labels), std::greater<>{});
+    std::vector<std::size_t> cpu_order;
+    common::Span<std::size_t const> sorted_idx;
+    if (ctx->IsMPS()) {
+      sorted_idx = common::Span<std::size_t const>{metal_order}.subspan(h_group_ptr[g],
+                                                                      g_labels.Size());
+    } else {
+      cpu_order = common::ArgSort<std::size_t>(ctx, linalg::cbegin(g_labels),
+                                              linalg::cend(g_labels), std::greater<>{});
+      sorted_idx = cpu_order;
+    }
 
     double idcg{0.0};
     for (std::size_t i = 0; i < std::min(g_labels.Size(), topk); ++i) {

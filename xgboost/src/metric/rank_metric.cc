@@ -370,12 +370,21 @@ class EvalNDCG : public EvalRankWithCache<ltr::NDCGCache> {
     auto h_label = info.labels.HostView();
     auto h_predt = linalg::MakeTensorView(ctx_, &preds, preds.Size());
     auto weights = common::MakeOptionalWeights(ctx_->Device(), info.weights_);
+    common::Span<std::size_t const> metal_order;
+    if (ctx_->IsMPS()) metal_order = p_cache->SortedIdx(ctx_, preds.ConstHostSpan());
 
     common::ParallelFor(n_groups, ctx_->Threads(), [&](auto g) {
       auto g_predt = h_predt.Slice(linalg::Range(group_ptr[g], group_ptr[g + 1]));
       auto g_labels = h_label.Slice(linalg::Range(group_ptr[g], group_ptr[g + 1]), 0);
-      auto sorted_idx = common::ArgSort<std::size_t>(ctx_, linalg::cbegin(g_predt),
-                                                     linalg::cend(g_predt), std::greater<>{});
+      std::vector<std::size_t> cpu_order;
+      common::Span<std::size_t const> sorted_idx;
+      if (ctx_->IsMPS()) {
+        sorted_idx = metal_order.subspan(group_ptr[g], g_predt.Size());
+      } else {
+        cpu_order = common::ArgSort<std::size_t>(ctx_, linalg::cbegin(g_predt),
+                                                linalg::cend(g_predt), std::greater<>{});
+        sorted_idx = cpu_order;
+      }
       double ndcg{.0};
       double inv_idcg = h_inv_idcg(g);
       if (inv_idcg <= 0.0) {

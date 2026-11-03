@@ -2858,3 +2858,69 @@ kernel void xgb_pr_area(device const uint2* sorted [[buffer(0)]],
   ulong2 total = xgb_reduce_double_pair(area, {0}, bounds, sums, lane, simd);
   if (simd == 0 && lane == 0) partial[ulong(group.y) * p.blocks + group.x] = total;
 }
+
+struct GroupSortParams {
+  ulong rows, stride;
+  uint groups, padding;
+};
+inline bool xgb_rank_less(uint2 a, uint2 b) {
+  return a.x < b.x || (a.x == b.x && a.y < b.y);
+}
+// Common ranking queries fit in one threadgroup. Sort score bits and original
+// row together, so ties (including signed zeros) retain their original order.
+kernel void xgb_group_sort_small(device const uint* values [[buffer(0)]],
+                                  device const uint* groups [[buffer(1)]],
+                                  device uint2* records [[buffer(2)]],
+                                  constant GroupSortParams& p [[buffer(3)]],
+                                  uint group [[threadgroup_position_in_grid]],
+                                  uint tid [[thread_index_in_threadgroup]]) {
+  ulong row = ulong(groups[group]) + tid;
+  bool valid = row < groups[group + 1];
+  uint2 value = uint2(0xffffffffu);
+  if (valid) {
+    uint bits = values[row * p.stride];
+    uint key = (bits & 0x7fffffffu) == 0 ? 0x80000000u
+                 : (bits & 0x80000000u ? ~bits : bits ^ 0x80000000u);
+    value = uint2(~key, uint(row));
+  }
+  threadgroup uint2 shared[256];
+  uint padded = 32, count = groups[group + 1] - groups[group];
+  while (padded < count) padded <<= 1;
+  for (uint size = 2; size <= padded; size <<= 1) {
+    for (uint distance = size >> 1; distance; distance >>= 1) {
+      uint2 other;
+      if (distance < 32) {
+        other = simd_shuffle_xor(value, distance);
+      } else {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        shared[tid] = value;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        other = shared[tid ^ distance];
+      }
+      bool take_min = ((tid & distance) == 0) == ((tid & size) == 0);
+      if (take_min ? xgb_rank_less(other, value) : xgb_rank_less(value, other)) value = other;
+    }
+  }
+  if (valid) records[row] = uint2(group, value.y);
+}
+// For large/skewed queries, first sort all scores, then stably radix-sort by
+// query ID. Binary search handles empty groups without expanding IDs on CPU.
+kernel void xgb_group_sort_key(device uint2* records [[buffer(0)]],
+                                device const uint* groups [[buffer(1)]],
+                                constant GroupSortParams& p [[buffer(2)]],
+                                uint tid [[thread_position_in_grid]]) {
+  uint row = records[tid].y, lo = 0, hi = p.groups;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (groups[mid] <= row) lo = mid + 1;
+    else hi = mid;
+  }
+  records[tid].x = lo - 1;
+}
+kernel void xgb_group_sort_export(device const uint2* records [[buffer(0)]],
+                                   device const uint* groups [[buffer(1)]],
+                                   device ulong* output [[buffer(2)]],
+                                   uint tid [[thread_position_in_grid]]) {
+  uint2 record = records[tid];
+  output[tid] = ulong(record.y - groups[record.x]);
+}

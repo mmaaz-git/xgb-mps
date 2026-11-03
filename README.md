@@ -9,7 +9,7 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums and stump
-fitting, means, stable column sorting, ROC/PR-AUC and quantile/median estimation on Metal. Feature quantile sketching,
+fitting, means, stable column/grouped sorting, ROC/PR-AUC and quantile/median estimation on Metal. Feature quantile sketching,
 gradient-based sampling and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
@@ -66,6 +66,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
+| Ranking sorts | Stable per-query prediction order for pairwise/NDCG/MAP training and NDCG/MAP/precision metrics; NDCG ideal-label order and query-weight sums also use Metal; pair construction, gradients and metric scoring remain CPU |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile and expectile |
@@ -655,7 +656,7 @@ All columns share one command and batched stable radix sort; no per-row host sor
 scan or class-indicator expansion is needed. Prefixes and integration use software
 binary64; normalization, multiclass prevalence weighting and multilabel macro
 averaging retain the existing host behavior. `roc_auc_dispatches` and
-`roc_auc_gpu_time_ns` expose completed work. Ranking metrics, including grouped ROC/PR-AUC, remain CPU.
+`roc_auc_gpu_time_ns` expose completed work. Ranking score calculation and grouped ROC/PR-AUC remain CPU.
 NaN score ordering has no defined CPU equivalence contract.
 
 The [weighted metric-only benchmark](validation/benchmark-roc-v1-m3.json) uses five
@@ -774,11 +775,56 @@ For [one million rows × 128 columns, 200 rounds, depth 8](validation/benchmark-
 current medians are **18.83 s CPU / 21.94 s Metal (0.86×)** with identical predictions.
 Metal time is lower than the earlier 25.39 s baseline, but this still does not meet
 the goal of faster general training. Runs occurred under substantial existing system
-memory pressure; all repeats and swap telemetry are retained. A 256-column run
-crossed laptop sleep and is excluded pending a clean rerun. The benchmark now records
-wall and monotonic times and rejects a run when their difference indicates sleep
-or a clock adjustment; it also checkpoints completed repetitions.
+memory pressure; all repeats and swap telemetry are retained.
+
+The [clean 256-column rerun](validation/benchmark-wide-long256-filter-v4-m3.json)
+uses the same one million rows, 200 rounds and depth 8: **41.78 s CPU / 40.22 s
+Metal (1.04×)**, with identical predictions. CPU repeats span 40.72–45.90 s;
+Metal spans 39.85–41.78 s. The final GPU run spends 15.57 s in histogram commands
+and 8.09 s scoring splits. The machine remains under existing memory pressure.
+This is far short of the intended large training speedup. An earlier 256-column
+run crossed laptop sleep and is excluded. The benchmark now records wall and
+monotonic times, rejects clock discrepancies above one second and checkpoints
+completed repetitions. The clean run's maximum discrepancy is below 0.6 ms.
 
 Current validation: 498 Python tests pass (497 in the full run plus the corrected
 metric-format test rerun), one skip; native tests pass with Metal API Validation,
 and the CPU-only build checks pass. Full CUDA parity remains in progress.
+
+
+### Grouped ranking sort
+
+Stable per-query sorting now runs on Metal for `rank:pairwise`, `rank:ndcg` and
+`rank:map` training, and for NDCG, MAP and precision metric evaluation. NDCG's ideal
+label ordering is also GPU-sorted. Query weights use the existing GPU sum reduction.
+Small queries use a bitonic sorting network with SIMD exchanges; larger or uneven
+queries use stable score sorting followed by stable query-ID radix passes. Signed
+zeros remain tied, and original row order breaks ties consistently with CPU.
+`group_sort_dispatches` and `group_sort_gpu_time_ns` expose completed GPU work.
+
+**This is partial ranking coverage:** pair construction, ranking gradients,
+discounts, ideal-gain computation and metric score aggregation still run on CPU.
+Grouped ROC/PR-AUC is also still CPU. No CPU sorting fallback is used for supported
+non-NaN scores.
+
+The native production-API test checks **100 cases / 7,249,460 sorted rows**, including
+strided data, empty queries, query boundaries, 65,537-query layouts, all ties,
+subnormals and infinities. All **520 Python tests** and native tests pass under
+Metal API Validation; one Python test is skipped. The CPU-only build checks pass.
+
+The [initial ranking benchmark](validation/benchmark-ranking-v1-m3.json) measures
+warm `ndcg@10` evaluation with fixed predictions, 8 CPU threads and five alternating
+repeats. It includes GPU sorting, host score aggregation, staging and synchronization,
+and excludes training/model construction and initial ideal-order cache setup.
+
+| Rows | Query size | CPU | Metal sort + host score | CPU / Metal |
+| ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 32 | 0.49 ms | 0.54 ms | 0.90× |
+| 100,000 | 256 | 0.90 ms | 0.55 ms | 1.66× |
+| 100,000 | 4,096 | 1.67 ms | 1.16 ms | 1.44× |
+| 1,000,000 | 32 | 4.75 ms | 2.90 ms | 1.64× |
+| 1,000,000 | 256 | 6.78 ms | 3.27 ms | 2.08× |
+| 1,000,000 | 4,096 | 17.85 ms | 10.63 ms | 1.68× |
+
+These are metric timings, not ranking-training speedups. Individual timings vary;
+all repeats, first-evaluation times and GPU counters are retained in the JSON.
