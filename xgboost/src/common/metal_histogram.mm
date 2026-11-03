@@ -22,6 +22,7 @@
 namespace xgboost::common::metal {
 namespace {
 std::atomic<std::uint64_t> split_dispatches{0}, split_gpu_time_ns{0};
+std::atomic<std::uint64_t> residual_scale_dispatches{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
@@ -67,6 +68,8 @@ class Runtime {
   id<MTLComputePipelineState> split_pipeline, multi_split_pipeline;
   id<MTLComputePipelineState> dequantize_hist_pipeline, subtract_hist_pipeline,
       gather_hist_pipeline;
+  id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
+  id<MTLComputePipelineState> quantile_metric_pipeline;
   id<MTLComputePipelineState> shared_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
@@ -120,6 +123,10 @@ class Runtime {
       dequantize_hist_pipeline = make_pipeline(@"xgb_histogram_dequantize");
       subtract_hist_pipeline = make_pipeline(@"xgb_histogram_subtract");
       gather_hist_pipeline = make_pipeline(@"xgb_histogram_gather");
+      residual_reduce_pipeline = make_pipeline(@"xgb_residual_scale_reduce");
+      residual_finish_pipeline = make_pipeline(@"xgb_residual_scale_finish");
+      adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
+      quantile_metric_pipeline = make_pipeline(@"xgb_quantile_metric");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
       LOG(INFO) << "Metal compute backend: " << device.name.UTF8String;
     }
@@ -767,6 +774,7 @@ Statistics GetStatistics() {
           index_gpu_time_ns.load(std::memory_order_relaxed),
           split_dispatches.load(std::memory_order_relaxed),
           split_gpu_time_ns.load(std::memory_order_relaxed),
+          residual_scale_dispatches.load(std::memory_order_relaxed),
           histogram_conversion_dispatches.load(std::memory_order_relaxed),
           histogram_subtraction_dispatches.load(std::memory_order_relaxed),
           resident_split_dispatches.load(std::memory_order_relaxed)};
@@ -797,6 +805,133 @@ Transform TransformFromName(char const* name) {
   if (!strcmp(name, "reg:logistic") || !strcmp(name, "binary:logistic")) return Transform::kSigmoid;
   if (!strcmp(name, "reg:gamma")) return Transform::kExp;
   return Transform::kIdentity;
+}
+
+std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predictions,
+                                         Span<float const> labels, Span<float const> weights,
+                                         Span<float const> alpha, std::uint32_t targets) {
+  CHECK_GT(targets, 0);
+  CHECK(!alpha.empty());
+  CHECK_EQ(labels.size() % targets, 0);
+  CHECK_EQ(predictions.size(), labels.size() * alpha.size());
+  CHECK_LE(predictions.size(), std::numeric_limits<std::uint32_t>::max());
+  auto rows = labels.size() / targets;
+  CHECK(weights.empty() || weights.size() == rows);
+  if (!rows) return {0, 0};
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    CHECK_EQ(rt.quantile_metric_pipeline.threadExecutionWidth, 32);
+    auto pred = Upload(rt, predictions.data(), predictions.size_bytes());
+    auto label = Upload(rt, labels.data(), labels.size_bytes());
+    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto levels = Upload(rt, alpha.data(), alpha.size_bytes());
+    auto blocks = (predictions.size() + 255) / 256;
+    auto partial = Allocate(rt, blocks * 2 * sizeof(double));
+    struct {
+      std::uint64_t count;
+      std::uint32_t targets, levels, weighted, expectile;
+    } p{predictions.size(), targets, static_cast<std::uint32_t>(alpha.size()), !weights.empty(),
+        expectile};
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.quantile_metric_pipeline];
+    [e setBuffer:pred offset:0 atIndex:0];
+    [e setBuffer:label offset:0 atIndex:1];
+    [e setBuffer:weight offset:0 atIndex:2];
+    [e setBuffer:levels offset:0 atIndex:3];
+    [e setBuffer:partial offset:0 atIndex:4];
+    [e setBytes:&p length:sizeof(p) atIndex:5];
+    [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    metric_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      metric_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                   std::memory_order_relaxed);
+    auto values = static_cast<double const*>(partial.contents);
+    std::array<double, 2> result{0, 0};
+    for (std::size_t i = 0; i < blocks; ++i) {
+      result[0] += values[2 * i];
+      result[1] += values[2 * i + 1];
+    }
+    return result;
+  }
+}
+
+void AdaptiveGradients(AdaptiveObjective objective, Span<float const> predictions,
+                       Span<float const> labels, Span<float const> weights, std::uint32_t targets,
+                       Span<float const> alpha, Span<GradientPair> output) {
+  CHECK_GT(targets, 0);
+  CHECK_EQ(predictions.size() % targets, 0);
+  CHECK_EQ(predictions.size(), output.size());
+  CHECK_LE(predictions.size(), std::numeric_limits<std::uint32_t>::max());
+  auto rows = predictions.size() / targets;
+  if (!rows) return;
+  CHECK(weights.empty() || weights.size() == rows);
+  CHECK(labels.size() == rows || labels.size() == predictions.size());
+  if (objective == AdaptiveObjective::kQuantile) CHECK_EQ(alpha.size(), targets);
+  struct {
+    std::uint64_t rows;
+    std::uint32_t targets, label_targets, weighted, kind, blocks, padding;
+  } p{rows,
+      targets,
+      static_cast<std::uint32_t>(labels.size() / rows),
+      !weights.empty(),
+      static_cast<std::uint32_t>(objective),
+      static_cast<std::uint32_t>((rows + 255) / 256),
+      0};
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    CHECK_EQ(rt.residual_reduce_pipeline.threadExecutionWidth, 32);
+    auto pred = Upload(rt, predictions.data(), predictions.size_bytes());
+    auto label = Upload(rt, labels.data(), labels.size_bytes());
+    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto levels = Upload(rt, alpha.data(), alpha.size_bytes());
+    auto partial = Allocate(rt, std::size_t(p.blocks) * targets * 2 * sizeof(std::uint64_t));
+    auto scale = Allocate(rt, targets * sizeof(float)), out = Allocate(rt, output.size_bytes());
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.residual_reduce_pipeline];
+    [e setBuffer:pred offset:0 atIndex:0];
+    [e setBuffer:label offset:0 atIndex:1];
+    [e setBuffer:weight offset:0 atIndex:2];
+    [e setBuffer:partial offset:0 atIndex:3];
+    [e setBytes:&p length:sizeof(p) atIndex:4];
+    [e dispatchThreadgroups:MTLSizeMake(p.blocks, targets, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.residual_finish_pipeline];
+    [e setBuffer:partial offset:0 atIndex:0];
+    [e setBuffer:scale offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(targets, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    [e endEncoding];
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.adaptive_pipeline];
+    [e setBuffer:pred offset:0 atIndex:0];
+    [e setBuffer:label offset:0 atIndex:1];
+    [e setBuffer:weight offset:0 atIndex:2];
+    [e setBuffer:scale offset:0 atIndex:3];
+    [e setBuffer:levels offset:0 atIndex:4];
+    [e setBuffer:out offset:0 atIndex:5];
+    [e setBytes:&p length:sizeof(p) atIndex:6];
+    [e dispatchThreads:MTLSizeMake(predictions.size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &objective_dispatches);
+    residual_scale_dispatches.fetch_add(1, std::memory_order_relaxed);
+    std::memcpy(output.data(), out.contents, output.size_bytes());
+  }
 }
 
 void Gradients(Objective objective, Span<float const> predictions, Span<float const> labels,

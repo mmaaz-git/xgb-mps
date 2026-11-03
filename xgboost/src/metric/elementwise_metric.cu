@@ -465,6 +465,16 @@ class QuantileError : public MetricNoCache {
       return dat[0] / dat[1];
     }
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      auto sums = common::metal::QuantileMetricSums(
+          false, preds.ConstHostSpan(), info.labels.HostView().Values(),
+          info.weights_.ConstHostSpan(), alpha_.ConstHostSpan(), info.labels.Shape(1));
+      CHECK_GT(sums[1], 0);
+      return sums[0] / sums[1];
+    }
+#endif
+
     auto const* ctx = ctx_;
     auto y_true = info.labels.View(ctx->Device());
     preds.SetDevice(ctx->Device());
@@ -551,6 +561,16 @@ class ExpectileError : public MetricNoCache {
       CHECK_GT(dat[1], 0);
       return dat[0] / dat[1];
     }
+
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      auto sums = common::metal::QuantileMetricSums(
+          true, preds.ConstHostSpan(), info.labels.HostView().Values(),
+          info.weights_.ConstHostSpan(), alpha_.ConstHostSpan(), info.labels.Shape(1));
+      CHECK_GT(sums[1], 0);
+      return sums[0] / sums[1];
+    }
+#endif
 
     auto const* ctx = ctx_;
     auto y_true = info.labels.View(ctx->Device());

@@ -970,6 +970,16 @@ class MeanAbsoluteError : public ObjFunction {
     out_gpair->Reshape(info.num_row_, n_targets);
     auto gpair = out_gpair->View(ctx_->Device());
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::AdaptiveGradients(common::metal::AdaptiveObjective::kAbsolute,
+                                       preds.ConstHostSpan(), info.labels.HostView().Values(),
+                                       info.weights_.ConstHostSpan(), n_targets, {},
+                                       out_gpair->HostView().Values());
+      return;
+    }
+#endif
+
     preds.SetDevice(ctx_->Device());
     auto predt = linalg::MakeTensorView(ctx_, &preds, info.num_row_, n_targets);
     auto weight = common::MakeOptionalWeights(ctx_->Device(), info.weights_);

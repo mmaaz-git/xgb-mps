@@ -53,11 +53,11 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Gradient quantization | GPU integer bit conversion with CPU-selected scales; exact comparison against CPU double `llround` |
-| Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile |
-| Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile |
+| Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
+| Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
-| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error |
+| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile and expectile |
 
 Input views and categorical recoding remain on the host. GPU metric kernels produce
 scaled block sums, with the final small reduction in host FP64. Metal has no native
@@ -78,7 +78,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **251 passed, 1 skipped**. The skip requires a machine without an
+- Python: **291 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **28 cases**, with every bin compared exactly to independent
@@ -98,13 +98,19 @@ On Apple M3, 2026-11-03:
   and 100,007 widening conversions** checked against CPU hardware arithmetic.
 - Native objectives: **20 cases / 131,968 gradient pairs** compared against
   independent CPU mathematical references.
+- Native adaptive objectives: **180 cases / 1,260 residual scales / 452,592 gradient
+  pairs**, covering zero/tiny weights, multiple targets and response scales.
+- Native quantile/expectile metrics: **288 cases / 1,727,040 loss/weight pairs**,
+  including multi-label layouts, extreme weights and FP32 subnormals. Rare
+  underflowing metric products use software arithmetic to preserve CPU results.
 - Integrated comparisons cover weighted/multi-target training, sampling,
   constraints, categorical recoding, external memory, model interchange,
   continuation, concurrent models, prediction chunks and base margins.
 - Metric tests include zero weights, weights from `1e-30` to `1e37`, parameterized
   thresholds, multiclass reduction and log-gamma boundaries.
 - General bitwise CPU/GPU equivalence is not promised. Prediction differences in
-  the benchmark runs below were zero.
+  the squared-error training and traversal benchmarks were zero. The adaptive
+  objective benchmarks differed by at most `4.77e-7`.
 
 A separate `USE_METAL=OFF` build passes its availability/error checks. Selected
 upstream configuration/model/I/O tests pass: **32 passed, 1 skipped**. Build outputs
@@ -147,6 +153,25 @@ The preceding hybrid version with CPU split selection measured 1.063 s Metal ver
 to the GPU has not automatically improved training time. Quantile construction, sampling, kernel scheduling and per-level synchronization
 remain optimization targets. Histogram arithmetic now stays on the GPU, but
 adding GPU operations still has dispatch costs. Small workloads pay proportionately more dispatch overhead.
+
+### Adaptive objectives
+
+Same hardware, 32 features and three alternating repetitions; **10** boosting
+rounds rather than the 20 used above. Includes DMatrix construction and all
+training work; quantile uses `alpha=0.5`. Neither objective shows an end-to-end
+training speedup yet.
+
+| Objective / rows | CPU | Metal | CPU / Metal |
+| --- | ---: | ---: | ---: |
+| Absolute error / 100,000 | 0.090 s | 0.194 s | 0.46× |
+| Absolute error / 1,000,000 | 0.743 s | 0.999 s | 0.74× |
+| Quantile / 100,000 | 0.127 s | 0.220 s | 0.58× |
+| Quantile / 1,000,000 | 0.895 s | 1.164 s | 0.77× |
+
+[Absolute-error results](validation/benchmark-absolute-v1-m3.json) and
+[quantile results](validation/benchmark-quantile-v1-m3.json). Base-score estimation
+remains on CPU; per-iteration residual-scale reduction and gradient calculation
+execute on Metal. These implement the adaptive losses in the vendored source.
 
 ### Prediction
 
@@ -246,3 +271,13 @@ it can inspect completed shared results without copying the entire histogram.
 Checks cover cache sizes 1/2/7/64, both growth policies, both output strategies
 and external-memory pages. All 251 Python tests and the native suites pass.
 The latest timing regression is retained in the performance table above.
+
+### Adaptive loss update
+
+Ported the residual-scale reductions and gradients for absolute-error and quantile
+regression, quantile prediction sorting, and quantile/expectile metrics. Residual
+scales stay on the GPU; metric kernels return small binary64 block sums for final
+host reduction. Added explicit subnormal preservation after a native test exposed
+Metal's FP32 underflow behavior. All 291 Python tests and native suites pass;
+CPU-only compatibility checks pass. The new objective benchmarks remain slower
+than CPU and are published above.

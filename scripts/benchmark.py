@@ -16,6 +16,9 @@ import xgboost as xgb
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows", type=int, nargs="+", default=[10_000, 100_000, 1_000_000])
+    parser.add_argument("--objective", choices=["reg:squarederror", "reg:absoluteerror", "reg:quantileerror"],
+                        default="reg:squarederror")
+    parser.add_argument("--quantile-levels", type=float, nargs="+", default=[0.5])
     parser.add_argument("--features", type=int, default=32)
     parser.add_argument("--rounds", type=int, default=20)
     parser.add_argument("--repeats", type=int, default=3)
@@ -25,8 +28,10 @@ def main():
     if args.output.exists():
         parser.error(f"{args.output} exists; inspect it or choose a new output name")
     assert xgb.metal_info()["available"], "A visible Metal GPU is required"
-    p = dict(tree_method="hist", objective="reg:squarederror", max_depth=6,
+    p = dict(tree_method="hist", objective=args.objective, max_depth=6,
              max_bin=256, nthread=args.threads, seed=7)
+    if args.objective == "reg:quantileerror":
+        p["quantile_alpha"] = args.quantile_levels
     # Compile the shader and initialize the runtime before timing either device.
     warm = xgb.DMatrix(np.arange(64, dtype=np.float32).reshape(32, 2), label=np.arange(32))
     for device in ["cpu", "mps"]:
@@ -64,10 +69,11 @@ def main():
         cpu = statistics.median(timings["cpu"])
         mps = statistics.median(timings["mps"])
         np.testing.assert_allclose(preds["mps"], preds["cpu"], rtol=2e-5, atol=2e-5)
+        truth = y[:, None] if preds["cpu"].ndim == 2 else y
         case = dict(rows=n, seconds=timings, dispatch_statistics=dispatch_statistics, cpu_median=cpu, mps_median=mps,
                     speedup=cpu/mps, max_prediction_difference=float(np.max(np.abs(preds["cpu"]-preds["mps"]))),
-                    cpu_rmse=float(np.sqrt(np.mean((preds["cpu"]-y)**2))),
-                    mps_rmse=float(np.sqrt(np.mean((preds["mps"]-y)**2))))
+                    cpu_rmse=float(np.sqrt(np.mean((preds["cpu"]-truth)**2))),
+                    mps_rmse=float(np.sqrt(np.mean((preds["mps"]-truth)**2))))
         report["cases"].append(case)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(f"  CPU/Metal speedup: {cpu/mps:.3f}x; wrote {args.output}", flush=True)

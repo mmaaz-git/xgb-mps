@@ -27,6 +27,10 @@
 #include "../common/stats.cuh"  // SegmentedQuantile
 #endif                          // defined(XGBOOST_USE_CUDA)
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ops.h"
+#endif
+
 namespace xgboost::obj {
 namespace {
 // Fixed internal constants selected by the quantile experiments associated with
@@ -112,6 +116,16 @@ class QuantileRegression : public ObjFunction {
     out_gpair->Reshape(info.num_row_, n_targets);
     auto gpair = out_gpair->View(ctx_->Device());
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::AdaptiveGradients(common::metal::AdaptiveObjective::kQuantile,
+                                       preds.ConstHostSpan(), info.labels.HostView().Values(),
+                                       info.weights_.ConstHostSpan(), n_targets,
+                                       alpha_.ConstHostSpan(), out_gpair->HostView().Values());
+      return;
+    }
+#endif
+
     auto weight = common::MakeOptionalWeights(ctx_->Device(), info.weights_);
 
     preds.SetDevice(ctx_->Device());
@@ -176,6 +190,13 @@ class QuantileRegression : public ObjFunction {
   void PredTransform(HostDeviceVector<float>* io_preds) const override {
     CHECK(!alpha_.Empty());
     CHECK_EQ(io_preds->Size() % alpha_.Size(), 0);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::TransformPredictions(common::metal::Transform::kQuantile, io_preds->HostSpan(),
+                                          alpha_.Size());
+      return;
+    }
+#endif
     // quantile_alpha is validated in ascending order. Sort each row's predictions directly to
     // prevent crossing. This insertion sort is simple and device portable.
     auto n_alphas = alpha_.Size();

@@ -31,6 +31,7 @@ struct Statistics {
       partition_dispatches, leaf_partition_dispatches, row_init_dispatches, partition_gpu_time_ns,
       index_gpu_time_ns;
   std::uint64_t split_dispatches, split_gpu_time_ns;
+  std::uint64_t residual_scale_dispatches;
   std::uint64_t histogram_conversion_dispatches, histogram_subtraction_dispatches,
       resident_split_dispatches;
 };

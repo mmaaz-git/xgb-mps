@@ -20,7 +20,7 @@ listed below. This is not yet a complete GPU backend.
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu` | CPU |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels; label validation and base-score estimation still CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
-| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | CPU |
+| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; base-score estimation remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | CPU |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | CPU |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu` | CPU |
@@ -29,7 +29,8 @@ listed below. This is not yet a complete GPU backend.
 | SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | CPU |
 | RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | Metal loss calculation and scaled block reductions; final small reduction in host FP64 |
 | Multiclass error and logloss | `metric/multiclass_metric.cu` | Metal loss calculation and scaled block reductions; final small reduction in host FP64 |
-| Quantile, expectile, ranking, AUC and survival metrics | `metric/*.cu` | CPU |
+| Quantile and expectile metrics | `metric/elementwise_metric.cu` | Metal loss calculation, subnormal-preserving products and binary64 block reductions; small final host sum |
+| Ranking, AUC and survival metrics | `metric/*.cu` | CPU |
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
@@ -75,6 +76,6 @@ can remain on the CPU, as they also do in CUDA-backed software. Split tests incl
 interaction constraints, and vector leaves. GPU sampling, remaining training-state updates, fewer synchronization points
 and efficient external-memory staging remain required.
 
-Remaining ranking/survival/robust objectives, SHAP, specialized metrics, quantile
+Remaining ranking/survival objectives, SHAP, specialized metrics, quantile
 construction, linear training and collectives are separate coverage requirements.
 The observed prediction speedups do not establish any of those as complete.

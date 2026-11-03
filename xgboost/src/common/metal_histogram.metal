@@ -287,7 +287,18 @@ kernel void xgb_transform(device const float* input [[buffer(0)]],
     output[tid] = input[tid] > 0.0f ? 1.0f : 0.0f;
   else {
     ulong begin = ulong(tid) * p.targets;
-    if (p.kind == 6) {
+    if (p.kind == 7) {
+      for (uint k = 0; k < p.targets; ++k) output[begin + k] = input[begin + k];
+      for (uint k = 1; k < p.targets; ++k) {
+        float value = output[begin + k];
+        uint j = k;
+        while (j && output[begin + j - 1] > value) {
+          output[begin + j] = output[begin + j - 1];
+          --j;
+        }
+        output[begin + j] = value;
+      }
+    } else if (p.kind == 6) {
       float value = input[begin];
       output[begin] = value;
       for (uint k = 1; k < p.targets; ++k) {
@@ -1498,4 +1509,179 @@ kernel void xgb_histogram_gather(device const ulong2* source [[buffer(0)]],
   HistogramGather s = segments[segment];
   for (uint i = tid; i < s.bins; i += width)
     output[ulong(s.output) + ulong(i) * s.stride] = source[s.source + i];
+}
+
+struct AdaptiveParams {
+  ulong rows;
+  uint targets, label_targets, weighted, kind, blocks, padding;
+};
+inline XGBDouble xgb_shuffle_down_double(XGBDouble value, uint delta) {
+  uint low = simd_shuffle_down(uint(value.bits), delta),
+       high = simd_shuffle_down(uint(value.bits >> 32), delta);
+  return {(ulong(high) << 32) | low};
+}
+kernel void xgb_residual_scale_reduce(
+    device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
+    device const float* weights [[buffer(2)]], device ulong2* partial [[buffer(3)]],
+    constant AdaptiveParams& p [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+    uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong row = ulong(group.x) * 256 + tid;
+  uint target = group.y;
+  XGBDouble root{0}, weight{0};
+  if (row < p.rows) {
+    float residual = predictions[row * p.targets + target] -
+                     labels[row * p.label_targets + (p.label_targets == 1 ? 0 : target)];
+    float w = p.weighted ? weights[row] : 1.0f;
+    root = xgb_dfrom_float(w * sqrt(abs(residual)));
+    weight = xgb_dfrom_float(w);
+  }
+  for (uint offset = 16; offset; offset >>= 1) {
+    XGBDouble r = xgb_shuffle_down_double(root, offset),
+              w = xgb_shuffle_down_double(weight, offset);
+    if (lane + offset < 32) {
+      root = xgb_dadd(root, r);
+      weight = xgb_dadd(weight, w);
+    }
+  }
+  threadgroup ulong2 sums[8];
+  if (lane == 0) sums[simd] = ulong2(root.bits, weight.bits);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd == 0) {
+    root = {lane < 8 ? sums[lane].x : 0};
+    weight = {lane < 8 ? sums[lane].y : 0};
+    for (uint offset = 4; offset; offset >>= 1) {
+      XGBDouble r = xgb_shuffle_down_double(root, offset),
+                w = xgb_shuffle_down_double(weight, offset);
+      if (lane + offset < 8) {
+        root = xgb_dadd(root, r);
+        weight = xgb_dadd(weight, w);
+      }
+    }
+    if (lane == 0) partial[ulong(group.x) * p.targets + target] = ulong2(root.bits, weight.bits);
+  }
+}
+kernel void xgb_residual_scale_finish(device const ulong2* partial [[buffer(0)]],
+                                      device float* scales [[buffer(1)]],
+                                      constant AdaptiveParams& p [[buffer(2)]],
+                                      uint target [[thread_position_in_grid]]) {
+  XGBDouble root{0}, weight{0};
+  for (uint block = 0; block < p.blocks; ++block) {
+    ulong2 value = partial[ulong(block) * p.targets + target];
+    root = xgb_dadd(root, {value.x});
+    weight = xgb_dadd(weight, {value.y});
+  }
+  // common::CloseTo uses the double literal 1e-6, rather than an FP32 threshold.
+  if (xgb_dlt({weight.bits & ~kDoubleSign}, {0x3eb0c6f7a0b5ed8dul}))
+    scales[target] = 0.0f;
+  else {
+    XGBDouble mean = xgb_ddiv(root, weight);
+    scales[target] = xgb_dto_float(xgb_dmul(mean, mean));
+  }
+}
+inline float xgb_hypot(float x, float y) {
+  float hi = max(abs(x), abs(y)), lo = min(abs(x), abs(y));
+  if (hi == 0.0f || isinf(hi)) return hi;
+  float ratio = lo / hi;
+  return hi * sqrt(1.0f + ratio * ratio);
+}
+kernel void xgb_adaptive_objective(
+    device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
+    device const float* weights [[buffer(2)]], device const float* scales [[buffer(3)]],
+    device const float* alpha [[buffer(4)]], device float2* output [[buffer(5)]],
+    constant AdaptiveParams& p [[buffer(6)]], uint tid [[thread_position_in_grid]]) {
+  ulong row = tid / p.targets;
+  uint target = tid % p.targets;
+  float residual =
+      predictions[tid] - labels[row * p.label_targets + (p.label_targets == 1 ? 0 : target)];
+  float scale = scales[target], w = p.weighted ? weights[row] : 1.0f;
+  if (p.kind == 0) {
+    float norm = xgb_hypot(scale, residual), curvature = norm > 0.0f ? scale / norm : 1.0f;
+    output[tid] = float2(w * residual * curvature, w * curvature);
+  } else {
+    if (!(scale > 0.0f) || w == 0.0f) {
+      output[tid] = float2(0);
+      return;
+    }
+    float x = residual / (0.04f * scale), t = tanh(x);
+    float ratio = x == 0.0f ? 1.0f : t / x;
+    ratio = max(ratio, 3e-4f);
+    float gradient = 0.5f * scale * (t + 1.0f - 2.0f * alpha[target]);
+    float hessian = (0.5f / 0.04f) * ratio;
+    output[tid] = float2(w * gradient, w * hessian);
+  }
+}
+
+// Metal arithmetic can flush FP32 subnormals. Preserve CPU rounding only for
+// the rare underflow cases; ordinary metric values retain native FP32 math.
+inline float xgb_fmul_preserve(float a, float b) {
+  float value = a * b;
+  uint aa = as_type<uint>(a) & 0x7fffffffu, bb = as_type<uint>(b) & 0x7fffffffu;
+  if ((aa && aa < 0x800000u) || (bb && bb < 0x800000u) ||
+      (!(as_type<uint>(value) & 0x7fffffffu) && aa && bb))
+    return xgb_dto_float(xgb_dmul(xgb_dfrom_float(a), xgb_dfrom_float(b)));
+  return value;
+}
+inline float xgb_fsub_preserve(float a, float b) {
+  float value = a - b;
+  uint aa = as_type<uint>(a) & 0x7fffffffu, bb = as_type<uint>(b) & 0x7fffffffu;
+  if ((aa && aa < 0x800000u) || (bb && bb < 0x800000u) ||
+      (!(as_type<uint>(value) & 0x7fffffffu) && as_type<uint>(a) != as_type<uint>(b)))
+    return xgb_dto_float(xgb_dsub(xgb_dfrom_float(a), xgb_dfrom_float(b)));
+  return value;
+}
+struct QuantileMetricParams {
+  ulong count;
+  uint targets, levels, weighted, expectile;
+};
+kernel void xgb_quantile_metric(
+    device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
+    device const float* weights [[buffer(2)]], device const float* alpha [[buffer(3)]],
+    device ulong2* partial [[buffer(4)]], constant QuantileMetricParams& p [[buffer(5)]],
+    uint tid [[thread_position_in_grid]], uint group [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
+  XGBDouble loss{0}, weight{0};
+  if (ulong(tid) < p.count) {
+    uint row = tid / (p.targets * p.levels), level = (tid / p.targets) % p.levels,
+         target = tid % p.targets;
+    float prediction = predictions[tid], label = labels[ulong(row) * p.targets + target];
+    float a = alpha[level], w = p.weighted ? weights[row] : 1.0f, value;
+    if (p.expectile) {
+      float diff = xgb_fsub_preserve(prediction, label);
+      float scale = xgb_dlt(xgb_dfrom_float(diff), {0}) ? a : 1.0f - a;
+      value = xgb_fmul_preserve(xgb_fmul_preserve(xgb_fmul_preserve(scale, diff), diff), w);
+    } else {
+      float diff = xgb_fsub_preserve(label, prediction);
+      float sign = xgb_dlt(xgb_dfrom_float(diff), {0}) ? 0.0f : 1.0f;
+      float left = xgb_fmul_preserve(xgb_fmul_preserve(a, sign), diff);
+      float right = xgb_fmul_preserve(xgb_fmul_preserve(1.0f - a, 1.0f - sign), diff);
+      value = xgb_fmul_preserve(xgb_fsub_preserve(left, right), w);
+    }
+    loss = xgb_dfrom_float(value);
+    weight = xgb_dfrom_float(w);
+  }
+  for (uint offset = 16; offset; offset >>= 1) {
+    XGBDouble l = xgb_shuffle_down_double(loss, offset),
+              w = xgb_shuffle_down_double(weight, offset);
+    if (lane + offset < 32) {
+      loss = xgb_dadd(loss, l);
+      weight = xgb_dadd(weight, w);
+    }
+  }
+  threadgroup ulong2 sums[8];
+  if (lane == 0) sums[simd] = ulong2(loss.bits, weight.bits);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd == 0) {
+    loss = {lane < 8 ? sums[lane].x : 0};
+    weight = {lane < 8 ? sums[lane].y : 0};
+    for (uint offset = 4; offset; offset >>= 1) {
+      XGBDouble l = xgb_shuffle_down_double(loss, offset),
+                w = xgb_shuffle_down_double(weight, offset);
+      if (lane + offset < 8) {
+        loss = xgb_dadd(loss, l);
+        weight = xgb_dadd(weight, w);
+      }
+    }
+    if (lane == 0) partial[group] = ulong2(loss.bits, weight.bits);
+  }
 }

@@ -27,8 +27,16 @@ enum class Transform : std::uint32_t {
   kHinge = 3,
   kSoftmax = 4,
   kArgmax = 5,
-  kExpectile = 6
+  kExpectile = 6,
+  kQuantile = 7
 };
+enum class AdaptiveObjective : std::uint32_t { kAbsolute = 0, kQuantile = 1 };
+void AdaptiveGradients(AdaptiveObjective objective, Span<float const> predictions,
+                       Span<float const> labels, Span<float const> weights, std::uint32_t targets,
+                       Span<float const> alpha, Span<GradientPair> output);
+std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predictions,
+                                         Span<float const> labels, Span<float const> weights,
+                                         Span<float const> alpha, std::uint32_t targets);
 std::array<double, 2> MetricSums(char const* name, Span<float const> predictions,
                                  Span<float const> labels, Span<float const> weights,
                                  std::uint32_t targets, float parameter = 0.5f);

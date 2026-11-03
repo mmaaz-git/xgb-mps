@@ -12,6 +12,8 @@ OBJECTIVES = [
     ("reg:tweedie", {"tweedie_variance_power": 1.3}), ("binary:hinge", {}),
     ("multi:softprob", {"num_class": 5}), ("multi:softmax", {"num_class": 5}),
     ("reg:expectileerror", {"expectile_alpha": [0.1, 0.5, 0.9]}),
+    ("reg:absoluteerror", {}),
+    ("reg:quantileerror", {"quantile_alpha": [0.1, 0.5, 0.9]}),
 ]
 
 @pytest.mark.parametrize("objective,extra", OBJECTIVES)
@@ -45,7 +47,7 @@ def test_objectives_execute_on_metal(metal, objective, extra, weighted):
     np.testing.assert_allclose(actual, cpu.predict(d), rtol=2e-5, atol=2e-5)
     transformed = objective in {"reg:logistic", "binary:logistic", "reg:gamma", "count:poisson",
                                "reg:tweedie", "binary:hinge", "multi:softprob", "multi:softmax",
-                               "reg:expectileerror"}
+                               "reg:expectileerror", "reg:quantileerror"}
     assert (after["transform_dispatches"] > before["transform_dispatches"]) == transformed
 
 @pytest.mark.parametrize("objective,extra", OBJECTIVES[:10])
@@ -71,3 +73,35 @@ def test_invalid_labels_still_rejected(metal, objective, label):
         p["num_class"] = 3
     with pytest.raises(xgb.core.XGBoostError, match="label"):
         xgb.train(p, d, 1)
+
+@pytest.mark.parametrize("objective", ["reg:absoluteerror", "reg:quantileerror"])
+@pytest.mark.parametrize("case", ["zero_residual", "zero_weights", "tiny_weights", "large_scale", "multi_target"])
+def test_adaptive_scales_and_boundaries(metal, objective, case):
+    rng = np.random.default_rng(957)
+    x = rng.normal(size=(1027, 5)).astype(np.float32)
+    y = (x[:, 0] * 2 - x[:, 1]).astype(np.float32)
+    weights = np.ones(len(x), dtype=np.float32)
+    extra = {}
+    if objective == "reg:quantileerror":
+        extra["quantile_alpha"] = [0.01, 0.5, 0.99]
+    elif case == "multi_target":
+        y = np.column_stack([y, y * 2 + x[:, 2]])
+        extra["multi_strategy"] = "multi_output_tree"
+    if case == "zero_residual":
+        y[:] = 0
+    elif case == "zero_weights":
+        weights[:] = 0
+    elif case == "tiny_weights":
+        weights[:] = 1e-12
+    elif case == "large_scale":
+        y *= 1e12
+    d = xgb.DMatrix(x, label=y, weight=weights)
+    p = dict(objective=objective, nthread=2, max_depth=3, max_bin=32,
+             base_score=0, reg_lambda=0, min_child_weight=0, **extra)
+    cpu = xgb.train(p | {"device": "cpu"}, d, 3)
+    before = xgb.metal_info()
+    gpu = xgb.train(p | {"device": "mps"}, d, 3)
+    assert xgb.metal_info()["objective_dispatches"] - before["objective_dispatches"] == 3
+    assert xgb.metal_info()["residual_scale_dispatches"] - before["residual_scale_dispatches"] == 3
+    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5,
+                               atol=2e-5 * max(1, float(np.max(np.abs(y)))))
