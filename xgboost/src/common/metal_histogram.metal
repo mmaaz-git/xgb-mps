@@ -1638,6 +1638,66 @@ inline ulong2 xgb_reduce_double_pair(XGBDouble a, XGBDouble b, threadgroup int4*
   return result;
 }
 
+struct GradientSumParams {
+  ulong rows, stride0, stride1;
+  uint targets, blocks;
+};
+kernel void xgb_gradient_sum_reduce(device const uint2* gradients [[buffer(0)]],
+                                    device ulong2* partial [[buffer(1)]],
+                                    constant GradientSumParams& p [[buffer(2)]],
+                                    uint2 group [[threadgroup_position_in_grid]],
+                                    uint tid [[thread_index_in_threadgroup]],
+                                    uint lane [[thread_index_in_simdgroup]],
+                                    uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong row = ulong(group.x) * 256 + tid;
+  uint2 value = row < p.rows ? gradients[row * p.stride0 + ulong(group.y) * p.stride1] : uint2(0);
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total =
+      xgb_reduce_double_pair(xgb_dfrom_float(as_type<float>(value.x)),
+                             xgb_dfrom_float(as_type<float>(value.y)), bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[ulong(group.y) * p.blocks + group.x] = total;
+}
+kernel void xgb_gradient_sum_finish(device const ulong2* partial [[buffer(0)]],
+                                    device ulong2* output [[buffer(1)]],
+                                    constant GradientSumParams& p [[buffer(2)]],
+                                    uint target [[threadgroup_position_in_grid]],
+                                    uint tid [[thread_index_in_threadgroup]],
+                                    uint lane [[thread_index_in_simdgroup]],
+                                    uint simd [[simdgroup_index_in_threadgroup]]) {
+  XGBDouble g{0}, h{0};
+  for (uint block = tid; block < p.blocks; block += 256) {
+    ulong2 value = partial[ulong(target) * p.blocks + block];
+    g = xgb_dadd(g, {value.x});
+    h = xgb_dadd(h, {value.y});
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(g, h, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) output[target] = total;
+}
+kernel void xgb_stump_weight(device const ulong2* sums [[buffer(0)]],
+                             device float* output [[buffer(1)]],
+                             uint tid [[thread_position_in_grid]]) {
+  ulong2 value = sums[tid];
+  XGBDouble h{value.y}, epsilon = xgb_dfrom_float(1.0e-6f);
+  if (xgb_dlt(h, epsilon)) h = epsilon;
+  output[tid] = xgb_dto_float(xgb_ddiv(xgb_dneg({value.x}), h));
+}
+// Preserve the host's left-to-right order for the first feature's histogram.
+// This small root reduction must agree with split scans' missing-value checks.
+kernel void xgb_histogram_sum(device const ulong2* histogram [[buffer(0)]],
+                              device ulong2* output [[buffer(1)]],
+                              constant ulong2& range [[buffer(2)]]) {
+  XGBDouble g{0}, h{0};
+  for (ulong bin = range.x; bin < range.x + range.y; ++bin) {
+    ulong2 value = histogram[bin];
+    g = xgb_dadd(g, {value.x});
+    h = xgb_dadd(h, {value.y});
+  }
+  output[0] = ulong2(g.bits, h.bits);
+}
+
 kernel void xgb_residual_scale_reduce(
     device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
     device const float* weights [[buffer(2)]], device ulong2* partial [[buffer(3)]],

@@ -57,7 +57,8 @@ int main(int argc, char** argv) {
       };
       auto dequantize = pipeline(@"xgb_histogram_dequantize"),
            subtract = pipeline(@"xgb_histogram_subtract"),
-           gather = pipeline(@"xgb_histogram_gather");
+           gather = pipeline(@"xgb_histogram_gather"),
+           sum_histogram = pipeline(@"xgb_histogram_sum");
       auto queue = [device newCommandQueue];
       auto upload = [&](void const* data, size_t bytes) {
         return [device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];
@@ -68,7 +69,7 @@ int main(int argc, char** argv) {
         Require(command.status == MTLCommandBufferStatusCompleted, "GPU command failed");
       };
       std::mt19937_64 rng(955);
-      size_t converted = 0, subtracted = 0, gathered = 0, cases = 0;
+      size_t converted = 0, subtracted = 0, gathered = 0, cases = 0, root_sums = 0;
       for (uint32_t bins : {1, 33, 257, 1025})
         for (int unit : {-200, -100, -32, 0, 32, 100, 200}) {
           std::vector<Raw> raw(bins * 3);
@@ -115,6 +116,27 @@ int main(int argc, char** argv) {
             for (size_t i = 0; i < expected.size(); ++i)
               Require(actual[i].g == expected[i].g && actual[i].h == expected[i].h,
                       "Scaled integer conversion/page accumulation mismatch or out-of-range write");
+            for (auto offset : offsets) {
+              Pair reference{0, 0};
+              for (size_t i = offset; i < offset + bins; ++i) {
+                reference.g += expected[i].g;
+                reference.h += expected[i].h;
+              }
+              uint64_t range[2]{offset, bins};
+              auto sum = upload(&reference, sizeof(reference));
+              command = [queue commandBuffer];
+              e = [command computeCommandEncoder];
+              [e setComputePipelineState:sum_histogram];
+              [e setBuffer:output offset:0 atIndex:0];
+              [e setBuffer:sum offset:0 atIndex:1];
+              [e setBytes:range length:sizeof(range) atIndex:2];
+              [e dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+              [e endEncoding];
+              finish(command);
+              Require(std::memcmp(sum.contents, &reference, sizeof(reference)) == 0,
+                      "Root histogram sum differs from CPU left-to-right sum");
+              ++root_sums;
+            }
             converted += raw.size();
             ++cases;
           }
@@ -176,6 +198,7 @@ int main(int argc, char** argv) {
       printf("PASS %zu histogram storage cases: %zu converted/accumulated pairs, %zu subtracted "
              "pairs, %zu gathered pairs on %s\n",
              cases, converted, subtracted, gathered, device.name.UTF8String);
+      printf("PASS %zu exact root histogram reductions\n", root_sums);
       return 0;
     } catch (std::exception const& e) {
       fprintf(stderr, "FAIL: %s\n", e.what());

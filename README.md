@@ -8,7 +8,8 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
-row partitioning and scalar/vector split evaluation on Metal. Quantile construction,
+row partitioning, scalar/vector split evaluation, root-gradient sums and stump
+fitting on Metal. Quantile construction,
 gradient-based sampling and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
@@ -53,7 +54,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
-| Gradient quantization | GPU integer bit conversion with CPU-selected scales; exact comparison against CPU double `llround` |
+| Gradient quantization | GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales stay on GPU |
+| Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights; mean/quantile estimation and remaining leaf fitting still use CPU |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
@@ -79,7 +81,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **315 passed, 1 skipped**. The skip requires a machine without an
+- Python: **327 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **84 cases**, with every bin compared exactly to independent
@@ -91,6 +93,10 @@ On Apple M3, 2026-11-03:
 - Native gradient bounds: **63 reductions / 1,015,196 quantized values** and
   **1,296 scale boundary cases**, including NaNs/infinities, subnormals and
   row-count limits. Scales are checked with independent CPU 128-bit arithmetic.
+- Native root/stump reductions: **405 cases / 11,964,810 gradient pairs**, with
+  both matrix layouts, padded strides, cancellation and subnormal inputs; exact
+  representable sums, compensated CPU references, and bitwise stump weights.
+  **168 root histogram sums** also match CPU left-to-right addition exactly.
 - Native gradient quantization: **713,814 values across six scales**, including
   subnormal floats, compared exactly against double-precision CPU rounding.
 - Native partition/transpose kernels: **256 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
@@ -137,12 +143,12 @@ quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 100,000 | 0.114 s | 0.385 s | 0.30× |
-| 1,000,000 | 0.794 s | 1.183 s | 0.67× |
+| 100,000 | 0.110 s | 0.358 s | 0.31× |
+| 1,000,000 | 0.797 s | 1.246 s | 0.64× |
 
-[Latest raw training results](validation/benchmark-hist-skip-zero-v1-m3.json), including
-resident histograms, GPU subtraction/gathering, reused split buffers and skipped
-zero atomic additions. The [preceding run](validation/benchmark-hist-pool-m3.json)
+[Latest raw training results](validation/benchmark-gradient-sums-v1-m3.json), including
+GPU gradient bounds, root reductions, resident histograms, subtraction/gathering,
+reused split buffers and skipped zero atomic additions. The [preceding run](validation/benchmark-hist-pool-m3.json)
 and [first resident-histogram run](validation/benchmark-hist-storage-m3.json) are
 retained. Dispatch overhead and substantial GPU timing variability remain.
 Metal training is still slower than CPU.
@@ -176,23 +182,25 @@ training speedup yet.
 
 | Objective / rows | CPU | Metal | CPU / Metal |
 | --- | ---: | ---: | ---: |
-| Absolute error / 100,000 | 0.097 s | 0.267 s | 0.36× |
-| Absolute error / 1,000,000 | 0.747 s | 0.882 s | 0.85× |
+| Absolute error / 100,000 | 0.091 s | 0.214 s | 0.43× |
+| Absolute error / 1,000,000 | 0.717 s | 0.986 s | 0.73× |
 | Quantile / 100,000 | 0.105 s | 0.211 s | 0.49× |
 | Quantile / 1,000,000 | 0.892 s | 1.108 s | 0.81× |
 
-[Absolute-error results](validation/benchmark-absolute-v2-m3.json) and
+[Absolute-error results](validation/benchmark-absolute-v3-m3.json) and
 [quantile results](validation/benchmark-quantile-v2-m3.json). Checked exact integer
 reductions accelerate common residual scales and metric sums, with software
-binary64 retained for wide exponent ranges. At one million rows, objective GPU
-time fell from 0.083 to 0.052 s for absolute error and from 0.068 to 0.055 s for
+binary64 retained for wide exponent ranges. In the preceding
+[absolute-error run](validation/benchmark-absolute-v2-m3.json) and the quantile run,
+at one million rows objective GPU time fell from 0.083 to 0.052 s for absolute error and from 0.068 to 0.055 s for
 quantile; end-to-end Metal training fell from 0.999 to 0.882 s and from 1.164 to
 1.108 s respectively. The [first absolute-error](validation/benchmark-absolute-v1-m3.json)
 and [first quantile](validation/benchmark-quantile-v1-m3.json) runs remain available.
 These are separate runs, subject to system timing variability.
 
-Base-score estimation remains on CPU; per-iteration residual-scale reduction and
-gradient calculation execute on Metal. These implement the adaptive losses in the
+Mean and quantile estimation remain on CPU. Gradient aggregation and weight
+calculation for Newton stump fitting now execute on Metal, as do per-iteration
+residual-scale reduction and gradient calculation. These implement the adaptive losses in the
 vendored source.
 
 ### Uniform sampling
@@ -351,3 +359,18 @@ All 315 Python tests and native suites pass. The
 [training run](validation/benchmark-gradient-bounds-v1-m3.json) measured 1.219 s
 Metal versus 0.791 s CPU at one million rows (0.65×), so this coverage improvement
 has not established an end-to-end speedup.
+
+### Root statistics and stump fitting update
+
+Scalar/vector root-gradient aggregation, dense root histogram sums and Newton
+stump weights now execute on Metal. Dense histogram totals retain CPU summation
+order for split missing-value checks; large gradient arrays use parallel binary64
+reductions. Means, quantiles and other base-score preparation remain CPU work.
+All 327 Python tests pass, along with 405 native gradient/stump cases and 168 exact
+root histogram sums. CPU-only build checks pass.
+
+Latest training results above include this additional GPU coverage and remain
+slower than CPU. A [single diagnostic profile](validation/profile-gradient-sums-m3.txt)
+records the remaining cost across quantile construction, histograms, split
+evaluation, row partitions and gradient staging. Its nested timings overlap and
+should not be added together.

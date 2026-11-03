@@ -43,6 +43,10 @@
 #include "xgboost/tree_model.h"              // for RegTree, MTNotImplemented, RTreeNodeStat
 #include "xgboost/tree_updater.h"            // for TreeUpdater, TreeUpdaterReg, XGBOOST_REGISTE...
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_reduction.h"
+#endif
+
 namespace xgboost::tree {
 
 DMLC_REGISTRY_FILE_TAG(updater_quantile_hist);
@@ -230,7 +234,12 @@ class MultiTargetHistBuilder {
 
     auto n_targets = gpair.Shape(1);
     auto root_sum = linalg::Empty<GradientPairPrecise>(ctx_, n_targets);
-    cpu_impl::SumGradients(ctx_, gpair, root_sum.HostView());
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS())
+      common::metal::SumGradients(gpair, root_sum.HostView());
+    else
+#endif
+      cpu_impl::SumGradients(ctx_, gpair, root_sum.HostView());
     auto h_root_sum = root_sum.HostView();
     CHECK(h_root_sum.CContiguous());
     auto rc = collective::GlobalSum(
@@ -500,15 +509,31 @@ class HistUpdater {
         std::uint32_t const ibegin = row_ptr[0];
         std::uint32_t const iend = row_ptr[1];
         auto hist = this->histogram_builder_->Histogram(0)[RegTree::kRoot];
-        auto begin = hist.data();
-        for (std::uint32_t i = ibegin; i < iend; ++i) {
-          GradientPairPrecise const &et = begin[i];
-          grad_stat.Add(et.GetGrad(), et.GetHess());
+#if defined(XGBOOST_USE_METAL)
+        if (ctx_->IsMPS()) {
+          auto const &cache = histogram_builder_->Histogram(0);
+          grad_stat = common::metal::SumHistogram(
+              cache.MetalBuffer(), cache.Offset(RegTree::kRoot) + ibegin, iend - ibegin);
+        } else
+#endif
+        {
+          auto begin = hist.data();
+          for (std::uint32_t i = ibegin; i < iend; ++i) {
+            GradientPairPrecise const &et = begin[i];
+            grad_stat.Add(et.GetGrad(), et.GetHess());
+          }
         }
       } else {
-        auto gpair_h = gpair.Slice(linalg::All(), 0).Values();
-        for (auto const &grad : gpair_h) {
-          grad_stat.Add(grad.GetGrad(), grad.GetHess());
+#if defined(XGBOOST_USE_METAL)
+        if (ctx_->IsMPS()) {
+          common::metal::SumGradients(gpair, linalg::MakeVec(&grad_stat, 1));
+        } else
+#endif
+        {
+          auto gpair_h = gpair.Slice(linalg::All(), 0).Values();
+          for (auto const &grad : gpair_h) {
+            grad_stat.Add(grad.GetGrad(), grad.GetHess());
+          }
         }
         auto rc =
             collective::GlobalSum(ctx_, linalg::MakeVec(reinterpret_cast<double *>(&grad_stat), 2));

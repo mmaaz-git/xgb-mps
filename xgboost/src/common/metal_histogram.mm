@@ -15,6 +15,7 @@
 #include "metal_histogram.h"
 #include "metal_ops.h"
 #include "metal_predictor.h"
+#include "metal_reduction.h"
 #include "metal_sampling.h"
 #include "metal_shader.h"
 #include "metal_split.h"
@@ -24,6 +25,8 @@ namespace xgboost::common::metal {
 namespace {
 std::atomic<std::uint64_t> split_dispatches{0}, split_gpu_time_ns{0};
 std::atomic<std::uint64_t> residual_scale_dispatches{0};
+std::atomic<std::uint64_t> gradient_sum_dispatches{0}, gradient_sum_gpu_time_ns{0},
+    stump_dispatches{0};
 std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
@@ -79,6 +82,8 @@ class Runtime {
   id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
   id<MTLComputePipelineState> quantile_metric_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
+  id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
+      histogram_sum_pipeline, stump_weight_pipeline;
   id<MTLComputePipelineState> shared_pipeline, gradient_maximum_pipeline, gradient_scale_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
@@ -139,6 +144,10 @@ class Runtime {
       uniform_sampling_pipeline = make_pipeline(@"xgb_uniform_sample");
       gradient_maximum_pipeline = make_pipeline(@"xgb_gradient_maximum");
       gradient_scale_pipeline = make_pipeline(@"xgb_gradient_scale");
+      gradient_sum_pipeline = make_pipeline(@"xgb_gradient_sum_reduce");
+      gradient_sum_finish_pipeline = make_pipeline(@"xgb_gradient_sum_finish");
+      histogram_sum_pipeline = make_pipeline(@"xgb_histogram_sum");
+      stump_weight_pipeline = make_pipeline(@"xgb_stump_weight");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
       LOG(INFO) << "Metal compute backend: " << device.name.UTF8String;
     }
@@ -801,7 +810,10 @@ Statistics GetStatistics() {
           histogram_conversion_dispatches.load(std::memory_order_relaxed),
           histogram_subtraction_dispatches.load(std::memory_order_relaxed),
           resident_split_dispatches.load(std::memory_order_relaxed),
-          gradient_bound_dispatches.load(std::memory_order_relaxed)};
+          gradient_bound_dispatches.load(std::memory_order_relaxed),
+          gradient_sum_dispatches.load(std::memory_order_relaxed),
+          gradient_sum_gpu_time_ns.load(std::memory_order_relaxed),
+          stump_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -829,6 +841,125 @@ Transform TransformFromName(char const* name) {
   if (!strcmp(name, "reg:logistic") || !strcmp(name, "binary:logistic")) return Transform::kSigmoid;
   if (!strcmp(name, "reg:gamma")) return Transform::kExp;
   return Transform::kIdentity;
+}
+
+namespace {
+id<MTLBuffer> EncodeGradientSum(Runtime& rt, linalg::MatrixView<GradientPair const> gradients,
+                                id<MTLCommandBuffer> command) {
+  auto rows = gradients.Shape(0), targets = gradients.Shape(1);
+  CHECK_GT(rows, 0);
+  CHECK_GT(targets, 0);
+  CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(targets, 65535);
+  auto values = gradients.Values();
+  auto input = Upload(rt, values.data(), values.size_bytes());
+  auto blocks = (rows + 255) / 256;
+  auto partial = Allocate(rt, blocks * targets * sizeof(GradientPairPrecise));
+  auto output = Allocate(rt, targets * sizeof(GradientPairPrecise));
+  struct {
+    std::uint64_t rows, stride0, stride1;
+    std::uint32_t targets, blocks;
+  } p{rows, gradients.Stride(0), gradients.Stride(1), static_cast<std::uint32_t>(targets),
+      static_cast<std::uint32_t>(blocks)};
+  static_assert(sizeof(p) == 32);
+  auto e = [command computeCommandEncoder];
+  CHECK(e);
+  [e setComputePipelineState:rt.gradient_sum_pipeline];
+  [e setBuffer:input offset:0 atIndex:0];
+  [e setBuffer:partial offset:0 atIndex:1];
+  [e setBytes:&p length:sizeof(p) atIndex:2];
+  [e dispatchThreadgroups:MTLSizeMake(blocks, targets, 1)
+      threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  e = [command computeCommandEncoder];
+  CHECK(e);
+  [e setComputePipelineState:rt.gradient_sum_finish_pipeline];
+  [e setBuffer:partial offset:0 atIndex:0];
+  [e setBuffer:output offset:0 atIndex:1];
+  [e setBytes:&p length:sizeof(p) atIndex:2];
+  [e dispatchThreadgroups:MTLSizeMake(targets, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  return output;
+}
+void CompleteGradientSum(id<MTLCommandBuffer> command) {
+  [command commit];
+  [command waitUntilCompleted];
+  CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+  gradient_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
+  auto elapsed = command.GPUEndTime - command.GPUStartTime;
+  if (elapsed > 0)
+    gradient_sum_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                       std::memory_order_relaxed);
+}
+}  // namespace
+
+void SumGradients(linalg::MatrixView<GradientPair const> gradients,
+                  linalg::VectorView<GradientPairPrecise> output) {
+  CHECK_EQ(gradients.Shape(1), output.Size());
+  if (!gradients.Size()) {
+    for (std::size_t t = 0; t < output.Size(); ++t) output(t) = GradientPairPrecise{};
+    return;
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto result = EncodeGradientSum(rt, gradients, command);
+    CompleteGradientSum(command);
+    auto data = static_cast<GradientPairPrecise const*>(result.contents);
+    for (std::size_t t = 0; t < output.Size(); ++t) output(t) = data[t];
+  }
+}
+void FitStump(linalg::MatrixView<GradientPair const> gradients, linalg::VectorView<float> output) {
+  CHECK_EQ(gradients.Shape(1), output.Size());
+  if (!gradients.Size()) {
+    for (std::size_t t = 0; t < output.Size(); ++t) output(t) = 0.0f;
+    return;
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto sums = EncodeGradientSum(rt, gradients, command);
+    auto result = Allocate(rt, output.Size() * sizeof(float));
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.stump_weight_pipeline];
+    [e setBuffer:sums offset:0 atIndex:0];
+    [e setBuffer:result offset:0 atIndex:1];
+    [e dispatchThreads:MTLSizeMake(output.Size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteGradientSum(command);
+    auto data = static_cast<float const*>(result.contents);
+    for (std::size_t t = 0; t < output.Size(); ++t) output(t) = data[t];
+    stump_dispatches.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+GradientPairPrecise SumHistogram(HistogramBuffer const* storage, std::size_t offset,
+                                 std::size_t bins) {
+  CHECK(storage);
+  CHECK_LE(offset, storage->Data().size());
+  CHECK_LE(bins, storage->Data().size() - offset);
+  if (!bins) return GradientPairPrecise{};
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto shared = static_cast<MetalHistogramBuffer const*>(storage);
+    auto output = Allocate(rt, sizeof(GradientPairPrecise));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    std::uint64_t range[2]{offset, bins};
+    [e setComputePipelineState:rt.histogram_sum_pipeline];
+    [e setBuffer:shared->buffer offset:0 atIndex:0];
+    [e setBuffer:output offset:0 atIndex:1];
+    [e setBytes:range length:sizeof(range) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [e endEncoding];
+    CompleteGradientSum(command);
+    return *static_cast<GradientPairPrecise const*>(output.contents);
+  }
 }
 
 void UniformSample(linalg::MatrixView<GradientPair> gradients, float probability,

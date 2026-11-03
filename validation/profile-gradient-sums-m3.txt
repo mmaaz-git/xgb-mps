@@ -1,0 +1,90 @@
+PROFILE cpu
+[02:45:16] DEBUG: xgboost/src/gbm/gbtree.cc:132: Using tree method: 3
+[02:45:16] DEBUG: xgboost/src/data/simple_dmatrix.cc:143: Generating new Gradient Index.
+[02:45:16] ======== Monitor (0): HostSketchContainer ========
+[02:45:16] AllReduce: 0.001533s, 1 calls @ 1533us
+
+[02:45:16] MakeCuts: 0.001698s, 1 calls @ 1698us
+
+[02:45:16] PushRowPage: 0.303154s, 1 calls @ 303154us
+
+[02:45:16] ======== Monitor (0): GBTree ========
+[02:45:16] BoostNewTrees: 0.741555s, 20 calls @ 741555us
+
+[02:45:16] CommitModel: 1.4e-05s, 20 calls @ 14us
+
+[02:45:16] ======== Monitor (0): HistUpdater ========
+[02:45:16] BuildHistogram: 0.127265s, 100 calls @ 127265us
+
+[02:45:16] EvaluateSplits: 0.020268s, 120 calls @ 20268us
+
+[02:45:16] InitData: 0.400407s, 20 calls @ 400407us
+
+[02:45:16] InitRoot: 0.106301s, 20 calls @ 106301us
+
+[02:45:16] LeafPartition: 0.016429s, 20 calls @ 16429us
+
+[02:45:16] UpdatePosition: 0.06511s, 120 calls @ 65110us
+
+[02:45:16] UpdateTree: 0.735818s, 20 calls @ 735818us
+
+[02:45:16] ======== Monitor (0):  ========
+[02:45:16] BuildHist: 0.221434s, 120 calls @ 221434us
+
+ELAPSED 0.8090895421337336
+[02:45:16] ======== Monitor (0): Learner ========
+[02:45:16] Configure: 0.000123s, 1 calls @ 123us
+
+[02:45:16] EvalOneIter: 5.6e-05s, 20 calls @ 56us
+
+[02:45:16] GetGradient: 0.003032s, 20 calls @ 3032us
+
+[02:45:16] PredictRaw: 0.000381s, 20 calls @ 381us
+
+[02:45:16] UpdateOneIter: 0.747804s, 20 calls @ 747804us
+
+PROFILE mps
+[02:45:16] DEBUG: xgboost/src/gbm/gbtree.cc:132: Using tree method: 3
+[02:45:16] DEBUG: xgboost/src/data/simple_dmatrix.cc:143: Generating new Gradient Index.
+[02:45:17] ======== Monitor (0): HostSketchContainer ========
+[02:45:17] AllReduce: 0.002036s, 1 calls @ 2036us
+
+[02:45:17] MakeCuts: 0.002205s, 1 calls @ 2205us
+
+[02:45:17] PushRowPage: 0.301375s, 1 calls @ 301375us
+
+[02:45:18] ======== Monitor (0): GBTree ========
+[02:45:18] BoostNewTrees: 1.22132s, 20 calls @ 1221325us
+
+[02:45:18] CommitModel: 1.7e-05s, 20 calls @ 17us
+
+[02:45:18] ======== Monitor (0): HistUpdater ========
+[02:45:18] BuildHistogram: 0.232s, 100 calls @ 232000us
+
+[02:45:18] EvaluateSplits: 0.140088s, 120 calls @ 140088us
+
+[02:45:18] InitData: 0.394656s, 20 calls @ 394656us
+
+[02:45:18] InitRoot: 0.198119s, 20 calls @ 198119us
+
+[02:45:18] LeafPartition: 0.065429s, 20 calls @ 65429us
+
+[02:45:18] UpdatePosition: 0.164691s, 120 calls @ 164691us
+
+[02:45:18] UpdateTree: 1.18255s, 20 calls @ 1182552us
+
+[02:45:18] ======== Monitor (0):  ========
+[02:45:18] BuildHist: 0.372173s, 120 calls @ 372173us
+
+ELAPSED 1.3410223750397563
+[02:45:18] ======== Monitor (0): Learner ========
+[02:45:18] Configure: 0.000112s, 1 calls @ 112us
+
+[02:45:18] EvalOneIter: 8e-05s, 20 calls @ 80us
+
+[02:45:18] GetGradient: 0.057196s, 20 calls @ 57196us
+
+[02:45:18] PredictRaw: 0.000214s, 20 calls @ 214us
+
+[02:45:18] UpdateOneIter: 1.28175s, 20 calls @ 1281752us
+

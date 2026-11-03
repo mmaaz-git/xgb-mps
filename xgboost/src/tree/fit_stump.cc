@@ -19,6 +19,10 @@
 #include "../common/common.h"  // AssertGPUSupport
 #endif
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_reduction.h"
+#endif
+
 namespace xgboost::tree {
 namespace cpu_impl {
 void SumGradients(Context const* ctx, linalg::MatrixView<GradientPair const> gpair,
@@ -86,6 +90,12 @@ void FitStump(Context const* ctx, linalg::Matrix<GradientPair> const& gpair, bst
 
   gpair.SetDevice(ctx->Device());
   auto gpair_t = gpair.View(ctx->Device().IsSycl() ? DeviceOrd::CPU() : ctx->Device());
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    common::metal::FitStump(gpair_t, out->HostView());
+    return;
+  }
+#endif
   ctx->IsCUDA() ? cuda_impl::FitStump(ctx, gpair_t, out->View(ctx->Device()))
                 : cpu_impl::FitStump(ctx, gpair_t, out->HostView());
 }

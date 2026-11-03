@@ -31,6 +31,10 @@ echo "Checking GPU histogram conversion, accumulation, subtraction and gathers"
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_storage.mm \
   -framework Metal -framework Foundation -o results/metal_storage_test
 results/metal_storage_test xgboost/src/common/metal_histogram.metal
+echo "Checking root-gradient sums and stump weights"
+clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_reduction.mm \
+  -framework Metal -framework Foundation -o results/metal_reduction_test
+results/metal_reduction_test xgboost/src/common/metal_histogram.metal
 echo "Checking adaptive objective scales and gradients against CPU references"
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_adaptive.mm \
   -framework Metal -framework Foundation -o results/metal_adaptive_test

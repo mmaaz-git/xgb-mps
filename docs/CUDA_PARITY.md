@@ -17,13 +17,13 @@ listed below. This is not yet a complete GPU backend.
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, monotonic bounds and pooled vector weights; host column sampling, interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter, resident row IDs, GPU leaf positions; supports numerical/categorical splits and missing values |
-| Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu` | Metal uniform row sampling and replay with CPU-compatible LCG/Bernoulli draws; gradient-based/column sampling and gradient sums remain CPU |
-| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels; label validation and base-score estimation still CPU |
+| Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu` | Metal uniform row sampling/replay with CPU-compatible LCG/Bernoulli draws, scalar/vector root-gradient sums and dense root histogram sums; gradient-based/column sampling remain CPU |
+| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels; label validation and mean-based estimation still CPU; Newton stump fitting uses Metal |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
-| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; base-score estimation remains CPU |
+| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error stump fitting uses Metal, initial means/quantiles remain CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | CPU |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | CPU |
-| Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu` | CPU |
+| Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu` | Newton stump gradient aggregation and unregularized weights on Metal; means, quantiles, other initialization work and leaf fitting remain CPU |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; CPU input views stage dense chunks and recode categories |
 | Prediction cache from leaf IDs | `predictor/predictor.cu` | Metal; supports strided target slices and negated sampling positions |
 | SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | CPU |
@@ -68,7 +68,7 @@ count, repeated measurements, and accuracy alongside any speedup claim.
 
 Quantized pages, row indices and histogram caches now persist on Metal buffers.
 Split selection, histogram conversion/accumulation/subtraction and uniform sampling
-also execute on Metal. Host orchestration still synchronizes at each tree level;
+and root-gradient/stump reductions also execute on Metal. Host orchestration still synchronizes at each tree level;
 gradients and prediction state still cross between host arrays and GPU buffers.
 Keeping those arrays resident and reducing synchronization are the next architectural
 steps. Host model construction and serialization can remain on the CPU.
