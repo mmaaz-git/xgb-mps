@@ -3,8 +3,10 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <random>
@@ -21,9 +23,9 @@ struct Pair {
 };
 struct Params {
   uint64_t rows, base;
-  uint32_t bins, features, width, dense;
+  uint32_t bins, features, width, dense, nodes, pad;
 };
-static_assert(sizeof(Row) == 16 && sizeof(Pair) == 16 && sizeof(Params) == 32);
+static_assert(sizeof(Row) == 16 && sizeof(Pair) == 16 && sizeof(Params) == 40);
 void Require(bool ok, char const *what) {
   if (!ok) throw std::runtime_error(what);
 }
@@ -38,8 +40,10 @@ int main(int argc, char **argv) {
       Require(file.good(), "Cannot read production shader");
       std::string source{std::istreambuf_iterator<char>(file), {}};
       NSError *error = nil;
+      auto options = [MTLCompileOptions new];
+      options.fastMathEnabled = NO;
       auto library = [dev newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()]
-                                       options:nil
+                                       options:options
                                          error:&error];
       if (!library) throw std::runtime_error(error.localizedDescription.UTF8String);
       auto kernel = [library newFunctionWithName:@"xgb_histogram"];
@@ -112,10 +116,12 @@ int main(int argc, char **argv) {
                 auto ptr = upload(rowptr.data(), rowptr.size() * sizeof(uint64_t));
                 auto off = upload(offsets.data(), offsets.size() * sizeof(uint32_t));
                 auto gp = upload(gradients.data(), gradients.size() * sizeof(Pair));
-                auto rs = upload(rows.data(), rows.size() * sizeof(Row));
+                std::vector<uint64_t> row_ids;
+                for (auto row : rows) row_ids.push_back(row.row);
+                auto rs = upload(row_ids.data(), row_ids.size() * sizeof(uint64_t));
                 std::vector<Pair> zero(reference.size(), {0, 0});
                 auto out = upload(zero.data(), zero.size() * sizeof(Pair));
-                Params p{n, base, bins, features, width, uint32_t(dense)};
+                Params p{n, base, bins, features, width, uint32_t(dense), nodes, 0};
                 auto command = [queue commandBuffer];
                 auto encoder = [command computeCommandEncoder];
                 [encoder setComputePipelineState:shared ? shared_pipeline : pipeline];
@@ -126,9 +132,9 @@ int main(int argc, char **argv) {
                 [encoder setBuffer:rs offset:0 atIndex:4];
                 [encoder setBuffer:out offset:0 atIndex:5];
                 [encoder setBytes:&p length:sizeof(p) atIndex:6];
+                auto np = upload(node_ptr.data(), node_ptr.size() * sizeof(uint64_t));
+                [encoder setBuffer:np offset:0 atIndex:7];
                 if (shared) {
-                  auto np = upload(node_ptr.data(), node_ptr.size() * sizeof(uint64_t));
-                  [encoder setBuffer:np offset:0 atIndex:7];
                   [encoder setThreadgroupMemoryLength:per_feature * sizeof(Pair) atIndex:0];
                   [encoder dispatchThreadgroups:MTLSizeMake((max_node_rows + 2047) / 2048, features,
                                                             nodes)
@@ -160,6 +166,58 @@ int main(int argc, char **argv) {
             }
           }
         }
+      }
+      auto quantize_function = [library newFunctionWithName:@"xgb_quantize_gradients"];
+      auto quantize_pipeline = [dev newComputePipelineStateWithFunction:quantize_function
+                                                                  error:&error];
+      Require(quantize_pipeline != nil, "Cannot create quantization pipeline");
+      for (int exponent : {-100, -40, 0, 30, 100, 200}) {
+        std::mt19937 gen(9);
+        std::vector<float> input;
+        std::vector<int64_t> reference;
+        auto append = [&](float value) {
+          double scaled = std::ldexp(double(value), exponent);
+          if (!std::isfinite(scaled) || std::abs(scaled) > std::ldexp(1.0, 60)) return;
+          // Interleaved gradient/Hessian with different signs.
+          input.push_back(value);
+          input.push_back(-value);
+          reference.push_back(std::llround(scaled));
+          reference.push_back(std::llround(-scaled));
+        };
+        for (float value :
+             {0.0f, -0.0f, 0.5f, -0.5f, 1.5f, -1.5f, std::numeric_limits<float>::denorm_min(),
+              std::numeric_limits<float>::min(), std::numeric_limits<float>::max()})
+          append(value);
+        for (size_t i = 0; i < 100000; ++i) {
+          uint32_t bits = gen();
+          float value;
+          memcpy(&value, &bits, sizeof(value));
+          append(value);
+        }
+        auto in = upload(input.data(), input.size() * sizeof(float));
+        auto out = [dev newBufferWithLength:reference.size() * sizeof(int64_t)
+                                    options:MTLResourceStorageModeShared];
+        struct {
+          uint64_t n;
+          int32_t g, h;
+        } params{input.size() / 2, exponent, exponent};
+        auto command = [queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        [encoder setComputePipelineState:quantize_pipeline];
+        [encoder setBuffer:in offset:0 atIndex:0];
+        [encoder setBuffer:out offset:0 atIndex:1];
+        [encoder setBytes:&params length:sizeof(params) atIndex:2];
+        [encoder dispatchThreads:MTLSizeMake(params.n, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        Require(command.status == MTLCommandBufferStatusCompleted, "Quantization command failed");
+        auto actual = static_cast<int64_t const *>(out.contents);
+        for (size_t i = 0; i < reference.size(); ++i)
+          Require(actual[i] == reference[i], "GPU quantization differs from CPU double llround");
+        printf("PASS quantization exponent %d: %zu values (including subnormals)\n", exponent,
+               reference.size());
       }
       printf("%d actual-GPU histogram cases passed on %s\n", cases, dev.name.UTF8String);
       return 0;

@@ -34,6 +34,10 @@
 #include "../common/common.h"  // for AssertGPUSupport
 #endif                         // XGBOOST_USE_CUDA
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ops.h"
+#endif
+
 namespace xgboost::metric {
 // tag the this file, used by force static link later.
 DMLC_REGISTRY_FILE_TAG(elementwise_metric);
@@ -191,6 +195,15 @@ class PseudoErrorLoss : public MetricNoCache {
                                                    : info.weights_.ConstHostSpan());
     float slope = this->param_.huber_slope;
     CHECK_NE(slope, 0.0) << "slope for pseudo huber cannot be 0.";
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      CheckRowWeights(info);
+      auto sums = common::metal::MetricSums(
+          "mphe", preds.ConstHostSpan(), info.labels.Data()->ConstHostSpan(),
+          info.weights_.ConstHostSpan(), info.labels.Shape(1), slope);
+      return EvalRowMAPE::GetFinal(sums[0], sums[1]);
+    }
+#endif
     PackedReduceResult result =
         Reduce(ctx_, info, [=] XGBOOST_DEVICE(size_t i, size_t sample_id, size_t target_id) {
           float wt = weights[sample_id];
@@ -235,6 +248,9 @@ struct EvalError {
   }
 
   static double GetFinal(double esum, double wsum) { return wsum == 0 ? esum : esum / wsum; }
+
+ public:
+  float MetalParameter() const { return threshold_; }
 
  private:
   bst_float threshold_;
@@ -317,6 +333,9 @@ struct EvalTweedieNLogLik {
   }
   static double GetFinal(double esum, double wsum) { return wsum == 0 ? esum : esum / wsum; }
 
+ public:
+  float MetalParameter() const { return rho_; }
+
  protected:
   bst_float rho_;
 };
@@ -344,6 +363,18 @@ struct EvalEWiseBase : public MetricNoCache {
     preds.SetDevice(device);
     auto predts = ctx_->IsCUDA() ? preds.ConstDeviceSpan() : preds.ConstHostSpan();
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      CheckRowWeights(info);
+      float parameter = 0.5f;
+      if constexpr (std::is_same_v<Policy, EvalError> || std::is_same_v<Policy, EvalTweedieNLogLik>)
+        parameter = policy_.MetalParameter();
+      auto sums = common::metal::MetricSums(
+          this->Name(), preds.ConstHostSpan(), info.labels.Data()->ConstHostSpan(),
+          info.weights_.ConstHostSpan(), info.labels.Shape(1), parameter);
+      return Policy::GetFinal(sums[0], sums[1]);
+    }
+#endif
     auto d_policy = policy_;
     auto result =
         Reduce(ctx_, info, [=] XGBOOST_DEVICE(size_t i, size_t sample_id, size_t target_id) {

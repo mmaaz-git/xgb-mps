@@ -44,6 +44,10 @@
 #include "../common/device_helpers.cuh"  // for MakeIndexTransformIter
 #endif                                   // defined(XGBOOST_USE_CUDA)
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ops.h"
+#endif
+
 namespace xgboost::obj {
 namespace {
 void CheckRegInputs(MetaInfo const& info, HostDeviceVector<float> const& preds) {
@@ -166,6 +170,15 @@ class RegLossObj : public FitInterceptGlmLike {
     const size_t block_size = ndata / n_data_blocks + !!(ndata % n_data_blocks);
     auto const n_targets = this->Targets(info);
     out_gpair->Reshape(info.num_row_, n_targets);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::Gradients(common::metal::ObjectiveFromName(Loss::Name()),
+                               preds.ConstHostSpan(), info.labels.Data()->ConstHostSpan(),
+                               info.weights_.ConstHostSpan(), this->Targets(info), 0.0f,
+                               scale_pos_weight, {}, out_gpair->Data()->HostSpan());
+      return;
+    }
+#endif
 
     common::Transform<>::Init(
         [block_size, ndata, n_targets] XGBOOST_DEVICE(
@@ -200,6 +213,14 @@ class RegLossObj : public FitInterceptGlmLike {
   [[nodiscard]] const char* DefaultEvalMetric() const override { return Loss::DefaultEvalMetric(); }
 
   void PredTransform(HostDeviceVector<float>* io_preds) const override {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::TransformPredictions(common::metal::TransformFromName(Loss::Name()),
+                                          io_preds->HostSpan(), 1);
+      return;
+    }
+#endif
+
     common::Transform<>::Init(
         [] XGBOOST_DEVICE(size_t _idx, common::Span<float> _preds) {
           _preds[_idx] = Loss::PredTransform(_preds[_idx]);
@@ -296,6 +317,15 @@ class SquaredLogErrorRegression : public FitIntercept {
 
     out_gpair->SetDevice(ctx_->Device());
     out_gpair->Reshape(info.num_row_, this->Targets(info));
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::Gradients(common::metal::Objective::kSquaredLog, preds.ConstHostSpan(),
+                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
+                               this->Targets(info), 0.0f, 1.0f, {}, out_gpair->Data()->HostSpan());
+      return;
+    }
+#endif
+
     auto gpair = out_gpair->View(ctx_->Device());
 
     preds.SetDevice(ctx_->Device());
@@ -344,6 +374,15 @@ class PseudoHuberRegression : public FitIntercept {
 
     out_gpair->SetDevice(ctx_->Device());
     out_gpair->Reshape(info.num_row_, this->Targets(info));
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::Gradients(common::metal::Objective::kPseudoHuber, preds.ConstHostSpan(),
+                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
+                               this->Targets(info), slope, 1.0f, {}, out_gpair->Data()->HostSpan());
+      return;
+    }
+#endif
+
     auto gpair = out_gpair->View(ctx_->Device());
 
     preds.SetDevice(ctx_->Device());
@@ -435,6 +474,16 @@ class ExpectileRegression : public FitIntercept {
     CHECK_EQ(info.labels.Shape(1), 1)
         << "Multi-target for expectile regression is not yet supported.";
     out_gpair->Reshape(info.num_row_, n_targets);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::Gradients(common::metal::Objective::kExpectile, preds.ConstHostSpan(),
+                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
+                               this->Targets(info), 0.0f, 1.0f, alpha_.ConstHostSpan(),
+                               out_gpair->Data()->HostSpan());
+      return;
+    }
+#endif
+
     auto gpair = out_gpair->View(ctx_->Device());
 
     info.weights_.SetDevice(ctx_->Device());
@@ -524,6 +573,14 @@ class ExpectileRegression : public FitIntercept {
   }
 
   void PredTransform(HostDeviceVector<float>* io_preds) const override {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::TransformPredictions(common::metal::Transform::kExpectile,
+                                          io_preds->HostSpan(), alpha_.Size());
+      return;
+    }
+#endif
+
     auto n_alphas = alpha_.Size();
     CHECK_NE(n_alphas, 0);
     CHECK_EQ(io_preds->Size() % n_alphas, 0);
@@ -616,6 +673,15 @@ class PoissonRegression : public FitInterceptGlmLike {
     auto const n_targets = this->Targets(info);
     out_gpair->SetDevice(ctx_->Device());
     out_gpair->Reshape(info.num_row_, n_targets);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::Gradients(common::metal::Objective::kPoisson, preds.ConstHostSpan(),
+                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
+                               this->Targets(info), param_.max_delta_step, 1.0f, {},
+                               out_gpair->Data()->HostSpan());
+      return;
+    }
+#endif
 
     auto labels = info.labels.View(ctx_->Device());
     preds.SetDevice(ctx_->Device());
@@ -636,6 +702,13 @@ class PoissonRegression : public FitInterceptGlmLike {
                               });
   }
   void PredTransform(HostDeviceVector<bst_float>* io_preds) const override {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::TransformPredictions(common::metal::Transform::kExp, io_preds->HostSpan(), 1);
+      return;
+    }
+#endif
+
     common::Transform<>::Init(
         [] XGBOOST_DEVICE(size_t _idx, common::Span<bst_float> _preds) {
           _preds[_idx] = expf(_preds[_idx]);
@@ -798,6 +871,15 @@ class TweedieRegression : public FitInterceptGlmLike {
     auto const n_targets = this->Targets(info);
     out_gpair->SetDevice(ctx_->Device());
     out_gpair->Reshape(info.num_row_, n_targets);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::Gradients(common::metal::Objective::kTweedie, preds.ConstHostSpan(),
+                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
+                               this->Targets(info), param_.tweedie_variance_power, 1.0f, {},
+                               out_gpair->Data()->HostSpan());
+      return;
+    }
+#endif
 
     auto labels = info.labels.View(ctx_->Device());
     preds.SetDevice(ctx_->Device());
@@ -818,6 +900,13 @@ class TweedieRegression : public FitInterceptGlmLike {
         });
   }
   void PredTransform(HostDeviceVector<bst_float>* io_preds) const override {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::TransformPredictions(common::metal::Transform::kExp, io_preds->HostSpan(), 1);
+      return;
+    }
+#endif
+
     common::Transform<>::Init(
         [] XGBOOST_DEVICE(size_t _idx, common::Span<bst_float> _preds) {
           _preds[_idx] = expf(_preds[_idx]);

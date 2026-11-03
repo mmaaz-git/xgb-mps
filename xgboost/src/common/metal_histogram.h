@@ -22,6 +22,10 @@ struct Statistics {
   std::uint64_t rows_processed;
   std::uint64_t shared_histogram_dispatches;
   std::uint64_t gpu_time_ns;
+  std::uint64_t quantization_dispatches, staging_time_ns, wait_time_ns, readback_time_ns;
+  std::uint64_t objective_dispatches, transform_dispatches, objective_gpu_time_ns;
+  std::uint64_t prediction_dispatches, prediction_gpu_time_ns, leaf_update_dispatches;
+  std::uint64_t metric_dispatches, metric_gpu_time_ns;
 };
 
 class Histogram {

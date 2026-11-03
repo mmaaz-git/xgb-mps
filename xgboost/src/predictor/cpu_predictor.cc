@@ -41,6 +41,10 @@
 #include "xgboost/span.h"                     // for Span
 #include "xgboost/tree_model.h"               // for RegTree, MTNotImplemented, RTreeNodeStat
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_predictor.h"
+#endif
+
 namespace xgboost::predictor {
 
 DMLC_REGISTRY_FILE_TAG(cpu_predictor);
@@ -59,6 +63,89 @@ using Vec = std::vector<T, std::allocator<T>>;
 // has an optimization to use CPU predictor when the DMatrix SparsePage is on CPU, even if
 // the context is a CUDA context.
 using HostModel = GBTreeModelView<Vec, TreeViewVar, CopyViews>;
+
+#if defined(XGBOOST_USE_METAL)
+std::unique_ptr<common::metal::Prediction> MakeMetalPrediction(HostModel const &model,
+                                                               common::OptionalWeights weights) {
+  common::metal::PredictionModel packed;
+  std::size_t t = 0;
+  for (auto const &variant : model.Trees()) {
+    std::visit(
+        [&](auto const &view) {
+          CHECK_LE(packed.nodes.size() + view.Size(), std::numeric_limits<std::uint32_t>::max());
+          auto root = static_cast<std::uint32_t>(packed.nodes.size());
+          auto group = view.NumTargets() == 1 ? model.tree_groups[t] : 0;
+          packed.trees.push_back({root, view.NumTargets(), group, weights[t]});
+          auto const &categories = view.GetCategoriesMatrix();
+          for (bst_node_t nid = 0; nid < view.Size(); ++nid) {
+            common::metal::PredictionNode node;
+            if constexpr (std::is_same_v<std::decay_t<decltype(view)>, tree::ScalarTreeView>) {
+              if (view.IsDeleted(nid)) {
+                packed.nodes.push_back(node);
+                continue;
+              }
+            }
+            if (view.IsLeaf(nid)) {
+              CHECK_LE(packed.leaves.size() + view.NumTargets(),
+                       std::numeric_limits<std::uint32_t>::max());
+              node.leaf_begin = packed.leaves.size();
+              if constexpr (std::is_same_v<std::decay_t<decltype(view)>, tree::ScalarTreeView>) {
+                packed.leaves.push_back(view.LeafValue(nid));
+              } else {
+                auto leaf = view.LeafValue(nid);
+                for (bst_target_t k = 0; k < view.NumTargets(); ++k)
+                  packed.leaves.push_back(leaf(k));
+              }
+            } else {
+              node.left = view.LeftChild(nid);
+              node.right = view.RightChild(nid);
+              node.missing = view.DefaultChild(nid);
+              node.feature = view.SplitIndex(nid);
+              node.split = view.SplitCond(nid);
+              node.categorical = common::IsCat(categories.split_type, nid);
+              if (node.categorical) {
+                auto segment = categories.node_ptr[nid];
+                CHECK_LE(packed.categories.size() + segment.size,
+                         std::numeric_limits<std::uint32_t>::max());
+                node.category_begin = packed.categories.size();
+                node.category_size = segment.size;
+                auto bits = categories.categories.subspan(segment.beg, segment.size);
+                packed.categories.insert(packed.categories.end(), bits.begin(), bits.end());
+              }
+            }
+            packed.nodes.push_back(node);
+          }
+        },
+        variant);
+    ++t;
+  }
+  return common::metal::MakePrediction(packed);
+}
+
+// Reuse the existing input views to preserve category recoding, missing-value
+// semantics, and quantized-bin lower bounds. This host staging is bounded and
+// remains a separate target for GPU acceleration.
+template <typename Batch>
+void MetalPredictBatch(Batch const &batch, common::metal::Prediction *prediction,
+                       HostModel const &model, int threads, linalg::MatrixView<float> output,
+                       bool leaf = false) {
+  auto features = model.n_features;
+  std::size_t chunk = std::max<std::size_t>(
+      1, std::min<std::size_t>(65536, (16 * 1024 * 1024) / std::max<std::size_t>(features, 1)));
+  for (std::size_t begin = 0; begin < batch.Size(); begin += chunk) {
+    auto rows = std::min<std::size_t>(chunk, batch.Size() - begin);
+    std::vector<float> data(rows * features, std::numeric_limits<float>::quiet_NaN());
+    common::ParallelFor(rows, threads, [&](std::size_t r) {
+      (void)batch.DoFill(begin + r, data.data() + r * features);
+    });
+    CHECK_EQ(output.Stride(1), 1);
+    auto groups = output.Shape(1);
+    CHECK_EQ(output.Stride(0), groups);
+    auto ptr = &output(batch.base_rowid + begin, 0);
+    prediction->Predict(data, rows, features, groups, {ptr, rows * groups}, leaf);
+  }
+}
+#endif
 
 template <bool has_missing, bool has_categorical, typename TreeView>
 bst_node_t GetLeafIndex(TreeView const &tree, const RegTree::FVec &feat,
@@ -443,6 +530,17 @@ class CPUPredictor : public Predictor {
     auto const h_model =
         HostModel{DeviceOrd::CPU(), model, false, tree_begin, tree_end, CopyViews{}};
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      auto prediction = MakeMetalPrediction(h_model, tree_weights);
+      LaunchPredict(ctx_, p_fmat, model, [&](auto &&policy) {
+        policy.ForEachBatch([&](auto &&batch) {
+          MetalPredictBatch(batch, prediction.get(), h_model, n_threads, out_predt);
+        });
+      });
+      return;
+    }
+#endif
     LaunchPredict(this->ctx_, p_fmat, model, [&](auto &&policy) {
       using Policy = common::GetValueT<decltype(policy)>;
       ThreadTmp<Policy::kBlockOfRowsSize> feat_vecs{n_threads};
@@ -499,8 +597,17 @@ class CPUPredictor : public Predictor {
                                                  tree_weights->data() + tree_begin,
                                                  static_cast<std::size_t>(tree_end - tree_begin)}};
 
+#if defined(XGBOOST_USE_METAL)
+    auto metal_prediction = ctx_->IsMPS() ? MakeMetalPrediction(h_model, weights) : nullptr;
+#endif
     auto kernel = [&](auto &&view) {
       auto out_predt = linalg::MakeTensorView(ctx_, predictions, view.Size(), n_groups);
+#if defined(XGBOOST_USE_METAL)
+      if (metal_prediction) {
+        MetalPredictBatch(view, metal_prediction.get(), h_model, n_threads, out_predt);
+        return;
+      }
+#endif
       PredictBatchByBlockKernel<BlockPolicy::kBlockOfRowsSize>(view, h_model, &feat_vecs, n_threads,
                                                                any_missing, out_predt, weights);
     };
@@ -546,6 +653,19 @@ class CPUPredictor : public Predictor {
     ThreadTmp<1> feat_vecs{n_threads};
 
     auto const h_model = HostModel{DeviceOrd::CPU(), model, false, 0, ntree_limit, CopyViews{}};
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      if (ntree_limit == 0) return;
+      auto prediction = MakeMetalPrediction(h_model, common::OptionalWeights{1.0f});
+      auto output = linalg::MakeTensorView(ctx_, preds, info.num_row_, ntree_limit);
+      LaunchPredict(ctx_, p_fmat, model, [&](auto &&policy) {
+        policy.ForEachBatch([&](auto &&batch) {
+          MetalPredictBatch(batch, prediction.get(), h_model, n_threads, output, true);
+        });
+      });
+      return;
+    }
+#endif
     LaunchPredict(this->ctx_, p_fmat, model, [&](auto &&policy) {
       policy.ForEachBatch([&](auto &&batch) {
         common::ParallelFor1d<1>(batch.Size(), n_threads, [&](auto &&block) {
@@ -579,6 +699,33 @@ class CPUPredictor : public Predictor {
       CHECK(p_tree);
       auto const h_leaf_ids = leaf_ids[tree_idx].ConstHostSpan();
       CHECK_EQ(h_leaf_ids.size(), out_preds.Shape(0));
+#if defined(XGBOOST_USE_METAL)
+      if (ctx_->IsMPS()) {
+        auto targets = out_preds.Shape(1);
+        std::vector<float> leaves(static_cast<std::size_t>(p_tree->Size()) * targets, 0.0f);
+        if (p_tree->IsMultiTarget()) {
+          auto view = p_tree->HostMtView();
+          CHECK_EQ(view.NumTargets(), targets);
+          for (bst_node_t n = 0; n < view.Size(); ++n)
+            if (view.IsLeaf(n)) {
+              auto weights = view.LeafValue(n);
+              for (std::size_t k = 0; k < targets; ++k) leaves[n * targets + k] = weights(k);
+            }
+        } else {
+          CHECK_EQ(targets, 1);
+          auto view = p_tree->HostScView();
+          for (bst_node_t n = 0; n < view.Size(); ++n)
+            if (!view.IsDeleted(n) && view.IsLeaf(n)) leaves[n] = view.LeafValue(n);
+        }
+        if (!h_leaf_ids.empty()) {
+          CHECK_EQ(out_preds.Stride(1), 1);
+          auto size = (h_leaf_ids.size() - 1) * out_preds.Stride(0) + targets;
+          common::metal::AddLeafValues(h_leaf_ids, leaves, targets, out_preds.Stride(0),
+                                       {&out_preds(0, 0), size});
+        }
+        continue;
+      }
+#endif
 
       if (!p_tree->IsMultiTarget()) {
         CHECK_EQ(out_preds.Shape(1), 1);

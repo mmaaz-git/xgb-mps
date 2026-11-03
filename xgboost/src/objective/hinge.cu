@@ -19,6 +19,10 @@
 #include "xgboost/linalg.h"              // for UnravelIndex
 #include "xgboost/span.h"                // for Span
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ops.h"
+#endif
+
 namespace xgboost::obj {
 #if defined(XGBOOST_USE_CUDA)
 DMLC_REGISTRY_FILE_TAG(hinge_obj_gpu);
@@ -47,6 +51,15 @@ class HingeObj : public FitIntercept {
 
     bst_target_t n_targets = this->Targets(info);
     out_gpair->Reshape(info.num_row_, n_targets);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::Gradients(common::metal::Objective::kHinge, preds.ConstHostSpan(),
+                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
+                               this->Targets(info), 0.0f, 1.0f, {}, out_gpair->Data()->HostSpan());
+      return;
+    }
+#endif
+
     auto gpair = out_gpair->View(ctx_->Device());
 
     preds.SetDevice(ctx_->Device());
@@ -78,6 +91,14 @@ class HingeObj : public FitIntercept {
   }
 
   void PredTransform(HostDeviceVector<float> *io_preds) const override {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::TransformPredictions(common::metal::Transform::kHinge, io_preds->HostSpan(),
+                                          1);
+      return;
+    }
+#endif
+
     common::Transform<>::Init(
         [] XGBOOST_DEVICE(std::size_t _idx, common::Span<float> _preds) {
           _preds[_idx] = _preds[_idx] > 0.0 ? 1.0 : 0.0;

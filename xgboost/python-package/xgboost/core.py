@@ -189,9 +189,15 @@ def _validate_feature_info(
 def metal_info() -> dict:
     """Experimental Metal availability and process-wide successful dispatch counters.
 
-    ``gpu_time_ns`` sums completed histogram command-buffer GPU durations, including
-    buffer clearing. It excludes CPU staging and does not measure full training time.
-    The schema is experimental and may change.
+    Counters cover completed histograms, gradient quantization, objectives,
+    transforms, prediction, leaf-cache updates, and supported metrics.
+    ``gpu_time_ns`` measures histogram commands including quantization and clearing.
+    ``objective_gpu_time_ns`` includes objective and transform kernels;
+    ``prediction_gpu_time_ns`` includes traversal and leaf-cache kernels.
+    ``metric_gpu_time_ns`` covers metric kernels. GPU durations exclude host work.
+    Histogram ``staging_time_ns``, ``wait_time_ns``, and ``readback_time_ns`` measure
+    host wall time; wait time overlaps GPU duration and must not be added to it.
+    Counters are process-wide and the experimental schema may change.
     """
     j_info = ctypes.c_char_p()
     _check_call(_LIB.XGBMetalInfo(ctypes.byref(j_info)))

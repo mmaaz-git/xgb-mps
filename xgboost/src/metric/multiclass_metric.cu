@@ -25,6 +25,10 @@
 #include "../common/device_helpers.cuh"
 #endif  // XGBOOST_USE_CUDA
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ops.h"
+#endif
+
 namespace xgboost::metric {
 // tag the this file, used by force static link later.
 DMLC_REGISTRY_FILE_TAG(multiclass_metric);
@@ -168,7 +172,18 @@ struct EvalMClassBase : public MetricNoCache {
       const size_t nclass = preds.Size() / info.labels.Size();
       CHECK_GE(nclass, 1U) << "mlogloss and merror are only used for multi-class classification,"
                            << " use logloss for binary classification";
-      auto result = reducer_.Reduce(this->ctx_, nclass, info.weights_, *info.labels.Data(), preds);
+      PackedReduceResult result;
+#if defined(XGBOOST_USE_METAL)
+      if (ctx_->IsMPS()) {
+        auto sums = common::metal::MetricSums(this->Name(), preds.ConstHostSpan(),
+                                              info.labels.Data()->ConstHostSpan(),
+                                              info.weights_.ConstHostSpan(), nclass);
+        result = PackedReduceResult{sums[0], sums[1]};
+      } else
+#endif
+      {
+        result = reducer_.Reduce(this->ctx_, nclass, info.weights_, *info.labels.Data(), preds);
+      }
       dat[0] = result.Residue();
       dat[1] = result.Weights();
     }

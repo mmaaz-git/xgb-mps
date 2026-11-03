@@ -30,6 +30,10 @@
 
 #include "multiclass_param.h"
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ops.h"
+#endif
+
 namespace xgboost::obj {
 #if defined(XGBOOST_USE_CUDA)
 DMLC_REGISTRY_FILE_TAG(multiclass_obj_gpu);
@@ -105,6 +109,15 @@ class SoftmaxMultiClassObj : public ObjFunction {
       CHECK_EQ(info.weights_.Size(), n_samples)
           << "Number of weights should be equal to number of data points.";
     }
+
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::Gradients(common::metal::Objective::kSoftmax, preds.ConstHostSpan(),
+                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
+                               n_classes, 0.0f, 1.0f, {}, out_gpair->Data()->HostSpan());
+      return;
+    }
+#endif
     info.weights_.SetDevice(device);
     auto weights = common::MakeOptionalWeights(this->ctx_->Device(), info.weights_);
 
@@ -152,6 +165,15 @@ class SoftmaxMultiClassObj : public ObjFunction {
     const int n_classes = param_.num_class;
     const auto n_samples = static_cast<int64_t>(io_preds->Size() / n_classes);
 
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::TransformPredictions(
+          prob ? common::metal::Transform::kSoftmax : common::metal::Transform::kArgmax,
+          io_preds->HostSpan(), n_classes);
+      if (!prob) io_preds->Resize(n_samples);
+      return;
+    }
+#endif
     auto device = io_preds->Device();
     if (prob) {
       common::Transform<>::Init(

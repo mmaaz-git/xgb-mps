@@ -171,6 +171,19 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["histogram_dispatches"] = Integer{static_cast<std::int64_t>(stats.histogram_dispatches)};
   info["rows_processed"] = Integer{static_cast<std::int64_t>(stats.rows_processed)};
   info["shared_histogram_dispatches"] = Integer{static_cast<std::int64_t>(stats.shared_histogram_dispatches)};
+  info["quantization_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.quantization_dispatches)};
+  info["staging_time_ns"] = Integer{static_cast<std::int64_t>(stats.staging_time_ns)};
+  info["wait_time_ns"] = Integer{static_cast<std::int64_t>(stats.wait_time_ns)};
+  info["readback_time_ns"] = Integer{static_cast<std::int64_t>(stats.readback_time_ns)};
+  info["objective_dispatches"] = Integer{static_cast<std::int64_t>(stats.objective_dispatches)};
+  info["transform_dispatches"] = Integer{static_cast<std::int64_t>(stats.transform_dispatches)};
+  info["objective_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.objective_gpu_time_ns)};
+  info["prediction_dispatches"] = Integer{static_cast<std::int64_t>(stats.prediction_dispatches)};
+  info["prediction_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.prediction_gpu_time_ns)};
+  info["leaf_update_dispatches"] = Integer{static_cast<std::int64_t>(stats.leaf_update_dispatches)};
+  info["metric_dispatches"] = Integer{static_cast<std::int64_t>(stats.metric_dispatches)};
+  info["metric_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.metric_gpu_time_ns)};
   info["gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.gpu_time_ns)};
 #else
   info["built"] = Boolean{false};
@@ -178,6 +191,18 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["histogram_dispatches"] = Integer{0};
   info["rows_processed"] = Integer{0};
   info["shared_histogram_dispatches"] = Integer{0};
+  info["quantization_dispatches"] = Integer{0};
+  info["staging_time_ns"] = Integer{0};
+  info["wait_time_ns"] = Integer{0};
+  info["readback_time_ns"] = Integer{0};
+  info["objective_dispatches"] = Integer{0};
+  info["transform_dispatches"] = Integer{0};
+  info["objective_gpu_time_ns"] = Integer{0};
+  info["prediction_dispatches"] = Integer{0};
+  info["prediction_gpu_time_ns"] = Integer{0};
+  info["leaf_update_dispatches"] = Integer{0};
+  info["metric_dispatches"] = Integer{0};
+  info["metric_gpu_time_ns"] = Integer{0};
   info["gpu_time_ns"] = Integer{0};
 #endif
   auto &out_str = GlobalConfigAPIThreadLocalStore::Get()->ret_str;

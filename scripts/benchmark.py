@@ -42,6 +42,7 @@ def main():
         y = (x[:, 0] * 2 - x[:, 1] + x[:, 2] ** 2 + rng.normal(scale=0.1, size=n)).astype(np.float32)
         timings = {"cpu": [], "mps": []}
         preds = {}
+        dispatch_statistics = {"cpu": [], "mps": []}
         for repeat in range(args.repeats):
             order = ["cpu", "mps"] if repeat % 2 == 0 else ["mps", "cpu"]
             for device in order:
@@ -51,6 +52,8 @@ def main():
                 model = xgb.train(p | {"device": device}, d, num_boost_round=args.rounds)
                 elapsed = time.perf_counter() - start
                 after = xgb.metal_info()
+                stats = {k: after[k] - before[k] for k in after if k not in {"built", "available"}}
+                dispatch_statistics[device].append(stats)
                 completed = after["histogram_dispatches"] - before["histogram_dispatches"]
                 gpu_seconds = (after.get("gpu_time_ns", 0) - before.get("gpu_time_ns", 0)) / 1e9
                 assert (completed > 0) == (device == "mps")
@@ -60,7 +63,8 @@ def main():
                 del d, model
         cpu = statistics.median(timings["cpu"])
         mps = statistics.median(timings["mps"])
-        case = dict(rows=n, seconds=timings, cpu_median=cpu, mps_median=mps,
+        np.testing.assert_allclose(preds["mps"], preds["cpu"], rtol=2e-5, atol=2e-5)
+        case = dict(rows=n, seconds=timings, dispatch_statistics=dispatch_statistics, cpu_median=cpu, mps_median=mps,
                     speedup=cpu/mps, max_prediction_difference=float(np.max(np.abs(preds["cpu"]-preds["mps"]))),
                     cpu_rmse=float(np.sqrt(np.mean((preds["cpu"]-y)**2))),
                     mps_rmse=float(np.sqrt(np.mean((preds["mps"]-y)**2))))
