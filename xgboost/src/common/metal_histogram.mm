@@ -19,6 +19,8 @@ namespace xgboost::common::metal {
 namespace {
 std::atomic<std::uint64_t> dispatches{0};
 std::atomic<std::uint64_t> processed_rows{0};
+std::atomic<std::uint64_t> shared_dispatches{0};
+std::atomic<std::uint64_t> gpu_time_ns{0};
 
 struct RowEntry {
   std::uint64_t row;
@@ -44,6 +46,7 @@ class Runtime {
  public:
   id<MTLDevice> device;
   id<MTLComputePipelineState> pipeline;
+  id<MTLComputePipelineState> shared_pipeline;
 
   Runtime() {
     @autoreleasepool {
@@ -60,6 +63,10 @@ class Runtime {
       CHECK(kernel) << "Missing Metal histogram kernel.";
       pipeline = [device newComputePipelineStateWithFunction:kernel error:&error];
       CHECK(pipeline) << "Metal pipeline creation failed: " << ErrorText(error);
+      auto shared_kernel = [library newFunctionWithName:@"xgb_histogram_dense_shared"];
+      CHECK(shared_kernel) << "Missing shared Metal histogram kernel.";
+      shared_pipeline = [device newComputePipelineStateWithFunction:shared_kernel error:&error];
+      CHECK(shared_pipeline) << "Metal shared pipeline creation failed: " << ErrorText(error);
       LOG(INFO) << "Metal histogram backend: " << device.name.UTF8String;
     }
   }
@@ -74,7 +81,7 @@ id<MTLBuffer> Allocate(Runtime const& rt, std::size_t bytes) {
   auto length = std::max<std::size_t>(bytes, 16);
   CHECK_LE(length, rt.device.maxBufferLength) << "Metal buffer exceeds the device limit.";
   id<MTLBuffer> buffer = [rt.device newBufferWithLength:length
-                                              options:MTLResourceStorageModeShared];
+                                                options:MTLResourceStorageModeShared];
   CHECK(buffer) << "Metal buffer allocation failed for " << length << " bytes.";
   return buffer;
 }
@@ -133,9 +140,9 @@ class MetalHistogram final : public Histogram {
     pages_.clear();
   }
 
-  void Build(std::size_t page_idx, GHistIndexMatrix const& gidx,
-             RowSetCollection const& rows, std::vector<bst_node_t> const& nodes,
-             Span<GradientPair const> gradients, std::vector<GHistRow> const& output) override {
+  void Build(std::size_t page_idx, GHistIndexMatrix const& gidx, RowSetCollection const& rows,
+             std::vector<bst_node_t> const& nodes, Span<GradientPair const> gradients,
+             std::vector<GHistRow> const& output) override {
     @autoreleasepool {
       CHECK_EQ(nodes.size(), output.size());
       CHECK_LE(nodes.size(), std::numeric_limits<std::uint32_t>::max());
@@ -146,10 +153,15 @@ class MetalHistogram final : public Histogram {
         page.index = Upload(rt_, gidx.index.data<std::uint8_t>(),
                             gidx.index.Size() * gidx.index.GetBinTypeSize());
         page.row_ptr = Upload(rt_, gidx.row_ptr.data(), gidx.row_ptr.size() * sizeof(std::size_t));
-        page.offsets = Upload(rt_, gidx.index.Offset(),
-                              gidx.index.OffsetSize() * sizeof(std::uint32_t));
+        page.offsets =
+            Upload(rt_, gidx.cut.Ptrs().data(), gidx.cut.Ptrs().size() * sizeof(std::uint32_t));
       }
       std::vector<RowEntry> work;
+      std::vector<std::uint64_t> node_ptr{0};
+      std::size_t max_node_rows = 0;
+      std::size_t total_rows = 0;
+      for (auto node : nodes) total_rows += rows[node].Size();
+      work.reserve(total_rows);
       for (std::size_t node = 0; node < nodes.size(); ++node) {
         for (auto row : rows[nodes[node]]) {
           CHECK_GE(row, gidx.base_rowid);
@@ -157,6 +169,8 @@ class MetalHistogram final : public Histogram {
           CHECK_LT(row, gradients.size());
           work.push_back({row, static_cast<std::uint32_t>(node), 0});
         }
+        max_node_rows = std::max<std::size_t>(max_node_rows, work.size() - node_ptr.back());
+        node_ptr.push_back(work.size());
       }
       CHECK_LE(work.size(), std::numeric_limits<std::uint32_t>::max());
       auto bins = static_cast<std::size_t>(gidx.cut.TotalBins());
@@ -166,7 +180,9 @@ class MetalHistogram final : public Histogram {
       auto bytes = nodes.size() * bins * sizeof(QuantizedPair);
       auto histogram = Allocate(rt_, bytes);
       auto row_buffer = Upload(rt_, work.data(), work.size() * sizeof(RowEntry));
-      Params params{work.size(), gidx.base_rowid, static_cast<std::uint32_t>(bins),
+      Params params{work.size(),
+                    gidx.base_rowid,
+                    static_cast<std::uint32_t>(bins),
                     static_cast<std::uint32_t>(gidx.cut.Ptrs().size() - 1),
                     static_cast<std::uint32_t>(gidx.index.GetBinTypeSize()),
                     static_cast<std::uint32_t>(gidx.IsDense())};
@@ -178,7 +194,16 @@ class MetalHistogram final : public Histogram {
       [clear endEncoding];
       id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
       CHECK(encoder) << "Metal compute encoder allocation failed.";
-      [encoder setComputePipelineState:rt_.pipeline];
+      std::size_t max_feature_bins = 0;
+      auto const& cuts = gidx.cut.Ptrs();
+      for (std::size_t f = 1; f < cuts.size(); ++f)
+        max_feature_bins = std::max<std::size_t>(max_feature_bins, cuts[f] - cuts[f - 1]);
+      auto shared_bytes = max_feature_bins * sizeof(QuantizedPair);
+      bool use_shared = gidx.IsDense() && work.size() >= 16384 &&
+                        shared_bytes <= rt_.device.maxThreadgroupMemoryLength &&
+                        params.n_features <= 65535 && nodes.size() <= 65535;
+      auto pipeline = use_shared ? rt_.shared_pipeline : rt_.pipeline;
+      [encoder setComputePipelineState:pipeline];
       [encoder setBuffer:page.index offset:0 atIndex:0];
       [encoder setBuffer:page.row_ptr offset:0 atIndex:1];
       [encoder setBuffer:page.offsets offset:0 atIndex:2];
@@ -186,9 +211,18 @@ class MetalHistogram final : public Histogram {
       [encoder setBuffer:row_buffer offset:0 atIndex:4];
       [encoder setBuffer:histogram offset:0 atIndex:5];
       [encoder setBytes:&params length:sizeof(params) atIndex:6];
-      auto threads = std::min<NSUInteger>(256, rt_.pipeline.maxTotalThreadsPerThreadgroup);
-      [encoder dispatchThreads:MTLSizeMake(work.size(), 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+      auto threads = std::min<NSUInteger>(256, pipeline.maxTotalThreadsPerThreadgroup);
+      if (use_shared) {
+        auto node_buffer = Upload(rt_, node_ptr.data(), node_ptr.size() * sizeof(std::uint64_t));
+        [encoder setBuffer:node_buffer offset:0 atIndex:7];
+        [encoder setThreadgroupMemoryLength:shared_bytes atIndex:0];
+        auto groups = (max_node_rows + threads * 8 - 1) / (threads * 8);
+        [encoder dispatchThreadgroups:MTLSizeMake(groups, params.n_features, nodes.size())
+                threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+      } else {
+        [encoder dispatchThreads:MTLSizeMake(work.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+      }
       [encoder endEncoding];
       [command commit];
       [command waitUntilCompleted];
@@ -198,12 +232,16 @@ class MetalHistogram final : public Histogram {
       for (std::size_t node = 0; node < nodes.size(); ++node) {
         for (std::size_t bin = 0; bin < bins; ++bin) {
           auto const& v = values[node * bins + bin];
-          output[node][bin] += GradientPairPrecise{v.grad * inverse_scale_[0],
-                                                  v.hess * inverse_scale_[1]};
+          output[node][bin] +=
+              GradientPairPrecise{v.grad * inverse_scale_[0], v.hess * inverse_scale_[1]};
         }
       }
       dispatches.fetch_add(1, std::memory_order_relaxed);
       processed_rows.fetch_add(work.size(), std::memory_order_relaxed);
+      if (use_shared) shared_dispatches.fetch_add(1, std::memory_order_relaxed);
+      auto elapsed = command.GPUEndTime - command.GPUStartTime;
+      if (elapsed > 0)
+        gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9), std::memory_order_relaxed);
     }
   }
 };
@@ -216,6 +254,9 @@ bool IsAvailable() {
   }
 }
 Statistics GetStatistics() {
-  return {dispatches.load(std::memory_order_relaxed), processed_rows.load(std::memory_order_relaxed)};
+  return {dispatches.load(std::memory_order_relaxed),
+          processed_rows.load(std::memory_order_relaxed),
+          shared_dispatches.load(std::memory_order_relaxed),
+          gpu_time_ns.load(std::memory_order_relaxed)};
 }
 }  // namespace xgboost::common::metal

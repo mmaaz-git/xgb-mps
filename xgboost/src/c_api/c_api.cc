@@ -51,6 +51,10 @@
 #include "xgboost/version_config.h"      // for XGBOOST_VER_MAJOR, XGBOOST_VER_MINOR, XGBOOS...
 #include "xgboost/windefs.h"             // for xgboost_IS_WIN
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_histogram.h"
+#endif
+
 using namespace xgboost;  // NOLINT(*);
 
 namespace {
@@ -74,10 +78,6 @@ XGB_DLL void XGBoostVersion(int *major, int *minor, int *patch) {
 
 static_assert(DMLC_CXX11_THREAD_LOCAL, "XGBoost depends on thread-local storage.");
 using GlobalConfigAPIThreadLocalStore = dmlc::ThreadLocalStore<XGBAPIThreadLocalEntry>;
-
-#if defined(XGBOOST_USE_METAL)
-#include "../common/metal_histogram.h"
-#endif
 
 #if !defined(XGBOOST_USE_CUDA)
 namespace xgboost {
@@ -170,11 +170,15 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   auto stats = xgboost::common::metal::GetStatistics();
   info["histogram_dispatches"] = Integer{static_cast<std::int64_t>(stats.histogram_dispatches)};
   info["rows_processed"] = Integer{static_cast<std::int64_t>(stats.rows_processed)};
+  info["shared_histogram_dispatches"] = Integer{static_cast<std::int64_t>(stats.shared_histogram_dispatches)};
+  info["gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.gpu_time_ns)};
 #else
   info["built"] = Boolean{false};
   info["available"] = Boolean{false};
   info["histogram_dispatches"] = Integer{0};
   info["rows_processed"] = Integer{0};
+  info["shared_histogram_dispatches"] = Integer{0};
+  info["gpu_time_ns"] = Integer{0};
 #endif
   auto &out_str = GlobalConfigAPIThreadLocalStore::Get()->ret_str;
   Json::Dump(info, &out_str);

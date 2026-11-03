@@ -4,6 +4,7 @@ CPU execution never satisfies a GPU test: every nonempty training job must
 increase the counter of completed Metal histogram dispatches.
 """
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -159,3 +160,124 @@ def test_continuation_and_device_switch(metal):
     cpu = xgb.train({**p, "device": "cpu"}, d, num_boost_round=1, xgb_model=continued)
     assert cpu.num_boosted_rounds() == 7
     assert xgb.metal_info()["histogram_dispatches"] == before
+
+
+@pytest.mark.gpu
+def test_shared_histogram_training(metal):
+    rng = np.random.default_rng(3)
+    x = rng.normal(size=(32769, 9)).astype(np.float32)
+    y = 3 * x[:, 0] + x[:, 1] ** 2 - x[:, 2]
+    d = xgb.DMatrix(x, label=y)
+    before = xgb.metal_info()["shared_histogram_dispatches"]
+    p = parameters(max_bin=256)
+    gpu = train_metal(d, p, rounds=4)
+    cpu = xgb.train(p, d, num_boost_round=4)
+    assert xgb.metal_info()["shared_histogram_dispatches"] > before
+    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("strategy", ["one_output_per_tree", "multi_output_tree"])
+def test_multiple_targets(metal, strategy):
+    x, y, _ = dataset()
+    y = np.column_stack([y, y * 2 + x[:, 3]])
+    d = xgb.DMatrix(x, label=y)
+    p = parameters(multi_strategy=strategy)
+    cpu = xgb.train(p, d, num_boost_round=5)
+    gpu = train_metal(d, p, rounds=5)
+    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.gpu
+def test_external_memory_pages(metal, tmp_path):
+    x, y, _ = dataset(layout="missing")
+
+    class Batches(xgb.DataIter):
+        def __init__(self):
+            self.page = 0
+            super().__init__(cache_prefix=str(tmp_path / "batches"))
+
+        def reset(self):
+            self.page = 0
+
+        def next(self, input_data):
+            if self.page == 4:
+                return False
+            start = self.page * 256
+            input_data(data=x[start:start+256], label=y[start:start+256])
+            self.page += 1
+            return True
+
+    d = xgb.ExtMemQuantileDMatrix(Batches(), max_bin=64)
+    p = parameters()
+    cpu = xgb.train(p, d, num_boost_round=4)
+    gpu = train_metal(d, p, rounds=4)
+    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("scale", [1e-12, 1e-6, 1e6, 1e12])
+def test_custom_gradient_scales(metal, scale):
+    x, y, _ = dataset()
+    d = xgb.DMatrix(x, label=y)
+    p = parameters(base_score=0, reg_lambda=0, min_child_weight=0)
+
+    def objective(prediction, data):
+        g = (prediction - data.get_label()) * scale
+        h = np.full(prediction.shape, scale, dtype=np.float32)
+        return g, h
+
+    cpu = xgb.train(p, d, num_boost_round=3, obj=objective)
+    gpu = train_metal(d, p, rounds=3, obj=objective)
+    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("shape", [(1, 1), (3, 7), (17, 1), (513, 24)])
+def test_small_and_uneven_shapes(metal, shape):
+    rng = np.random.default_rng(95)
+    x = rng.integers(0, 8, size=shape).astype(np.float32)
+    if shape[1] > 1:
+        x[:, -1] = np.nan
+    y = rng.normal(size=shape[0]).astype(np.float32)
+    d = xgb.DMatrix(x, label=y)
+    p = parameters(base_score=0)
+    cpu = xgb.train(p, d, num_boost_round=3)
+    gpu = train_metal(d, p, rounds=3)
+    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.gpu
+def test_sklearn_and_held_out_predictions(metal):
+    x, y, w = dataset()
+    before = xgb.metal_info()["histogram_dispatches"]
+    params = dict(n_estimators=8, max_depth=3, max_bin=64, n_jobs=2, tree_method="hist")
+    cpu = xgb.XGBRegressor(**params, device="cpu").fit(x[:800], y[:800], sample_weight=w[:800])
+    gpu = xgb.XGBRegressor(**params, device="mps").fit(x[:800], y[:800], sample_weight=w[:800])
+    assert xgb.metal_info()["histogram_dispatches"] > before
+    np.testing.assert_allclose(gpu.predict(x[800:]), cpu.predict(x[800:]), rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.gpu
+def test_ranking(metal):
+    x, y, _ = dataset()
+    d = xgb.DMatrix(x, label=np.digitize(y, np.quantile(y, [0.25, 0.5, 0.75])))
+    d.set_group([16] * 64)
+    p = parameters(objective="rank:pairwise")
+    cpu = xgb.train(p, d, num_boost_round=4)
+    gpu = train_metal(d, p, rounds=4)
+    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.gpu
+def test_concurrent_independent_models(metal):
+    def fit(seed):
+        x, y, w = dataset(seed)
+        d = xgb.DMatrix(x, label=y, weight=w)
+        p = parameters()
+        cpu = xgb.train(p, d, num_boost_round=4)
+        gpu = train_metal(d, p, rounds=4)
+        np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(fit, [7, 9, 11, 13]))

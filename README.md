@@ -16,8 +16,10 @@ This is a working **hybrid backend**, not full CUDA feature parity.
 - [x] Verify completed GPU dispatches; CPU fallback cannot satisfy a GPU test.
 - [x] Test histogram kernels against an independent integer CPU reference.
 - [x] Measure end-to-end performance against multithreaded CPU XGBoost.
-- [ ] Optimize GPU histograms and reduce staging overhead.
-- [ ] Expand edge-case, multi-target, external-memory, and objective coverage.
+- [x] Add a shared-memory histogram kernel for large dense inputs.
+- [ ] Reduce CPU staging and synchronization overhead.
+- [x] Test multi-target trees, external-memory pages, ranking, and extreme gradient scales.
+- [ ] Expand randomized testing and validation across Apple GPU generations.
 - [ ] Accelerate additional training and prediction stages.
 
 **Current result:** correctness checks pass; the first implementation is slower
@@ -51,26 +53,29 @@ than silently falling back. Prediction and metrics currently run on the CPU.
 ## Validation
 
 ```sh
-.venv/bin/python -m pytest -q --require-metal
-clang++ -std=c++17 -fobjc-arc tests/metal_kernel.mm \
-  -framework Metal -framework Foundation -o results/metal_kernel_test
-results/metal_kernel_test xgboost/src/common/metal_histogram.metal
+bash scripts/test.sh
 ```
 
 On Apple M3, 2026-11-03:
 
-- Python: **35 passed, 1 skipped**. All 29 GPU tests executed and passed. The
+- Python: **50 passed, 1 skipped**. All 44 GPU tests executed and passed. The
   skipped test specifically requires a machine without an accessible GPU.
-- Native shader: **16 cases passed**, comparing every histogram bin exactly
+- Native shader: **28 cases passed**, comparing every histogram bin exactly
   against an independent CPU integer sum. Covers dense/sparse indices, 8/16/32-bit
-  storage, nonzero page offsets, high contention, negative sums, and carries.
+  storage, nonzero page offsets, high contention, negative sums, and carries,
+  for both global and shared-memory kernels.
 - Training comparisons cover regression, binary/multiclass classification,
   missing values, CSR input, weights, categorical splits, quantile matrices,
-  sampling, constraints, cache eviction, continuation, and model interchange.
+  sampling, constraints, cache eviction, continuation, model interchange,
+  multi-target trees, external memory, ranking, custom gradient scales, held-out
+  sklearn predictions, and concurrent independent models.
 - Numerical tolerances are explicit in the tests; general bitwise CPU/GPU
   equivalence is not promised.
+- Selected upstream configuration, model, and serialization tests: **32 passed,
+  1 skipped**. A separate `USE_METAL=OFF` build also compiles; its API reports
+  Metal unavailable and rejects `device="mps"` with a clear build-option error.
 
-## First performance baseline
+## Performance measurements
 
 Apple M3, 8 CPU threads, 32 dense features, depth 6, 20 boosting rounds, 256 bins.
 Median of three runs; fresh DMatrix per run; includes matrix construction,
@@ -79,11 +84,14 @@ generation is excluded. CPU and Metal predictions were identical in these runs.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 10,000 | 0.086 s | 0.195 s | 0.44x |
-| 100,000 | 0.227 s | 0.510 s | 0.44x |
-| 1,000,000 | 1.306 s | 2.459 s | 0.53x |
+| 10,000 | 0.048 s | 0.122 s | 0.39x |
+| 100,000 | 0.145 s | 0.255 s | 0.57x |
+| 1,000,000 | 1.457 s | 2.518 s | 0.58x |
 
-[Raw measurements](validation/benchmark-v1-m3.json). Reproduce with:
+[Current raw measurements](validation/benchmark-v2-m3.json), and the
+[first baseline](validation/benchmark-v1-m3.json). These are short local runs
+with substantial timing variability; they do not establish a speedup from the
+shared-memory optimization. Reproduce with:
 
 ```sh
 .venv/bin/python scripts/benchmark.py --output results/my-benchmark.json
@@ -101,7 +109,10 @@ Imported XGBoost 3.4.2, implemented the first Metal histogram backend, and added
 execution counters and equivalence tests. Initial sandbox restrictions prevented
 GPU access; after permissions were refreshed, the full GPU suite and native
 shader tests passed. Recorded the first performance baseline above. The public
-repository is maintained through normal Git commits.
+repository is maintained through normal Git commits. Added a shared-memory
+histogram path, GPU command-duration counters, and broader correctness tests.
+CPU/GPU predictions were identical in both benchmark runs, but Metal training
+remains slower overall.
 
 ## Source and license
 

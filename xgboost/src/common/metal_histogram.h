@@ -20,6 +20,8 @@ namespace common::metal {
 struct Statistics {
   std::uint64_t histogram_dispatches;
   std::uint64_t rows_processed;
+  std::uint64_t shared_histogram_dispatches;
+  std::uint64_t gpu_time_ns;
 };
 
 class Histogram {
@@ -29,8 +31,7 @@ class Histogram {
   virtual void Reset() = 0;
   virtual void Build(std::size_t page_idx, GHistIndexMatrix const& gidx,
                      RowSetCollection const& rows, std::vector<bst_node_t> const& nodes,
-                     Span<GradientPair const> gradients,
-                     std::vector<GHistRow> const& output) = 0;
+                     Span<GradientPair const> gradients, std::vector<GHistRow> const& output) = 0;
 };
 
 std::unique_ptr<Histogram> MakeHistogram();
@@ -39,4 +40,3 @@ Statistics GetStatistics();
 
 }  // namespace common::metal
 }  // namespace xgboost
-

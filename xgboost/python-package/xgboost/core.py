@@ -187,7 +187,12 @@ def _validate_feature_info(
 
 
 def metal_info() -> dict:
-    """Experimental Metal availability and process-wide successful dispatch counters."""
+    """Experimental Metal availability and process-wide successful dispatch counters.
+
+    ``gpu_time_ns`` sums completed histogram command-buffer GPU durations, including
+    buffer clearing. It excludes CPU staging and does not measure full training time.
+    The schema is experimental and may change.
+    """
     j_info = ctypes.c_char_p()
     _check_call(_LIB.XGBMetalInfo(ctypes.byref(j_info)))
     assert j_info.value is not None

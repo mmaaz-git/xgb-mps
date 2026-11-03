@@ -45,16 +45,18 @@ def main():
         for repeat in range(args.repeats):
             order = ["cpu", "mps"] if repeat % 2 == 0 else ["mps", "cpu"]
             for device in order:
-                before = xgb.metal_info()["histogram_dispatches"]
+                before = xgb.metal_info()
                 start = time.perf_counter()
                 d = xgb.DMatrix(x, label=y, nthread=args.threads)
                 model = xgb.train(p | {"device": device}, d, num_boost_round=args.rounds)
                 elapsed = time.perf_counter() - start
-                completed = xgb.metal_info()["histogram_dispatches"] - before
+                after = xgb.metal_info()
+                completed = after["histogram_dispatches"] - before["histogram_dispatches"]
+                gpu_seconds = (after.get("gpu_time_ns", 0) - before.get("gpu_time_ns", 0)) / 1e9
                 assert (completed > 0) == (device == "mps")
                 timings[device].append(elapsed)
                 preds[device] = model.predict(d)
-                print(f"  {device} repeat {repeat+1}/{args.repeats}: {elapsed:.3f}s, {completed} GPU dispatches", flush=True)
+                print(f"  {device} repeat {repeat+1}/{args.repeats}: {elapsed:.3f}s, {completed} GPU dispatches, {gpu_seconds:.3f}s GPU time", flush=True)
                 del d, model
         cpu = statistics.median(timings["cpu"])
         mps = statistics.median(timings["mps"])
