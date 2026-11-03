@@ -96,3 +96,27 @@ def test_row_workspace_resize_and_reuse(metal, layout, targets):
     assert reuses > allocations
     np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
                                rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.parametrize("targets", [1, 3])
+def test_leaf_cache_with_subnormal_hessians(metal, targets):
+    # A tiny nonzero Hessian is still a valid row. Check the cached training
+    # margins; a fresh tree traversal can hide skipped leaf-cache updates.
+    x = np.arange(257*3, dtype=np.float32).reshape(257, 3)
+    d = xgb.DMatrix(x, label=np.zeros((257, targets)), nthread=2)
+    params = dict(base_score=.2, nthread=2, max_depth=1, min_split_loss=1e30,
+                  min_child_weight=0, max_delta_step=1, multi_strategy="multi_output_tree")
+    margins = {}
+    for device in ["cpu", "mps"]:
+        seen = []
+        def objective(predictions, data):
+            seen.append(predictions.copy())
+            gradient = -np.ones(predictions.shape, dtype=np.float32)
+            hessian = np.full(predictions.shape, np.nextafter(np.float32(0), np.float32(1)), dtype=np.float32)
+            hessian[1::3] = np.float32(1e-40)
+            gradient[::7] = 0
+            hessian[::7] = 0
+            return gradient, hessian
+        xgb.train(params | {"device": device}, d, 4, obj=objective)
+        margins[device] = seen
+    np.testing.assert_array_equal(margins["mps"], margins["cpu"])

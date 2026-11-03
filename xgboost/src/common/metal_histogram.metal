@@ -745,7 +745,7 @@ struct LeafPositionParams {
 };
 kernel void xgb_leaf_positions(device const ulong* rows [[buffer(0)]],
                                device const LeafRange* leaves [[buffer(1)]],
-                               device const float2* gradients [[buffer(2)]],
+                               device const uint2* gradients [[buffer(2)]],
                                device int* positions [[buffer(3)]],
                                constant LeafPositionParams& p [[buffer(4)]],
                                uint tid [[thread_position_in_grid]]) {
@@ -761,7 +761,9 @@ kernel void xgb_leaf_positions(device const ulong* rows [[buffer(0)]],
   ulong row = rows[tid];
   bool invalid = true;
   for (uint t = 0; t < p.targets; ++t)
-    invalid = invalid && gradients[row * p.stride0 + t * p.stride1].y == 0.0f;
+    // Metal float comparisons can flush a nonzero subnormal Hessian to zero.
+    // Only the two signed-zero encodings denote a sampled-out row.
+    invalid = invalid && (gradients[row * p.stride0 + t * p.stride1].y & 0x7fffffffu) == 0;
   int node = leaves[lo].node;
   positions[row - p.base] = invalid ? ~node : node;
 }

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 #include "../xgboost/src/common/metal_histogram.h"
@@ -128,7 +129,11 @@ int main() {
                 linalg::MatrixView<GradientPair> view{gradients, shape, DeviceOrd::CPU(), order};
                 for (size_t r = 0; r < total; ++r)
                   for (size_t t = 0; t < targets; ++t)
-                    view(r, t) = GradientPair{float(r % 19), float(r % 5 && t + 1 == targets)};
+                    view(r, t) = GradientPair{
+                        float(r % 19),
+                        r % 5 && t + 1 == targets
+                            ? (r % 7 == 0 ? std::numeric_limits<float>::denorm_min() : 1.0f)
+                            : 0.0f};
                 size_t bytes = gradients.size() * sizeof(GradientPair);
                 size_t mapped_bytes = (bytes + page - 1) / page * page;
                 void* mapping = nullptr;
