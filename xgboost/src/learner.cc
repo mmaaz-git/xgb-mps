@@ -538,6 +538,11 @@ class LearnerConfiguration : public Intercept {
     auto initialized = ctx_.GetInitialised();
     auto old_seed = ctx_.seed;
     ctx_.UpdateAllowUnknown(args);
+    if (ctx_.IsMPS()) {
+      CHECK(tparam_.booster == "gbtree" || tparam_.booster == "dart")
+          << "device=mps supports only tree boosters.";
+      CHECK(!collective::IsDistributed()) << "Distributed Metal training is not supported yet.";
+    }
 
     ConsoleLogger::Configure(args);
 

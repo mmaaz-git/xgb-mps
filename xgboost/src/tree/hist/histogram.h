@@ -27,6 +27,10 @@
 #include "xgboost/span.h"                  // for Span
 #include "xgboost/tree_model.h"            // for RegTree
 
+#if defined(XGBOOST_USE_METAL)
+#include "../../common/metal_histogram.h"
+#endif
+
 namespace xgboost::tree {
 /**
  * @brief Decide which node as the build node for multi-target trees.
@@ -50,6 +54,9 @@ class HistogramBuilder {
   std::int32_t n_threads_{-1};
   // Whether XGBoost is running in distributed environment.
   bool is_distributed_{false};
+#if defined(XGBOOST_USE_METAL)
+  std::unique_ptr<common::metal::Histogram> metal_;
+#endif
 
  public:
   /**
@@ -66,6 +73,15 @@ class HistogramBuilder {
     hist_.Reset(total_bins, param->MaxCachedHistNodes(ctx->Device()));
     buffer_.Init(total_bins);
     is_distributed_ = is_distributed;
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) {
+      CHECK(!is_distributed) << "Distributed Metal training is not supported yet.";
+      if (!metal_) metal_ = common::metal::MakeHistogram();
+      metal_->Reset();
+    } else {
+      metal_.reset();
+    }
+#endif
   }
 
   template <bool any_missing>
@@ -152,6 +168,20 @@ class HistogramBuilder {
     monitor_.Start(__func__);
     CHECK(gpair.Contiguous());
 
+#if defined(XGBOOST_USE_METAL)
+    if (metal_) {
+      std::vector<common::GHistRow> output;
+      for (auto node : nodes_to_build) {
+        auto hist = hist_[node];
+        if (page_idx == 0) std::fill(hist.begin(), hist.end(), GradientPairPrecise{});
+        output.push_back(hist);
+      }
+      metal_->Build(page_idx, gidx, row_set_collection, nodes_to_build, gpair.Values(), output);
+      monitor_.Stop(__func__);
+      return;
+    }
+#endif
+
     if (page_idx == 0) {
       // Add the local histogram cache to the parallel buffer before processing the first page.
       auto n_nodes = nodes_to_build.size();
@@ -180,6 +210,9 @@ class HistogramBuilder {
     auto n_total_bins = buffer_.TotalBins();
     common::BlockedSpace2d space(
         nodes_to_build.size(), [&](std::size_t) { return n_total_bins; }, 1024);
+#if defined(XGBOOST_USE_METAL)
+    if (!metal_)
+#endif
     common::ParallelFor2d(space, this->n_threads_, [&](size_t node, common::Range1d r) {
       // Merging histograms from each thread.
       this->buffer_.ReduceHist(node, r.begin(), r.end());

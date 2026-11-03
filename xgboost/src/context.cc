@@ -109,8 +109,18 @@ DeviceOrd CUDAOrdinal(DeviceOrd device, bool) {
   if (input == DeviceSym::CPU()) {
     return DeviceOrd::CPU();
   }
+  if (input == "mps") {
+#if defined(XGBOOST_USE_METAL)
+    // The hybrid backend manages its Metal buffers separately; existing
+    // objectives, metrics and predictors continue using host storage.
+    return DeviceOrd::CPU();
+#else
+    LOG(FATAL) << "device=mps requires XGBoost built with USE_METAL=ON.";
+#endif
+  }
   StringView msg{R"(Invalid argument for `device`. Expected to be one of the following:
 - cpu
+- mps  # experimental Apple Metal histogram backend
 - cuda
 - cuda:<device ordinal>  # e.g. cuda:0
 - gpu
@@ -261,7 +271,11 @@ void Context::SetDeviceOrdinal(Args const& kwargs) {
   if (!has_device) {
     CHECK_EQ(new_d.ordinal, this->device_.ordinal);  // unchanged
   }
-  this->SetDevice(new_d);
+  if (this->device == "mps") {
+    this->device_ = new_d;
+  } else {
+    this->SetDevice(new_d);
+  }
 
   if (this->IsCPU()) {
     CHECK_EQ(this->device_.ordinal, DeviceOrd::CPUOrdinal());

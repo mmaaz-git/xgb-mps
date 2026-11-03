@@ -76,6 +76,11 @@ XGB_DLL void XGBoostVersion(int *major, int *minor, int *patch);
  */
 XGB_DLL int XGBuildInfo(char const **out);
 
+/** Experimental Metal device availability and successful kernel dispatch counters.
+ * The returned JSON string is owned by XGBoost and valid until the next API call.
+ */
+XGB_DLL int XGBMetalInfo(char const **out);
+
 /**
  * @brief Get the string message of the last error.
  *

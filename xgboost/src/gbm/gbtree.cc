@@ -43,6 +43,10 @@ DMLC_REGISTRY_FILE_TAG(gbtree);
 namespace {
 /** @brief Map the `tree_method` parameter to the `updater` parameter. */
 std::string MapTreeMethodToUpdaters(Context const* ctx, TreeMethod tree_method) {
+  if (ctx->IsMPS()) {
+    CHECK(tree_method == TreeMethod::kHist || tree_method == TreeMethod::kAuto)
+        << "device=mps currently supports only tree_method=hist.";
+  }
   // Choose updaters according to tree_method parameters
   if (ctx->IsCUDA()) {
     common::AssertGPUSupport();
@@ -122,6 +126,7 @@ void GBTree::Configure(Args const& cfg) {
   specified_updater_ =
       std::any_of(cfg.cbegin(), cfg.cend(), [](auto const& arg) { return arg.first == "updater"; });
   if (specified_updater_) {
+    CHECK(!ctx_->IsMPS()) << "Explicit updater selection is not supported with device=mps.";
     error::WarnManualUpdater();
   }
   LOG(DEBUG) << "Using tree method: " << static_cast<int>(tparam_.tree_method);

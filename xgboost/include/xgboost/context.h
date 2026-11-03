@@ -181,6 +181,11 @@ struct Context : public XGBoostParameter<Context> {
    */
   [[nodiscard]] bool IsCPU() const { return Device().IsCPU(); }
   /**
+   * @brief Select the hybrid Metal histogram backend. Device() describes storage;
+   *        the first Metal backend retains host storage for non-histogram stages.
+   */
+  [[nodiscard]] bool IsMPS() const { return device == "mps"; }
+  /**
    * @brief Is XGBoost running on a CUDA device?
    */
   [[nodiscard]] bool IsCUDA() const { return Device().IsCUDA(); }
@@ -219,7 +224,7 @@ struct Context : public XGBoostParameter<Context> {
   /**
    * @brief Name of the current device.
    */
-  [[nodiscard]] std::string DeviceName() const { return Device().Name(); }
+  [[nodiscard]] std::string DeviceName() const { return IsMPS() ? "mps" : Device().Name(); }
   /**
    * @brief Get a CUDA device context for allocator and stream.
    */

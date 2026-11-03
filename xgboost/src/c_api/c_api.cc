@@ -75,6 +75,10 @@ XGB_DLL void XGBoostVersion(int *major, int *minor, int *patch) {
 static_assert(DMLC_CXX11_THREAD_LOCAL, "XGBoost depends on thread-local storage.");
 using GlobalConfigAPIThreadLocalStore = dmlc::ThreadLocalStore<XGBAPIThreadLocalEntry>;
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_histogram.h"
+#endif
+
 #if !defined(XGBOOST_USE_CUDA)
 namespace xgboost {
 void XGBBuildInfoDevice(Json *p_info) {
@@ -143,11 +147,38 @@ XGB_DLL int XGBuildInfo(char const **out) {
 #endif
 
   XGBBuildInfoDevice(&info);
+#if defined(XGBOOST_USE_METAL)
+  info["USE_METAL"] = Boolean{true};
+#else
+  info["USE_METAL"] = Boolean{false};
+#endif
 
   auto &out_str = GlobalConfigAPIThreadLocalStore::Get()->ret_str;
   Json::Dump(info, &out_str);
   *out = out_str.c_str();
 
+  API_END();
+}
+
+XGB_DLL int XGBMetalInfo(char const **out) {
+  API_BEGIN_UNGUARD()
+  xgboost_CHECK_C_ARG_PTR(out);
+  Json info{Object{}};
+#if defined(XGBOOST_USE_METAL)
+  info["built"] = Boolean{true};
+  info["available"] = Boolean{xgboost::common::metal::IsAvailable()};
+  auto stats = xgboost::common::metal::GetStatistics();
+  info["histogram_dispatches"] = Integer{static_cast<std::int64_t>(stats.histogram_dispatches)};
+  info["rows_processed"] = Integer{static_cast<std::int64_t>(stats.rows_processed)};
+#else
+  info["built"] = Boolean{false};
+  info["available"] = Boolean{false};
+  info["histogram_dispatches"] = Integer{0};
+  info["rows_processed"] = Integer{0};
+#endif
+  auto &out_str = GlobalConfigAPIThreadLocalStore::Get()->ret_str;
+  Json::Dump(info, &out_str);
+  *out = out_str.c_str();
   API_END();
 }
 

@@ -16,6 +16,7 @@ from .core import (
     ExtMemQuantileDMatrix,
     QuantileDMatrix,
     build_info,
+    metal_info,
 )
 from .tracker import RabitTracker  # noqa
 from .training import cv, train
@@ -50,6 +51,7 @@ __all__ = [
     # utilities
     "RabitTracker",
     "build_info",
+    "metal_info",
     "plot_importance",
     "plot_tree",
     "to_graphviz",

@@ -1,0 +1,14 @@
+.venv/
+.cache/
+.pytest_cache/
+.hypothesis/
+__pycache__/
+*.pyc
+results/
+build*/
+*.air
+*.metallib
+*.dylib
+*.a
+.DS_Store
+

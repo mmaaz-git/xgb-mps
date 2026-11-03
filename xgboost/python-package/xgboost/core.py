@@ -186,6 +186,14 @@ def _validate_feature_info(
     return feature_info
 
 
+def metal_info() -> dict:
+    """Experimental Metal availability and process-wide successful dispatch counters."""
+    j_info = ctypes.c_char_p()
+    _check_call(_LIB.XGBMetalInfo(ctypes.byref(j_info)))
+    assert j_info.value is not None
+    return json.loads(j_info.value.decode("utf-8"))
+
+
 def build_info() -> dict:
     """Build information of XGBoost.  The returned value format is not stable. Also,
     please note that build time dependency is not the same as runtime dependency. For
