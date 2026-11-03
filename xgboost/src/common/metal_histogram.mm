@@ -55,9 +55,9 @@ std::uint64_t Elapsed(Clock::time_point start) {
 
 struct Params {
   std::uint64_t n_rows, base_rowid, page_rows;
-  std::uint32_t n_bins, n_features, bin_bytes, dense, n_nodes, padding;
+  std::uint32_t n_bins, n_features, bin_bytes, dense, n_nodes, padding, rows_per_lane;
 };
-static_assert(sizeof(Params) == 48);
+static_assert(sizeof(Params) == 56);
 struct QuantizedPair {
   std::int64_t grad, hess;
 };
@@ -586,8 +586,10 @@ class MetalHistogram final : public Histogram {
       auto staging_start = Clock::now();
       auto page = GetPage(rt_, gidx);
       std::vector<std::uint64_t> node_ptr{0};
+      std::size_t max_node_rows = 0;
       for (auto node : nodes) {
         auto size = rows[node].Size();
+        max_node_rows = std::max(max_node_rows, size);
         node_ptr.push_back(node_ptr.back() + size);
       }
       auto total_rows = node_ptr.back();
@@ -627,15 +629,15 @@ class MetalHistogram final : public Histogram {
         node_buffer_ = Allocate(rt_, node_bytes);
       std::memcpy(node_buffer_.contents, node_ptr.data(), node_bytes);
       auto node_buffer = node_buffer_;
-      Params params{total_rows,
-                    gidx.base_rowid,
-                    gidx.Size(),
-                    static_cast<std::uint32_t>(bins),
+      Params params{total_rows, gidx.base_rowid, gidx.Size(), static_cast<std::uint32_t>(bins),
                     static_cast<std::uint32_t>(gidx.cut.Ptrs().size() - 1),
                     static_cast<std::uint32_t>(gidx.index.GetBinTypeSize()),
                     static_cast<std::uint32_t>(gidx.IsDense()),
                     static_cast<std::uint32_t>(nodes.size()),
-                    static_cast<std::uint32_t>(gidx.IsDense())};
+                    static_cast<std::uint32_t>(gidx.IsDense()),
+                    // Large, dense node populations benefit from amortizing merges;
+                    // fragmented branches need smaller groups for memory locality.
+                    max_node_rows > gidx.Size() / 4 ? 32u : 8u};
 
       bool quantized = !gradients_ready_;
       if (quantized) this->UploadGradients(gradients, command);
@@ -670,7 +672,8 @@ class MetalHistogram final : public Histogram {
         std::vector<std::uint64_t> block_ptr{0};
         for (std::size_t node = 0; node < nodes.size(); ++node) {
           auto size = node_ptr[node + 1] - node_ptr[node];
-          block_ptr.push_back(block_ptr.back() + (size + threads * 8 - 1) / (threads * 8));
+          block_ptr.push_back(block_ptr.back() + (size + threads * params.rows_per_lane - 1) /
+                                                     (threads * params.rows_per_lane));
         }
         auto block_bytes = block_ptr.size() * sizeof(std::uint64_t);
         EnsureBuffer(rt_, &block_buffer_, block_bytes);

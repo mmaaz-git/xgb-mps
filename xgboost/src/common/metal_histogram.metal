@@ -12,6 +12,7 @@ struct HistogramParams {
   uint dense;
   uint n_nodes;
   uint padding;
+  uint rows_per_lane;
 };
 
 // An exact modular 64-bit sum using universally available 32-bit atomics.
@@ -82,7 +83,7 @@ kernel void xgb_histogram(
   }
 }
 
-// Privatize one feature histogram per threadgroup. Eight rows per lane amortize
+// Privatize one feature histogram per threadgroup. Multiple rows per lane amortize
 // clearing and merging the shared histogram. Each group handles exactly one
 // node, so threads never contend across nodes or features in shared memory.
 kernel void xgb_histogram_dense_shared(
@@ -106,8 +107,8 @@ kernel void xgb_histogram_dense_shared(
       hi = mid;
   }
   uint node = lo;
-  ulong begin = node_ptr[node] + (ulong(group.x) - block_ptr[node]) * threads.x * 8;
-  ulong end = min(node_ptr[node + 1], begin + threads.x * 8);
+  ulong begin = node_ptr[node] + (ulong(group.x) - block_ptr[node]) * threads.x * p.rows_per_lane;
+  ulong end = min(node_ptr[node + 1], begin + threads.x * p.rows_per_lane);
   if (begin >= end) return;  // Uniform across the threadgroup, before any barrier.
   uint feature_offset = offsets[feature];
   uint bins = offsets[feature + 1] - feature_offset;

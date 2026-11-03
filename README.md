@@ -85,9 +85,10 @@ On Apple M3, 2026-11-03:
 - Python: **351 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
-- Native histograms: **84 cases**, with every bin compared exactly to independent
+- Native histograms: **192 cases**, with every bin compared exactly to independent
   CPU integer sums. Covers dense/sparse indices, 8/16/32-bit storage, page offsets,
-  high contention, negative values, carries, zero words and sampled-out rows.
+  high contention, negative values, carries, zero words, sampled-out rows and
+  workgroup sizes of 1/8/32/64 rows per lane.
 - Native sampling: **3,780 exact cases / 1,019,088 Bernoulli draws** against the
   CPU standard-library implementation, including zero seeds, rounding boundaries,
   strided matrices, guard regions and CPU thread partitions.
@@ -147,10 +148,10 @@ quantization, gradients, histograms and tree construction.
 
 | Rows | CPU | Metal | CPU / Metal |
 | ---: | ---: | ---: | ---: |
-| 100,000 | 0.122 s | 0.326 s | 0.37× |
-| 1,000,000 | 0.834 s | 1.208 s | 0.69× |
+| 100,000 | 0.120 s | 0.463 s | 0.26× |
+| 1,000,000 | 0.793 s | 1.209 s | 0.66× |
 
-[Latest raw training results](validation/benchmark-binning-v1-m3.json), including
+[Latest raw training results](validation/benchmark-hist-adaptive-v1-m3.json), including
 GPU bin assignment, gradient bounds, root reductions, resident histograms, subtraction/gathering,
 reused split buffers and skipped zero atomic additions. The [preceding run](validation/benchmark-hist-pool-m3.json)
 and [first resident-histogram run](validation/benchmark-hist-storage-m3.json) are
@@ -393,3 +394,18 @@ and native suites pass; CPU-only compatibility checks pass.
 prediction agreement. Their latest speed ratios are 0.69× and 0.83× respectively
 at one million rows. The [diagnostic profile](validation/profile-binning-m3.txt)
 is retained; this port has not achieved a training speedup.
+
+### Histogram workgroup tuning
+
+A [within-process kernel benchmark](validation/benchmark-hist-kernel-v2-m3.json)
+compares 1/8/16/32/64 rows per lane in randomized trial order and validates every
+histogram against CPU integer sums. Larger workgroups help densely populated
+nodes but hurt fragmented branches. The runtime now chooses 32 rows per lane
+when the largest node contains more than a quarter of the page, and 8 otherwise.
+The [benchmark source](scripts/metal_histogram_benchmark.mm) is included.
+
+All 351 Python tests and 192 native histogram cases pass. The
+[fixed-32 run](validation/benchmark-hist-workgroups-v1-m3.json) and
+[adaptive run](validation/benchmark-hist-adaptive-v1-m3.json) are retained. The
+adaptive million-row median is 1.209 s Metal versus 0.793 s CPU (0.66×), so the
+kernel tuning has not established a full training speedup.
