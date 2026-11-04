@@ -677,11 +677,18 @@ class WQuantileSketch {
   }
 
  public:
-  /*! \brief get the summary after finalize */
-  [[nodiscard]] WQSummaryContainer GetSummary(size_t max_size) {
-    // Flush pending queue into level summaries first.
+  // Flush before exposing levels for batched device finalization. The views
+  // remain valid until this sketch is modified again.
+  void PrepareSummary() {
     inqueue_.PopSummary(&temp_);
     this->PushSummary(&temp_);
+  }
+  [[nodiscard]] Span<Summary const> SummaryLevels() const { return level_; }
+  [[nodiscard]] std::size_t SummaryLimit() const { return limit_size_; }
+
+  /*! \brief get the summary after finalize */
+  [[nodiscard]] WQSummaryContainer GetSummary(size_t max_size) {
+    this->PrepareSummary();
 
     auto const prune_size = std::max(max_size, limit_size_);
     // Reserve based on observed live storage after local merge.

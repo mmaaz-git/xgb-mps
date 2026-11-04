@@ -4489,3 +4489,135 @@ kernel void xgb_column_sample_small(device const uint* features [[buffer(0)]],
   xgb_column_sort_records(work, selected_width, tid);
   for (uint i = tid; i < p.selected; i += 256) output[i] = work[i].x;
 }
+
+// Sketch fields are (rmin, rmax, wmin, feature value). Preserve FP32 operations,
+// including subnormal ranks, because pruning choices are discrete decisions.
+inline bool xgb_sketch_less(float a, float b) {
+  return xgb_float_less(as_type<uint>(a), as_type<uint>(b));
+}
+inline bool xgb_sketch_equal(float a, float b) {
+  uint aa = as_type<uint>(a), bb = as_type<uint>(b);
+  if ((aa & 0x7fffffffu) > 0x7f800000u || (bb & 0x7fffffffu) > 0x7f800000u) return false;
+  return aa == bb || ((aa | bb) & 0x7fffffffu) == 0;
+}
+inline bool xgb_sketch_ge(float a, float b) {
+  return xgb_sketch_less(b, a) || xgb_sketch_equal(a, b);
+}
+inline float xgb_sketch_next(float4 a) { return xgb_fadd_preserve(a.x, a.z); }
+inline float xgb_sketch_prev(float4 a) { return xgb_fsub_preserve(a.y, a.z); }
+
+inline uint xgb_sketch_merge(device const float4* a, uint na, device const float4* b, uint nb,
+                             device float4* output) {
+  if (!na || !nb) {
+    for (uint i = 0; i < na; ++i) output[i] = a[i];
+    for (uint i = 0; i < nb; ++i) output[i] = b[i];
+    return na + nb;
+  }
+  uint i = 0, j = 0, n = 0;
+  float aprev = 0, bprev = 0;
+  while (i < na && j < nb) {
+    float4 aa = a[i], bb = b[j], value;
+    if (xgb_sketch_equal(aa.w, bb.w)) {
+      value = float4(xgb_fadd_preserve(aa.x, bb.x), xgb_fadd_preserve(aa.y, bb.y),
+                     xgb_fadd_preserve(aa.z, bb.z), aa.w);
+      aprev = xgb_sketch_next(aa);
+      bprev = xgb_sketch_next(bb);
+      ++i;
+      ++j;
+    } else if (xgb_sketch_less(aa.w, bb.w)) {
+      value = float4(xgb_fadd_preserve(aa.x, bprev), xgb_fadd_preserve(aa.y, xgb_sketch_prev(bb)),
+                     aa.z, aa.w);
+      aprev = xgb_sketch_next(aa);
+      ++i;
+    } else {
+      value = float4(xgb_fadd_preserve(bb.x, aprev), xgb_fadd_preserve(bb.y, xgb_sketch_prev(aa)),
+                     bb.z, bb.w);
+      bprev = xgb_sketch_next(bb);
+      ++j;
+    }
+    output[n++] = value;
+  }
+  if (i < na) {
+    float last = b[nb - 1].y;
+    while (i < na) {
+      float4 aa = a[i++];
+      output[n++] = float4(xgb_fadd_preserve(aa.x, bprev), xgb_fadd_preserve(aa.y, last), aa.zw);
+    }
+  }
+  if (j < nb) {
+    float last = a[na - 1].y;
+    while (j < nb) {
+      float4 bb = b[j++];
+      output[n++] = float4(xgb_fadd_preserve(bb.x, aprev), xgb_fadd_preserve(bb.y, last), bb.zw);
+    }
+  }
+  // Match WQSummary::FixError, in its original operation order.
+  float rmin = 0, rmax = 0;
+  for (uint k = 0; k < n; ++k) {
+    float4 value = output[k];
+    if (xgb_sketch_less(value.x, rmin))
+      value.x = rmin;
+    else
+      rmin = value.x;
+    if (xgb_sketch_less(value.y, rmax)) value.y = rmax;
+    float next = xgb_sketch_next(value);
+    if (xgb_sketch_less(value.y, next)) value.y = next;
+    rmax = value.y;
+    output[k] = value;
+  }
+  return n;
+}
+inline uint xgb_sketch_prune(device const float4* input, uint count, uint budget,
+                             device float4* output) {
+  if (!budget || !count) return 0;
+  if (count <= budget) {
+    for (uint i = 0; i < count; ++i) output[i] = input[i];
+    return count;
+  }
+  output[0] = input[0];
+  if (budget == 1) return 1;
+  float begin = input[0].y;
+  float range = xgb_fsub_preserve(input[count - 1].x, begin);
+  uint n = budget - 1, cursor = 1, last = 0, written = 1;
+  for (uint k = 1; k < n; ++k) {
+    float product = xgb_fmul_preserve(float(k), range);
+    float quotient = xgb_dto_float(xgb_ddiv(xgb_dfrom_float(product), xgb_dfrom_float(float(n))));
+    float rank = xgb_fmul_preserve(2.f, xgb_fadd_preserve(quotient, begin));
+    while (cursor < count - 1 &&
+           xgb_sketch_ge(rank, xgb_fadd_preserve(input[cursor + 1].y, input[cursor + 1].x)))
+      ++cursor;
+    if (cursor == count - 1) break;
+    uint selected = xgb_sketch_less(rank, xgb_fadd_preserve(xgb_sketch_next(input[cursor]),
+                                                            xgb_sketch_prev(input[cursor + 1])))
+                        ? cursor
+                        : cursor + 1;
+    if (selected != last) {
+      output[written++] = input[selected];
+      last = selected;
+    }
+  }
+  if (last != count - 1) output[written++] = input[count - 1];
+  return written;
+}
+struct SketchFinalizeTask {
+  ulong begin, end, workspace;
+  uint capacity, intermediate_budget, final_budget, padding;
+};
+kernel void xgb_sketch_finalize(device const float4* entries [[buffer(0)]],
+                                device const ulong2* levels [[buffer(1)]],
+                                device const SketchFinalizeTask* tasks [[buffer(2)]],
+                                device float4* current [[buffer(3)]],
+                                device float4* merged [[buffer(4)]],
+                                device uint* sizes [[buffer(5)]],
+                                uint column [[thread_position_in_grid]]) {
+  auto task = tasks[column];
+  auto a = current + task.workspace;
+  auto b = merged + task.workspace;
+  uint count = 0;
+  for (ulong l = task.begin; l < task.end; ++l) {
+    ulong2 level = levels[l];
+    uint n = xgb_sketch_merge(a, count, entries + level.x, uint(level.y), b);
+    count = xgb_sketch_prune(b, n, task.intermediate_budget, a);
+  }
+  sizes[column] = xgb_sketch_prune(a, count, task.final_budget, b);
+}

@@ -160,6 +160,8 @@ def main():
                 memory[device].append({"before": memory_before, "after": memory_snapshot()})
                 after = xgb.metal_info()
                 stats = {k: after[k] - before[k] for k in after if k not in {"built", "available"}}
+                assert stats["sketch_finalize_dispatches"] == (1 if device == "mps" else 0)
+                assert stats["sketch_finalize_columns"] == (args.features if device == "mps" else 0)
                 sampling_columns = min(args.colsample_bytree, args.colsample_bylevel, args.colsample_bynode) < 1
                 assert (stats["column_init_dispatches"] > 0) == (device == "mps")
                 assert (stats["column_sampling_dispatches"] > 0) == (device == "mps" and sampling_columns)

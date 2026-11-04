@@ -34,7 +34,7 @@ listed below. This is not yet a complete GPU backend.
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and tied-score trapezoids on Metal; per-output normalization and aggregation remain host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and stable continuous integration on Metal; final per-output degeneracy checks and aggregation remain host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses GPU label validation, stable score order, segmented binary64 prefixes, continuous PR integration, valid-query checks and aggregation |
-| Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Quantile sketching/cut construction remain CPU; numeric/categorical bin assignment and hit counts for SparsePage-backed matrices use Metal; adapter-built QuantileDMatrix bins remain CPU |
+| Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Final numeric sketch level merging, rank repair and pruning use Metal; ingestion, queue sorting and streaming compaction remain CPU. Final cut materialization is host-side in both the CUDA and Metal implementations. Numeric/categorical bin assignment and hit counts for SparsePage-backed matrices use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | `gblinear` rejected for `mps` |
@@ -81,7 +81,7 @@ interaction constraints, vector leaves and external-memory pages. Column samplin
 now uses GPU initialization, random draws, selection and ordering. Remaining
 training-state updates and more efficient external-memory staging are still required.
 
-Sensitive AFT gradient corrections, SHAP, quantile
+Sensitive AFT gradient corrections, SHAP, remaining sketch
 construction, linear training and collectives are separate coverage requirements.
 The observed prediction speedups do not establish any of those as complete.
 
@@ -265,3 +265,36 @@ waits for completion and reads back selected IDs. These are explicit performance
 limits. `column_init_dispatches`, `column_sampling_dispatches` and
 `column_sampling_gpu_time_ns` expose completed work; the sampling time excludes
 the separate initialization command and host staging/wait overhead.
+
+## Numeric sketch finalization
+
+Fresh MPS histogram matrices batch the retained levels of all numeric columns
+into one Metal command. GPU merging preserves level order and equal-value rank
+combination, repairs cumulative rank bounds, prunes after each merge and prunes
+again to the requested final budget. FP32 operation order, subnormal ranks and
+comparison behavior match the CPU sketch. Pruning currently uses software
+binary64 division rounded to FP32. Each column has one GPU thread; columns run
+in parallel, while operations within a column remain sequential.
+
+This is partial sketch coverage. CPU ingestion still builds and sorts queues,
+flushes them into levels and performs streaming compaction. The GPU stage copies
+those levels into Metal buffers and reads back completed summaries. Final cut
+materialization remains on the host; the vendored CUDA
+`SketchContainer::MakeCuts` also copies summaries back and materializes cuts on
+the host, so that step is not itself missing CUDA parity. Category collection
+and adapter-built QuantileDMatrix bins remain CPU work.
+
+Native validation covers 942 columns, including 28 complete streamed sketches
+through 1,000,003 input rows. Exact comparisons cover CPU merge/prune output,
+independently queried rank bounds, source fingerprints, guards and final cuts.
+Inputs include empty levels, duplicate values, zero/subnormal/overflowing weights,
+inconsistent ranks requiring repair and pruning budgets from zero to 65,537.
+Public tests compare exact CPU cut bits and training predictions for fresh dense,
+sparse, missing-value, weighted, grouped and external-page matrices. Cached
+gradient indices do not redispatch finalization; categorical-only matrices do not
+dispatch numeric sketch work. See [validation](../validation/sketch-finalization-m3.txt).
+
+`sketch_finalize_dispatches`, `sketch_finalize_columns` and
+`sketch_finalize_gpu_time_ns` expose completed work. The GPU duration excludes
+host ingestion, staging, waiting and cut materialization; it cannot be used as
+an end-to-end preprocessing time or speedup.

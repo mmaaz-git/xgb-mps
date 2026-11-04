@@ -1,0 +1,33 @@
+Apple M3, 2026-11-03. Metal API Validation enabled.
+Full native and Python suites; independent CPU-only build.
+
+Checking sketch level merging and pruning against CPU summaries and independent rank queries
+2026-11-03 20:32:57.576 metal_sketch_api_test[48659:43192008] Metal API Validation Enabled
+Checked 64 sketch columns / 64 source entries / 1120 exact fields
+Checked 128 sketch columns / 302 source entries / 4008 exact fields
+Checked 192 sketch columns / 714 source entries / 8276 exact fields
+Checked 256 sketch columns / 1300 source entries / 13816 exact fields
+Checked 320 sketch columns / 2420 source entries / 23104 exact fields
+Checked 384 sketch columns / 6276 source entries / 49832 exact fields
+Checked 448 sketch columns / 12376 source entries / 91212 exact fields
+Checked 512 sketch columns / 18650 source entries / 132528 exact fields
+Checked 576 sketch columns / 35706 source entries / 229196 exact fields
+Checked 640 sketch columns / 84760 source entries / 494996 exact fields
+Checked 704 sketch columns / 133988 source entries / 761684 exact fields
+Checked 768 sketch columns / 183396 source entries / 1030960 exact fields
+Checked 832 sketch columns / 375652 source entries / 1996552 exact fields
+Checked 896 sketch columns / 1088612 source entries / 5187896 exact fields
+Checked 910 sketch columns / 1260700 source entries / 5923192 exact fields
+Checked 914 sketch columns / 2047144 source entries / 9713252 exact fields
+PASS 28 streamed sketches through million-row ingestion, including duplicate/zero/tiny weights
+PASS 942 native sketch columns / 2047144 source entries / 9731868 exact fields
+
+700 passed, 1 skipped, 32 warnings in 20.01s
+CPU-only build verified: Metal reports unavailable and device=mps raises a clear error.
+
+Wed Nov  4 04:31:26 UTC 2026
+Building formatted sketch finalization
+Running full native/Python suites with Metal API Validation
+Building and checking independent CPU-only library
+Full sketch validation finished: 0
+Wed Nov  4 04:33:37 UTC 2026

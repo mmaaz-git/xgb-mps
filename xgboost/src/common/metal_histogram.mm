@@ -24,6 +24,7 @@
 #include "metal_reduction.h"
 #include "metal_sampling.h"
 #include "metal_shader.h"
+#include "metal_sketch.h"
 #include "metal_split.h"
 #include "metal_survival.h"
 #include "survival_util.h"
@@ -39,6 +40,8 @@ std::atomic<std::uint64_t> gradient_sum_dispatches{0}, gradient_sum_gpu_time_ns{
     stump_dispatches{0};
 std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> gradient_sampling_dispatches{0}, gradient_sampling_gpu_time_ns{0};
+std::atomic<std::uint64_t> sketch_finalize_dispatches{0}, sketch_finalize_columns{0},
+    sketch_finalize_gpu_time_ns{0};
 std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches{0},
     column_sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
@@ -128,7 +131,7 @@ class Runtime {
       ranking_bias_finish_pipeline, ranking_bias_update_pipeline, ranking_bias_pairs_pipeline,
       ranking_bias_dispatch_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
-  id<MTLComputePipelineState> uniform_sampling_pipeline;
+  id<MTLComputePipelineState> uniform_sampling_pipeline, sketch_finalize_pipeline;
   id<MTLComputePipelineState> column_iota_pipeline, column_rng_pipeline, column_keys_pipeline,
       column_select_pipeline, column_sort_small_pipeline, column_output_pipeline,
       column_sample_small_pipeline;
@@ -202,6 +205,7 @@ class Runtime {
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
       quantile_metric_pipeline = make_pipeline(@"xgb_quantile_metric");
       uniform_sampling_pipeline = make_pipeline(@"xgb_uniform_sample");
+      sketch_finalize_pipeline = make_pipeline(@"xgb_sketch_finalize");
       column_iota_pipeline = make_pipeline(@"xgb_column_iota");
       column_rng_pipeline = make_pipeline(@"xgb_column_rng");
       column_keys_pipeline = make_pipeline(@"xgb_column_keys");
@@ -1036,7 +1040,10 @@ Statistics GetStatistics() {
           ranking_pr_auc_gpu_time_ns.load(std::memory_order_relaxed),
           column_init_dispatches.load(std::memory_order_relaxed),
           column_sampling_dispatches.load(std::memory_order_relaxed),
-          column_sampling_gpu_time_ns.load(std::memory_order_relaxed)};
+          column_sampling_gpu_time_ns.load(std::memory_order_relaxed),
+          sketch_finalize_dispatches.load(std::memory_order_relaxed),
+          sketch_finalize_columns.load(std::memory_order_relaxed),
+          sketch_finalize_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2599,6 +2606,89 @@ void BinEntries(Span<Entry const> entries, Span<FeatureType const> feature_types
       binning_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                     std::memory_order_relaxed);
   }
+}
+
+std::vector<WQSummaryContainer> FinalizeSketches(Span<SketchFinalization const> columns) {
+  using Entry = WQSummary<>::Entry;
+  static_assert(sizeof(Entry) == 16);
+  CHECK_LE(columns.size(), std::numeric_limits<std::uint32_t>::max());
+  std::vector<WQSummaryContainer> result(columns.size());
+  if (columns.empty()) return result;
+  struct Task {
+    std::uint64_t begin, end, workspace;
+    std::uint32_t capacity, intermediate_budget, final_budget, padding;
+  };
+  struct Level {
+    std::uint64_t begin, size;
+  };
+  static_assert(sizeof(Task) == 40 && sizeof(Level) == 16);
+  std::vector<Task> tasks;
+  std::vector<Level> levels;
+  std::vector<Entry> entries;
+  std::size_t workspace_size = 0;
+  for (auto const& column : columns) {
+    CHECK_LE(column.intermediate_budget, std::numeric_limits<std::uint32_t>::max());
+    CHECK_LE(column.final_budget, std::numeric_limits<std::uint32_t>::max());
+    auto begin = levels.size();
+    std::size_t total = 0, maximum = 0;
+    for (auto const& level : column.levels) {
+      CHECK_LE(level.Size(), std::numeric_limits<std::uint32_t>::max());
+      auto data = level.Entries();
+      levels.push_back({entries.size(), data.size()});
+      entries.insert(entries.end(), data.begin(), data.end());
+      total += data.size();
+      maximum = std::max(maximum, data.size());
+    }
+    auto capacity = std::min(total, column.intermediate_budget + maximum);
+    CHECK_LE(capacity, std::numeric_limits<std::uint32_t>::max());
+    tasks.push_back({begin, levels.size(), workspace_size, static_cast<std::uint32_t>(capacity),
+                     static_cast<std::uint32_t>(column.intermediate_budget),
+                     static_cast<std::uint32_t>(column.final_budget), 0});
+    workspace_size += capacity;
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, entries.data(), entries.size() * sizeof(Entry));
+    auto offsets = Upload(rt, levels.data(), levels.size() * sizeof(Level));
+    auto metadata = Upload(rt, tasks.data(), tasks.size() * sizeof(Task));
+    auto current = Allocate(rt, workspace_size * sizeof(Entry));
+    auto merged = Allocate(rt, workspace_size * sizeof(Entry));
+    auto sizes = Allocate(rt, columns.size() * sizeof(std::uint32_t));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.sketch_finalize_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:offsets offset:0 atIndex:1];
+    [e setBuffer:metadata offset:0 atIndex:2];
+    [e setBuffer:current offset:0 atIndex:3];
+    [e setBuffer:merged offset:0 atIndex:4];
+    [e setBuffer:sizes offset:0 atIndex:5];
+    [e dispatchThreads:MTLSizeMake(columns.size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    auto counts = static_cast<std::uint32_t const*>(sizes.contents);
+    auto output = static_cast<Entry const*>(merged.contents);
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+      CHECK_LE(counts[i], tasks[i].capacity);
+      CHECK_LE(counts[i], columns[i].final_budget);
+      result[i].Reserve(counts[i]);
+      if (counts[i])
+        std::memcpy(result[i].space.data(), output + tasks[i].workspace, counts[i] * sizeof(Entry));
+      result[i].SetSize(counts[i]);
+    }
+    sketch_finalize_dispatches.fetch_add(1, std::memory_order_relaxed);
+    sketch_finalize_columns.fetch_add(columns.size(), std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      sketch_finalize_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                            std::memory_order_relaxed);
+  }
+  return result;
 }
 
 void InitFeatureSet(Span<bst_feature_t> features) {

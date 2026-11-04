@@ -16,6 +16,9 @@
 #include "../data/adapter.h"
 #include "categorical.h"
 #include "hist_util.h"
+#if defined(XGBOOST_USE_METAL)
+#include "metal_sketch.h"
+#endif
 
 namespace xgboost::common {
 HostSketchContainer::HostSketchContainer(Context const *ctx, bst_bin_t max_bin,
@@ -453,12 +456,31 @@ auto HostSketchContainer::AllReduce(Context const *ctx, Span<bst_feature_t const
   std::vector<std::size_t> num_elements(sketches_.size(), 0);
 
   // Size local summaries with the same O(log n / eps) budget as the single-machine sketch.
-  ParallelFor(numeric_features.size(), n_threads_, [&](size_t idx) {
-    auto fidx = numeric_features[idx];
-    num_elements[fidx] = sketches_[fidx].NumElements();
-    auto cut_target = SketchSummaryBudget(max_bins_, num_elements[fidx]);
-    reduced[fidx] = sketches_[fidx].GetSummary(cut_target);
-  });
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    std::vector<metal::SketchFinalization> columns(numeric_features.size());
+    ParallelFor(numeric_features.size(), n_threads_, [&](size_t idx) {
+      auto fidx = numeric_features[idx];
+      auto& sketch = sketches_[fidx];
+      num_elements[fidx] = sketch.NumElements();
+      auto cut_target = SketchSummaryBudget(max_bins_, num_elements[fidx]);
+      sketch.PrepareSummary();
+      columns[idx] = {sketch.SummaryLevels(), std::max(cut_target, sketch.SummaryLimit()),
+                      cut_target};
+    });
+    auto finalized = metal::FinalizeSketches(columns);
+    for (std::size_t i = 0; i < numeric_features.size(); ++i)
+      reduced[numeric_features[i]] = std::move(finalized[i]);
+  } else
+#endif
+  {
+    ParallelFor(numeric_features.size(), n_threads_, [&](size_t idx) {
+      auto fidx = numeric_features[idx];
+      num_elements[fidx] = sketches_[fidx].NumElements();
+      auto cut_target = SketchSummaryBudget(max_bins_, num_elements[fidx]);
+      reduced[fidx] = sketches_[fidx].GetSummary(cut_target);
+    });
+  }
 
   // Early exit: no allreduce needed when there is one worker or no numeric features.
   if (collective::GetWorldSize() == 1 || numeric_features.empty()) {

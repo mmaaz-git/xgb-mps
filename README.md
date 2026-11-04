@@ -11,7 +11,8 @@ prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums and stump
 fitting, means, stable column/grouped sorting, ROC/PR-AUC, ranking metrics,
 gradient-based row sampling, uniform/weighted column sampling and quantile/median
-estimation on Metal. Feature quantile sketching and several specialized features still run on the CPU. Histogram conversion,
+estimation on Metal. Numeric sketch finalization also runs on Metal; sketch ingestion,
+queue sorting and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
 
@@ -63,9 +64,10 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Operation | Implemented coverage |
 | --- | --- |
 | Histograms | Dense/sparse compressed indices, external-memory pages, scaled integer sums, shared-memory dense kernel, GPU binary64 conversion/subtraction and a resident cache |
-| Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps column sampling and interaction masks |
+| Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps interaction masks |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
-| Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; quantile sketches and adapter-built QuantileDMatrix bins remain CPU |
+| Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; adapter-built QuantileDMatrix bins remain CPU |
+| Feature sketches | GPU final merging, rank-bound repair and pruning of numeric sketch levels; ingestion, queue sorting and streaming compaction remain CPU; final cut materialization remains host, as in the CUDA implementation |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
 | Gradient-based sampling | GPU norms, stable sorting, CPU-ordered FP32 prefixes, threshold selection, random draws and gradient rescaling; includes strided multi-target replay and zero budgets; host chooses the per-tree seed |
@@ -109,6 +111,9 @@ counters and must not be added to those totals.
 `ranking_roc_auc_dispatches` and `ranking_roc_auc_gpu_time_ns` likewise describe a
 subset of ROC-AUC and generic metric work; their timings overlap those totals.
 The corresponding `ranking_pr_auc_*` counters are subsets of PR-AUC and metric totals.
+`sketch_finalize_dispatches`, `sketch_finalize_columns` and
+`sketch_finalize_gpu_time_ns` report final numeric sketch processing, excluding
+host ingestion, staging and final cut materialization.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
@@ -124,7 +129,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **673 passed, 1 skipped**. The skip requires a machine without an
+- Python: **700 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
@@ -203,6 +208,12 @@ On Apple M3, 2026-11-03:
   bit for bit, including constructed ties. Production hierarchy/cache behavior,
   parent RNG state and guards are checked. A separate **8,086,019-input** logarithm
   check has zero CPU mismatches on this M3.
+- Sketch finalization: **942 native columns / 2,047,144 retained source entries**,
+  with **9,731,868 exact field comparisons** across GPU summaries and independent
+  CPU rank queries. Includes 28 streamed sketches through 1,000,003-row ingestion,
+  zero/tiny/overflowing weights, rank repair and empty/tiny pruning budgets.
+  Public tests require identical cut bits for dense, sparse, missing-value,
+  weighted, grouped, categorical and external-page inputs.
 - Grouped ranking PR-AUC: **297 production cases / 14,198,354 rows / 4,660 query
   results**, checked against CPU and independent continuous-integral references.
   Includes irregular/empty queries, recursive scan carries, widely differing query
@@ -385,7 +396,9 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Reuse split workspaces across tree levels and boosting rounds.
 - [x] Port uniform sampling, including random-stream compatibility and replay.
 - [x] Port gradient-based sampling, including exact CPU thresholds and replay.
-- [ ] Port column sampling and remaining training-state updates.
+- [x] Port uniform/weighted column sampling, with CPU-compatible random streams.
+- [ ] Port remaining training-state updates.
+- [x] Port final numeric sketch level merging and pruning.
 - [ ] Port quantile construction, remaining objectives/metrics, SHAP and linear training.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.

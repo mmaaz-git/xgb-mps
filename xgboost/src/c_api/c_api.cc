@@ -256,6 +256,12 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.ranking_roc_auc_dispatches)};
   info["ranking_roc_auc_gpu_time_ns"] =
       Integer{static_cast<std::int64_t>(stats.ranking_roc_auc_gpu_time_ns)};
+  info["sketch_finalize_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.sketch_finalize_dispatches)};
+  info["sketch_finalize_columns"] =
+      Integer{static_cast<std::int64_t>(stats.sketch_finalize_columns)};
+  info["sketch_finalize_gpu_time_ns"] =
+      Integer{static_cast<std::int64_t>(stats.sketch_finalize_gpu_time_ns)};
   info["column_init_dispatches"] = Integer{static_cast<std::int64_t>(stats.column_init_dispatches)};
   info["column_sampling_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.column_sampling_dispatches)};
@@ -336,6 +342,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["gradient_sampling_gpu_time_ns"] = Integer{0};
   info["ranking_roc_auc_dispatches"] = Integer{0};
   info["ranking_roc_auc_gpu_time_ns"] = Integer{0};
+  info["sketch_finalize_dispatches"] = Integer{0};
+  info["sketch_finalize_columns"] = Integer{0};
+  info["sketch_finalize_gpu_time_ns"] = Integer{0};
   info["column_init_dispatches"] = Integer{0};
   info["column_sampling_dispatches"] = Integer{0};
   info["column_sampling_gpu_time_ns"] = Integer{0};
