@@ -1,3 +1,8 @@
+Historical pair-sampling checkpoint. The following arithmetic port is recorded
+in cuda-ranking-arithmetic-m3.txt. Correction: the old MAP soft-label kernel
+already scanned actual labels serially; the old transitional test oracle used
+binary hits. Both now use actual-label source formulas/parallel prefixes.
+
 CUDA-source mean-ranking pair sampling, Apple M3
 ================================================
 Date: 2026-11-04

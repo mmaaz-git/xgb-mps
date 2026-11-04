@@ -1,0 +1,140 @@
+CUDA-derived ranking gradient/cost arithmetic, Apple M3
+======================================================
+Date: 2026-11-04
+Source: objective/lambdarank_obj.cu/.h, common/deterministic.cuh,
+        common/ranking_utils.cu/.h; existing modern CCCL mean pairs.
+NVIDIA device execution: not performed. No new benchmark was run.
+
+Implemented behavior
+--------------------
+All top-k/mean pairwise/NDCG/MAP objectives use raw LambdaGrad values to obtain
+per-query max absolute FP32 gradient/Hessian and binary64 normalization sums.
+CreateRoundingFactor uses float(query_rows)*max, FP32 epsilon/denominator/divide,
+frexp exponent and power-of-two construction. Zero gives factor one; exact
+powers use frexp's next exponent. Each positive/negative gradient contribution
+is truncated SEPARATELY with (M+x)-M; Hessians use their own factor. Equal-label
+pairs are skipped, including when other pairs have infinite rounding factors.
+Ordered GPU gathers replace CUDA atomic updates of these truncated terms.
+
+Normalization uses raw untruncated gradient sums. The final multiplier is
+float(double(query_weight)*binary64_weight_norm), then one FP32 multiplication.
+Subnormal arithmetic is preserved. MAP materializes actual binary64 labels and
+label/rank then uses the existing recursive segmented GPU prefix machinery.
+Correction to the preceding ledger: the old soft-label MAP kernel already used
+actual labels, in a serial GPU branch. This port removes that branch. The old
+transitional mean test oracle approximated soft labels as binary hits; the new
+source-formula oracle uses the actual labels.
+
+Unbiased ranking computes cost for EVERY unequal-label pair, even if an endpoint
+is outside the tracked position range. Its GPU minimum-bias and per-query maximum
+cost determine binary64 rounding factors. All batches finish the first pass
+before the global factor is reduced; a second pass deterministically recomputes
+pairs and applies truncated cost/bias updates. Existing per-position bias
+normalization/power arithmetic remains on GPU. Pair buffers are reused within
+the 64 MiB budget; one larger query is allowed within the device buffer limit.
+The former tracked-pair compaction/correction dispatch has been removed: it
+could not supply untracked costs to the required first-pass bound.
+
+Explicit source-edge policies (not NVIDIA bitwise-equivalence claims)
+-------------------------------------------------------------------
+1. CUDA CalcGrad launches per-query lanes that all write d_cost_rounding[0].
+   Metal uses the maximum of per-query factors, computed on GPU, instead of
+   reproducing this data race. This can discard more low bits than whichever
+   query happened to win a particular NVIDIA execution. Empty-query factor one
+   also participates in that maximum.
+2. NVIDIA documents an unspecified frexp/frexpf exponent for NaN/Inf. Metal
+   defines it as zero (factor one). This includes division by zero from a zero
+   bias minimum. NaN values are ignored by maximum bounds but propagate through
+   the underlying arithmetic. Finite formulas are preserved even beyond the
+   positive-denominator range; no universal reproducibility guarantee is made
+   for invalid/nonfinite bounds or unbounded term counts.
+   Primary references, checked 2026-11-04:
+   https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html
+   https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__DOUBLE.html
+3. The host oracle rounds a binary64 exponential explicitly to FP32 for sigmoid,
+   with source FP32 score/denominator boundaries and binary64 delta/Hessian/cost
+   arithmetic. It uses host libm for other transcendental functions. CUDA
+   libdevice rounding and CUB reduction/scan association are not emulated.
+
+Validation
+----------
+Direct production shader rounding test:
+  162,851 cases, 977,106 exact FP32/binary64 fields (NaNs by classification).
+  7,284 FP32 and 2,400 binary64 cases have asymmetric positive/negative terms.
+  Covers powers and adjacent values across exponent ranges, subnormals, zero,
+  infinities/NaNs, uint32 counts around 2^22 and UINT32_MAX, random full-bit
+  patterns, nonfinite frexp policy, independent sign truncation and cost factors.
+  tests/cuda_ranking_rounding.h uses host frexp/ldexp and IEEE operations,
+  independently of the shader's bit construction and manual binary64 arithmetic.
+
+Production diagnostics:
+  64 cases, 1,600 bound/normalization/weight fields, 2,113,664 MAP prefix fields.
+  Rounding factors and combined multipliers match exactly; normalization allows
+  FP32 error, MAP prefix fields allow 2e-12 relative/absolute association error.
+  121 untracked cost maxima, 16 combined-weight rounding witnesses, and 48 global
+  factors different from the last query's factor prove those paths matter.
+  Includes 65,537-row queries/three-level prefixes, label ties/soft values,
+  empty queries, zero/tiny bias, wide weight ratios and repeated pair storage.
+  Optional RankingGradientTrace exposes actual buffers only when requested;
+  normal training does not read these diagnostics back to host.
+
+Objective checks:
+  1,442 cases, 2,444,200 rows, 43,810,880 candidate pairs;
+  ALL 2,444,200 ordinary gradient pairs match the CUDA-formula oracle bitwise.
+  504,543 subnormal fields retain the existing two-ULP absolute plus 2e-5 relative
+  check. The oracle enumerates top-k or independent CUDA mean pairs, computes
+  source maxima/rounding, then independently accumulates truncated terms.
+  2,592 unbiased calls, 852,768 rows, 118,368 serialized bias values;
+  1,705,535 bit-exact gradient fields, max scaled gradient error 1.69500709e-7;
+  serialized bias error zero. Four further 524,288-row unbiased calls exercise
+  multiple batches, two iterations per method, all gradient fields exact.
+  Existing 74 pair-sampler cases / 9,068,696 exact raw pairs still pass.
+
+Training tests:
+  Nine prior top-k CPU-trained-model identity assertions failed after adopting
+  CUDA's truncation (CPU does not truncate). Replaced that invalid contract for
+  both methods with independent per-round metrics, CPU prediction of each saved
+  model, and deterministic training/bias replay. Native CUDA-formula tests check
+  the actual objective gradients/state separately. Original inputs/rounds and
+  numerical tolerances remain; replay comparisons are exact. An accidental test
+  edit briefly removed unrelated PR fixtures/helper, producing 13 NameErrors;
+  the deleted code was restored verbatim before final full validation.
+
+Local logs (ignored results/)
+----------------------------
+  cuda-ranking-arithmetic-build-v1.log: missing pipeline member declarations;
+    fixed; build-v2.log PASS and pair trace unchanged.
+  cuda-ranking-arithmetic-native-v1.log: ordinary/unbiased source-gradient PASS.
+  cuda-ranking-rounding-v1.log: direct rounding PASS.
+  cuda-ranking-arithmetic-focused-v1.log: all values passed, but the proposed
+    combined-weight witness happened to round identically. Replaced with a
+    concrete one-ULP witness; no tolerance change.
+  cuda-ranking-arithmetic-focused-v2.log: all four native suites PASS; Python
+    166 passed / nine obsolete CPU-training assertions failed, as described above.
+  cuda-ranking-arithmetic-python-v1.log: 236 passed / 13 missing-helper failures
+    from the accidental edit, restored before the final full run.
+  Final full run: 2026-11-04 13:13:14-13:17:34 UTC, FULL_EXIT=0.
+  All rebuilt native suites and the test-only reference updater PASS.
+  Python: 1,773 passed, 1 skipped, 371 warnings, 93.28 seconds.
+  The skipped case requires a host without a GPU; all GPU tests required Metal.
+  CPU-only configure/build and no-Metal API/clear MPS-error checks PASS.
+  cuda-ranking-arithmetic-full-driver-v1.log
+  build-cuda-ranking-arithmetic-final-v1.log
+  test-cuda-ranking-arithmetic-full-v1.log
+  configure-cpu-cuda-ranking-arithmetic-v1.log
+  build-cpu-cuda-ranking-arithmetic-v1.log
+  check-cpu-cuda-ranking-arithmetic-v1.log
+  No production or test edits after the full run began; later edits were docs.
+  git diff --check PASS.
+
+Remaining limits
+----------------
+Query-size maximum and pair/tile-count prefixes remain host computations.
+CUDA RankingCache::InitOnCUDA uses GPU reduction and scans for this metadata;
+a read-only follow-up audit identified this as remaining operation coverage.
+Mean incidence lists remain sequential within each query. GPU storage is still
+host-orchestrated and synchronous; output gradients and small serialized bias
+vectors return to host. Cross-query bias sums use 128-query blocks with a final
+GPU reduction. Source formula coverage and same-device tests do not replace
+NVIDIA/cross-Apple validation or establish universal bitwise reproducibility.
+Performance tuning and new benchmarks remain deferred until coverage is complete.

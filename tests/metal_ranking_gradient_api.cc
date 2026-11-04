@@ -1,5 +1,4 @@
-// Actual objectives/counters: top-k CPU gradients, mean CUDA-pair/shared-math
-// gradients (unrounded; CUDA gradient rounding is separate pending work).
+// Actual objectives/counters against CUDA-source pairs, rounding and gradient formulas.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -12,7 +11,7 @@
 #include <vector>
 
 #include "../xgboost/src/common/metal_histogram.h"
-#include "mean_ranking_reference.h"
+#include "cuda_ranking_reference.h"
 #include "xgboost/context.h"
 #include "xgboost/data.h"
 #include "xgboost/objective.h"
@@ -70,19 +69,15 @@ int main() {
                 {"lambdarank_normalization", normalized ? "true" : "false"},
                 {"lambdarank_score_normalization", score_normalized ? "true" : "false"},
                 {"ndcg_exp_gain", exponential ? "true" : "false"}};
-      std::unique_ptr<ObjFunction> co{ObjFunction::Create(objective, &cpu)},
-          go{ObjFunction::Create(objective, &gpu)};
-      co->Configure(args);
+      std::unique_ptr<ObjFunction> go{ObjFunction::Create(objective, &gpu)};
+
       go->Configure(args);
       linalg::Matrix<GradientPair> expected, actual;
       cpu.Rng().seed(17891u + cases);
       gpu.Rng().seed(17891u + cases);
-      if (mean) {
-        cuda_reference::MeanRankingReference reference(objective, args, info);
-        reference.Gradient(preds, info, static_cast<std::uint32_t>(cpu.Rng()()), &expected);
-      } else {
-        co->GetGradient(preds, info, 0, &expected);
-      }
+      cuda_reference::RankingReference reference(objective, args, info);
+      reference.Gradient(preds, info, mean ? static_cast<std::uint32_t>(cpu.Rng()()) : 0,
+                         &expected);
       auto before = common::metal::GetStatistics();
       go->GetGradient(preds, info, 0, &actual);
       auto after = common::metal::GetStatistics();

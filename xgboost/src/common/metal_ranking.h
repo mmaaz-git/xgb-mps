@@ -34,6 +34,18 @@ struct RankingBias {
   Span<double> positive, negative;
   double regularizer{1};
 };
+// Optional internal diagnostics for source-oracle tests. Normal training does
+// not copy these GPU statistics or prefixes to the host.
+struct RankingGroupStatistics {
+  float normalization, gradient_rounding, hessian_rounding, weight;
+  double cost_rounding;
+  std::uint64_t padding;
+};
+struct RankingGradientTrace {
+  Span<RankingGroupStatistics> groups;
+  Span<double> global_cost_rounding;
+  Span<std::array<double, 2>> map_prefix;
+};
 // Top-k or mean-sampled LambdaRank. Nonempty bias vectors enable unbiased loss
 // and are updated on GPU, then copied back for objective serialization. Pair
 // construction, statistics, normalization and FP32 gradient accumulation execute
@@ -46,8 +58,8 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
                      bool score_normalization, bool exponential, double weight_norm,
                      Span<double const> discounts, Span<double const> inverse_idcg,
                      Span<GradientPair> output, bool mean = false, std::uint32_t seed = 0,
-                     RankingBias bias = {},
-                     Span<std::array<std::uint32_t, 2>> mean_pair_trace = {});
+                     RankingBias bias = {}, Span<std::array<std::uint32_t, 2>> mean_pair_trace = {},
+                     RankingGradientTrace diagnostics = {});
 // GPU sort and weighted query scoring in one command. NDCG uses the existing
 // cache's discounts and inverse ideal gains. Caller validates label semantics.
 RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const> predictions,

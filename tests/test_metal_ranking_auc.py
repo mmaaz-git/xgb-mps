@@ -136,19 +136,21 @@ def test_ranking_auc_training(metal, metric):
     x = rng.normal(size=(1032, 5)).astype(np.float32)
     data = xgb.QuantileDMatrix(x, label=rng.integers(0, 2 if metric == "aucpr" else 7, size=len(x)), group=[129] * 8, nthread=2, max_bin=33)
     p = dict(objective="rank:pairwise", eval_metric=metric, nthread=2, max_depth=3, max_bin=33)
-    histories = {}
-    predictions = {}
+    history = {}
     counter = "ranking_pr_auc_dispatches" if metric == "aucpr" else "ranking_roc_auc_dispatches"
     before = xgb.metal_info()[counter]
-    for device in ["cpu", "mps"]:
-        histories[device] = {}
-        model = xgb.train(p | {"device": device}, data, 5, evals=[(data, "train")],
-                          evals_result=histories[device], verbose_eval=False)
-        predictions[device] = model.predict(data)
+    model = xgb.train(p | {"device": "mps"}, data, 5, evals=[(data, "train")],
+                      evals_result=history, verbose_eval=False)
     assert xgb.metal_info()[counter] == before + 5
-    np.testing.assert_allclose(histories["mps"]["train"][metric], histories["cpu"]["train"][metric],
-                               rtol=2e-12, atol=2e-12)
-    np.testing.assert_allclose(predictions["mps"], predictions["cpu"], rtol=2e-5, atol=2e-5)
+    # Ranking gradients now use CUDA's truncation; CPU training has different
+    # gradients. Compare each learned prefix on the CPU predictor/evaluator.
+    for r in range(5):
+        cpu = model[:r + 1]
+        cpu.set_param({"device": "cpu", "eval_metric": metric})
+        np.testing.assert_allclose(model.predict(data, iteration_range=(0, r + 1)),
+                                   cpu.predict(data), rtol=2e-5, atol=2e-5)
+        np.testing.assert_allclose(history["train"][metric][r], score(cpu, data),
+                                   rtol=2e-12, atol=2e-12)
 
 
 @pytest.mark.parametrize("invalid", [-np.finfo(np.float32).smallest_subnormal, -1., 1.1])

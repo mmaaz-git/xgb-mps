@@ -14,18 +14,21 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **CUDA-source mean-ranking pair sampling**. Metal now uses
-independent Philox draws and CUDA's sample-major pair order, replacing the
-previous CPU random stream. Native tests verify **9.07 million exact production
-pairs** and **659,200 random draws/positions**. A separate host check matches
-**83,328 draws/positions against unmodified NVIDIA CCCL headers**.
-Gradient and multi-round bias tests pass with the new pairs; CUDA-specific
-gradient/cost rounding, MAP prefixes and combined weight arithmetic remain open.
-Full validation passes **1,773 Python tests**, every rebuilt native suite, and
-the CPU-only build/device check. This completes pair sampling; full ranking-gradient
-equivalence remains unfinished.
-[Validation](validation/cuda-ranking-pairs-m3.txt) ·
-[Scope](docs/CUDA_PARITY.md#ranking-gradient-numerical-behavior).
+Latest step: **CUDA-derived ranking gradient and cost arithmetic**. Metal now
+builds per-query rounding bounds, truncates both gradient signs independently,
+uses CUDA's combined weight multiplier, and scans MAP labels in parallel.
+Unbiased ranking makes two bounded-memory passes so all pairs contribute to
+cost bounds before bias updates. CUDA's shared cost-factor race and nonfinite
+rounding inputs have explicit deterministic policies, documented below.
+
+All **2.44 million ordinary gradient pairs** match the host source-formula oracle
+bit for bit; multi-round unbiased tests also pass. New tests cover **977,106
+exact rounding fields** and **2.11 million MAP prefix fields**. This builds on the
+previous **9.07 million exact sampled-pair checks**. Full validation passes
+**1,773 Python tests**, every rebuilt native suite and the CPU-only build/device
+check. NVIDIA execution equivalence remains unverified.
+[Validation](validation/cuda-ranking-arithmetic-m3.txt) ·
+[Arithmetic and remaining limits](docs/CUDA_PARITY.md#ranking-gradient-numerical-behavior).
 
 The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 `hist` and `approx`, including external-memory pages: GPU sorting, FP32 scans,
@@ -136,7 +139,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input staging and category recoding remain host |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
-| Ranking training | Stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, gradients, normalization, unbiased corrections and bias updates on Metal; CUDA gradient/cost rounding, MAP actual-label prefixes and weight arithmetic remain open |
+| Ranking training | Stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, raw bounds, independent sign/cost truncation, parallel MAP prefixes, normalization and combined weights on Metal; unbiased bias updates use a deterministic global cost-factor policy |
 | ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; collective transport remains host |
 | Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior |
 | Column sampling | CUDA-source Philox weighted draws and Thrust Feistel unweighted shuffle; GPU compaction, stable priority ordering and integer feature sorting; 24 shuffle keys and cache metadata remain host as in CUDA, while feature arrays still stage through host |
@@ -335,9 +338,18 @@ On Apple M3, 2026-11-03:
   **41,200 RNG cases / 659,200 exact draws and consumed positions**, including
   large discard offsets. **83,328 draws/positions** also match pinned upstream
   CCCL on the host. Existing gradient/bias datasets use CUDA-pair/shared-math
-  oracles for mean and CPU checks for top-k, with unchanged tolerances; CUDA
-  gradient-rounding alignment remains open.
+  oracles for both methods, with unchanged tolerances. The previous unrounded
+  mean reference has been replaced by the full arithmetic oracle below.
   [Validation](validation/cuda-ranking-pairs-m3.txt).
+- Ranking gradient/cost arithmetic: **162,851 direct rounding cases / 977,106
+  exact fields**, plus **64 production diagnostics cases / 1,600 bounds and
+  multipliers / 2,113,664 MAP prefix fields**. **1,442 gradient cases / 2,444,200
+  pairs** match the host CUDA-formula reference bit for bit. **2,592 unbiased
+  calls / 118,368 bias values** and four additional 524,288-row batched calls
+  pass; the largest scaled gradient error is `1.70e-7`, serialized bias error zero.
+  The global cost-factor race and nonfinite `frexp` inputs have explicit policies;
+  these results do not prove NVIDIA execution equivalence.
+  [Validation](validation/cuda-ranking-arithmetic-m3.txt).
 - Column sampling: **550 native cases / 3,281,095 selected feature IDs /
   4,610,295 exact Philox draws / 1,320,896 exact shuffle indices**, checked against
   CUDA-source references. An optional actual Thrust/CCCL host check verifies
@@ -594,7 +606,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Align grouped PR-AUC term rounding, recall totals, integral and query validity with CUDA source.
 - [x] Align classification AUC arithmetic/output rules and port multi-output normalization to GPU.
 - [x] Port CUDA raw CSR sketching and resident summaries for ordinary hist/approx matrices.
-- [ ] Complete adapter/device-array sketches and finish CUDA ranking gradient/cost arithmetic.
+- [ ] Complete adapter/device-array sketches and remaining objective/state operations.
+- [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.

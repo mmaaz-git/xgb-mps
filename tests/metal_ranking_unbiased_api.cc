@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "../xgboost/src/common/metal_histogram.h"
-#include "mean_ranking_reference.h"
+#include "cuda_ranking_reference.h"
 #include "xgboost/context.h"
 #include "xgboost/data.h"
 #include "xgboost/json.h"
@@ -37,19 +37,16 @@ void CheckBatched() {
     Args args{{"lambdarank_pair_method", method},
               {"lambdarank_num_pair_per_sample", "8"},
               {"lambdarank_unbiased", "true"}};
-    std::unique_ptr<ObjFunction> co{ObjFunction::Create("rank:pairwise", &cpu)},
-        go{ObjFunction::Create("rank:pairwise", &gpu)};
-    co->Configure(args);
+    std::unique_ptr<ObjFunction> go{ObjFunction::Create("rank:pairwise", &gpu)};
+
     go->Configure(args);
-    cuda_reference::MeanRankingReference reference("rank:pairwise", args, info);
+    cuda_reference::RankingReference reference("rank:pairwise", args, info);
     for (int iteration = 0; iteration < 2; ++iteration) {
       cpu.Rng().seed(12345 + iteration);
       gpu.Rng().seed(12345 + iteration);
       linalg::Matrix<GradientPair> expected, actual;
-      if (method == "mean")
-        reference.Gradient(predictions, info, static_cast<std::uint32_t>(cpu.Rng()()), &expected);
-      else
-        co->GetGradient(predictions, info, iteration, &expected);
+      reference.Gradient(predictions, info,
+                         method == "mean" ? static_cast<std::uint32_t>(cpu.Rng()()) : 0, &expected);
       auto before = common::metal::GetStatistics();
       go->GetGradient(predictions, info, iteration, &actual);
       auto after = common::metal::GetStatistics();
@@ -111,20 +108,17 @@ int main() {
                             {"lambdarank_normalization", normalized ? "true" : "false"},
                             {"lambdarank_score_normalization", score_normalized ? "true" : "false"},
                             {"lambdarank_bias_norm", std::to_string(bias_norm)}};
-                  std::unique_ptr<ObjFunction> co{ObjFunction::Create(objective, &cpu)},
-                      go{ObjFunction::Create(objective, &gpu)};
-                  co->Configure(args);
+                  std::unique_ptr<ObjFunction> go{ObjFunction::Create(objective, &gpu)};
+
                   go->Configure(args);
-                  cuda_reference::MeanRankingReference reference(objective, args, info);
+                  cuda_reference::RankingReference reference(objective, args, info);
                   for (int iteration = 0; iteration < 3; ++iteration) {
                     cpu.Rng().seed(8912 + cases);
                     gpu.Rng().seed(8912 + cases);
                     linalg::Matrix<GradientPair> expected, actual;
-                    if (method == "mean")
-                      reference.Gradient(pred, info, static_cast<std::uint32_t>(cpu.Rng()()),
-                                         &expected);
-                    else
-                      co->GetGradient(pred, info, iteration, &expected);
+                    reference.Gradient(
+                        pred, info, method == "mean" ? static_cast<std::uint32_t>(cpu.Rng()()) : 0,
+                        &expected);
                     auto before = common::metal::GetStatistics();
                     go->GetGradient(pred, info, iteration, &actual);
                     auto after = common::metal::GetStatistics();
@@ -156,10 +150,7 @@ int main() {
                         }
                       }
                     Json cj{Object{}}, gj{Object{}};
-                    if (method == "mean")
-                      reference.SaveBias(&cj);
-                    else
-                      co->SaveConfig(&cj);
+                    reference.SaveBias(&cj);
                     go->SaveConfig(&gj);
                     for (auto key : {"ti+", "tj-"}) {
                       auto const& c = get<F32Array>(cj[key]);

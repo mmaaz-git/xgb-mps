@@ -69,52 +69,28 @@ def test_ranking_training(metal, objective, method, largest):
     params = dict(objective=objective, tree_method="hist", max_depth=3, nthread=2,
                   eval_metric=["ndcg@7", "map@7", "pre@7"], seed=17,
                   lambdarank_pair_method=method, lambdarank_num_pair_per_sample=8)
-    histories = {}
-    models = {}
-    before = None
-    for device in (["cpu", "mps"] if method == "topk" else ["mps"]):
-        histories[device] = {}
-        if device == "mps":
-            before = xgb.metal_info()
-        models[device] = xgb.train(params | {"device": device}, d, 5, evals=[(d, "train")],
-                                    evals_result=histories[device], verbose_eval=False)
+    history = {}
+    before = xgb.metal_info()
+    model = xgb.train(params | {"device": "mps"}, d, 5, evals=[(d, "train")],
+                       evals_result=history, verbose_eval=False)
     after = xgb.metal_info()
-    # Objective ranking, NDCG ideal order and all three metric orders use GPU.
     assert after["group_sort_dispatches"] - before["group_sort_dispatches"] >= 20
     assert after["float_sum_dispatches"] > before["float_sum_dispatches"]
     assert after["ranking_metric_dispatches"] - before["ranking_metric_dispatches"] == 15
-    # NDCG also builds a temporary objective cache for intercept estimation.
     assert after["ranking_cache_dispatches"] - before["ranking_cache_dispatches"] == (3 if objective == "rank:ndcg" else 1)
     assert after["ranking_label_dispatches"] > before["ranking_label_dispatches"]
     assert after["ranking_gradient_dispatches"] - before["ranking_gradient_dispatches"] == 6
     assert (after["radix_sort_dispatches"] > before["radix_sort_dispatches"]) == (largest > 4096)
-    assert_cpu_prediction_of_metal_model(models["mps"], d)
-    if method == "mean":
-        # Mean CUDA pairs intentionally differ from CPU's minstd stream. Exact
-        # pairs and gradients/bias updates are validated by the native oracles.
-        # Here check every round's metrics independently on the trained model.
-        for metric in params["eval_metric"]:
-            expected = [cuda_ranking_reference(
-                metric, y, models["mps"].predict(d, iteration_range=(0, r + 1)),
-                sizes, d.get_weight()) for r in range(5)]
-            np.testing.assert_allclose(histories["mps"]["train"][metric], expected,
-                                       rtol=2e-12, atol=2e-12)
-    else:
-        np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
-                                   rtol=2e-5, atol=2e-5)
-        for metric in params["eval_metric"]:
-            expected = np.asarray(histories["cpu"]["train"][metric])
-            if metric.startswith("map"):
-                # CUDA's zero-relevance fallback is unweighted. Its difference from
-                # CPU depends only on labels/weights, so applies to every round.
-                offset, delta = 0, 0.0
-                for size, weight in zip(sizes, d.get_weight()):
-                    if not np.any(y[offset:offset + size]):
-                        delta += 1.0 - float(weight)
-                    offset += size
-                expected = expected + delta / sum(float(w) for w in d.get_weight())
-            np.testing.assert_allclose(histories["mps"]["train"][metric], expected,
-                                       rtol=2e-12, atol=2e-12)
+    assert_cpu_prediction_of_metal_model(model, d)
+    # CUDA truncates gradient terms; CPU doesn't, for either pair method. Native
+    # source oracles validate gradients/bias state. Check every round's metrics
+    # independently here instead of imposing CPU-trained model identity.
+    for metric in params["eval_metric"]:
+        expected = [cuda_ranking_reference(
+            metric, y, model.predict(d, iteration_range=(0, r + 1)),
+            sizes, d.get_weight()) for r in range(5)]
+        np.testing.assert_allclose(history["train"][metric], expected,
+                                   rtol=2e-12, atol=2e-12)
 
 
 @pytest.mark.parametrize("metric", ["ndcg", "ndcg@3-", "map", "map@3-", "pre@3"])
@@ -312,7 +288,6 @@ def test_unbiased_gradient_and_bias_updates(metal, objective, method, query_size
     params = dict(objective=objective, tree_method="hist", max_depth=3, nthread=2,
                   lambdarank_unbiased=True, lambdarank_pair_method=method,
                   lambdarank_num_pair_per_sample=8, base_score=0)
-    cpu = xgb.train(params | {"device": "cpu"}, d, 3) if method == "topk" else None
     before = xgb.metal_info()
     gpu = xgb.train(params | {"device": "mps"}, d, 3)
     after = xgb.metal_info()
@@ -320,17 +295,14 @@ def test_unbiased_gradient_and_bias_updates(metal, objective, method, query_size
     assert after["ranking_gradient_dispatches"] - before["ranking_gradient_dispatches"] == 3
     assert after["ranking_bias_dispatches"] - before["ranking_bias_dispatches"] == 3
     assert_cpu_prediction_of_metal_model(gpu, d)
-    if method == "mean":
-        # Replay the same CUDA-pair stream; source-oracle native tests separately
-        # check each unbiased gradient and evolving bias state.
-        cpu = xgb.train(params | {"device": "mps"}, d, 3)
-        np.testing.assert_array_equal(gpu.predict(d), cpu.predict(d))
-    else:
-        np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
-    cpu_state = json.loads(cpu.save_config())["learner"]["objective"]
+    # Source-oracle native tests check the gradient/cost rounding and state.
+    # Both pair methods must also replay deterministically through training.
+    replay = xgb.train(params | {"device": "mps"}, d, 3)
+    np.testing.assert_array_equal(gpu.predict(d), replay.predict(d))
+    replay_state = json.loads(replay.save_config())["learner"]["objective"]
     gpu_state = json.loads(gpu.save_config())["learner"]["objective"]
     for key in ["ti+", "tj-"]:
-        np.testing.assert_allclose(gpu_state[key], cpu_state[key], rtol=2e-5, atol=2e-6)
+        np.testing.assert_array_equal(gpu_state[key], replay_state[key])
     assert not np.allclose(gpu_state["ti+"], 1)
 
 
@@ -338,7 +310,7 @@ def test_unbiased_gradient_and_bias_updates(metal, objective, method, query_size
 def test_mean_ranking_rounding_feedback(metal):
     # Preserve the old 20-round feedback fixture, inputs and prediction tolerance.
     # CPU training has a different sampler; compare CPU evaluation of the same
-    # model and exact Metal replay. Native shared-math tests check the gradients.
+    # model and exact Metal replay. Native CUDA-formula tests check the gradients.
     rng = np.random.default_rng(17)
     n = 100_000
     x = rng.standard_normal(size=(n, 32), dtype=np.float32)
