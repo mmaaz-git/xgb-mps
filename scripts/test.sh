@@ -84,6 +84,14 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_stats_api_test
 results/metal_stats_api_test
+echo "Checking GPU feature winners, final weights and scalar/vector bound updates"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_split_finalize.mm \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp -framework Metal -framework Foundation \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_split_finalize_test
+MTL_DEBUG_LAYER=1 results/metal_split_finalize_test xgboost/src/common/metal_histogram.metal
 echo "Checking objective initialization against exact CPU gradients and broadcasts"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

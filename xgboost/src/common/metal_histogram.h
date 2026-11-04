@@ -79,6 +79,7 @@ struct Statistics {
   std::uint64_t cuda_gradient_sampling_dispatches, leaf_integer_sum_dispatches;
   std::uint64_t cuda_integer_split_dispatches;
   std::uint64_t cuda_integer_multi_split_dispatches;
+  std::uint64_t split_finalize_dispatches, split_bounds_dispatches;
 };
 
 class Histogram {

@@ -64,7 +64,7 @@ must be reported rather than hidden by widening test tolerances.
 | Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Both sampling methods and all roots share quantized state; weighted sketches still differ from CUDA; preprocessing remains hybrid |
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Original per-tree scales feed both integer sampling methods, all roots and histograms; reduced value leaves now use original scales and integer sums; scalar/vector split statistics retain integers |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned integer cache; external-page accumulation and subtraction retain exact quantized sums, with a binary64 view for host orchestration. GPU growth copies both buffers, empty first pages overwrite reused ranges, and feature gathering remains GPU. Scalar/vector split gathering now reads integer buffers; host cache policy/metadata remain |
-| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. Feature winner reduction, final weights, interaction masks, constraint metadata and tree updates remain host |
+| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights and monotonic-bound updates; interaction masks, category bitset assembly, staging and tree metadata remain host |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; column initialization/selection/order run on Metal but still need CUDA RNG alignment |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
@@ -937,8 +937,8 @@ prevent splitting so CPU comparisons test root arithmetic independently of
 incompatible split tie rules. No numerical tolerance was widened.
 
 At this scalar checkpoint, vector-leaf integer splits remained (now addressed
-below). Remaining scope includes GPU feature-winner reduction,
-constraint/interaction metadata and scalar final-weight application; CUDA sketch
+below). Remaining scope includes interaction metadata; GPU feature-winner
+reduction, unscaled weight calculation and monotonic bounds are addressed below; CUDA sketch
 and column-RNG differences; extreme nonfinite gain/host expansion semantics; and
 actual NVIDIA execution. Gain arithmetic currently uses explicit separately
 rounded binary64 operations with an FP32 leaf-weight square. NVCC contraction
@@ -1027,10 +1027,68 @@ A final parent-gain source correction was rebuilt and verified with the complete
 Python suite; the native shader and API source were unchanged after their full run.
 [Validation record](../validation/cuda-integer-vector-splits-m3.txt).
 
-Remaining scope: feature-winner reduction, final-weight calculation and constraint/
-interaction metadata still execute on CPU where CUDA has GPU operations. Generic
+At this vector checkpoint, feature reduction, weight calculation and constraint
+updates remained on CPU; the following update moves them onto Metal. Interaction
+masks and generic model-buffer operations still require GPU coverage. Generic
 state ownership, sketches, RNG differences and the other ledger entries remain.
 The source-derived model uses separately rounded binary64 gain operations; actual
 NVCC contraction/build behavior has not been compared. Extreme nonfinite gains
 and host expansion rules still require alignment. Local tests do not establish
 NVIDIA hardware equivalence. No performance benchmark accompanies this change.
+
+
+## GPU split finalization and constraint bounds
+
+`FinalizeSplitNodes` reads the resident output of the scalar/vector integer split
+kernels. A 32-lane group reduces each node's raw feature candidates, retaining
+sampled-feature order on scalar ties and lower feature ID on vector ties. It then
+calculates bounded base/child weights, constrained pooled vector weights, current
+parent gain and vector Hessian traces. Scalar parent gain/subtraction stay FP32;
+vector gain accumulates in binary64 and subtracts before the final FP32 conversion.
+The GPU returns a winner index, weights and statistics, which are retained by node
+ID across loss-guide queues and histogram-cache reuse. The host no longer recomputes
+these values when applying a split. Root-weight calls use the same finalizer with
+empty feature ranges, including completely empty feature matrices.
+
+The source authority remains `gpu_hist/evaluate_splits.cu`,
+`multi_evaluate_splits.cu` and `split_evaluator.h`. Vector root cover now uses CUDA's
+binary64 target trace before conversion to model FP32. The previous CPU-style
+sequential FP32 sum could lose several small positive target contributions.
+The source oracle was updated to match that CUDA rule; CPU behavior is unchanged.
+
+`UpdateSplitBounds` computes/scatters monotonic child bounds on Metal. The scalar
+midpoint is `(left + right) / 2`; the vector midpoint is
+`left + 0.5 * (right - left)`, with distinct FP32 rounding boundaries. Software
+operations preserve subnormals. Weight inputs are snapshotted; bounds use guarded
+borrowed host memory or initialized copies. Overlapping bounds, invalid node IDs
+and layouts are rejected; NaN midpoints report an error rather than silently
+writing invalid constraints. The tree evaluator has an explicit Metal flag,
+because this backend's `Context::Device()` still represents host-owned CPU data.
+
+Counters `split_finalize_dispatches` and `split_bounds_dispatches` identify these
+completed GPU operations, including root-only finalization. Their times are added
+to `split_gpu_time_ns`, but their dispatches do not increase the existing candidate
+split counters. CPU-only builds expose both counters as zero. Statistics ABI and
+tree-evaluator layout changed; native test executables must be rebuilt.
+
+Direct independent CUDA-source tests compare **448 finalized nodes / 11,904 target
+weights**, with scalar/vector ties, 0–129 features, 1–129 targets, invalid candidates,
+zero Hessians, regularization, bounded/pooled weights, subnormals and output guards.
+**90 production bound updates** cover both midpoint formulas, three monotonic
+orders, multiple target counts, tiny/large values, aliases and untouched nodes.
+Additional API checks reject stale/invalid finalization layouts, overlapping or
+out-of-range bounds, and NaN midpoints. Thirteen public cases audit complete trees,
+assert dispatch/bound counts, exercise multi-chunk feature selection and verify
+root traces that differ from CPU's FP32 accumulation. The first complete Python
+suite passes 1,502 tests (one skipped). Final validation also passes **1,502
+Python tests**, every native suite and the CPU-only build/API check.
+[Validation record](../validation/split-finalization-m3.txt).
+
+Remaining work includes interaction masks, categorical bitset materialization,
+constraint allocation/initialization and persistent GPU ownership. Finalization
+currently uses a separate synchronous command: candidate readback/staging has not
+been eliminated. Host tree orchestration remains; CUDA's vector model-buffer copy
+and learning-rate application operations (`multi_target_tree_model.cc` / its CUDA
+helpers) still need Metal integration. Extreme nonfinite candidate/expansion rules,
+NVCC contraction and actual NVIDIA execution remain unverified. Other coverage
+ledger entries are unchanged. No performance benchmark accompanies this step.

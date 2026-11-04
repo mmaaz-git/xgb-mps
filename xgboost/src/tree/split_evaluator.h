@@ -19,6 +19,9 @@
 #include "../common/math.h"
 #include "../common/transform.h"
 #include "param.h"  // for TrainParam
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_split.h"
+#endif
 #include "xgboost/host_device_vector.h"
 #include "xgboost/linalg.h"
 
@@ -75,6 +78,7 @@ class TreeEvaluator {
   DeviceOrd device_;
   bst_target_t n_targets_;
   bool has_constraint_;
+  bool use_metal_;
 
   void EnsureBounds(bst_node_t max_nidx, bst_target_t n_targets) {
     auto n_nodes = static_cast<std::size_t>(max_nidx) * 2 + 1;
@@ -89,8 +93,11 @@ class TreeEvaluator {
 
  public:
   TreeEvaluator(TrainParam const& p, bst_feature_t n_features, DeviceOrd device,
-                bst_target_t n_targets)
-      : device_{device}, n_targets_{n_targets}, has_constraint_{p.HasMonotone()} {
+                bst_target_t n_targets, bool use_metal = false)
+      : device_{device},
+        n_targets_{n_targets},
+        has_constraint_{p.HasMonotone()},
+        use_metal_{use_metal} {
     CHECK_GT(n_targets, 0);
     if (device.IsCUDA()) {
       lower_bounds_.SetDevice(device);
@@ -367,6 +374,14 @@ class TreeEvaluator {
 
     auto max_nidx = std::max(leftid, rightid);
     this->EnsureBounds(max_nidx, 1u);
+#if defined(XGBOOST_USE_METAL)
+    if (use_metal_) {
+      common::metal::UpdateSplitBounds(lower_bounds_.HostSpan(), upper_bounds_.HostSpan(), nodeid,
+                                       leftid, rightid, monotone_.ConstHostSpan()[f],
+                                       {&left_weight, 1}, {&right_weight, 1}, false);
+      return;
+    }
+#endif
 
     common::Transform<>::Init(
         [=] XGBOOST_DEVICE(size_t, common::Span<float> lower, common::Span<float> upper,
@@ -406,6 +421,17 @@ class TreeEvaluator {
 
     auto max_nidx = std::max(leftid, rightid);
     this->EnsureBounds(max_nidx, n_targets);
+#if defined(XGBOOST_USE_METAL)
+    if (use_metal_) {
+      CHECK(left_weight.CContiguous());
+      CHECK(right_weight.CContiguous());
+      common::metal::UpdateSplitBounds(lower_bounds_.HostSpan(), upper_bounds_.HostSpan(), nodeid,
+                                       leftid, rightid, monotone_.ConstHostSpan()[f],
+                                       left_weight.Values().subspan(0, left_weight.Size()),
+                                       right_weight.Values().subspan(0, right_weight.Size()), true);
+      return;
+    }
+#endif
 
     common::Transform<>::Init(
         [=] XGBOOST_DEVICE(size_t t, common::Span<float> lower, common::Span<float> upper,

@@ -95,4 +95,34 @@ void EvaluateMultiSplits(Span<HistogramInput const> histograms, Span<MultiSplitT
                          SplitParameters const& parameters, std::vector<SplitResult>* results,
                          std::vector<GradientPairPrecise>* children,
                          std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace);
+
+// Finalize the resident output of EvaluateQuantized[Multi]Splits. Candidate
+// ranges and parent ranges are contiguous in node order. Empty ranges also
+// support root-weight calculation before any split evaluation.
+struct SplitFinalizeNode {
+  std::uint32_t begin, end, parent_begin, targets;
+};
+struct SplitFinalizeFeature {
+  std::uint32_t feature;
+  std::int32_t monotone;
+  std::uint32_t child_begin, padding{0};
+};
+struct SplitNodeResult {
+  std::uint32_t winner;
+  float loss_chg;
+  double parent_gain, parent_hess, left_hess, right_hess;
+};
+struct SplitNodeWeights {
+  float base, left, right, padding{0};
+};
+void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
+                        Span<SplitFinalizeFeature const> features,
+                        Span<GradientPairPrecise const> parents, Span<SplitBounds const> bounds,
+                        SplitParameters const& parameters, bool vector_leaf,
+                        std::vector<SplitNodeResult>* results,
+                        std::vector<SplitNodeWeights>* weights, SplitWorkspace* workspace);
+void UpdateSplitBounds(Span<float> lower, Span<float> upper, std::uint32_t parent,
+                       std::uint32_t left, std::uint32_t right, std::int32_t monotone,
+                       Span<float const> left_weight, Span<float const> right_weight,
+                       bool vector_leaf);
 }  // namespace xgboost::common::metal

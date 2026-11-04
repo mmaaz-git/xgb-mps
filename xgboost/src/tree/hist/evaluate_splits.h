@@ -41,6 +41,7 @@ class HistEvaluator {
 #if defined(XGBOOST_USE_METAL)
     // Persist winners by node ID: loss-guide entries can outlive split scratch.
     GradientPairInt64 quantized, quantized_left, quantized_right;
+    common::metal::SplitNodeWeights metal_weights{};
 #endif
   };
 
@@ -291,12 +292,20 @@ class HistEvaluator {
       if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
       auto evaluator = tree_evaluator_.GetEvaluator();
       std::vector<common::metal::QuantizedSplitTask> tasks;
+      std::vector<common::metal::SplitFinalizeNode> nodes;
+      std::vector<common::metal::SplitFinalizeFeature> final_features;
+      std::vector<GradientPairPrecise> final_parents;
+      std::vector<common::metal::SplitBounds> final_bounds;
       std::size_t bins = 0;
       std::vector<common::metal::HistogramInput> inputs{{hist.MetalBuffer(), {}}};
       std::vector<std::pair<std::size_t, bst_feature_t>> mapping;
       auto const &ptr = cut.Ptrs();
       for (std::size_t i = 0; i < entries.size(); ++i) {
         auto nid = entries[i].nid;
+        auto begin = static_cast<std::uint32_t>(tasks.size());
+        final_parents.emplace_back(snode_[nid].stats.GetGrad(), snode_[nid].stats.GetHess());
+        final_bounds.push_back({evaluator.has_constraint ? evaluator.lower[nid] : -INFINITY,
+                                evaluator.has_constraint ? evaluator.upper[nid] : INFINITY});
         for (auto f : features[i]->ConstHostSpan()) {
           if (!interaction_constraints_.Query(nid, f)) continue;
           auto n = ptr[f + 1] - ptr[f];
@@ -317,7 +326,10 @@ class HistEvaluator {
               {hist.Offset(nid) + ptr[f], static_cast<std::uint32_t>(bins), n, 1, 0});
           bins += n;
           mapping.emplace_back(i, f);
+          final_features.push_back({f, evaluator.has_constraint ? evaluator.constraints[f] : 0, 0});
         }
+        nodes.push_back(
+            {begin, static_cast<std::uint32_t>(tasks.size()), static_cast<std::uint32_t>(i), 1});
       }
       common::metal::SplitParameters parameters{param_->reg_lambda, param_->reg_alpha,
                                                 param_->max_delta_step, param_->min_child_weight};
@@ -325,17 +337,14 @@ class HistEvaluator {
       std::vector<std::uint32_t> order;
       common::metal::EvaluateQuantizedSplits(inputs, tasks, parameters, &results, &order,
                                              metal_workspace_.get());
-      // CUDA reduces raw child gains in sampled-feature order, then subtracts
-      // the parent gain once. Subtracting first can create artificial FP32 ties.
-      std::vector<std::size_t> winners(entries.size(), tasks.size());
-      for (std::size_t i = 0; i < tasks.size(); ++i) {
-        if (results[i].bin < 0) continue;
-        auto& winner = winners[mapping[i].first];
-        if (winner == tasks.size() || results[i].gain > results[winner].gain) winner = i;
-      }
+      std::vector<common::metal::SplitNodeResult> finalized;
+      std::vector<common::metal::SplitNodeWeights> node_weights;
+      common::metal::FinalizeSplitNodes(nodes, final_features, final_parents, final_bounds,
+                                        parameters, false, &finalized, &node_weights,
+                                        metal_workspace_.get());
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
-        auto i = winners[entry];
-        if (i == tasks.size()) continue;
+        auto i = finalized[entry].winner;
+        if (i == std::numeric_limits<std::uint32_t>::max()) continue;
         auto const& r = results[i];
         auto f = mapping[i].second;
         auto nid = entries[entry].nid;
@@ -349,7 +358,7 @@ class HistEvaluator {
         else
           split = cut.Values()[ptr[f] + r.bin];
         SplitEntry candidate;
-        candidate.Update(r.gain - snode_[nid].root_gain, f, split, r.default_left, task.kind != 0,
+        candidate.Update(finalized[entry].loss_chg, f, split, r.default_left, task.kind != 0,
                          GradStats{r.left_sum}, GradStats{r.right_sum});
         if (task.kind) {
           candidate.cat_bits.resize(common::CatBitField::ComputeStorageSize(cut.MaxCategory() + 1),
@@ -364,6 +373,7 @@ class HistEvaluator {
         if (entries[entry].split.Update(candidate)) {
           snode_[nid].quantized_left = r.left;
           snode_[nid].quantized_right = r.right;
+          snode_[nid].metal_weights = node_weights[entry];
         }
       }
       return;
@@ -442,11 +452,20 @@ class HistEvaluator {
     // and cover. Adding the two rounded views can lose cancellation bits.
     if (ctx_->IsMPS()) parent_sum = snode_[candidate.nid].stats;
 #endif
-    auto base_weight = evaluator.CalcWeight(candidate.nid, *param_, GradStats{parent_sum});
-    auto left_weight =
-        evaluator.CalcWeight(candidate.nid, *param_, GradStats{candidate.split.left_sum});
-    auto right_weight =
-        evaluator.CalcWeight(candidate.nid, *param_, GradStats{candidate.split.right_sum});
+    float base_weight, left_weight, right_weight;
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      auto const& weights = snode_[candidate.nid].metal_weights;
+      base_weight = weights.base;
+      left_weight = weights.left;
+      right_weight = weights.right;
+    } else
+#endif
+    {
+      base_weight = evaluator.CalcWeight(candidate.nid, *param_, parent_sum);
+      left_weight = evaluator.CalcWeight(candidate.nid, *param_, candidate.split.left_sum);
+      right_weight = evaluator.CalcWeight(candidate.nid, *param_, candidate.split.right_sum);
+    }
 
     if (candidate.split.is_cat) {
       tree.ExpandCategorical(
@@ -477,11 +496,14 @@ class HistEvaluator {
     }
 #endif
     snode_.at(left_child).stats = candidate.split.left_sum;
-    snode_.at(left_child).root_gain =
-        evaluator.CalcGain(candidate.nid, *param_, GradStats{candidate.split.left_sum});
     snode_.at(right_child).stats = candidate.split.right_sum;
-    snode_.at(right_child).root_gain =
-        evaluator.CalcGain(candidate.nid, *param_, GradStats{candidate.split.right_sum});
+    // MPS finalization recomputes parent gain on GPU with the current bounds.
+    if (!ctx_->IsMPS()) {
+      snode_.at(left_child).root_gain =
+          evaluator.CalcGain(candidate.nid, *param_, candidate.split.left_sum);
+      snode_.at(right_child).root_gain =
+          evaluator.CalcGain(candidate.nid, *param_, candidate.split.right_sum);
+    }
 
     interaction_constraints_.Split(candidate.nid, tree[candidate.nid].SplitIndex(), left_child,
                                    right_child);
@@ -496,6 +518,22 @@ class HistEvaluator {
     if (ctx_->IsMPS()) {
       CHECK(quantized);
       snode_[0].quantized = *quantized;
+      snode_[0].stats = root_sum;
+      if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
+      common::metal::SplitFinalizeNode node{0, 0, 0, 1};
+      GradientPairPrecise parent{root_sum.GetGrad(), root_sum.GetHess()};
+      auto evaluator = tree_evaluator_.GetEvaluator();
+      common::metal::SplitBounds bounds{evaluator.has_constraint ? evaluator.lower[0] : -INFINITY,
+                                        evaluator.has_constraint ? evaluator.upper[0] : INFINITY};
+      common::metal::SplitParameters params{param_->reg_lambda, param_->reg_alpha,
+                                            param_->max_delta_step, param_->min_child_weight};
+      std::vector<common::metal::SplitNodeResult> result;
+      std::vector<common::metal::SplitNodeWeights> weights;
+      common::metal::FinalizeSplitNodes({&node, 1}, {}, {&parent, 1}, {&bounds, 1}, params, false,
+                                        &result, &weights, metal_workspace_.get());
+      snode_[0].root_gain = result[0].parent_gain;
+      snode_[0].metal_weights = weights[0];
+      return weights[0].base;
     }
 #endif
     auto root_evaluator = tree_evaluator_.GetEvaluator();
@@ -510,12 +548,13 @@ class HistEvaluator {
  public:
   // The column sampler must be constructed by caller since we need to preserve the rng
   // for the entire training session.
-  explicit HistEvaluator(Context const *ctx, TrainParam const *param, MetaInfo const &info,
+  explicit HistEvaluator(Context const* ctx, TrainParam const* param, MetaInfo const& info,
                          std::shared_ptr<common::ColumnSampler> sampler)
       : ctx_{ctx},
         param_{param},
         column_sampler_{std::move(sampler)},
-        tree_evaluator_{*param, static_cast<bst_feature_t>(info.num_col_), DeviceOrd::CPU(), 1u} {
+        tree_evaluator_{*param, static_cast<bst_feature_t>(info.num_col_), DeviceOrd::CPU(), 1u,
+                        ctx->IsMPS()} {
     interaction_constraints_.Configure(*param, info.num_col_);
     column_sampler_->Init(ctx, info.num_col_, info.feature_weights, param_->colsample_bynode,
                           param_->colsample_bylevel, param_->colsample_bytree);
@@ -535,6 +574,8 @@ class HistMultiEvaluator {
   std::unique_ptr<common::metal::SplitWorkspace> metal_workspace_;
   // Exact node sums and selected child sums persist by node ID across queues.
   std::vector<GradientPairInt64> metal_node_sums_, metal_split_sums_;
+  std::vector<common::metal::SplitNodeWeights> metal_split_weights_;
+  std::vector<common::metal::SplitNodeResult> metal_node_results_;
 #endif
 
  private:
@@ -743,6 +784,10 @@ class HistMultiEvaluator {
       auto evaluator = tree_evaluator_.GetEvaluator();
       auto targets = hist.size();
       std::vector<common::metal::QuantizedMultiSplitTask> tasks;
+      std::vector<common::metal::SplitFinalizeNode> nodes;
+      std::vector<common::metal::SplitFinalizeFeature> final_features;
+      std::vector<GradientPairPrecise> final_parents;
+      std::vector<common::metal::SplitBounds> final_bounds;
       std::vector<GradientPairInt64> parents;
       std::size_t bins = 0;
       std::vector<common::metal::HistogramInput> inputs;
@@ -752,6 +797,15 @@ class HistMultiEvaluator {
       auto const &ptr = cut.Ptrs();
       for (std::size_t i = 0; i < entries.size(); ++i) {
         auto nid = entries[i].nid;
+        auto begin = static_cast<std::uint32_t>(tasks.size());
+        auto parent_begin = static_cast<std::uint32_t>(final_parents.size());
+        CHECK_LE(final_parents.size() + targets, std::numeric_limits<std::uint32_t>::max());
+        for (std::size_t t = 0; t < targets; ++t) {
+          final_parents.push_back(stats_(nid, t));
+          final_bounds.push_back(
+              {evaluator.has_constraint ? evaluator.lower[nid * targets + t] : -INFINITY,
+               evaluator.has_constraint ? evaluator.upper[nid * targets + t] : INFINITY});
+        }
         for (auto f : features[i]->ConstHostSpan()) {
           if (!interaction_constraints_.Query(nid, f)) continue;
           auto n = ptr[f + 1] - ptr[f];
@@ -780,7 +834,11 @@ class HistMultiEvaluator {
                                           static_cast<std::uint32_t>(targets), 0});
           bins += n * targets;
           mapping.emplace_back(i, f);
+          final_features.push_back({f, evaluator.has_constraint ? evaluator.constraints[f] : 0,
+                                    2 * tasks.back().parent_begin});
         }
+        nodes.push_back({begin, static_cast<std::uint32_t>(tasks.size()), parent_begin,
+                         static_cast<std::uint32_t>(targets)});
       }
       common::metal::SplitParameters parameters{param_->reg_lambda, param_->reg_alpha,
                                                 param_->max_delta_step, param_->min_child_weight};
@@ -791,19 +849,14 @@ class HistMultiEvaluator {
       common::metal::EvaluateQuantizedMultiSplits(inputs, tasks, parents, bounds, parameters,
                                                   &results, &integer_children, &children, &order,
                                                   metal_workspace_.get());
-      // CUDA compares rounded chunk winners between features, with lower
-      // feature ID winning ties, then subtracts the binary64 parent gain.
-      std::vector<std::size_t> winners(entries.size(), tasks.size());
-      for (std::size_t i = 0; i < tasks.size(); ++i) {
-        if (results[i].bin < 0) continue;
-        auto& winner = winners[mapping[i].first];
-        if (winner == tasks.size() || results[i].gain > results[winner].gain ||
-            (results[i].gain == results[winner].gain && mapping[i].second < mapping[winner].second))
-          winner = i;
-      }
+      std::vector<common::metal::SplitNodeResult> finalized;
+      std::vector<common::metal::SplitNodeWeights> node_weights;
+      common::metal::FinalizeSplitNodes(nodes, final_features, final_parents, final_bounds,
+                                        parameters, true, &finalized, &node_weights,
+                                        metal_workspace_.get());
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
-        auto i = winners[entry];
-        if (i == tasks.size()) continue;
+        auto i = finalized[entry].winner;
+        if (i == std::numeric_limits<std::uint32_t>::max()) continue;
         auto const& r = results[i];
         auto f = mapping[i].second;
         auto nid = entries[entry].nid;
@@ -818,9 +871,8 @@ class HistMultiEvaluator {
         SplitEntryContainer<std::vector<GradientPairPrecise>> candidate;
         auto left = linalg::MakeVec(children.data() + 2 * task.parent_begin, targets);
         auto right = linalg::MakeVec(children.data() + 2 * task.parent_begin + targets, targets);
-        auto parent_gain = evaluator.CalcGain(nid, *param_, stats_.Slice(nid, linalg::All()));
-        candidate.Update(static_cast<float>(double(r.gain) - parent_gain), f, split, r.default_left,
-                         task.kind != 0, left, right);
+        candidate.Update(finalized[entry].loss_chg, f, split, r.default_left, task.kind != 0, left,
+                         right);
         if (task.kind) {
           candidate.cat_bits.resize(common::CatBitField::ComputeStorageSize(cut.MaxCategory() + 1),
                                     0);
@@ -837,6 +889,12 @@ class HistMultiEvaluator {
             metal_split_sums_.resize(offset + 2 * targets);
           std::copy_n(integer_children.data() + 2 * task.parent_begin, 2 * targets,
                       metal_split_sums_.data() + offset);
+          if (metal_split_weights_.size() < (std::size_t(nid) + 1) * targets)
+            metal_split_weights_.resize((std::size_t(nid) + 1) * targets);
+          std::copy_n(node_weights.data() + nodes[entry].parent_begin, targets,
+                      metal_split_weights_.data() + nid * targets);
+          if (metal_node_results_.size() <= std::size_t(nid)) metal_node_results_.resize(nid + 1);
+          metal_node_results_[nid] = finalized[entry];
         }
       }
       return;
@@ -942,13 +1000,16 @@ class HistMultiEvaluator {
   }
 
   linalg::Vector<float> InitRoot(linalg::VectorView<GradientPairPrecise const> root_sum,
-                                 common::Span<GradientPairInt64 const> quantized = {}) {
+                                 common::Span<GradientPairInt64 const> quantized = {},
+                                 float* metal_root_cover = nullptr) {
     auto n_targets = root_sum.Size();
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       CHECK_EQ(quantized.size(), n_targets);
       metal_node_sums_.assign(quantized.begin(), quantized.end());
       metal_split_sums_.clear();
+      metal_split_weights_.clear();
+      metal_node_results_.clear();
     }
 #endif
     stats_ = linalg::Constant(ctx_, GradientPairPrecise{}, 1, n_targets);
@@ -956,9 +1017,29 @@ class HistMultiEvaluator {
 
     linalg::Vector<float> weight({n_targets}, ctx_->Device());
     auto evaluator = tree_evaluator_.GetEvaluator();
-    evaluator.CalcWeight(RegTree::kRoot, *param_, root_sum, weight.HostView());
-    auto root_gain = evaluator.CalcGainGivenWeight(*param_, root_sum, weight.HostView());
-    gain_.front() = root_gain;
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
+      common::metal::SplitFinalizeNode node{0, 0, 0, static_cast<std::uint32_t>(n_targets)};
+      std::vector<common::metal::SplitBounds> bounds;
+      for (std::size_t t = 0; t < n_targets; ++t)
+        bounds.push_back({evaluator.has_constraint ? evaluator.lower[t] : -INFINITY,
+                          evaluator.has_constraint ? evaluator.upper[t] : INFINITY});
+      common::metal::SplitParameters params{param_->reg_lambda, param_->reg_alpha,
+                                            param_->max_delta_step, param_->min_child_weight};
+      common::metal::FinalizeSplitNodes({&node, 1}, {}, root_sum.Values().subspan(0, n_targets),
+                                        bounds, params, true, &metal_node_results_,
+                                        &metal_split_weights_, metal_workspace_.get());
+      for (std::size_t t = 0; t < n_targets; ++t)
+        weight.HostView()(t) = metal_split_weights_[t].base;
+      gain_.front() = metal_node_results_[0].parent_gain;
+      if (metal_root_cover) *metal_root_cover = metal_node_results_[0].parent_hess;
+    } else
+#endif
+    {
+      evaluator.CalcWeight(RegTree::kRoot, *param_, root_sum, weight.HostView());
+      gain_.front() = evaluator.CalcGainGivenWeight(*param_, root_sum, weight.HostView());
+    }
 
     auto h_stats = stats_.HostView();
     std::copy(linalg::cbegin(root_sum), linalg::cend(root_sum), linalg::begin(h_stats));
@@ -975,7 +1056,6 @@ class HistMultiEvaluator {
     auto evaluator = tree_evaluator_.GetEvaluator();
     auto weight = linalg::Empty<float>(ctx_, 3, n_split_targets);
     auto base_weight = weight.Slice(0, linalg::All());
-    evaluator.CalcWeight(candidate.nid, *param_, parent_sum, base_weight);
 
     auto left_weight = weight.Slice(1, linalg::All());
     auto left_sum =
@@ -984,16 +1064,28 @@ class HistMultiEvaluator {
     auto right_weight = weight.Slice(2, linalg::All());
     auto right_sum =
         linalg::MakeVec(candidate.split.right_sum.data(), candidate.split.right_sum.size());
-    evaluator.CalcSplitWeights(*param_, candidate.nid, candidate.split.SplitIndex(), left_sum,
-                               right_sum, left_weight, right_weight);
-
-    // Compute the loss_chg and sum hessians for parent and children
     float loss_chg = candidate.split.loss_chg;
-    // Sum hessians across all targets for each child
     double left_sum_hess = 0.0, right_sum_hess = 0.0;
-    for (std::size_t t = 0; t < candidate.split.left_sum.size(); ++t) {
-      left_sum_hess += candidate.split.left_sum[t].GetHess();
-      right_sum_hess += candidate.split.right_sum[t].GetHess();
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      for (std::size_t t = 0; t < n_split_targets; ++t) {
+        auto const& w = metal_split_weights_.at(candidate.nid * n_split_targets + t);
+        base_weight(t) = w.base;
+        left_weight(t) = w.left;
+        right_weight(t) = w.right;
+      }
+      left_sum_hess = metal_node_results_.at(candidate.nid).left_hess;
+      right_sum_hess = metal_node_results_.at(candidate.nid).right_hess;
+    } else
+#endif
+    {
+      evaluator.CalcWeight(candidate.nid, *param_, parent_sum, base_weight);
+      evaluator.CalcSplitWeights(*param_, candidate.nid, candidate.split.SplitIndex(), left_sum,
+                                 right_sum, left_weight, right_weight);
+      for (std::size_t t = 0; t < n_split_targets; ++t) {
+        left_sum_hess += left_sum(t).GetHess();
+        right_sum_hess += right_sum(t).GetHess();
+      }
     }
 
     common::Span<CatWordT const> cat_bits;
@@ -1035,8 +1127,10 @@ class HistMultiEvaluator {
     }
 #endif
     gain_.resize(n_nodes);
-    gain_[left_child] = evaluator.CalcGainGivenWeight(*param_, left_sum, left_weight);
-    gain_[right_child] = evaluator.CalcGainGivenWeight(*param_, right_sum, right_weight);
+    if (!ctx_->IsMPS()) {
+      gain_[left_child] = evaluator.CalcGainGivenWeight(*param_, left_sum, left_weight);
+      gain_[right_child] = evaluator.CalcGainGivenWeight(*param_, right_sum, right_weight);
+    }
 
     if (n_nodes >= stats_.Shape(0)) {
       stats_.Reshape(n_nodes * 2, stats_.Shape(1));
@@ -1050,12 +1144,12 @@ class HistMultiEvaluator {
               linalg::begin(right_sum_stat));
   }
 
-  explicit HistMultiEvaluator(Context const *ctx, MetaInfo const &info, TrainParam const *param,
+  explicit HistMultiEvaluator(Context const* ctx, MetaInfo const& info, TrainParam const* param,
                               bst_target_t n_targets,
                               std::shared_ptr<common::ColumnSampler> sampler)
       : param_{param},
         tree_evaluator_{*param, static_cast<bst_feature_t>(info.num_col_), DeviceOrd::CPU(),
-                        n_targets},
+                        n_targets, ctx->IsMPS()},
         column_sampler_{std::move(sampler)},
         ctx_{ctx} {
     interaction_constraints_.Configure(*param, info.num_col_);

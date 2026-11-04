@@ -197,12 +197,7 @@ def audit_tree(tree, data, cuts, types, grad, hess, p, keep=None,
                 expected_leaf = [np.float32(weight(dequantize(v, s), p) * eta)
                                  for v, s in zip(value_sums, value_scales, strict=True)]
             np.testing.assert_array_equal(leaf_weights[right_id], expected_leaf, err_msg=f"leaf={node}")
-            if node == 0:
-                cover = np.float32(0)
-                for v in fp:
-                    cover = np.float32(cover + np.float32(v[1]))
-            else:
-                cover = np.float32(hessian_trace(fp))
+            cover = np.float32(hessian_trace(fp))
             np.testing.assert_array_equal(np.float32(tree["sum_hessian"][node]), cover)
             if selected_feature_only or capped or (depth_limit > 0 and depth >= depth_limit):
                 return

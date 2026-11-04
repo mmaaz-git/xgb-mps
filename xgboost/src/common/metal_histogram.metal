@@ -6118,3 +6118,149 @@ kernel void xgb_evaluate_quantized_multi_splits(
     }
   }
 }
+
+struct SplitFinalizeNode {
+  uint begin, end, parent_begin, targets;
+};
+struct SplitFinalizeFeature {
+  uint feature;
+  int monotone;
+  uint child_begin, padding;
+};
+struct SplitNodeResult {
+  uint winner;
+  float loss_chg;
+  ulong parent_gain, parent_hess, left_hess, right_hess;
+};
+inline void xgb_final_children(device const uchar* candidates, device const ulong2* children,
+                               device const SplitFinalizeFeature* features, uint winner, uint t,
+                               uint nt, uint multi, thread DoublePair& left,
+                               thread DoublePair& right) {
+  if (multi) {
+    uint offset = features[winner].child_begin;
+    ulong2 l = children[offset + t], r = children[offset + nt + t];
+    left = {{l.x}, {l.y}};
+    right = {{r.x}, {r.y}};
+  } else {
+    QuantizedSplitResult r =
+        reinterpret_cast<device const QuantizedSplitResult*>(candidates)[winner];
+    left = {{r.flg}, {r.flh}};
+    right = {{r.frg}, {r.frh}};
+  }
+}
+kernel void xgb_finalize_split_nodes(
+    device const uchar* candidates [[buffer(0)]],
+    device const SplitFinalizeFeature* features [[buffer(1)]],
+    device const SplitFinalizeNode* nodes [[buffer(2)]], constant SplitParameters& p [[buffer(3)]],
+    device const ulong2* parents [[buffer(4)]], device const float2* bounds [[buffer(5)]],
+    device const ulong2* children [[buffer(6)]], device SplitNodeResult* output [[buffer(7)]],
+    device float4* weights [[buffer(8)]], constant uint& multi [[buffer(9)]],
+    uint node_id [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]) {
+  SplitFinalizeNode node = nodes[node_id];
+  uint best = 0xffffffffu, best_key = 0, best_rank = 0xffffffffu;
+  for (uint i = node.begin + lane; i < node.end; i += 32) {
+    float gain;
+    int bin;
+    if (multi) {
+      QuantizedMultiSplitResult r =
+          reinterpret_cast<device const QuantizedMultiSplitResult*>(candidates)[i];
+      gain = r.gain;
+      bin = r.bin;
+    } else {
+      QuantizedSplitResult r = reinterpret_cast<device const QuantizedSplitResult*>(candidates)[i];
+      gain = r.gain;
+      bin = r.bin;
+    }
+    if (bin < 0) continue;
+    uint key = xgb_cuda_gain_key(gain), rank = multi ? features[i].feature : i;
+    if (best == 0xffffffffu || key > best_key || (key == best_key && rank < best_rank)) {
+      best = i;
+      best_key = key;
+      best_rank = rank;
+    }
+  }
+  uint top = simd_max(best_key);
+  uint rank = simd_min(best != 0xffffffffu && best_key == top ? best_rank : 0xffffffffu);
+  uint winner =
+      simd_min(best != 0xffffffffu && best_key == top && best_rank == rank ? best : 0xffffffffu);
+  for (uint t = lane; t < node.targets; t += 32) {
+    uint idx = node.parent_begin + t;
+    ulong2 bits = parents[idx];
+    DoublePair parent{{bits.x}, {bits.y}};
+    float bw = xgb_cuda_bounded_weight(parent, p, bounds[idx]), lw = 0, rw = 0;
+    if (winner != 0xffffffffu) {
+      DoublePair l, r;
+      xgb_final_children(candidates, children, features, winner, t, node.targets, multi, l, r);
+      lw = xgb_cuda_bounded_weight(l, p, bounds[idx]);
+      rw = xgb_cuda_bounded_weight(r, p, bounds[idx]);
+      int c = features[winner].monotone;
+      if (multi &&
+          ((c > 0 && !xgb_cuda_float_le(lw, rw)) || (c < 0 && !xgb_cuda_float_le(rw, lw)))) {
+        SplitParameters pooled = p;
+        pooled.reg_alpha = xgb_fmul_preserve(2.f, p.reg_alpha);
+        pooled.reg_lambda = xgb_fmul_preserve(2.f, p.reg_lambda);
+        lw = xgb_cuda_bounded_weight(xgb_pair_add(l, r), pooled, bounds[idx]);
+        rw = lw;
+      }
+    }
+    weights[idx] = float4(bw, lw, rw, 0);
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+  if (lane == 0) {
+    XGBDouble gain{0}, ph{0}, lh{0}, rh{0};
+    for (uint t = 0; t < node.targets; ++t) {
+      uint idx = node.parent_begin + t;
+      ulong2 bits = parents[idx];
+      DoublePair parent{{bits.x}, {bits.y}};
+      ph = xgb_dadd(ph, parent.h);
+      gain = multi ? xgb_dadd(gain, xgb_vector_gain_weight(parent, weights[idx].x, p))
+                   : xgb_dfrom_float(xgb_split_gain_weight(parent, weights[idx].x, p));
+      if (winner != 0xffffffffu) {
+        DoublePair l, r;
+        xgb_final_children(candidates, children, features, winner, t, node.targets, multi, l, r);
+        lh = xgb_dadd(lh, l.h);
+        rh = xgb_dadd(rh, r.h);
+      }
+    }
+    float loss = 0;
+    if (winner != 0xffffffffu) {
+      float raw =
+          multi ? reinterpret_cast<device const QuantizedMultiSplitResult*>(candidates)[winner].gain
+                : reinterpret_cast<device const QuantizedSplitResult*>(candidates)[winner].gain;
+      loss = multi ? xgb_dto_float(xgb_dsub(xgb_dfrom_float(raw), gain))
+                   : xgb_fsub_preserve(raw, xgb_dto_float(gain));
+    }
+    output[node_id] = {winner, loss, gain.bits, ph.bits, lh.bits, rh.bits};
+  }
+}
+
+struct SplitBoundsUpdate {
+  uint parent, left, right, targets;
+  int monotone;
+  uint multi;
+};
+kernel void xgb_update_split_bounds(device float* lower [[buffer(0)]],
+                                    device float* upper [[buffer(1)]],
+                                    device const float* left_weight [[buffer(2)]],
+                                    device const float* right_weight [[buffer(3)]],
+                                    constant SplitBoundsUpdate& p [[buffer(4)]],
+                                    device atomic_uint* error [[buffer(5)]],
+                                    uint t [[thread_position_in_grid]]) {
+  if (t >= p.targets) return;
+  ulong parent = ulong(p.parent) * p.targets + t, left = ulong(p.left) * p.targets + t,
+        right = ulong(p.right) * p.targets + t;
+  float lo = lower[parent], hi = upper[parent];
+  float mid = p.multi
+                  ? xgb_fadd_preserve(
+                        left_weight[t],
+                        xgb_fmul_preserve(.5f, xgb_fsub_preserve(right_weight[t], left_weight[t])))
+                  : xgb_fmul_preserve(.5f, xgb_fadd_preserve(left_weight[t], right_weight[t]));
+  if (isnan(mid)) {
+    atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+    return;
+  }
+  lower[left] = p.monotone < 0 ? mid : lo;
+  upper[left] = p.monotone > 0 ? mid : hi;
+  lower[right] = p.monotone > 0 ? mid : lo;
+  upper[right] = p.monotone < 0 ? mid : hi;
+}

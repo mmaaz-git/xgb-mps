@@ -273,15 +273,17 @@ class MultiTargetHistBuilder {
     histogram_builder_->BuildRootHist(p_fmat, p_tree->HostMtView(), partitioner_, gpair, best,
                                       HistBatch(param_));
 
-    auto weight = evaluator_->InitRoot(h_root_sum, quantized_root);
+    float root_sum_hess = 0.0f;
+    auto weight = evaluator_->InitRoot(h_root_sum, quantized_root, &root_sum_hess);
     auto weight_t = weight.HostView();
     std::transform(linalg::cbegin(weight_t), linalg::cend(weight_t), linalg::begin(weight_t),
                    [&](float w) { return w * param_->learning_rate; });
 
     // Compute root sum_hess by summing hessians across all targets
-    float root_sum_hess = 0.0f;
-    for (bst_target_t t{0}; t < n_targets; ++t) {
-      root_sum_hess += static_cast<float>(h_root_sum(t).GetHess());
+    if (!ctx_->IsMPS()) {
+      for (bst_target_t t{0}; t < n_targets; ++t) {
+        root_sum_hess += static_cast<float>(h_root_sum(t).GetHess());
+      }
     }
     p_tree->SetRoot(weight_t, root_sum_hess);
     std::vector<BoundedHistCollection const *> hists;

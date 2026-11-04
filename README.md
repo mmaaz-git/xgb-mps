@@ -14,14 +14,12 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **CUDA-order vector integer splits**. Multi-output trees
-now retain integer parent/prefix/child sums and CUDA's two-stage candidate selection:
-binary64 winners within each 32-candidate chunk, then FP32 comparisons across chunks.
-Direct native checks pass **1,528 cases / 76,102 exact child pairs**; all **94 new
-public full-tree cases** pass. Final validation passes **1,489 Python tests**, all
-native suites and the CPU-only build/API check.
-[Validation](validation/cuda-integer-vector-splits-m3.txt) ·
-[Scope](docs/CUDA_PARITY.md#vector-cuda-order-integer-splits).
+Latest validated step: **GPU split finalization and constraint bounds**. Metal
+now chooses scalar/vector feature winners, calculates parent gains and unscaled
+node weights, and updates monotonic bounds. Direct checks pass **448 nodes /
+11,904 target weights / 90 bound updates**. Final validation passes **1,502 Python
+tests**, every native suite and the CPU-only build/API check.
+[Validation](validation/split-finalization-m3.txt) · [Scope](docs/CUDA_PARITY.md#gpu-split-finalization-and-constraint-bounds).
 Actual NVIDIA execution equivalence remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
@@ -105,7 +103,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; both sampling methods/roots share integer state; weighted sketches still need CUDA alignment |
 | Gradient state | Shared per-tree integer gradients/scales for both sampling methods, all roots and histograms; GPU target/layout copies and bit-preserving Hessian extraction |
 | Histograms | Dense/sparse indices, external pages, scaled integer sums and shared-memory accumulation; resident integer cache retains page additions/subtractions; scalar/vector split scans read integers directly, with a binary64 view for host consumers |
-| Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. Regularization and monotonic bounds supported; feature-winner reduction, final weights and constraint/interaction metadata remain host |
+| Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights and monotonic-bound updates; interaction masks, categorical bitset assembly and tree metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; adapter-built QuantileDMatrix bins remain CPU |
 | Feature sketches | GPU group/Hessian weighting, sorted-column weighted summaries, streaming level compaction and final numeric merging/pruning; row queues and value sorting remain CPU; final cut materialization remains host, as in CUDA |
@@ -113,7 +111,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
 | Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; scalar/vector split statistics retain integers |
-| Root statistics / stump fitting | All scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; objective stump fitting retains its separate binary64 GPU reduction |
+| Root statistics / stump fitting | All scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; final root weights run on GPU; vector cover sums targets in binary64 before FP32 conversion; objective stump fitting retains its separate binary64 GPU reduction |
 | Reduced-gradient leaf fitting | Original value scales → float sampling replay → per-row integer conversion → integer leaf/page sums; binary64 view for regularized/clipped final weights; host tree receives completed leaves |
 | Linear coordinate descent | GPU bias/feature gradient sums and residual updates; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
 | Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
@@ -197,6 +195,10 @@ histogram/conversion/subtraction/gradient-sum operation totals.
 `cuda_integer_split_dispatches` and `cuda_integer_multi_split_dispatches` identify
 the production scalar/vector CUDA-order split kernels. They are subsets of
 `split_dispatches` and `resident_split_dispatches`, not additional work.
+`split_finalize_dispatches` counts GPU feature reduction/weight calculation,
+including root-only calls; `split_bounds_dispatches` counts completed monotonic
+bound updates. These are additional commands whose GPU time is included in
+`split_gpu_time_ns`; they do not increment candidate-evaluation counters.
 `gradient_copy_dispatches`, `hessian_extract_dispatches` and
 `gradient_state_gpu_time_ns` report generic gradient copies/Hessian extraction.
 `gradient_state_shared_input_bytes`, `gradient_state_shared_output_bytes` and
@@ -1994,9 +1996,38 @@ a legitimate categorical missing-direction tie difference: vector split tests no
 check the CUDA-source reference, while retaining their numerical CPU prediction
 comparison at the original tolerance. The focused run passes all 118 cases.
 
-Feature-winner reduction, final weights and constraint/interaction metadata still
-run on the host. Extreme nonfinite behavior, NVCC contraction and actual NVIDIA
+At this vector checkpoint, feature-winner reduction, final weights and constraint/
+interaction metadata still ran on the host; the next update addresses finalization
+and monotonic bounds. Extreme nonfinite behavior, NVCC contraction and actual NVIDIA
 execution remain unverified. Final validation passes **1,489 Python tests (one
 skipped)**, all native suites and the CPU-only build/API check.
 [Validation record](validation/cuda-integer-vector-splits-m3.txt). No performance
 benchmark was run.
+
+
+### GPU split finalization and constraint bounds
+
+Scalar and vector training now use a Metal finalizer to select the winning feature,
+subtract parent gain at CUDA's precision boundary, calculate bounded/pooled node
+weights, and sum vector Hessian traces. It reads the existing GPU candidate buffers.
+Scalar feature ties preserve sampled order; vector ties choose the lower feature
+ID. Weights and statistics persist by node ID until the queued split is applied.
+Root weights also use the GPU when there are no candidate features.
+
+Monotonic bounds now update on the GPU, preserving the distinct scalar/vector
+midpoint formulas and IEEE subnormal arithmetic. Guarded synchronous views share
+host-owned bounds when possible, with a copied-buffer fallback. Weight inputs are
+snapshotted before writes so aliases are safe. Root vector covers now accumulate
+in binary64 before narrowing; regression cases expose the small contributions
+lost by the previous CPU-style FP32 target accumulation.
+
+Direct checks pass 448 nodes, 11,904 target weights and 90 production bound updates.
+Thirteen new public cases verify dispatch coverage, whole-tree formulas, bound-update
+counts, empty-feature roots, large target counts and many-feature selection.
+Final validation passes **1,502 Python tests (one skipped)**, every native suite
+and the CPU-only build/API check. [Validation](validation/split-finalization-m3.txt).
+
+This is still a synchronous hybrid backend. Interaction masks, categorical bitset
+assembly, staging and tree metadata remain on the host; vector model buffer copies
+and learning-rate scaling still need their CUDA GPU counterparts. Candidate
+readbacks have not yet been removed or fused with finalization. No benchmark was run.
