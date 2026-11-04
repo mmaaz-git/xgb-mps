@@ -9,9 +9,9 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums and stump
-fitting, means, stable column/grouped sorting, ROC/PR-AUC, ranking metrics, gradient-based
-sampling and quantile/median estimation on Metal. Feature quantile sketching,
-column sampling and several specialized features still run on the CPU. Histogram conversion,
+fitting, means, stable column/grouped sorting, ROC/PR-AUC, ranking metrics,
+gradient-based row sampling, uniform/weighted column sampling and quantile/median
+estimation on Metal. Feature quantile sketching and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
 
@@ -82,6 +82,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Ranking training | Stable grouped sorting, NDCG cache/label checks and top-k and mean-sampled pairwise/NDCG/MAP pairs, gradients and normalization, including unbiased loss corrections and position-bias updates, on Metal |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior |
+| Column sampling | GPU feature initialization, CPU-compatible MT19937 draws, uniform/weighted selection, stable priority ordering and integer feature sorting; tree/level/node caches remain host |
 | Grouped ranking PR-AUC | GPU label validation, stable prediction ordering, segmented binary64 prefixes, continuous PR integration, degenerate-query handling and aggregation |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision; GPU label validation and NDCG cache initialization |
@@ -123,7 +124,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **633 passed, 1 skipped**. The skip requires a machine without an
+- Python: **673 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
@@ -197,6 +198,11 @@ On Apple M3, 2026-11-03:
   **500,002,500,003 pairs**, testing 64-bit counts without a quadratic CPU run.
   Covers label/score ties, padded strides, zero/tiny/large weights, infinities/NaNs
   in scores, short queries, weight-square overflow errors and output guards.
+- Column sampling: **467 native cases / 3,218,105 selected feature IDs /
+  4,499,703 random draws**, exactly matching CPU; weighted priorities also match
+  bit for bit, including constructed ties. Production hierarchy/cache behavior,
+  parent RNG state and guards are checked. A separate **8,086,019-input** logarithm
+  check has zero CPU mismatches on this M3.
 - Grouped ranking PR-AUC: **297 production cases / 14,198,354 rows / 4,660 query
   results**, checked against CPU and independent continuous-integral references.
   Includes irregular/empty queries, recursive scan carries, widely differing query
@@ -1361,3 +1367,23 @@ snapshots are retained; these results do not establish an isolated hardware limi
   --eval-metric aucpr --rounds 20 --threads 8 --repeats 3 \
   --output results/my-ranking-pr-training.json
 ```
+
+### Column sampling update
+
+Column sampling now runs feature initialization, random generation, uniform and
+weighted selection, stable priority ordering and final feature-ID sorting on Metal.
+The existing tree/level/node sampling rules and parent random stream are preserved.
+Weights chosen to create exact CPU score ties are included in native checks;
+weighted keys and selected IDs agree exactly in the tested cases. The logarithm
+compatibility check covers 8.09 million inputs, including zero, one and table
+boundaries. See the [behavior and limits](docs/CUDA_PARITY.md#column-sampling-behavior).
+
+The host still owns feature vectors and cached level sets. GPU random generation
+is sequential to retain CPU random draws; small feature sets can be slower due
+to dispatch and staging. `column_init_dispatches`, `column_sampling_dispatches`
+and `column_sampling_gpu_time_ns` expose actual GPU work. Wide-workload timings
+will be published separately from this coverage update.
+
+[Validation report](validation/column-sampling-m3.txt): **673 Python tests passed,
+one skipped**, all native suites passed with Metal API Validation, and the
+independent CPU-only build passed its compatibility checks.

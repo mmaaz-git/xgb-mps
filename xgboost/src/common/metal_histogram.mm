@@ -39,6 +39,8 @@ std::atomic<std::uint64_t> gradient_sum_dispatches{0}, gradient_sum_gpu_time_ns{
     stump_dispatches{0};
 std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> gradient_sampling_dispatches{0}, gradient_sampling_gpu_time_ns{0};
+std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches{0},
+    column_sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
 std::atomic<std::uint64_t> histogram_shared_gradient_bytes{0}, leaf_shared_gradient_bytes{0},
@@ -127,6 +129,8 @@ class Runtime {
       ranking_bias_dispatch_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
+  id<MTLComputePipelineState> column_iota_pipeline, column_rng_pipeline, column_keys_pipeline,
+      column_select_pipeline, column_sort_small_pipeline, column_output_pipeline;
   id<MTLComputePipelineState> gradient_sampling_norm_pipeline, gradient_sampling_prefix_pipeline,
       gradient_sampling_threshold_pipeline, gradient_sampling_apply_pipeline;
   id<MTLComputePipelineState> ranking_roc_init_pipeline, ranking_roc_merge_pipeline,
@@ -197,6 +201,13 @@ class Runtime {
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
       quantile_metric_pipeline = make_pipeline(@"xgb_quantile_metric");
       uniform_sampling_pipeline = make_pipeline(@"xgb_uniform_sample");
+      column_iota_pipeline = make_pipeline(@"xgb_column_iota");
+      column_rng_pipeline = make_pipeline(@"xgb_column_rng");
+      column_keys_pipeline = make_pipeline(@"xgb_column_keys");
+      column_select_pipeline = make_pipeline(@"xgb_column_select");
+      column_sort_small_pipeline = make_pipeline(@"xgb_column_sort_small");
+      column_output_pipeline = make_pipeline(@"xgb_column_output");
+
       gradient_maximum_pipeline = make_pipeline(@"xgb_gradient_maximum");
       gradient_scale_pipeline = make_pipeline(@"xgb_gradient_scale");
       gradient_sum_pipeline = make_pipeline(@"xgb_gradient_sum_reduce");
@@ -1020,7 +1031,10 @@ Statistics GetStatistics() {
           ranking_roc_auc_dispatches.load(std::memory_order_relaxed),
           ranking_roc_auc_gpu_time_ns.load(std::memory_order_relaxed),
           ranking_pr_auc_dispatches.load(std::memory_order_relaxed),
-          ranking_pr_auc_gpu_time_ns.load(std::memory_order_relaxed)};
+          ranking_pr_auc_gpu_time_ns.load(std::memory_order_relaxed),
+          column_init_dispatches.load(std::memory_order_relaxed),
+          column_sampling_dispatches.load(std::memory_order_relaxed),
+          column_sampling_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2582,6 +2596,143 @@ void BinEntries(Span<Entry const> entries, Span<FeatureType const> feature_types
     if (elapsed > 0)
       binning_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                     std::memory_order_relaxed);
+  }
+}
+
+void InitFeatureSet(Span<bst_feature_t> features) {
+  if (features.empty()) return;
+  CHECK_LE(features.size(), std::numeric_limits<std::uint32_t>::max());
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto output = Allocate(rt, features.size_bytes());
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.column_iota_pipeline];
+    [e setBuffer:output offset:0 atIndex:0];
+    [e dispatchThreads:MTLSizeMake(features.size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    std::memcpy(features.data(), output.contents, features.size_bytes());
+    column_init_dispatches.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weights,
+                    std::uint32_t seed, Span<bst_feature_t> selected, Span<float> uniforms,
+                    Span<float> keys) {
+  CHECK_LE(selected.size(), features.size());
+  CHECK_LE(features.size(), std::numeric_limits<std::uint32_t>::max());
+  CHECK(uniforms.empty() || (!weights.empty() && uniforms.size() == features.size()));
+  CHECK(keys.empty() || (!weights.empty() && keys.size() == features.size()));
+  if (selected.empty()) return;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, features.data(), features.size_bytes());
+    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto indices = Allocate(rt, features.size_bytes());
+    auto random = Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
+    auto scores = Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
+    auto invalid = Allocate(rt, sizeof(std::uint32_t));
+    auto records = Allocate(rt, selected.size() * 2 * sizeof(std::uint32_t));
+    auto output = Allocate(rt, selected.size_bytes());
+    struct {
+      std::uint32_t rows, selected, seed, weighted;
+      std::uint64_t weights;
+    } p{static_cast<std::uint32_t>(features.size()), static_cast<std::uint32_t>(selected.size()),
+        seed, static_cast<std::uint32_t>(!weights.empty()), weights.size()};
+    static_assert(sizeof(p) == 24);
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto clear = [command blitCommandEncoder];
+    CHECK(clear);
+    [clear fillBuffer:invalid range:NSMakeRange(0, invalid.length) value:0];
+    [clear endEncoding];
+    if (!p.weighted) {
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.column_iota_pipeline];
+      [e setBuffer:indices offset:0 atIndex:0];
+      [e dispatchThreads:MTLSizeMake(p.rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.column_rng_pipeline];
+    [e setBuffer:indices offset:0 atIndex:0];
+    [e setBuffer:random offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [e endEncoding];
+    id<MTLBuffer> ranked = Allocate(rt, 8);
+    if (p.weighted) {
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.column_keys_pipeline];
+      [e setBuffer:input offset:0 atIndex:0];
+      [e setBuffer:weight offset:0 atIndex:1];
+      [e setBuffer:random offset:0 atIndex:2];
+      [e setBuffer:scores offset:0 atIndex:3];
+      [e setBuffer:invalid offset:0 atIndex:4];
+      [e setBytes:&p length:sizeof(p) atIndex:5];
+      [e dispatchThreads:MTLSizeMake(p.rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      std::uint32_t bounds[]{0, p.rows};
+      auto offsets = Upload(rt, bounds, sizeof(bounds));
+      ranked = EncodeGroupSort(rt, command, scores, offsets, p.rows, 1, 1, p.rows).records;
+    }
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.column_select_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:indices offset:0 atIndex:1];
+    [e setBuffer:ranked offset:0 atIndex:2];
+    [e setBuffer:records offset:0 atIndex:3];
+    [e setBytes:&p.weighted length:sizeof(p.weighted) atIndex:4];
+    [e dispatchThreads:MTLSizeMake(p.selected, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    // Dynamic threadgroup storage must be aligned to 16 bytes, even for one ID.
+    std::uint32_t width = 2;
+    while (width < p.selected && width < 4096) width <<= 1;
+    if (p.selected <= 4096 && width * 8 <= rt.device.maxThreadgroupMemoryLength) {
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.column_sort_small_pipeline];
+      [e setBuffer:records offset:0 atIndex:0];
+      [e setBytes:&p.selected length:sizeof(p.selected) atIndex:1];
+      [e setBytes:&width length:sizeof(width) atIndex:2];
+      [e setThreadgroupMemoryLength:width * 8 atIndex:0];
+      [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    } else {
+      SortShape shape{p.selected, 1, 1, 1,
+                      static_cast<std::uint32_t>((std::uint64_t{p.selected} + 255) / 256)};
+      records = EncodeRadixRecords(rt, command, records, shape);
+    }
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.column_output_pipeline];
+    [e setBuffer:records offset:0 atIndex:0];
+    [e setBuffer:output offset:0 atIndex:1];
+    [e dispatchThreads:MTLSizeMake(p.selected, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    CHECK_EQ(*static_cast<std::uint32_t const*>(invalid.contents), 0)
+        << "Feature index exceeds weights";
+    std::memcpy(selected.data(), output.contents, selected.size_bytes());
+    if (!uniforms.empty()) std::memcpy(uniforms.data(), random.contents, uniforms.size_bytes());
+    if (!keys.empty()) std::memcpy(keys.data(), scores.contents, keys.size_bytes());
+    column_sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      column_sampling_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                            std::memory_order_relaxed);
   }
 }
 

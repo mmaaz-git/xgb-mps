@@ -4186,3 +4186,261 @@ kernel void xgb_ranking_pr_score(
   ulong2 result = xgb_reduce_double_pair(sum, zero, bounds, sums, lane, simd);
   if (!tid) partial[group] = ulong2(result.x, one.bits);
 }
+
+// MT19937's in-place recurrence matches std::mt19937, including its 624-word
+// wraparound. One lane owns the stream: rejection draws cannot be reordered.
+inline uint xgb_column_mt(threadgroup uint* state, thread uint& position) {
+  uint next = position + 1 == 624 ? 0 : position + 1;
+  uint other = position + 397;
+  if (other >= 624) other -= 624;
+  uint y = (state[position] & 0x80000000u) | (state[next] & 0x7fffffffu);
+  uint value = state[other] ^ (y >> 1) ^ ((y & 1u) ? 0x9908b0dfu : 0u);
+  state[position] = value;
+  position = next;
+  value ^= value >> 11;
+  value ^= (value << 7) & 0x9d2c5680u;
+  value ^= (value << 15) & 0xefc60000u;
+  return value ^ (value >> 18);
+}
+struct ColumnSampleParams {
+  uint rows, selected, seed, weighted;
+  ulong weights;
+};
+kernel void xgb_column_iota(device uint* output [[buffer(0)]],
+                            uint row [[thread_position_in_grid]]) {
+  output[row] = row;
+}
+kernel void xgb_column_rng(device uint* indices [[buffer(0)]], device float* uniforms [[buffer(1)]],
+                           constant ColumnSampleParams& p [[buffer(2)]]) {
+  threadgroup uint state[624];
+  state[0] = p.seed;
+  for (uint i = 1; i < 624; ++i) state[i] = 1812433253u * (state[i - 1] ^ (state[i - 1] >> 30)) + i;
+  uint position = 0;
+  if (p.weighted) {
+    for (uint i = 0; i < p.rows; ++i)
+      uniforms[i] = float(xgb_column_mt(state, position)) * 0x1p-32f;
+  } else {
+    // Forward Fisher-Yates: later swaps cannot change the selected prefix.
+    // The local engine is discarded, so unused tail draws need not execute.
+    for (uint i = 0; i < min(p.selected, p.rows - 1); ++i) {
+      uint range = p.rows - i, bits = 32 - clz(range - 1);
+      uint mask = 0xffffffffu >> (32 - bits), draw;
+      do {
+        draw = xgb_column_mt(state, position) & mask;
+      } while (draw >= range);
+      uint value = indices[i];
+      indices[i] = indices[i + draw];
+      indices[i + draw] = value;
+    }
+  }
+}
+// Float log for the uniform-draw domain [0, 1]. Range reduction uses a 1/128
+// grid and a cubic with the rounding behavior of the tested Apple libm. The
+// generic correctly-rounded log can differ by an FP32 ULP and break score ties.
+// Table entries are binary64 1/c and log(c), with c halved for indices >= 64.
+constant ulong2 xgb_column_log_table[] = {
+    ulong2(0x3ff0000000000000ul, 0x0000000000000000ul),
+    ulong2(0x3fefc07f01fc07f0ul, 0x3f7fe02a6b106789ul),
+    ulong2(0x3fef81f81f81f820ul, 0x3f8fc0a8b0fc03e4ul),
+    ulong2(0x3fef44659e4a4271ul, 0x3f97b91b07d5b11bul),
+    ulong2(0x3fef07c1f07c1f08ul, 0x3f9f829b0e783300ul),
+    ulong2(0x3feecc07b301ecc0ul, 0x3fa39e87b9febd60ul),
+    ulong2(0x3fee9131abf0b767ul, 0x3fa77458f632dcfcul),
+    ulong2(0x3fee573ac901e574ul, 0x3fab42dd711971bful),
+    ulong2(0x3fee1e1e1e1e1e1eul, 0x3faf0a30c01162a6ul),
+    ulong2(0x3fede5d6e3f8868aul, 0x3fb16536eea37ae1ul),
+    ulong2(0x3fedae6076b981dbul, 0x3fb341d7961bd1d1ul),
+    ulong2(0x3fed77b654b82c34ul, 0x3fb51b073f06183ful),
+    ulong2(0x3fed41d41d41d41dul, 0x3fb6f0d28ae56b4cul),
+    ulong2(0x3fed0cb58f6ec074ul, 0x3fb8c345d6319b21ul),
+    ulong2(0x3fecd85689039b0bul, 0x3fba926d3a4ad563ul),
+    ulong2(0x3feca4b3055ee191ul, 0x3fbc5e548f5bc743ul),
+    ulong2(0x3fec71c71c71c71cul, 0x3fbe27076e2af2e6ul),
+    ulong2(0x3fec3f8f01c3f8f0ul, 0x3fbfec9131dbeabbul),
+    ulong2(0x3fec0e070381c0e0ul, 0x3fc0d77e7cd08e59ul),
+    ulong2(0x3febdd2b899406f7ul, 0x3fc1b72ad52f67a0ul),
+    ulong2(0x3febacf914c1bad0ul, 0x3fc29552f81ff523ul),
+    ulong2(0x3feb7d6c3dda338bul, 0x3fc371fc201e8f74ul),
+    ulong2(0x3feb4e81b4e81b4ful, 0x3fc44d2b6ccb7d1eul),
+    ulong2(0x3feb2036406c80d9ul, 0x3fc526e5e3a1b438ul),
+    ulong2(0x3feaf286bca1af28ul, 0x3fc5ff3070a793d4ul),
+    ulong2(0x3feac5701ac5701bul, 0x3fc6d60fe719d21dul),
+    ulong2(0x3fea98ef606a63beul, 0x3fc7ab890210d909ul),
+    ulong2(0x3fea6d01a6d01a6dul, 0x3fc87fa06520c911ul),
+    ulong2(0x3fea41a41a41a41aul, 0x3fc9525a9cf456b4ul),
+    ulong2(0x3fea16d3f97a4b02ul, 0x3fca23bc1fe2b563ul),
+    ulong2(0x3fe9ec8e951033d9ul, 0x3fcaf3c94e80bff3ul),
+    ulong2(0x3fe9c2d14ee4a102ul, 0x3fcbc286742d8cd6ul),
+    ulong2(0x3fe999999999999aul, 0x3fcc8ff7c79a9a22ul),
+    ulong2(0x3fe970e4f80cb872ul, 0x3fcd5c216b4fbb91ul),
+    ulong2(0x3fe948b0fcd6e9e0ul, 0x3fce27076e2af2e6ul),
+    ulong2(0x3fe920fb49d0e229ul, 0x3fcef0adcbdc5936ul),
+    ulong2(0x3fe8f9c18f9c18faul, 0x3fcfb9186d5e3e2bul),
+    ulong2(0x3fe8d3018d3018d3ul, 0x3fd0402594b4d041ul),
+    ulong2(0x3fe8acb90f6bf3aaul, 0x3fd0a324e27390e3ul),
+    ulong2(0x3fe886e5f0abb04aul, 0x3fd1058bf9ae4ad5ul),
+    ulong2(0x3fe8618618618618ul, 0x3fd1675cababa60eul),
+    ulong2(0x3fe83c977ab2beddul, 0x3fd1c898c16999fbul),
+    ulong2(0x3fe8181818181818ul, 0x3fd22941fbcf7966ul),
+    ulong2(0x3fe7f405fd017f40ul, 0x3fd2895a13de86a3ul),
+    ulong2(0x3fe7d05f417d05f4ul, 0x3fd2e8e2bae11d31ul),
+    ulong2(0x3fe7ad2208e0ecc3ul, 0x3fd347dd9a987d55ul),
+    ulong2(0x3fe78a4c8178a4c8ul, 0x3fd3a64c556945eaul),
+    ulong2(0x3fe767dce434a9b1ul, 0x3fd404308686a7e4ul),
+    ulong2(0x3fe745d1745d1746ul, 0x3fd4618bc21c5ec2ul),
+    ulong2(0x3fe724287f46debcul, 0x3fd4be5f957778a1ul),
+    ulong2(0x3fe702e05c0b8170ul, 0x3fd51aad872df82dul),
+    ulong2(0x3fe6e1f76b4337c7ul, 0x3fd5767717455a6cul),
+    ulong2(0x3fe6c16c16c16c17ul, 0x3fd5d1bdbf5809caul),
+    ulong2(0x3fe6a13cd1537290ul, 0x3fd62c82f2b9c795ul),
+    ulong2(0x3fe6816816816817ul, 0x3fd686c81e9b14aful),
+    ulong2(0x3fe661ec6a5122f9ul, 0x3fd6e08eaa2ba1e4ul),
+    ulong2(0x3fe642c8590b2164ul, 0x3fd739d7f6bbd007ul),
+    ulong2(0x3fe623fa77016240ul, 0x3fd792a55fdd47a2ul),
+    ulong2(0x3fe6058160581606ul, 0x3fd7eaf83b82afc3ul),
+    ulong2(0x3fe5e75bb8d015e7ul, 0x3fd842d1da1e8b17ul),
+    ulong2(0x3fe5c9882b931057ul, 0x3fd89a3386c1425bul),
+    ulong2(0x3fe5ac056b015ac0ul, 0x3fd8f11e873662c7ul),
+    ulong2(0x3fe58ed2308158edul, 0x3fd947941c2116fbul),
+    ulong2(0x3fe571ed3c506b3aul, 0x3fd99d958117e08bul),
+    ulong2(0x3fe5555555555555ul, 0xbfd269621134db92ul),
+    ulong2(0x3fe5390948f40febul, 0xbfd214456d0eb8d4ul),
+    ulong2(0x3fe51d07eae2f815ul, 0xbfd1bf99635a6b95ul),
+    ulong2(0x3fe5015015015015ul, 0xbfd16b5ccbacfb73ul),
+    ulong2(0x3fe4e5e0a72f0539ul, 0xbfd1178e8227e47cul),
+    ulong2(0x3fe4cab88725af6eul, 0xbfd0c42d676162e3ul),
+    ulong2(0x3fe4afd6a052bf5bul, 0xbfd07138604d5862ul),
+    ulong2(0x3fe49539e3b2d067ul, 0xbfd01eae5626c691ul),
+    ulong2(0x3fe47ae147ae147bul, 0xbfcf991c6cb3b379ul),
+    ulong2(0x3fe460cbc7f5cf9aul, 0xbfcef5ade4dcffe6ul),
+    ulong2(0x3fe446f86562d9fbul, 0xbfce530effe71012ul),
+    ulong2(0x3fe42d6625d51f87ul, 0xbfcdb13db0d48940ul),
+    ulong2(0x3fe4141414141414ul, 0xbfcd1037f2655e7bul),
+    ulong2(0x3fe3fb013fb013fbul, 0xbfcc6ffbc6f00f71ul),
+    ulong2(0x3fe3e22cbce4a902ul, 0xbfcbd087383bd8adul),
+    ulong2(0x3fe3c995a47babe7ul, 0xbfcb31d8575bce3dul),
+    ulong2(0x3fe3b13b13b13b14ul, 0xbfca93ed3c8ad9e3ul),
+    ulong2(0x3fe3991c2c187f63ul, 0xbfc9f6c407089664ul),
+    ulong2(0x3fe3813813813814ul, 0xbfc95a5adcf7017ful),
+    ulong2(0x3fe3698df3de0748ul, 0xbfc8beafeb38fe8cul),
+    ulong2(0x3fe3521cfb2b78c1ul, 0xbfc823c16551a3c2ul),
+    ulong2(0x3fe33ae45b57bcb2ul, 0xbfc7898d85444c73ul),
+    ulong2(0x3fe323e34a2b10bful, 0xbfc6f0128b756abcul),
+    ulong2(0x3fe30d190130d190ul, 0xbfc6574ebe8c133aul),
+    ulong2(0x3fe2f684bda12f68ul, 0xbfc5bf406b543db2ul),
+    ulong2(0x3fe2e025c04b8097ul, 0xbfc527e5e4a1b58dul),
+    ulong2(0x3fe2c9fb4d812ca0ul, 0xbfc4913d8333b561ul),
+    ulong2(0x3fe2b404ad012b40ul, 0xbfc3fb45a59928ccul),
+    ulong2(0x3fe29e4129e4129eul, 0xbfc365fcb0159016ul),
+    ulong2(0x3fe288b01288b013ul, 0xbfc2d1610c86813aul),
+    ulong2(0x3fe27350b8812735ul, 0xbfc23d712a49c202ul),
+    ulong2(0x3fe25e22708092f1ul, 0xbfc1aa2b7e23f72aul),
+    ulong2(0x3fe2492492492492ul, 0xbfc1178e8227e47cul),
+    ulong2(0x3fe23456789abcdful, 0xbfc08598b59e3a07ul),
+    ulong2(0x3fe21fb78121fb78ul, 0xbfbfe89139dbd566ul),
+    ulong2(0x3fe20b470c67c0d9ul, 0xbfbec739830a1120ul),
+    ulong2(0x3fe1f7047dc11f70ul, 0xbfbda727638446a2ul),
+    ulong2(0x3fe1e2ef3b3fb874ul, 0xbfbc885801bc4b23ul),
+    ulong2(0x3fe1cf06ada2811dul, 0xbfbb6ac88dad5b1cul),
+    ulong2(0x3fe1bb4a4046ed29ul, 0xbfba4e7640b1bc38ul),
+    ulong2(0x3fe1a7b9611a7b96ul, 0xbfb9335e5d594989ul),
+    ulong2(0x3fe19453808ca29cul, 0xbfb8197e2f40e3f0ul),
+    ulong2(0x3fe1811811811812ul, 0xbfb700d30aeac0e1ul),
+    ulong2(0x3fe16e0689427379ul, 0xbfb5e95a4d9791cbul),
+    ulong2(0x3fe15b1e5f75270dul, 0xbfb4d3115d207eacul),
+    ulong2(0x3fe1485f0e0acd3bul, 0xbfb3bdf5a7d1ee64ul),
+    ulong2(0x3fe135c81135c811ul, 0xbfb2aa04a44717a5ul),
+    ulong2(0x3fe12358e75d3033ul, 0xbfb1973bd1465567ul),
+    ulong2(0x3fe1111111111111ul, 0xbfb08598b59e3a07ul),
+    ulong2(0x3fe0fef010fef011ul, 0xbfaeea31c006b87cul),
+    ulong2(0x3fe0ecf56be69c90ul, 0xbfaccb73cdddb2ccul),
+    ulong2(0x3fe0db20a88f4696ul, 0xbfaaaef2d0fb10fcul),
+    ulong2(0x3fe0c9714fbcda3bul, 0xbfa894aa149fb343ul),
+    ulong2(0x3fe0b7e6ec259dc8ul, 0xbfa67c94f2d4bb58ul),
+    ulong2(0x3fe0a6810a6810a7ul, 0xbfa466aed42de3eaul),
+    ulong2(0x3fe0953f39010954ul, 0xbfa252f32f8d183ful),
+    ulong2(0x3fe0842108421084ul, 0xbfa0415d89e74444ul),
+    ulong2(0x3fe073260a47f7c6ul, 0xbf9c63d2ec14aaf2ul),
+    ulong2(0x3fe0624dd2f1a9fcul, 0xbf98492528c8cabful),
+    ulong2(0x3fe05197f7d73404ul, 0xbf9432a925980cc1ul),
+    ulong2(0x3fe0410410410410ul, 0xbf90205658935847ul),
+    ulong2(0x3fe03091b51f5e1aul, 0xbf882448a388a2aaul),
+    ulong2(0x3fe0204081020408ul, 0xbf8010157588de71ul),
+    ulong2(0x3fe0101010101010ul, 0xbf70080559588b35ul),
+    ulong2(0x3fe0000000000000ul, 0x0000000000000000ul),
+};
+inline float xgb_column_logf(float value) {
+  using namespace xgb_survival;
+  uint bits = as_type<uint>(value);
+  if (!bits) return -INFINITY;
+  uint index = ((bits & 0x7fffffu) + 0x8000u) >> 16;
+  int exponent = as_type<int>(bits - 0x3f3f8000u) >> 23;
+  D mantissa{(ulong(bits) | 0x1ff800000ul) << 29};
+  ulong2 table = xgb_column_log_table[index];
+  D r = mantissa * D{table.x} - one;
+  D polynomial = r * D{0x3fd55561555ccbadul} + D{0xbfe00006000349d2ul};
+  D result = From(float(exponent)) * D{0x3fe62e42fefa39eful} + D{table.y};
+  result = r * D{0x3fefffffffff6666ul} + result;
+  return xgb_dto_float((r * r) * polynomial + result);
+}
+kernel void xgb_column_keys(device const uint* features [[buffer(0)]],
+                            device const float* weights [[buffer(1)]],
+                            device const float* uniforms [[buffer(2)]],
+                            device float* keys [[buffer(3)]],
+                            device atomic_uint* invalid [[buffer(4)]],
+                            constant ColumnSampleParams& p [[buffer(5)]],
+                            uint row [[thread_position_in_grid]]) {
+  using namespace xgb_survival;
+  uint feature = features[row];
+  if (feature >= p.weights) {
+    atomic_store_explicit(invalid, 1u, memory_order_relaxed);
+    keys[row] = 0;
+    return;
+  }
+  float weight = weights[feature];
+  // Compare preserved bits: Metal can flush subnormal weights in native math.
+  if (xgb_float_less(as_type<uint>(weight), as_type<uint>(1e-6f))) weight = 1e-6f;
+  float logarithm = xgb_column_logf(uniforms[row]);
+  keys[row] = xgb_dto_float(From(logarithm) / From(weight));
+}
+kernel void xgb_column_select(device const uint* features [[buffer(0)]],
+                              device const uint* shuffled [[buffer(1)]],
+                              device const uint2* ranked [[buffer(2)]],
+                              device uint2* selected [[buffer(3)]],
+                              constant uint& weighted [[buffer(4)]],
+                              uint row [[thread_position_in_grid]]) {
+  uint index = weighted ? ranked[row].y : shuffled[row];
+  selected[row] = uint2(features[index], row);
+}
+// The common column counts fit a single cooperative sorting network. Larger
+// selections use the same stable integer radix implementation as other sorts.
+kernel void xgb_column_sort_small(device uint2* records [[buffer(0)]],
+                                  constant uint& count [[buffer(1)]],
+                                  constant uint& width [[buffer(2)]],
+                                  threadgroup uint2* work [[threadgroup(0)]],
+                                  uint tid [[thread_index_in_threadgroup]]) {
+  for (uint i = tid; i < width; i += 256) work[i] = i < count ? records[i] : uint2(0xffffffffu);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint size = 2; size <= width; size <<= 1) {
+    for (uint step = size >> 1; step; step >>= 1) {
+      for (uint i = tid; i < width; i += 256) {
+        uint other = i ^ step;
+        if (other > i) {
+          uint2 a = work[i], b = work[other];
+          bool greater = a.x > b.x || (a.x == b.x && a.y > b.y);
+          if (greater == ((i & size) == 0)) {
+            work[i] = b;
+            work[other] = a;
+          }
+        }
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+  }
+  for (uint i = tid; i < count; i += 256) records[i] = work[i];
+}
+kernel void xgb_column_output(device const uint2* selected [[buffer(0)]],
+                              device uint* output [[buffer(1)]],
+                              uint row [[thread_position_in_grid]]) {
+  output[row] = selected[row].x;
+}

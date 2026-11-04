@@ -15,9 +15,9 @@ listed below. This is not yet a complete GPU backend.
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | Implemented with a different bounded fixed-point scheme; GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales remain in GPU buffers; eligible raw gradients are read through guarded shared host views |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata |
-| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host column sampling, interaction masks and tree updates |
+| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
-| Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | Metal uniform and gradient-based row sampling/replay, including CPU-compatible draws, norms, sorted thresholds and rescaling; scalar/vector root-gradient sums and dense root histogram sums on Metal; column sampling remains CPU |
+| Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | Metal uniform and gradient-based row sampling/replay, including CPU-compatible draws, norms, sorted thresholds and rescaling; scalar/vector root-gradient sums and dense root histogram sums on Metal; column initialization, uniform/weighted selection and final feature ordering now use Metal |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means and Newton stump fitting use Metal; label validation and other objective-specific initialization remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means/stump fitting and initial quantile estimation use Metal; other initialization work remains CPU |
@@ -77,9 +77,9 @@ Keeping those arrays resident and reducing synchronization are the next architec
 steps. Host model construction and serialization can remain on the CPU.
 
 Split tests include categorical partitions, missing directions, monotonic and
-interaction constraints, vector leaves and external-memory pages. Column
-sampling, remaining training-state updates and more efficient external-memory
-staging remain required.
+interaction constraints, vector leaves and external-memory pages. Column sampling
+now uses GPU initialization, random draws, selection and ordering. Remaining
+training-state updates and more efficient external-memory staging are still required.
 
 Sensitive AFT gradient corrections, SHAP, quantile
 construction, linear training and collectives are separate coverage requirements.
@@ -224,3 +224,42 @@ training case still fails strict prediction equivalence (maximum 0.421501, RMS
 0.047376), although NDCG@10 histories agree within 8.11e-5. Its failed report is
 published; unbiased NDCG/MAP cases pass strict prediction checks. This is an
 explicit numerical limitation, not an unported CPU-gradient fallback.
+
+## Column sampling behavior
+
+Feature initialization, uniform and weighted sampling without replacement, and
+final feature-ID sorting execute on Metal for `colsample_bytree`,
+`colsample_bylevel` and `colsample_bynode`. Existing host caches retain the same
+per-tree/per-level reuse and per-node resampling rules. The host consumes one
+parent RNG seed per actual sample, exactly as the CPU path does; rates of one
+reuse the feature set without consuming a seed or dispatching a sampler.
+
+The GPU implements MT19937 and Apple libc++ uniform-real and rejection-based
+uniform-integer draws. Uniform selection uses forward Fisher-Yates and stops
+when its selected prefix is fixed; unused local-generator draws cannot affect
+later samples. Weighted sampling gathers feature weights, applies the CPU's
+`1e-6` floor, computes `log(u)/weight`, stably orders priorities and sorts selected
+integer IDs. Small selections use a cooperative sorting network; large selections
+use integer radix sorting, preserving IDs above the exact-integer range of FP32.
+
+Weighted score ties are sensitive to libm rounding. A sampling-specific table
+and cubic logarithm matches the tested Apple CPU rounding; generic binary64 log
+rounding differed by up to two FP32 ULP in weighted keys. Tests now require exact
+CPU keys, including weights deliberately chosen to produce tied scores. A separate
+8,086,019-input check covers random draws, all exponent ranges in the draw domain,
+range-reduction boundaries, zero and one with zero observed mismatches. This is a
+local Apple libc++/libm compatibility result, not a guarantee about other library
+versions or every possible weighted priority.
+
+Native checks cover 467 cases, 3,218,105 selected IDs and 4,499,703 exact random
+draws, including million-feature samples and the production sampler hierarchy.
+Inputs and output guards, weight-index bounds, parent RNG consumption, cached
+levels and GPU dispatch counts are checked. Public tests cover scalar/vector trees,
+zero/nonuniform feature weights, missing values and model persistence.
+
+RNG generation is sequential on one GPU lane to preserve the CPU stream. Host
+feature vectors and cache metadata remain authoritative; sampling uploads inputs,
+waits for completion and reads back selected IDs. These are explicit performance
+limits. `column_init_dispatches`, `column_sampling_dispatches` and
+`column_sampling_gpu_time_ns` expose completed work; the sampling time excludes
+the separate initialization command and host staging/wait overhead.

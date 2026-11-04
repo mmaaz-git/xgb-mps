@@ -46,6 +46,14 @@ std::shared_ptr<HostDeviceVector<bst_feature_t>> ColumnSampler::ColSample(
   }
 
   auto seed = ctx->Rng()();
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    p_new_features->Resize(n);
+    metal::SampleFeatures(p_features->ConstHostSpan(), feature_weights_.ConstHostSpan(), seed,
+                          p_new_features->HostSpan());
+    return p_new_features;
+  }
+#endif
   RandomEngine rng(seed);
   const auto &features = p_features->HostVector();
   CHECK_GT(features.size(), 0);

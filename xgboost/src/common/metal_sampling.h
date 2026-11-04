@@ -7,6 +7,12 @@
 #include "xgboost/linalg.h"
 #include "xgboost/span.h"
 namespace xgboost::common::metal {
+// Column sampling follows Apple libc++'s MT19937/distribution sequence. Optional
+// weighted diagnostics expose GPU uniforms/keys without changing the algorithm.
+void InitFeatureSet(Span<bst_feature_t> features);
+void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weights,
+                    std::uint32_t seed, Span<bst_feature_t> selected, Span<float> uniforms = {},
+                    Span<float> keys = {});
 void UniformSample(linalg::MatrixView<GradientPair> gradients, float probability,
                    std::uint64_t seed, std::uint32_t threads);
 // Compute probabilities from the original split gradients, then sample/rescale

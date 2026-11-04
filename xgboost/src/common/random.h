@@ -17,6 +17,9 @@
 #include <vector>
 
 #include "algorithm.h"        // ArgSort
+#if defined(XGBOOST_USE_METAL)
+#include "metal_sampling.h"
+#endif
 #include "xgboost/context.h"  // Context
 #include "xgboost/host_device_vector.h"
 
@@ -124,7 +127,13 @@ class ColumnSampler {
 #else
       AssertGPUSupport();
 #endif
-    } else {
+    }
+#if defined(XGBOOST_USE_METAL)
+    else if (ctx->IsMPS()) {
+      metal::InitFeatureSet(feature_set_tree_->HostSpan());
+    }
+#endif
+    else {
       std::iota(feature_set_tree_->HostVector().begin(), feature_set_tree_->HostVector().end(), 0);
     }
 

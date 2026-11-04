@@ -48,6 +48,10 @@ def main():
     parser.add_argument("--sampling-method", choices=["uniform", "gradient_based"], default="uniform")
     parser.add_argument("--weighted", action="store_true")
     parser.add_argument("--features", type=int, default=32)
+    parser.add_argument("--colsample-bytree", type=float, default=1.0)
+    parser.add_argument("--colsample-bylevel", type=float, default=1.0)
+    parser.add_argument("--colsample-bynode", type=float, default=1.0)
+    parser.add_argument("--feature-weights", action="store_true", help="Use deterministic nonuniform column weights")
     parser.add_argument("--max-depth", type=int, default=6)
     parser.add_argument("--query-size", type=int, default=128, help="Rows per query for ranking objectives")
     parser.add_argument("--rank-pairs", type=int, default=32)
@@ -65,11 +69,15 @@ def main():
         parser.error(f"{args.output} exists; inspect it or choose a new output name")
     if args.query_size < 1 or args.rank_pairs < 1:
         parser.error("query-size and rank-pairs must be positive")
+    if not all(0 < value <= 1 for value in [args.colsample_bytree, args.colsample_bylevel, args.colsample_bynode]):
+        parser.error("Column sampling rates must be in (0, 1]")
     is_ranking = args.objective.startswith("rank:")
     assert xgb.metal_info()["available"], "A visible Metal GPU is required"
     p = dict(tree_method="hist", objective=args.objective, max_depth=args.max_depth,
              max_bin=256, nthread=args.threads, seed=7, subsample=args.subsample,
              sampling_method=args.sampling_method)
+    p.update(colsample_bytree=args.colsample_bytree, colsample_bylevel=args.colsample_bylevel,
+             colsample_bynode=args.colsample_bynode)
     if is_ranking:
         p.update(lambdarank_pair_method=args.rank_method, lambdarank_num_pair_per_sample=args.rank_pairs,
                  lambdarank_unbiased=args.unbiased)
@@ -80,12 +88,14 @@ def main():
     # Compile the shader and initialize the runtime before timing either device.
     warm_labels = np.arange(32) % 2 if args.objective in {"binary:logistic", "rank:map"} or args.eval_metric == "aucpr" else np.arange(32)
     warm = xgb.DMatrix(np.arange(64, dtype=np.float32).reshape(32, 2), label=warm_labels,
+                       feature_weights=np.array([.5, 2], dtype=np.float32) if args.feature_weights else None,
                        weight=np.ones(1 if is_ranking else 32) if args.weighted else None,
                        group=[32] if is_ranking else None)
     for device in ["cpu", "mps"]:
         xgb.train(p | {"device": device}, warm, num_boost_round=1)
     report = dict(status="in_progress", platform=platform.platform(), cpu_threads=args.threads, features=args.features,
-                  rounds=args.rounds, repeats=args.repeats, weighted=args.weighted, params=p, cases=[],
+                  rounds=args.rounds, repeats=args.repeats, weighted=args.weighted,
+                  feature_weights=args.feature_weights, params=p, cases=[],
                   xgboost_version=xgb.__version__, numpy_version=np.__version__, build_info=xgb.build_info(),
                   commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
                   working_tree=subprocess.check_output(["git", "status", "--short"], text=True).strip(),
@@ -113,6 +123,7 @@ def main():
             y = ((y > 1).astype(np.float32) if args.objective == "rank:map" or args.eval_metric == "aucpr" else
                  np.digitize(y, [-2, -1, 0, 1, 2, 4, 6]).astype(np.float32))
         weights = rng.uniform(0.1, 3, len(groups) if is_ranking else n).astype(np.float32) if args.weighted else None
+        feature_weights = np.exp2(np.linspace(-3, 3, args.features)).astype(np.float32) if args.feature_weights else None
         timings = {"cpu": [], "mps": []}
         preds = {}
         metric_histories = {"cpu": [], "mps": []}
@@ -126,7 +137,8 @@ def main():
                 memory_before = memory_snapshot()
                 wall_start = time.time()
                 start = time.perf_counter()
-                d = xgb.DMatrix(x, label=y, weight=weights, group=groups, nthread=args.threads)
+                d = xgb.DMatrix(x, label=y, weight=weights, group=groups,
+                                feature_weights=feature_weights, nthread=args.threads)
                 history = {}
                 model = xgb.train(p | {"device": device}, d, num_boost_round=args.rounds,
                                   evals=[(d, "train")] if args.eval_metric else [],
@@ -148,6 +160,9 @@ def main():
                 memory[device].append({"before": memory_before, "after": memory_snapshot()})
                 after = xgb.metal_info()
                 stats = {k: after[k] - before[k] for k in after if k not in {"built", "available"}}
+                sampling_columns = min(args.colsample_bytree, args.colsample_bylevel, args.colsample_bynode) < 1
+                assert (stats["column_init_dispatches"] > 0) == (device == "mps")
+                assert (stats["column_sampling_dispatches"] > 0) == (device == "mps" and sampling_columns)
                 dispatch_statistics[device].append(stats)
                 metric_histories[device].append(history)
                 if args.eval_metric in {"auc", "aucpr"}:
