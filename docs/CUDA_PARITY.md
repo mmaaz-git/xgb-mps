@@ -40,7 +40,8 @@ work, not accepted substitutes for CUDA behavior:
   uses that RNG and CUDA-derived norms/thresholds/integer rescaling. Compiler
   contraction and hardware-dependent reduction details remain unverified on NVIDIA;
   weighted columns now use the same modern Philox stream, and unweighted columns
-  use Thrust's distinct shuffle stream. Ranking random streams still need alignment.
+  use Thrust's distinct shuffle stream. Mean ranking now uses independent Philox
+  integer draws and CUDA pair order; its gradient/cost arithmetic still needs alignment.
 - Quantile sketches: ordinary MPS matrices now use CUDA-derived raw sorting,
   FP32 scans and resident summaries, as detailed below. Adapter/device-array
   ingestion and distributed sketch collectives remain open. Scan association,
@@ -79,7 +80,7 @@ must be reported rather than hidden by widening test tolerances.
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
 | Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; expectile's host margin loop matches upstream host execution |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation use Metal; other initialization work remains CPU |
-| Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; biased top-k/mean pair construction, gradients, MAP prefixes and query normalization execute on Metal. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
+| Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; top-k and CUDA-source Philox mean pairs execute on Metal, along with gradients, MAP prefixes and query normalization; CUDA gradient/cost rounding, actual-label MAP prefixes and combined weight arithmetic remain open. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients and prediction/base-score transforms; GPU identifies small censored probabilities for original CPU gradient recomputation, exposed through correction counters/time. Full GPU coverage remains incomplete |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Other initialization/state work still requires porting/audit |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; CPU input views stage dense chunks and recode categories |
@@ -389,37 +390,63 @@ and the CPU-only build/device check (2026-11-04, 11:35:37–11:39:51 UTC).
 
 ## Ranking gradient numerical behavior
 
-Biased top-k/mean pairwise/NDCG/MAP gradients preserve FP32 sigmoid and CPU score
-subtraction, binary64 delta/Hessian calculations, per-row FP32 accumulation order,
-and separate FP32 normalization/weight multiplications. Software arithmetic
-preserves subnormal inputs/results that native Metal arithmetic can flush.
-Parallel query normalization and MAP prefixes can change low-order rounding;
-CPU equivalence is tested with FP32 tolerances, not a universal bitwise guarantee.
-Candidate-pair buffers are batched, and output gradients return to existing
-host-owned storage. Fully resident training state remains open work.
+Mean pair construction now follows `objective/lambdarank_obj.cuh`'s
+`MakePairsOp::WithSampling` and the modern CCCL branch of `common/random.cuh`.
+Prediction ranks and then labels sort stably on GPU. Each pair independently
+seeds Philox4x64 with the wrapped 32-bit query seed, discards its query-local
+pair index, and applies `uniform_int_distribution<size_t>` to the complement of
+its equal-label bucket. Pair order is sample-major, repeat-minor. Singleton
+ranges consume no engine output; homogeneous queries produce `(0,0)` pairs.
+The older Thrust CUDA stream is not claimed equivalent.
 
+One Metal lane samples each pair. A separate query kernel builds incidence
+lists in pair-index order for the existing gradient gather; that list-building
+step remains sequential within a query. Production pair buffers retain the
+64 MiB batching budget (a single larger query may exceed it within the device
+limit). An optional internal trace copies raw ordered pairs for native tests;
+normal training does not allocate that trace or copy pair indices to the host.
 
-Mean sampling matches Apple libc++ engine/distribution sequences and stable label
-bucket order. Query generators build ordered incidence lists on GPU; generation
-within a query is sequential. The ranking sigmoid uses a two-float exponential
-expansion with FP32 intermediate rounding and an emulated binary64 reciprocal.
-It matches CPU/GPU binary64-exp oracles on 2,996,040 test inputs; dynamic Apple
-`expf` itself differs on 4,962 of these (up to four sigmoid ULPs). Rounding feedback
-can amplify small differences in mean-pairwise training. A million-row, 20-round
-benchmark fails the strict per-prediction check on 0.1544% of rows (maximum
-0.000506, RMS 7.09e-6), while NDCG@10 histories agree within 4e-15. This limitation
-is retained in the published failed report; strict checks were not weakened.
+Validation checks **9,068,696 exact production pairs in 74 cases**, including
+prediction/label ties, signed zeros, subnormal labels, empty queries, padded
+label strides, seed wraparound, noncanonical rank order and reused batch buffers.
+The distribution test checks **659,200 exact draws and consumed positions**,
+including 64-bit discard offsets. A separate host program checks **83,328 draws
+and consumed engine positions against unmodified NVIDIA CCCL headers**, pinned
+to commit `3d0d040ac0dc5907daf2a0731edb378e5562099d`.
+[Validation record](../validation/cuda-ranking-pairs-m3.txt).
 
+**Ranking gradient CUDA alignment remains incomplete.** Both methods currently
+use the shared LambdaGrad formula with FP32 score subtraction/sigmoid,
+binary64 delta/Hessian calculations, unrounded per-row FP32 accumulation, and
+separate normalization/weight multiplications. CUDA instead calculates rounding
+factors before truncating each positive/negative gradient contribution; it also
+combines query weight and weight normalization before applying them. MAP prefixes
+still count labels exactly equal to one, whereas CUDA scans the actual labels.
+CUDA's unbiased cost-rounding pass also remains unported. These are explicit
+next steps, not covered by a claim of pair-sampler equivalence.
 
-Unbiased loss corrections and bias updates now execute on GPU. Per-row cost
-accumulation retains CPU order; cross-query sums use ordered 128-query blocks
-and a final block reduction, changing addition association; logarithms/powers use software
-binary64. Small bias vectors return to host for serialization. Native multi-step
-and multi-batch tests validate gradients and state. A large unbiased mean-pairwise
-training case still fails strict prediction equivalence (maximum 0.421501, RMS
-0.047376), although NDCG@10 histories agree within 8.11e-5. Its failed report is
-published; unbiased NDCG/MAP cases pass strict prediction checks. This is an
-explicit numerical limitation, not an unported CPU-gradient fallback.
+Top-k native gradients retain the CPU comparison. Mean native gradients now use
+an independent CUDA pair constructor and the upstream shared host LambdaGrad
+formula, with explicitly unrounded accumulation and existing bias updates. This
+transitional integration oracle checks **1,442 combined gradient cases** and
+**2,592 combined unbiased calls**, plus multi-batch unbiased calls. It does not
+establish full CUDA gradient parity. Python mean training checks same-model CPU
+predictions, independent per-round metrics, and deterministic replay; CPU-trained
+model identity is no longer a valid contract with the different pair stream.
+Existing numerical tolerances are retained.
+
+Software arithmetic preserves subnormals. The ranking sigmoid matches the local
+binary64-exp oracle on 2,996,040 inputs; Apple's dynamic `expf` differs on 4,962
+of them (up to four sigmoid ULPs). CUDA libdevice rounding has not been measured.
+Unbiased corrections, row costs, cross-query sums and bias updates execute on
+GPU; sums use ordered 128-query blocks and a final reduction. Small bias vectors
+and output gradients still return to host-owned storage. Persistent ownership,
+less synchronization and NVIDIA/cross-Apple execution validation remain open.
+
+Earlier mean-ranking performance and CPU-equivalence reports used the previous
+CPU random stream. They remain historical records, including their failed strict
+prediction checks, and do not describe performance of the new sampler. No new
+benchmark was run for this change.
 
 ## Column sampling behavior
 

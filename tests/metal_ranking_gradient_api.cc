@@ -1,4 +1,5 @@
-// Actual ranking objectives, GPU gradient counters and CPU reference gradients.
+// Actual objectives/counters: top-k CPU gradients, mean CUDA-pair/shared-math
+// gradients (unrounded; CUDA gradient rounding is separate pending work).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include "../xgboost/src/common/metal_histogram.h"
+#include "mean_ranking_reference.h"
 #include "xgboost/context.h"
 #include "xgboost/data.h"
 #include "xgboost/objective.h"
@@ -75,7 +77,12 @@ int main() {
       linalg::Matrix<GradientPair> expected, actual;
       cpu.Rng().seed(17891u + cases);
       gpu.Rng().seed(17891u + cases);
-      co->GetGradient(preds, info, 0, &expected);
+      if (mean) {
+        cuda_reference::MeanRankingReference reference(objective, args, info);
+        reference.Gradient(preds, info, static_cast<std::uint32_t>(cpu.Rng()()), &expected);
+      } else {
+        co->GetGradient(preds, info, 0, &expected);
+      }
       auto before = common::metal::GetStatistics();
       go->GetGradient(preds, info, 0, &actual);
       auto after = common::metal::GetStatistics();

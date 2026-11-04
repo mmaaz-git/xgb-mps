@@ -3416,7 +3416,10 @@ kernel void xgb_ranking_map_stats(device const uint2* records [[buffer(0)]],
 
 inline uint2 xgb_rank_pair_indices(RankingPairTask task, ulong index, ulong output,
                                      bool mean, device const uint2* sampled) {
-  if (mean) return sampled[output];
+  if (mean) {
+    uint2 pair = sampled[output];
+    return uint2(min(pair.x, pair.y), max(pair.x, pair.y));
+  }
   uint lo = 0, hi = task.topk;
   while (lo < hi) {
     uint mid = lo + (hi - lo) / 2;
@@ -3658,31 +3661,16 @@ kernel void xgb_ranking_gather(device const uint2* records [[buffer(0)]],
 }
 
 
-// Match Apple libc++'s minstd_rand + uniform_int_distribution<size_t>.
-// Unlike modulo sampling, rejection preserves the CPU sequence and distribution.
-inline uint xgb_rank_minstd(thread uint& state) {
-  ulong product = ulong(state) * 48271u;
-  uint next = uint(product & 0x7ffffffful) + uint(product >> 31);
-  state = next >= 0x7fffffffu ? next - 0x7fffffffu : next;
-  return state;
-}
-inline uint xgb_rank_uniform(thread uint& state, uint range) {
-  if (range == 1) return 0;  // libc++ consumes no engine output for a singleton.
-  uint w = 32 - clz(range - 1), n = (w + 29) / 30, w0 = w / n;
-  constexpr uint rp = 2147483646u;
-  uint y0 = (rp >> w0) << w0;
-  if (rp - y0 > y0 / n) { ++n; w0 = w / n; y0 = (rp >> w0) << w0; }
-  uint n0 = n - w % n, y1 = (rp >> (w0 + 1)) << (w0 + 1);
-  uint mask0 = (1u << w0) - 1, mask1 = (1u << (w0 + 1)) - 1;
+// Modern CUDA/CCCL uses philox4x64 and uniform_int_distribution<size_t>.
+// Each pair starts at its own discarded engine position; rejection draws never
+// advance another pair's stream. A group has at most UINT32_MAX rows.
+inline ulong xgb_cuda_philox(uint seed, ulong position);
+inline uint xgb_rank_uniform(uint seed, thread ulong& position, uint range) {
+  if (range == 1) return 0;
+  uint bits = 32 - clz(range - 1);
+  ulong mask = (1ul << bits) - 1;
   uint value;
-  do {
-    value = 0;
-    for (uint k = 0; k < n; ++k) {
-      uint u, limit = k < n0 ? y0 : y1;
-      do { u = xgb_rank_minstd(state) - 1; } while (u >= limit);
-      value = (value << (k < n0 ? w0 : w0 + 1)) + (u & (k < n0 ? mask0 : mask1));
-    }
-  } while (value >= range);
+  do { value = uint(xgb_cuda_philox(seed, position++) & mask); } while (value >= range);
   return value;
 }
 kernel void xgb_ranking_mean_labels(device const uint2* records [[buffer(0)]],
@@ -3692,50 +3680,75 @@ kernel void xgb_ranking_mean_labels(device const uint2* records [[buffer(0)]],
                                     uint row [[thread_position_in_grid]]) {
   ranked[row] = labels[ulong(records[row].y) * stride];
 }
-// Sampling is sequential within a query to retain variable rejection draws and
-// pair order. Independent queries execute in parallel. Incidence lists remove
-// the need to scan all pairs for each row or to use nondeterministic atomics.
+// One lane per pair, following cuda_impl::MakePairsOp::WithSampling.
+// Store raw rank order for diagnostics; the gradient consumer canonicalizes it.
 kernel void xgb_ranking_mean_sample(device const uint2* records [[buffer(0)]],
                                     device const uint2* label_order [[buffer(1)]],
                                     device const uint* labels [[buffer(2)]],
                                     device const RankingPairTask* tasks [[buffer(3)]],
                                     device uint2* sampled [[buffer(4)]],
-                                    device uint* links [[buffer(5)]],
-                                    device uint* heads [[buffer(6)]],
-                                    device uint* tails [[buffer(7)]],
-                                    constant RankingGradientParams& p [[buffer(8)]],
+                                    constant RankingGradientParams& p [[buffer(5)]],
                                     uint tid [[thread_position_in_grid]]) {
+  ulong index = p.pair_base + tid;
+  uint lo = p.group_begin, hi = p.group_end;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (tasks[mid].pair_begin <= index) lo = mid + 1;
+    else hi = mid;
+  }
+  uint group = lo - 1;
+  RankingPairTask task = tasks[group];
+  ulong local = index - task.pair_begin;
+  uint item = uint(local / task.topk);
+  uint rank = label_order[ulong(task.begin) + item].y;
+  uint label = labels[ulong(records[rank].y) * p.label_stride];
+  // Descending lower/upper bounds of this label bucket. Bit comparisons retain
+  // subnormal labels and treat signed zeros as equal, as CUDA comparisons do.
+  lo = 0; hi = item + 1;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    uint value = labels[ulong(records[label_order[ulong(task.begin) + mid].y].y) * p.label_stride];
+    if (xgb_float_less(label, value)) lo = mid + 1;
+    else hi = mid;
+  }
+  uint left = lo;
+  lo = item; hi = task.count;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    uint value = labels[ulong(records[label_order[ulong(task.begin) + mid].y].y) * p.label_stride];
+    if (!xgb_float_less(value, label)) lo = mid + 1;
+    else hi = mid;
+  }
+  uint right_begin = lo, outside = left + (task.count - right_begin);
+  if (!outside) { sampled[tid] = uint2(0); return; }
+  ulong position = local;
+  uint other = xgb_rank_uniform(p.seed + group, position, outside);
+  if (other >= left) other = other - left + right_begin;
+  sampled[tid] = uint2(rank - task.begin, label_order[ulong(task.begin) + other].y - task.begin);
+}
+// Ordered incidence lists are only a transport for the current gradient gather.
+// Sampling itself is independent and parallel; no CPU RNG or adjacency work.
+kernel void xgb_ranking_mean_links(device const RankingPairTask* tasks [[buffer(0)]],
+                                   device const uint2* sampled [[buffer(1)]],
+                                   device uint* links [[buffer(2)]],
+                                   device uint* heads [[buffer(3)]],
+                                   device uint* tails [[buffer(4)]],
+                                   constant RankingGradientParams& p [[buffer(5)]],
+                                   uint tid [[thread_position_in_grid]]) {
   uint group = p.group_begin + tid;
   RankingPairTask task = tasks[group];
-  uint state = (p.seed + group) % 2147483647u;
-  if (!state) state = 1;
   for (ulong row = task.begin; row < ulong(task.begin) + task.count; ++row) heads[row] = 0xffffffffu;
-  using namespace xgb_survival;
-  for (ulong i = 0; i < task.count;) {
-    ulong j = i + 1;
-    D label = From(as_type<float>(labels[ulong(records[label_order[task.begin + i].y].y) * p.label_stride]));
-    while (j < task.count && xgb_deq(label, From(as_type<float>(labels[ulong(records[label_order[task.begin + j].y].y) * p.label_stride])))) ++j;
-    uint outside = uint(i + task.count - j);
-    for (uint repeat = 0; repeat < task.topk; ++repeat) {
-      for (ulong item = i; item < j; ++item) {
-        ulong slot = task.pair_begin - p.pair_base + i * task.topk + ulong(repeat) * (j - i) + item - i;
-        if (!outside) { sampled[slot] = uint2(0); continue; }
-        ulong other = xgb_rank_uniform(state, outside);
-        if (other >= i) other = other - i + j;
-        uint a = label_order[task.begin + item].y - task.begin;
-        uint b = label_order[task.begin + other].y - task.begin;
-        uint first = min(a, b), second = max(a, b);
-        sampled[slot] = uint2(first, second);
-        for (uint side = 0; side < 2; ++side) {
-          uint node = uint(2 * slot + side), row = task.begin + (side ? second : first);
-          links[node] = 0xffffffffu;
-          if (heads[row] == 0xffffffffu) heads[row] = node;
-          else links[tails[row]] = node;
-          tails[row] = node;
-        }
-      }
+  for (ulong slot = task.pair_begin - p.pair_base; slot < tasks[group + 1].pair_begin - p.pair_base; ++slot) {
+    uint2 pair = sampled[slot];
+    if (pair.x == pair.y) continue;
+    uint first = min(pair.x, pair.y), second = max(pair.x, pair.y);
+    for (uint side = 0; side < 2; ++side) {
+      uint node = uint(2 * slot + side), row = task.begin + (side ? second : first);
+      links[node] = 0xffffffffu;
+      if (heads[row] == 0xffffffffu) heads[row] = node;
+      else links[tails[row]] = node;
+      tails[row] = node;
     }
-    i = j;
   }
 }
 kernel void xgb_ranking_mean_gather(device const uint2* records [[buffer(0)]],

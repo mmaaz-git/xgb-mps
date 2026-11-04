@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p results
 echo "Compiling standalone tests against the production Metal shader"
-echo "Checking mean-ranking random draws against Apple libc++"
+echo "Checking CUDA ranking random draws and independent engine positions"
 clang++ -O2 -std=c++17 -fobjc-arc tests/metal_ranking_rng.mm \
   -framework Metal -framework Foundation -o results/metal_ranking_rng_test
 MTL_DEBUG_LAYER=1 results/metal_ranking_rng_test xgboost/src/common/metal_histogram.metal
@@ -160,6 +160,14 @@ echo "Checking ranking sigmoid rounding against CPU and binary64 oracles"
 clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_ranking_math.mm \
   -framework Metal -framework Foundation -o results/metal_ranking_math_test
 MTL_DEBUG_LAYER=1 results/metal_ranking_math_test xgboost/src/common/metal_histogram.metal
+echo "Checking production mean-ranking pairs against the CUDA-source oracle"
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_ranking_pairs_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_ranking_pairs_api_test
+MTL_DEBUG_LAYER=1 results/metal_ranking_pairs_api_test
 echo "Checking top-k/mean ranking gradients and bounded pair batches"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

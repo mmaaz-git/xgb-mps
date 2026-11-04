@@ -14,18 +14,23 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **CUDA-derived quantile sketching for ordinary matrices**. Metal now
-sorts raw CSR entries, scans FP32 weights, deduplicates categories, and maintains
-GPU summaries through CUDA-style pruning and merging. Both `hist` and `approx`
-use this path, including external-memory pages. Device switches rebuild ordinary
-matrix cuts; fixed QuantileDMatrix reference cuts remain unchanged.
-Native checks cover **64 cases**, 276 pushes, 1.87 million input entries and
-229,976 exact summary fields. **258 focused Python tests** pass, including
-independent sketch-to-tree audits. Full validation passes **1,773 Python tests**,
-every rebuilt native suite and the CPU-only build/device check.
-[Validation record](validation/cuda-resident-sketch-m3.txt).
-[Scope and numerical limits](docs/CUDA_PARITY.md#cuda-derived-resident-sketches).
-Actual NVIDIA execution equivalence remains unverified.
+Latest step: **CUDA-source mean-ranking pair sampling**. Metal now uses
+independent Philox draws and CUDA's sample-major pair order, replacing the
+previous CPU random stream. Native tests verify **9.07 million exact production
+pairs** and **659,200 random draws/positions**. A separate host check matches
+**83,328 draws/positions against unmodified NVIDIA CCCL headers**.
+Gradient and multi-round bias tests pass with the new pairs; CUDA-specific
+gradient/cost rounding, MAP prefixes and combined weight arithmetic remain open.
+Full validation passes **1,773 Python tests**, every rebuilt native suite, and
+the CPU-only build/device check. This completes pair sampling; full ranking-gradient
+equivalence remains unfinished.
+[Validation](validation/cuda-ranking-pairs-m3.txt) ·
+[Scope](docs/CUDA_PARITY.md#ranking-gradient-numerical-behavior).
+
+The preceding step added CUDA-derived ordinary-matrix quantile sketches for
+`hist` and `approx`, including external-memory pages: GPU sorting, FP32 scans,
+category deduplication and resident summary pruning/merging.
+[Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
 The major remaining areas are adapter/device-array sketch ingestion and matrix preprocessing,
 remaining objective initialization and training-state operations, CUDA algorithm
@@ -131,7 +136,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input staging and category recoding remain host |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
-| Ranking training | Stable grouped sorting, NDCG cache/label checks and top-k and mean-sampled pairwise/NDCG/MAP pairs, gradients and normalization, including unbiased loss corrections and position-bias updates, on Metal |
+| Ranking training | Stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, gradients, normalization, unbiased corrections and bias updates on Metal; CUDA gradient/cost rounding, MAP actual-label prefixes and weight arithmetic remain open |
 | ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; collective transport remains host |
 | Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior |
 | Column sampling | CUDA-source Philox weighted draws and Thrust Feistel unweighted shuffle; GPU compaction, stable priority ordering and integer feature sorting; 24 shuffle keys and cache metadata remain host as in CUDA, while feature arrays still stage through host |
@@ -326,6 +331,13 @@ On Apple M3, 2026-11-03:
   subnormal half-weight rounding and GPU counters. Finite squared-weight overflow
   now returns NaN, matching CUDA source. All **73 public grouped AUC tests** pass.
   [CUDA-source validation](validation/cuda-grouped-roc-m3.txt).
+- Mean-ranking pair sampling: **74 production cases / 9,068,696 exact raw pairs**;
+  **41,200 RNG cases / 659,200 exact draws and consumed positions**, including
+  large discard offsets. **83,328 draws/positions** also match pinned upstream
+  CCCL on the host. Existing gradient/bias datasets use CUDA-pair/shared-math
+  oracles for mean and CPU checks for top-k, with unchanged tolerances; CUDA
+  gradient-rounding alignment remains open.
+  [Validation](validation/cuda-ranking-pairs-m3.txt).
 - Column sampling: **550 native cases / 3,281,095 selected feature IDs /
   4,610,295 exact Philox draws / 1,320,896 exact shuffle indices**, checked against
   CUDA-source references. An optional actual Thrust/CCCL host check verifies
@@ -582,7 +594,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Align grouped PR-AUC term rounding, recall totals, integral and query validity with CUDA source.
 - [x] Align classification AUC arithmetic/output rules and port multi-output normalization to GPU.
 - [x] Port CUDA raw CSR sketching and resident summaries for ordinary hist/approx matrices.
-- [ ] Complete adapter/device-array sketches and align ranking streams with CUDA.
+- [ ] Complete adapter/device-array sketches and finish CUDA ranking gradient/cost arithmetic.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.
@@ -1237,6 +1249,11 @@ unfinished.
 
 
 ### Mean-sampled ranking and sigmoid accuracy
+
+**Historical checkpoint:** the CPU random stream and sequential sampler described
+below have been replaced by [CUDA-source mean pairs](docs/CUDA_PARITY.md#ranking-gradient-numerical-behavior).
+These benchmarks retain their original results and are not measurements of the
+current sampler. CPU-trained model identity is no longer the mean-ranking contract.
 
 Mean-sampled pairwise/NDCG/MAP now run pair generation and gradients on Metal.
 Stable label sorting follows prediction rank; a GPU generator per query preserves

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "../xgboost/src/common/metal_histogram.h"
+#include "mean_ranking_reference.h"
 #include "xgboost/context.h"
 #include "xgboost/data.h"
 #include "xgboost/json.h"
@@ -40,11 +41,15 @@ void CheckBatched() {
         go{ObjFunction::Create("rank:pairwise", &gpu)};
     co->Configure(args);
     go->Configure(args);
+    cuda_reference::MeanRankingReference reference("rank:pairwise", args, info);
     for (int iteration = 0; iteration < 2; ++iteration) {
       cpu.Rng().seed(12345 + iteration);
       gpu.Rng().seed(12345 + iteration);
       linalg::Matrix<GradientPair> expected, actual;
-      co->GetGradient(predictions, info, iteration, &expected);
+      if (method == "mean")
+        reference.Gradient(predictions, info, static_cast<std::uint32_t>(cpu.Rng()()), &expected);
+      else
+        co->GetGradient(predictions, info, iteration, &expected);
       auto before = common::metal::GetStatistics();
       go->GetGradient(predictions, info, iteration, &actual);
       auto after = common::metal::GetStatistics();
@@ -110,11 +115,16 @@ int main() {
                       go{ObjFunction::Create(objective, &gpu)};
                   co->Configure(args);
                   go->Configure(args);
+                  cuda_reference::MeanRankingReference reference(objective, args, info);
                   for (int iteration = 0; iteration < 3; ++iteration) {
                     cpu.Rng().seed(8912 + cases);
                     gpu.Rng().seed(8912 + cases);
                     linalg::Matrix<GradientPair> expected, actual;
-                    co->GetGradient(pred, info, iteration, &expected);
+                    if (method == "mean")
+                      reference.Gradient(pred, info, static_cast<std::uint32_t>(cpu.Rng()()),
+                                         &expected);
+                    else
+                      co->GetGradient(pred, info, iteration, &expected);
                     auto before = common::metal::GetStatistics();
                     go->GetGradient(pred, info, iteration, &actual);
                     auto after = common::metal::GetStatistics();
@@ -146,7 +156,10 @@ int main() {
                         }
                       }
                     Json cj{Object{}}, gj{Object{}};
-                    co->SaveConfig(&cj);
+                    if (method == "mean")
+                      reference.SaveBias(&cj);
+                    else
+                      co->SaveConfig(&cj);
                     go->SaveConfig(&gj);
                     for (auto key : {"ti+", "tj-"}) {
                       auto const& c = get<F32Array>(cj[key]);

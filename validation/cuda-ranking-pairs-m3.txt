@@ -1,0 +1,99 @@
+CUDA-source mean-ranking pair sampling, Apple M3
+================================================
+Date: 2026-11-04
+Target: objective/lambdarank_obj.cuh MakePairsOp::WithSampling and
+        common/random.cuh modern CCCL branch, not legacy Thrust.
+Pinned CCCL: 3d0d040ac0dc5907daf2a0731edb378e5562099d
+NVIDIA device execution: not performed. No CUDA hardware available locally.
+No new performance benchmark was run.
+
+Implementation
+--------------
+Stable prediction ranks, stable descending labels, pair index i*k+repeat,
+wrapped uint32(seed+query), independent Philox4x64 engine discarded by local
+pair index, uniform_int_distribution<size_t> rejection over low bits. The
+sample maps around its equal-label bucket. Homogeneous groups emit (0,0),
+singleton ranges consume no draw. One GPU lane per pair. Raw pairs retain CUDA
+orientation; gradient consumers canonicalize prediction-rank order before
+applying the existing shared LambdaGrad formula.
+
+A separate GPU query kernel links pair incidences in index order. This step
+remains serial per query and is not a CUDA atomic gradient implementation.
+Existing 64 MiB batch budgeting/reuse remains. Optional internal pair tracing
+copies the actual sampled buffer before each reuse; production never allocates
+that full trace. No CPU pair generation or adjacency construction in training.
+
+Validation
+----------
+Standalone production shader:
+  41,200 seed/range/discard cases, 659,200 exact draws AND consumed positions.
+  Covers singleton/power-of-two/rejection boundaries, 31/32-bit ranges, wrapped
+  seeds, and discard positions beyond 2^32/2^40 and near 2^63.
+  tests/cuda_ranking_pairs.h is the independent host interpretation; it uses
+  host 128-bit multiplication, while Metal uses manual wide multiplication.
+
+Actual pinned upstream check (host only):
+  83,328 exact cuda::std::uniform_int_distribution<size_t>(philox4x64) draws
+  and post-distribution engine positions, including large engine.discard().
+  Upstream headers are unmodified. Host standard headers precede CCCL for
+  Apple libc++ ABI declaration compatibility.
+  clang++ -O2 -std=c++20 -DTHRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP \
+    -I results/cccl-source/thrust -I results/cccl-source/cub \
+    -I results/cccl-source/libcudacxx/include tests/cuda_ranking_upstream.cc \
+    -o results/cuda_ranking_upstream_test
+  results/cuda_ranking_upstream_test
+
+Production pair trace:
+  74 cases, 9,068,696 exact pairs; 3,928,736 reversed raw pairs and 1,215,240
+  homogeneous sentinels. Covers empty groups/data, singleton groups, 255/256/257
+  and 4097 boundaries, prediction/label ties, signed zero/subnormal/fractional
+  labels, padded label stride, uint32 query seed wrap, and multiple buffer batches.
+  Reference traverses label buckets linearly, independently of shader binary
+  searches. It does not call the production pair constructor or sort.
+
+Objective integration (transitional, not a full CUDA gradient oracle):
+  1,442 top-k/mean cases, 2,444,200 rows, 43,810,880 candidate pairs;
+  2,440,942 bit-exact gradient pairs; maximum scaled error 4.17232513e-7;
+  548,587 subnormal fields retain two-ULP absolute plus 2e-5 relative tolerance.
+  2,592 unbiased calls, 852,768 rows, 118,368 serialized bias values;
+  maximum scaled gradient error 2.95234473e-6, bias error 3.39189669e-7.
+  Four additional 524,288-row unbiased calls exercise multiple batches.
+  Mean expected gradients use independent CUDA-source pairs and upstream host
+  LambdaGrad, with unrounded FP32 sums and existing bias updates. Top-k still
+  compares with the CPU objective. Original datasets/options/tolerances retained.
+
+Python mean training now checks CPU prediction of the same model, independently
+calculated metrics for all rounds, and exact deterministic replay. The existing
+100,000-row/20-round feedback input remains. CPU-trained model identity is not
+valid after adopting a different pair stream; tests no longer require it. Native
+source-pair/shared-math tests separately validate objective updates.
+
+Logs (local, ignored results/):
+  cuda-ranking-pairs-driver-v1.log: build, shader and actual CCCL checks PASS.
+  cuda-ranking-pairs-native-v1.log: production pair/gradient/bias suites PASS.
+  Final full run: 2026-11-04 12:51:36-12:55:42 UTC, exit 0.
+  All rebuilt native suites and test-only reference updater PASS.
+  Python: 1,773 passed, 1 skipped, 370 warnings, 93.07 seconds.
+  The skipped case requires a host without a GPU; all GPU tests required Metal.
+  CPU-only reconfigure/build and no-Metal API/clear MPS-error checks PASS.
+  cuda-ranking-pairs-full-driver-v1.log
+  build-cuda-ranking-pairs-final-v1.log
+  test-cuda-ranking-pairs-full-v1.log
+  configure-cpu-cuda-ranking-pairs-v1.log
+  build-cpu-cuda-ranking-pairs-v1.log
+  check-cpu-cuda-ranking-pairs-v1.log
+  No production or test edits after this full run began; later edits were docs.
+  git diff --check PASS.
+
+Remaining ranking gaps
+----------------------
+CUDA uses a first gradient pass to calculate per-query deterministic rounding
+factors, then truncates positive and negative gradient/Hessian contributions
+before accumulation. That pass is not yet ported; do not infer gradient parity
+from exact pairs. CUDA MAP statistics scan actual labels, while the current
+Metal gradient cache counts labels exactly equal to one. CUDA combines query
+weight with weight_norm before its final multiply; current Metal retains two
+multiplications. CUDA unbiased cost rounding is also outstanding. The source
+writes a single cost-rounding slot from all query lanes; its concurrency must
+be resolved explicitly rather than silently copied. Actual libdevice rounding,
+CUB scan association, cross-Apple validation and resident async state remain open.

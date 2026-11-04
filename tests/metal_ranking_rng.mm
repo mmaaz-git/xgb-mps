@@ -1,5 +1,5 @@
-// Validate production sampling against Apple's actual standard-library engine
-// and distribution, including 31/32-bit ranges and rejection boundaries.
+// Validate the production CUDA ranking distribution, including rejection,
+// singleton ranges, independent pair streams and 64-bit engine discard.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <cstdint>
@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "cuda_ranking_pairs.h"
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
@@ -17,14 +18,13 @@ int main(int argc, char** argv) {
       std::ifstream file(argv[1]);
       std::string source{std::istreambuf_iterator<char>(file), {}};
       source += R"(
-        kernel void test_rank_rng(device const uint2* input [[buffer(0)]],
-                                   device uint2* output [[buffer(1)]],
+        kernel void test_rank_rng(device const ulong4* input [[buffer(0)]],
+                                   device ulong2* output [[buffer(1)]],
                                    uint tid [[thread_position_in_grid]]) {
-          uint state = input[tid].x % 2147483647u;
-          if (!state) state = 1;
-          for (uint i = 0; i < 256; ++i) {
-            uint value = xgb_rank_uniform(state, input[tid].y), copy = state;
-            output[ulong(tid) * 256 + i] = uint2(value, xgb_rank_minstd(copy));
+          for (uint i = 0; i < 16; ++i) {
+            ulong position = input[tid].z + i;
+            uint value = xgb_rank_uniform(uint(input[tid].x), position, uint(input[tid].y));
+            output[ulong(tid) * 16 + i] = ulong2(value, position);
           }
         })";
       auto device = MTLCreateSystemDefaultDevice();
@@ -51,23 +51,31 @@ int main(int argc, char** argv) {
         ranges.push_back(1u << bit);
         ranges.push_back((1u << bit) + 1);
       }
-      std::vector<uint32_t> inputs, expected;
+      std::vector<uint64_t> positions{0,
+                                      1,
+                                      2,
+                                      3,
+                                      15,
+                                      255,
+                                      0xffffffffULL,
+                                      0x100000000ULL,
+                                      0x10000000003ULL,
+                                      0x7fffffffffffffefULL};
+      std::vector<uint64_t> inputs, expected;
       for (uint32_t seed : seeds)
-        for (uint32_t range : ranges) {
-          inputs.push_back(seed);
-          inputs.push_back(range);
-          std::minstd_rand engine(seed);
-          std::uniform_int_distribution<size_t> dist(0, size_t(range) - 1);
-          for (int i = 0; i < 256; ++i) {
-            expected.push_back(dist(engine));
-            auto copy = engine;
-            expected.push_back(copy());
+        for (uint32_t range : ranges)
+          for (auto start : positions) {
+            inputs.insert(inputs.end(), {seed, range, start, 0});
+            for (uint64_t i = 0; i < 16; ++i) {
+              auto position = start + i;
+              expected.push_back(cuda_reference::RankingUniform(seed, &position, range));
+              expected.push_back(position);
+            }
           }
-        }
       auto in = [device newBufferWithBytes:inputs.data()
-                                    length:inputs.size() * 4
+                                    length:inputs.size() * 8
                                    options:MTLResourceStorageModeShared];
-      auto out = [device newBufferWithLength:expected.size() * 4
+      auto out = [device newBufferWithLength:expected.size() * 8
                                      options:MTLResourceStorageModeShared];
       auto queue = [device newCommandQueue];
       auto command = [queue commandBuffer];
@@ -75,25 +83,24 @@ int main(int argc, char** argv) {
       [e setComputePipelineState:pipeline];
       [e setBuffer:in offset:0 atIndex:0];
       [e setBuffer:out offset:0 atIndex:1];
-      [e dispatchThreads:MTLSizeMake(inputs.size() / 2, 1, 1)
+      [e dispatchThreads:MTLSizeMake(inputs.size() / 4, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
       [e endEncoding];
       [command commit];
       [command waitUntilCompleted];
       if (command.status != MTLCommandBufferStatusCompleted)
         throw std::runtime_error(command.error.localizedDescription.UTF8String);
-      auto actual = static_cast<uint32_t const*>(out.contents);
+      auto actual = static_cast<uint64_t const*>(out.contents);
       for (size_t i = 0; i < expected.size(); ++i)
         if (actual[i] != expected[i]) {
-          size_t case_id = i / 512;
-          std::fprintf(stderr, "seed=%u range=%u draw=%zu field=%zu: %u != %u\n",
-                       inputs[2 * case_id], inputs[2 * case_id + 1], i / 2 % 256, i % 2, actual[i],
-                       expected[i]);
-          throw std::runtime_error("Sampling sequence differs from libc++");
+          size_t case_id = i / 32;
+          std::fprintf(stderr, "seed=%llu range=%llu start=%llu draw=%zu field=%zu: %llu != %llu\n",
+                       inputs[4 * case_id], inputs[4 * case_id + 1], inputs[4 * case_id + 2],
+                       i / 2 % 16, i % 2, actual[i], expected[i]);
+          throw std::runtime_error("Sampling sequence differs from CUDA-source oracle");
         }
-      std::printf("PASS %zu seed/range cases / %zu sampled values and engine states, bit-exact "
-                  "with Apple libc++\n",
-                  inputs.size() / 2, expected.size() / 2);
+      std::printf("PASS %zu seed/range/discard cases / %zu exact CUDA-source draws and positions\n",
+                  inputs.size() / 4, expected.size() / 2);
     } catch (std::exception const& e) {
       std::fprintf(stderr, "%s\n", e.what());
       return 1;
