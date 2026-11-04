@@ -1,0 +1,146 @@
+Metal ELLPACK compression, concatenation and external host cache
+==============================================================
+Machine: Apple M3 Air, 8 CPU / 10 GPU cores, 16 GB unified memory.
+Date: 2026-11-04. Coverage/correctness milestone; no new benchmark.
+
+API and source authority
+------------------------
+ExtMemQuantileDMatrix(iterator, device="mps") now accepts DataIter(on_host=True),
+the default. cache_host_ratio selects shared/private storage; min_cache_page_bytes
+selects concatenation. No disk file is created. on_host=False remains disk-backed
+and rejects an explicit cache_host_ratio. Default input-device inference is unchanged.
+
+Vendored CUDA authorities:
+- data/ellpack_page.cu::CalcNumSymbols, CopyGHistToEllpack, Copy
+- common/compressed_iterator.h::CompressedBufferWriter, SymbolBits, kPadding
+- data/ellpack_page_source.cu::CalcCacheMapping, EllpackHostCacheStreamImpl::Write/Read
+- data/batch_utils.cc::DftPageSizeHostRatio
+- data/extmem_quantile_dmatrix.cu::InitFromCUDA
+
+Metal kernels implement the eight-byte prefix and MSB-first bitstream, dense local
+bins, relatively dense local bins plus null, sparse global bins plus null, bitwise
+page copies across non-byte-aligned seams, row counts/prefixes, restoration and
+hit counts. GPU buffers preserve the compressed stream across shared/private byte
+splits, including a split inside a symbol. CUDA's minimum empty stream is nine
+logical bytes; physical Metal allocations have at least 16 bytes.
+
+Plan defaults preserve CUDA's page grouping and padded input-byte sums. The default
+minimum page size is device budget / 16; cache budget is device budget / 2. Auto
+validation ratio is one; train ratio is zero if the cache fits, otherwise
+(total - cache_budget * 0.85) / total. Explicit ratios are checked in [0,1]. A cache
+containing just one page forces ratio zero even for explicit ratios, as CUDA does.
+Metal substitutes recommendedMaxWorkingSetSize for physical CUDA device memory.
+Apple has no corresponding NVIDIA C2C link-count branch.
+
+Shared/private buffers both use unified memory; private storage restricts CPU
+access. This policy does not establish additional VRAM capacity or memory savings.
+Primary Apple references:
+https://developer.apple.com/documentation/metal/mtldevice/recommendedmaxworkingsetsize
+https://developer.apple.com/documentation/metal/choosing-a-resource-storage-mode-for-apple-gpus
+
+Ownership and cache lifecycle
+-----------------------------
+MetalPageSource uses existing SparsePageSourceImpl asynchronous prefetch/reset
+machinery with a two-page prefetch window (active plus prefetched). Cache construction
+keeps one input page and one aggregate compressed page, without a full-dataset
+gradient-index allocation. Completed construction retains no input callback or raw
+array references. GPU prefetch can join split pages; wholly private pages alias
+their existing storage. Restored index/row-pointer buffers attach directly to
+training pages, avoiding a repeat upload of the host bin mirror.
+
+MakeIndexBatch is shared with disk construction. Quantized bins still return from
+GPU adapter binning to a temporary host GHistIndexMatrix before upload for packing.
+Restoration also builds host gradient-index and column mirrors for existing CPU
+interoperability. These are explicit remaining ownership/staging gaps; the new
+compressed cache does not imply an entirely device-owned training pipeline.
+
+Eight Statistics fields appended; all native callers rebuilt:
+ellpack_pack_dispatches (includes symbol maxima), ellpack_copy_dispatches,
+ellpack_restore_dispatches, ellpack_cache_dispatches (buffer blits),
+ellpack_gpu_time_ns, ellpack_debug_readback_bytes, ellpack_cached_host_bytes,
+ellpack_cached_device_bytes. Cache-byte totals are cumulative logical committed
+bytes, not live allocation gauges; dummy minimum allocations are excluded.
+GPU timing excludes host staging/metadata/column mirrors; dense transpose retains
+its existing index counter. Production compressed-byte diagnostic readback is zero.
+CPU-only builds expose zeros and reject MPS construction clearly in both cache modes.
+
+Native format checks
+--------------------
+tests/metal_ellpack_api.cc, registered in scripts/test.sh with MTL_DEBUG_LAYER=1.
+PASS 257 cases / 82,394 exact bytes / 55,438,557 exact fields in the full run.
+- 224 fixture cases: 1/2/3/8/17/255/256/257/65535/65536/65537 max bins;
+  dense, relatively dense, sparse, all-missing, empty chunks and nonzero row bases;
+  cache ratios 0, 0.000001, 0.23, 0.5 and 1; prefetch_copy false and true.
+- Independent upstream scalar CompressedBufferWriter supplies expected packed
+  bytes, including padding and concatenated copies. Exact restored CPU-reference
+  row pointers, bins, hits, columns and retained GPU buffers/no upload are checked.
+- 32 synthetic symbol-only cases cover every bit width 1 through 32, arbitrary
+  valid symbols, repeated 37-symbol concatenation and extreme byte splits. These
+  do not allocate billions of histogram cuts or exercise invalid bin restoration.
+- One zero-cut/zero-symbol-domain case restores 17 all-missing rows with stride
+  zero and one symbol, covering the actual CalcNumSymbols empty-cut branch.
+- 80 deterministic cache-plan combinations independently replay CUDA formulas for
+  two device budgets, five page thresholds, four ratios and train/validation mode.
+
+The first shader build rejected an ulong grid-position attribute; uint2 dispatch
+with 64-bit linearization fixed it. The first byte oracle failed at case five and
+caught a four-byte prefix assumption: upstream actually uses eight. Production
+now uses eight, with a static assertion against upstream kPadding. Unaligned
+split copies, the nine-byte empty stream and all 32 widths then passed Metal
+validation. Autorelease pools bound temporary command/buffer lifetimes.
+Focused final format run before the extra empty-cut case: 256 cases / 82,394 bytes /
+55,438,536 fields PASS (results/test-ellpack-native-v6.log, 17:17:26 UTC).
+
+Native external-cache checks
+---------------------------
+tests/metal_extmem_api.cc now covers 48 disk cases plus 144 host cases.
+PASS 192 cases / 2,322 cached-page visits / 10,815,835 exact fields.
+Host cases: bins 8/257, four layouts, numeric/categorical, weighted rows, ratios
+0/.23/1 and page thresholds 0/128/automatic. Independent CPU bins at shared cuts
+and scalar bit-writer sizes supply expected rows, grouping, bins, column values,
+missing flags and hits. Three complete traversals follow interrupted resets,
+alternating prefetch_copy. Closed input callbacks, no repeated GPU ingestion,
+no host-cache disk files and no index re-upload/debug readback are asserted.
+Focused PASS: results/test-host-cache-native-v1.log, 17:12:33 UTC.
+
+Public checks
+-------------
+tests/test_metal_host_cache.py adds 96 cases:
+- 75 layout/minimum/ratio combinations, including missing/categorical data, tiny
+  positive ratios and empty first/middle/final input batches.
+- Exact CUDA-source sketch cuts from raw values and original input boundaries;
+  same-model CPU prediction and CPU bins at fixed shared cuts.
+- Retained GPU bins, no repeat input work, released callbacks, logical cache-byte
+  counter changes and absence of files/diagnostic compressed readback.
+- Eight CPU/MPS reference and reordered-category cases, with no resketch.
+- Four invalid ratios; empty matrices and CPU training interoperability.
+- Five changing-iterator failures: row count, nnz in either direction, fewer or
+  additional batches. Cleanup is checked after each failure.
+- Ranking/group weights, vector labels/base margins and AFT survival-bound metadata.
+The former on_host=True rejection test now checks successful construction. All 43
+disk and 58 in-memory adapter tests remain; combined focused regression PASS:
+197 passed in 14.49 seconds (results/test-host-cache-public-v2.log).
+
+Full validation
+---------------
+Driver: results/run-host-cache-full-v1.sh, tmux xgb-host-cache-full-v1.
+PASS 2026-11-04T17:18:34Z to 17:24:16Z (5 minutes 42 seconds), FULL_EXIT=0.
+- Final Metal build PASS.
+- Every rebuilt native suite and host reference updater PASS.
+- Python: 2,143 passed, 1 skipped, 387 warnings in 110.40 seconds.
+- CPU-only configure/build and API/device/constructor/cache checks PASS.
+Only documentation and verified whitespace-only formatting changed after this
+run began. git diff --check passed. No benchmark was run.
+Logs: results/host-cache-full-driver-v1.log, build-host-cache-final-v1.log,
+test-host-cache-full-v1.log, configure-cpu-host-cache-v1.log,
+build-cpu-host-cache-v1.log, check-cpu-host-cache-v1.log.
+
+Remaining scope
+---------------
+Direct adapter-to-compressed construction, direct compressed training/prediction
+consumers, optional Snappy/nvcomp cache compression/decompression, native Metal
+array/half input, general metadata/device ownership and GPU collectives remain
+unfinished. Host packing, dictionaries, allocation and synchronization remain.
+This step covers external host-cache ELLPACK; ordinary/in-memory matrices still
+use their existing index representations. No benchmarks were rerun. No measured
+NVIDIA equivalence or cross-Apple validation is claimed.

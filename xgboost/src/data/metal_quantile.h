@@ -57,4 +57,9 @@ void MakeSketches(Context const* ctx,
                   DMatrixProxy* proxy, std::shared_ptr<DMatrix> ref, BatchParam const& p,
                   float missing, common::HistogramCuts* cuts, ExternalDataInfo* ext,
                   std::vector<FeatureType>* types);
+std::shared_ptr<GHistIndexMatrix> MakeIndexBatch(Context const* ctx, DMatrixProxy* proxy,
+                                                 float missing, BatchParam const& p,
+                                                 common::HistogramCuts const& cuts,
+                                                 MetaInfo const& info, bst_idx_t expected_rows,
+                                                 bst_idx_t base_row, bst_idx_t expected_nnz);
 }  // namespace xgboost::data::metal_impl

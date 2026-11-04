@@ -18,6 +18,7 @@
 #include "xgboost/data.h"                // for MetaInfo, BatchParam
 
 namespace xgboost::data {
+class MetalPageSource;
 /**
  * @brief A DMatrix class for building a `QuantileDMatrix` from external memory iterator.
  *
@@ -40,7 +41,8 @@ class ExtMemQuantileDMatrix : public QuantileDMatrix {
   void InitFromMPS(
       Context const* ctx,
       std::shared_ptr<DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>> iter,
-      DMatrixHandle proxy, BatchParam const& p, float missing, std::shared_ptr<DMatrix> ref);
+      DMatrixHandle proxy, BatchParam const& p, ExtMemConfig const& config,
+      std::shared_ptr<DMatrix> ref);
   void InitFromCPU(
       Context const *ctx,
       std::shared_ptr<DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>> iter,
@@ -61,7 +63,7 @@ class ExtMemQuantileDMatrix : public QuantileDMatrix {
     return std::visit([](auto &&v) { return static_cast<bool>(v); }, ellpack_page_source_);
   }
   [[nodiscard]] bool GHistIndexExists() const override {
-    return static_cast<bool>(ghist_index_source_);
+    return static_cast<bool>(ghist_index_source_) || static_cast<bool>(metal_page_source_);
   }
 
   [[nodiscard]] BatchSet<ExtSparsePage> GetExtBatches(Context const *ctx,
@@ -78,5 +80,6 @@ class ExtMemQuantileDMatrix : public QuantileDMatrix {
   using EllpackHostPtr = std::shared_ptr<ExtEllpackPageHostSource>;
   std::variant<EllpackDiskPtr, EllpackHostPtr> ellpack_page_source_;
   std::shared_ptr<ExtGradientIndexPageSource> ghist_index_source_;
+  std::shared_ptr<MetalPageSource> metal_page_source_;
 };
 }  // namespace xgboost::data

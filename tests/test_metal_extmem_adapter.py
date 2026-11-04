@@ -195,8 +195,10 @@ def test_extmem_adapter_defaults_errors_empty(metal, tmp_path):
     cpu = xgb.ExtMemQuantileDMatrix(pages([x]), nthread=2)
     assert xgb.metal_info()["adapter_prepare_dispatches"] == before["adapter_prepare_dispatches"]
     del cpu
-    with pytest.raises(xgb.core.XGBoostError, match="on_host=False"):
-        xgb.ExtMemQuantileDMatrix(pages([x], on_host=True), device="mps", nthread=2)
+    hosted = xgb.ExtMemQuantileDMatrix(pages([x], on_host=True), device="mps", nthread=2)
+    assert hosted.num_nonmissing() == x.size
+    del hosted
+    assert not list(tmp_path.iterdir())
     with pytest.raises(xgb.core.XGBoostError, match="dense or columnar"):
         xgb.ExtMemQuantileDMatrix(pages([sp.csr_matrix(x)]), device="mps", nthread=2)
     with pytest.raises(xgb.core.XGBoostError, match="cache_host_ratio"):

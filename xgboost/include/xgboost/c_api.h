@@ -563,7 +563,8 @@ XGB_DLL int XGQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHand
  *                         the corresponding booster training parameter.
  *   - on_host (optional): Whether the data should be placed on host memory. Used by GPU inputs.
  *   - device (optional, Metal fork): Construction device. "mps" accepts host dense/columnar
- *      batches and requires on_host=false for the disk cache. Omission follows the input device.
+ *      batches. on_host=false selects disk; true selects a compressed Metal shared/private cache.
+ *      Omission follows the input device.
  *   - min_cache_page_bytes (optional): The minimum number of bytes for each internal GPU
  *      page. Set to 0 to disable page concatenation. Automatic configuration if the
  *      parameter is not provided or set to None.

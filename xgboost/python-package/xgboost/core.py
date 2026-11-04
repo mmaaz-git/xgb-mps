@@ -1715,8 +1715,9 @@ class ExtMemQuantileDMatrix(DMatrix, _RefMixIn):
 
         device :
             Optional construction device. ``"mps"`` constructs dense/columnar
-            batches on Metal and requires ``DataIter(on_host=False)`` for the
-            disk-backed page cache. The default follows the input device.
+            batches on Metal. ``DataIter(on_host=False)`` uses disk pages;
+            ``on_host=True`` uses a bit-packed cache split between Metal shared
+            and private storage. The default follows the input device.
 
         cache_host_ratio :
 

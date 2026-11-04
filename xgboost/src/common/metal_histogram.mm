@@ -17,12 +17,14 @@
 #include "../collective/aggregator.h"
 #include "../data/adapter.h"
 #include "../data/gradient_index.h"
+#include "compressed_iterator.h"
 #include "metal_adapter.h"
 #include "metal_auc.h"
 #include "metal_category.h"
 #include "metal_constraints.h"
 #include "metal_cuda_sketch.h"
 #include "metal_data.h"
+#include "metal_ellpack.h"
 #include "metal_gradient.h"
 #include "metal_histogram.h"
 #include "metal_leaf.h"
@@ -118,6 +120,9 @@ std::atomic<std::uint64_t> category_sort_dispatches{0}, category_recode_dispatch
     category_gpu_time_ns{0};
 std::atomic<std::uint64_t> input_prepare_dispatches{0}, input_recode_dispatches{0},
     input_prepare_gpu_time_ns{0}, input_debug_readback_bytes{0};
+std::atomic<std::uint64_t> ellpack_pack_dispatches{0}, ellpack_copy_dispatches{0},
+    ellpack_restore_dispatches{0}, ellpack_cache_dispatches{0}, ellpack_gpu_time_ns{0},
+    ellpack_debug_readback_bytes{0}, ellpack_cached_host_bytes{0}, ellpack_cached_device_bytes{0};
 std::atomic<std::uint64_t> adapter_prepare_dispatches{0}, adapter_index_dispatches{0},
     adapter_gpu_time_ns{0}, adapter_debug_readback_bytes{0};
 std::atomic<std::uint64_t> radix_sort_dispatches{0}, quantile_dispatches{0},
@@ -253,6 +258,8 @@ class Runtime {
   id<MTLComputePipelineState> category_iota_pipeline, category_merge_pipeline,
       category_extract_pipeline, category_validate_pipeline, category_recode_pipeline;
   id<MTLComputePipelineState> input_prepare_pipeline;
+  id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
+      ellpack_copy_pipeline, ellpack_count_pipeline, ellpack_unpack_pipeline;
   id<MTLComputePipelineState> adapter_count_pipeline, adapter_scatter_pipeline,
       adapter_offsets_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
@@ -339,6 +346,11 @@ class Runtime {
       category_validate_pipeline = make_pipeline(@"xgb_category_validate");
       category_recode_pipeline = make_pipeline(@"xgb_category_recode");
       input_prepare_pipeline = make_pipeline(@"xgb_prepare_input");
+      ellpack_symbols_pipeline = make_pipeline(@"xgb_ellpack_symbols");
+      ellpack_pack_pipeline = make_pipeline(@"xgb_ellpack_pack");
+      ellpack_copy_pipeline = make_pipeline(@"xgb_ellpack_copy");
+      ellpack_count_pipeline = make_pipeline(@"xgb_ellpack_count");
+      ellpack_unpack_pipeline = make_pipeline(@"xgb_ellpack_unpack");
       adapter_count_pipeline = make_pipeline(@"xgb_adapter_count");
       adapter_scatter_pipeline = make_pipeline(@"xgb_adapter_scatter");
       adapter_offsets_pipeline = make_pipeline(@"xgb_adapter_offsets");
@@ -619,9 +631,11 @@ id<MTLBuffer> GatherHistograms(Runtime const& rt, Span<HistogramInput const> inp
 class Page final : public QuantizedPage {
  public:
   id<MTLBuffer> index, row_ptr, offsets, cuts;
-  Page(Runtime const& rt, GHistIndexMatrix const& gidx) {
+  Page(Runtime const& rt, GHistIndexMatrix const& gidx, id<MTLBuffer> resident_index = nil,
+       id<MTLBuffer> resident_rows = nil) {
     auto bytes = gidx.index.Size() * gidx.index.GetBinTypeSize();
-    auto source = Upload(rt, gidx.index.data<std::uint8_t>(), bytes);
+    auto source =
+        resident_index ? resident_index : Upload(rt, gidx.index.data<std::uint8_t>(), bytes);
     index = source;
     if (gidx.IsDense() && gidx.Size() && gidx.Features()) {
       index = Allocate(rt, bytes);
@@ -649,14 +663,18 @@ class Page final : public QuantizedPage {
         index_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                     std::memory_order_relaxed);
     }
-    row_ptr = Upload(rt, gidx.row_ptr.data(), gidx.row_ptr.size() * sizeof(std::size_t));
+    row_ptr = resident_rows
+                  ? resident_rows
+                  : Upload(rt, gidx.row_ptr.data(), gidx.row_ptr.size() * sizeof(std::size_t));
     offsets = Upload(rt, gidx.cut.Ptrs().data(), gidx.cut.Ptrs().size() * sizeof(std::uint32_t));
     cuts = Upload(rt, gidx.cut.Values().data(), gidx.cut.Values().size() * sizeof(float));
-    index_uploads.fetch_add(1, std::memory_order_relaxed);
-    index_uploaded_bytes.fetch_add(bytes + gidx.row_ptr.size() * sizeof(std::size_t) +
-                                       gidx.cut.Ptrs().size() * sizeof(std::uint32_t) +
-                                       gidx.cut.Values().size() * sizeof(float),
-                                   std::memory_order_relaxed);
+    if (!resident_index) {
+      index_uploads.fetch_add(1, std::memory_order_relaxed);
+      index_uploaded_bytes.fetch_add(bytes + gidx.row_ptr.size() * sizeof(std::size_t) +
+                                         gidx.cut.Ptrs().size() * sizeof(std::uint32_t) +
+                                         gidx.cut.Values().size() * sizeof(float),
+                                     std::memory_order_relaxed);
+    }
   }
 };
 std::shared_ptr<Page> GetPage(Runtime const& rt, GHistIndexMatrix const& gidx) {
@@ -1807,7 +1825,15 @@ Statistics GetStatistics() {
           adapter_prepare_dispatches.load(std::memory_order_relaxed),
           adapter_index_dispatches.load(std::memory_order_relaxed),
           adapter_gpu_time_ns.load(std::memory_order_relaxed),
-          adapter_debug_readback_bytes.load(std::memory_order_relaxed)};
+          adapter_debug_readback_bytes.load(std::memory_order_relaxed),
+          ellpack_pack_dispatches.load(std::memory_order_relaxed),
+          ellpack_copy_dispatches.load(std::memory_order_relaxed),
+          ellpack_restore_dispatches.load(std::memory_order_relaxed),
+          ellpack_cache_dispatches.load(std::memory_order_relaxed),
+          ellpack_gpu_time_ns.load(std::memory_order_relaxed),
+          ellpack_debug_readback_bytes.load(std::memory_order_relaxed),
+          ellpack_cached_host_bytes.load(std::memory_order_relaxed),
+          ellpack_cached_device_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6253,6 +6279,345 @@ std::unique_ptr<AdapterInput> PrepareAdapter(data::ColumnarAdapter const& adapte
                                              bst_idx_t begin, bst_idx_t count,
                                              enc::MappingView mapping) {
   return PrepareAdapterImpl(adapter, missing, begin, count, mapping);
+}
+
+namespace {
+struct EllpackParams {
+  std::uint64_t rows, split, row_offset;
+  std::uint32_t features, stride, symbols, bits, dense, width;
+};
+static_assert(sizeof(EllpackParams) == 48);
+static_assert(common::detail::kPadding == 8, "Metal bitstream padding must match CUDA.");
+id<MTLBuffer> EllpackPrivate(Runtime const& rt, std::size_t bytes) {
+  auto length = std::max<std::size_t>(bytes, 16);
+  CHECK_LE(length, rt.device.maxBufferLength) << "Metal compressed page exceeds the buffer limit.";
+  auto buffer = [rt.device newBufferWithLength:length options:MTLResourceStorageModePrivate];
+  CHECK(buffer) << "Metal private cache allocation failed.";
+  return buffer;
+}
+class MetalCompressedPage final : public CompressedPage {
+  EllpackInfo info_;
+  bst_idx_t rows_, base_, written_{0};
+  std::size_t bytes_, host_bytes_{0};
+  bool committed_{false};
+  id<MTLBuffer> buffer_, head_, tail_;
+  EllpackParams Params() const {
+    return {rows_,
+            committed_ ? host_bytes_ : 0,
+            0,
+            info_.features,
+            info_.row_stride,
+            info_.symbols,
+            info_.bits,
+            std::uint32_t(info_.dense),
+            4};
+  }
+  id<MTLBuffer> Head() const { return committed_ ? head_ : buffer_; }
+  id<MTLBuffer> Tail() const { return committed_ ? tail_ : buffer_; }
+
+ public:
+  MetalCompressedPage(EllpackInfo info, bst_idx_t rows, bst_idx_t base, std::size_t bytes)
+      : info_{info}, rows_{rows}, base_{base}, bytes_{bytes ? bytes : EllpackBytes(rows, info)} {
+    @autoreleasepool {
+      CHECK_GE(bytes_, EllpackBytes(rows, info));
+      CHECK_LE(rows_, std::numeric_limits<std::uint32_t>::max());
+      auto& rt = GetRuntime();
+      buffer_ = EllpackPrivate(rt, bytes_);
+      auto command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      [blit fillBuffer:buffer_ range:NSMakeRange(0, buffer_.length) value:0];
+      [blit endEncoding];
+      CompleteOperation(command, &ellpack_cache_dispatches, &ellpack_gpu_time_ns);
+    }
+  }
+  EllpackInfo Info() const override { return info_; }
+  bst_idx_t Rows() const override { return rows_; }
+  bst_idx_t BaseRow() const override { return base_; }
+  std::size_t SizeBytes() const override { return bytes_; }
+  std::size_t HostBytes() const override { return host_bytes_; }
+  std::size_t DeviceBytes() const override { return bytes_ - host_bytes_; }
+  void Pack(GHistIndexMatrix const& input) override {
+    @autoreleasepool {
+      CHECK(!committed_);
+      CHECK_EQ(written_, 0);
+      CHECK_EQ(input.Size(), rows_);
+      CHECK_EQ(input.Features(), info_.features);
+      CHECK_EQ(input.IsDense(), info_.dense);
+      auto& rt = GetRuntime();
+      auto p = Params();
+      p.width = input.index.GetBinTypeSize();
+      if (rows_ && info_.row_stride) {
+        auto index = Upload(rt, input.index.data<std::uint8_t>(), input.index.Size() * p.width);
+        auto rows = Upload(rt, input.row_ptr.data(), input.row_ptr.size() * sizeof(std::size_t));
+        auto cuts = Upload(rt, input.cut.Ptrs().data(), input.cut.Ptrs().size() * 4);
+        auto command = [rt.queue commandBuffer];
+        auto e = [command computeCommandEncoder];
+        [e setComputePipelineState:rt.ellpack_pack_pipeline];
+        [e setBuffer:index offset:0 atIndex:0];
+        [e setBuffer:rows offset:0 atIndex:1];
+        [e setBuffer:cuts offset:0 atIndex:2];
+        [e setBuffer:buffer_ offset:0 atIndex:3];
+        [e setBytes:&p length:sizeof(p) atIndex:4];
+        [e dispatchThreads:MTLSizeMake(info_.row_stride, rows_, 1)
+            threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+        [e endEncoding];
+        CompleteOperation(command, &ellpack_pack_dispatches, &ellpack_gpu_time_ns);
+      }
+      written_ = rows_;
+    }
+  }
+  void Copy(CompressedPage const& source, bst_idx_t row_offset) override {
+    @autoreleasepool {
+      CHECK_NE(this, &source);
+      CHECK(!committed_);
+      CHECK_EQ(written_, row_offset);
+      auto& input = dynamic_cast<MetalCompressedPage const&>(source);
+      CHECK_EQ(input.written_, input.rows_);
+      CHECK_EQ(info_.features, input.info_.features);
+      CHECK_EQ(info_.row_stride, input.info_.row_stride);
+      CHECK_EQ(info_.symbols, input.info_.symbols);
+      CHECK_EQ(info_.dense, input.info_.dense);
+      CHECK_LE(row_offset, rows_);
+      CHECK_LE(input.rows_, rows_ - row_offset);
+      auto& rt = GetRuntime();
+      auto p = input.Params();
+      p.row_offset = row_offset;
+      if (input.rows_ && info_.row_stride) {
+        auto command = [rt.queue commandBuffer];
+        auto e = [command computeCommandEncoder];
+        [e setComputePipelineState:rt.ellpack_copy_pipeline];
+        [e setBuffer:input.Head() offset:0 atIndex:0];
+        [e setBuffer:input.Tail() offset:0 atIndex:1];
+        [e setBuffer:buffer_ offset:0 atIndex:2];
+        [e setBytes:&p length:sizeof(p) atIndex:3];
+        [e dispatchThreads:MTLSizeMake(info_.row_stride, input.rows_, 1)
+            threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+        [e endEncoding];
+        CompleteOperation(command, &ellpack_copy_dispatches, &ellpack_gpu_time_ns);
+      }
+      written_ += input.rows_;
+    }
+  }
+  void Commit(double host_ratio) override {
+    @autoreleasepool {
+      CHECK(!committed_);
+      CHECK_EQ(written_, rows_);
+      CHECK_GE(host_ratio, 0.0);
+      CHECK_LE(host_ratio, 1.0);
+      host_bytes_ = host_ratio == 0   ? 0
+                    : host_ratio == 1 ? bytes_
+                                      : std::max(std::size_t(bytes_ * host_ratio), std::size_t{1});
+      auto& rt = GetRuntime();
+      head_ = Allocate(rt, host_bytes_);
+      if (!host_bytes_) {
+        tail_ = buffer_;  // The complete cache page stays private to the GPU.
+      } else {
+        tail_ = EllpackPrivate(rt, bytes_ - host_bytes_);
+        auto command = [rt.queue commandBuffer];
+        auto blit = [command blitCommandEncoder];
+        [blit copyFromBuffer:buffer_
+                 sourceOffset:0
+                     toBuffer:head_
+            destinationOffset:0
+                         size:host_bytes_];
+        if (bytes_ > host_bytes_) {
+          [blit copyFromBuffer:buffer_
+                   sourceOffset:host_bytes_
+                       toBuffer:tail_
+              destinationOffset:0
+                           size:bytes_ - host_bytes_];
+        }
+        [blit endEncoding];
+        CompleteOperation(command, &ellpack_cache_dispatches, &ellpack_gpu_time_ns);
+      }
+      buffer_ = nil;
+      committed_ = true;
+      ellpack_cached_host_bytes.fetch_add(host_bytes_, std::memory_order_relaxed);
+      ellpack_cached_device_bytes.fetch_add(bytes_ - host_bytes_, std::memory_order_relaxed);
+    }
+  }
+  void Restore(Context const* ctx, HistogramCuts const& cuts, bst_bin_t max_bin,
+               double sparse_thresh, bool prefetch_copy, GHistIndexMatrix* output) const override {
+    @autoreleasepool {
+      CHECK_EQ(written_, rows_);
+      // Per-bin hits cannot exceed the row count. Resource limits are tighter on
+      // supported Apple GPUs, but make the 32-bit counter contract explicit.
+      CHECK_LE(rows_, std::numeric_limits<std::uint32_t>::max());
+      auto& rt = GetRuntime();
+      auto p = Params();
+      auto head = Head(), tail = Tail();
+      if (prefetch_copy && p.split) {
+        auto full = EllpackPrivate(rt, bytes_);
+        auto command = [rt.queue commandBuffer];
+        auto blit = [command blitCommandEncoder];
+        [blit copyFromBuffer:head sourceOffset:0 toBuffer:full destinationOffset:0 size:p.split];
+        if (bytes_ > p.split)
+          [blit copyFromBuffer:tail
+                   sourceOffset:0
+                       toBuffer:full
+              destinationOffset:p.split
+                           size:bytes_ - p.split];
+        [blit endEncoding];
+        CompleteOperation(command, &ellpack_cache_dispatches, &ellpack_gpu_time_ns);
+        head = tail = full;
+        p.split = 0;
+      }
+      auto counts = Allocate(rt, (rows_ + 1) * 8);
+      auto command = [rt.queue commandBuffer];
+      auto e = [command computeCommandEncoder];
+      [e setComputePipelineState:rt.ellpack_count_pipeline];
+      [e setBuffer:head offset:0 atIndex:0];
+      [e setBuffer:tail offset:0 atIndex:1];
+      [e setBuffer:counts offset:0 atIndex:2];
+      [e setBytes:&p length:sizeof(p) atIndex:3];
+      [e dispatchThreads:MTLSizeMake(std::max<bst_idx_t>(1, rows_), 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      auto row_ptr = EncodePrefixU64(rt, command, counts, rows_ + 1);
+      CompleteOperation(command, &ellpack_restore_dispatches, &ellpack_gpu_time_ns);
+      auto nnz = static_cast<std::uint64_t const*>(row_ptr.contents)[rows_];
+      output->cut = cuts;
+      output->base_rowid = base_;
+      output->max_numeric_bins_per_feat = max_bin;
+      output->SetDense(info_.dense);
+      output->row_ptr = common::MakeFixedVecWithMalloc(rows_ + 1, std::size_t{0});
+      std::memcpy(output->row_ptr.data(), row_ptr.contents, (rows_ + 1) * 8);
+      output->hit_count = common::MakeFixedVecWithMalloc(cuts.TotalBins(), std::size_t{0});
+      output->ResizeIndex(ctx, nnz, info_.dense);
+      if (info_.dense) output->index.SetBinOffset(output->cut.Ptrs());
+      p.width = output->index.GetBinTypeSize();
+      auto index = Allocate(rt, nnz * p.width);
+      auto ptrs = Upload(rt, cuts.Ptrs().data(), cuts.Ptrs().size() * 4);
+      auto hits = Allocate(rt, cuts.TotalBins() * 4);
+      command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      [blit fillBuffer:hits range:NSMakeRange(0, hits.length) value:0];
+      [blit endEncoding];
+      e = [command computeCommandEncoder];
+      [e setComputePipelineState:rt.ellpack_unpack_pipeline];
+      [e setBuffer:head offset:0 atIndex:0];
+      [e setBuffer:tail offset:0 atIndex:1];
+      [e setBuffer:row_ptr offset:0 atIndex:2];
+      [e setBuffer:ptrs offset:0 atIndex:3];
+      [e setBuffer:index offset:0 atIndex:4];
+      [e setBuffer:hits offset:0 atIndex:5];
+      [e setBytes:&p length:sizeof(p) atIndex:6];
+      [e dispatchThreads:MTLSizeMake(std::max<bst_idx_t>(1, rows_), 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &ellpack_restore_dispatches, &ellpack_gpu_time_ns);
+      if (nnz) std::memcpy(output->index.data<std::uint8_t>(), index.contents, nnz * p.width);
+      for (std::size_t i = 0; i < output->hit_count.size(); ++i)
+        output->hit_count[i] = static_cast<std::uint32_t const*>(hits.contents)[i];
+      output->InitColumns(ctx, sparse_thresh);
+      // Training consumes the already restored GPU buffers; do not upload host bins again.
+      output->metal_page = std::make_shared<Page>(rt, *output, index, row_ptr);
+    }
+  }
+  std::vector<std::uint8_t> Readback() const override {
+    @autoreleasepool {
+      auto& rt = GetRuntime();
+      auto result = Allocate(rt, bytes_);
+      auto command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      auto split = Params().split;
+      if (split)
+        [blit copyFromBuffer:Head() sourceOffset:0 toBuffer:result destinationOffset:0 size:split];
+      if (bytes_ > split)
+        [blit copyFromBuffer:Tail()
+                 sourceOffset:0
+                     toBuffer:result
+            destinationOffset:split
+                         size:bytes_ - split];
+      [blit endEncoding];
+      CompleteOperation(command, &ellpack_cache_dispatches, &ellpack_gpu_time_ns);
+      ellpack_debug_readback_bytes.fetch_add(bytes_, std::memory_order_relaxed);
+      auto ptr = static_cast<std::uint8_t const*>(result.contents);
+      return {ptr, ptr + bytes_};
+    }
+  }
+};
+}  // namespace
+EllpackInfo MakeEllpackInfo(HistogramCuts const& cuts, bst_idx_t row_stride, bool dense) {
+  @autoreleasepool {
+    CHECK_LE(row_stride, cuts.NumFeatures());
+    CHECK_LT(cuts.TotalBins(), std::numeric_limits<std::uint32_t>::max());
+    std::uint32_t symbols = cuts.TotalBins() + 1;
+    if (symbols == 1) return {cuts.NumFeatures(), 0, symbols, 1, dense};
+    auto& rt = GetRuntime();
+    std::uint32_t zero = 0, features = cuts.NumFeatures();
+    auto ptrs = Upload(rt, cuts.Ptrs().data(), cuts.Ptrs().size() * 4);
+    auto max_bins = Upload(rt, &zero, 4);
+    auto command = [rt.queue commandBuffer];
+    auto e = [command computeCommandEncoder];
+    [e setComputePipelineState:rt.ellpack_symbols_pipeline];
+    [e setBuffer:ptrs offset:0 atIndex:0];
+    [e setBuffer:max_bins offset:0 atIndex:1];
+    [e setBytes:&features length:sizeof(features) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(features, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &ellpack_pack_dispatches, &ellpack_gpu_time_ns);
+    auto maximum = *static_cast<std::uint32_t const*>(max_bins.contents);
+    if (dense) {
+      row_stride = features;
+      symbols = maximum;
+    } else if (row_stride == features)
+      symbols = maximum + 1;
+    return {features, static_cast<std::uint32_t>(row_stride), symbols,
+            common::detail::SymbolBits(symbols), dense};
+  }
+}
+std::size_t EllpackBytes(bst_idx_t rows, EllpackInfo info) {
+  CHECK_GT(info.symbols, 0);
+  CHECK_EQ(info.bits, common::detail::SymbolBits(info.symbols));
+  if (info.row_stride)
+    CHECK_LE(rows, std::numeric_limits<std::size_t>::max() / info.row_stride / info.bits);
+  return common::CompressedBufferWriter::CalculateBufferSize(rows * info.row_stride, info.symbols);
+}
+std::uint64_t CacheWorkingSetBytes() { return GetRuntime().device.recommendedMaxWorkingSetSize; }
+std::shared_ptr<CompressedPage> MakeCompressedPage(EllpackInfo info, bst_idx_t rows,
+                                                   bst_idx_t base_row, std::size_t bytes) {
+  return std::make_shared<MetalCompressedPage>(info, rows, base_row, bytes);
+}
+EllpackCachePlan PlanEllpackCache(EllpackInfo info, Span<bst_idx_t const> batch_rows,
+                                  bool validation, double ratio, std::int64_t minimum,
+                                  std::uint64_t device_bytes) {
+  CHECK(!batch_rows.empty());
+  if (!std::isnan(ratio)) {
+    CHECK_GE(ratio, 0.0);
+    CHECK_LE(ratio, 1.0);
+  }
+  std::size_t total = 0;
+  for (auto rows : batch_rows) {
+    auto bytes = EllpackBytes(rows, info);
+    CHECK_LE(bytes, std::numeric_limits<std::size_t>::max() - total);
+    total += bytes;
+  }
+  if (minimum == -1) minimum = device_bytes / 16;
+  auto available = device_bytes / 2;
+  if (std::isnan(ratio)) {
+    if (validation)
+      ratio = 1.0;
+    else if (total <= available)
+      ratio = 0.0;
+    else
+      ratio = double(total - available * 0.85) / double(total);
+    // Apple unified memory has no NVIDIA C2C link-count branch.
+  }
+  EllpackCachePlan plan{ratio, minimum, {}, {}, {}};
+  for (auto rows : batch_rows) {
+    auto bytes = EllpackBytes(rows, info);
+    if (plan.bytes.empty() || static_cast<std::int64_t>(plan.bytes.back()) >= minimum) {
+      plan.bytes.push_back(bytes);
+      plan.rows.push_back(rows);
+    } else {
+      plan.bytes.back() += bytes;
+      plan.rows.back() += rows;
+    }
+    plan.mapping.push_back(plan.bytes.size() - 1);
+  }
+  if (plan.rows.size() == 1) plan.host_ratio = 0.0;
+  return plan;
 }
 
 namespace {

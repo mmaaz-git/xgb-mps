@@ -7468,3 +7468,115 @@ kernel void xgb_adapter_offsets(device const ulong* input [[buffer(0)]],
                                 uint i [[thread_position_in_grid]]) {
   if (ulong(i) < p.count) output[i] = input[i] + p.offset;
 }
+
+// CUDA ELLPACK's padded, MSB-first bitstream. Separate host/device buffers can
+// split in the middle of a symbol; reads address the logical byte stream.
+struct EllpackParams {
+  ulong rows, split, row_offset;
+  uint features, stride, symbols, bits, dense, width;
+};
+inline uint xgb_ellpack_read(device const uchar* head, device const uchar* tail, ulong split,
+                             ulong index, uint bits) {
+  uint symbol = 0;
+  for (uint j = 0; j < bits; ++j) {
+    ulong bit = index * bits + j, byte = 8 + bit / 8;
+    uint value = byte < split ? head[byte] : tail[byte - split];
+    symbol = (symbol << 1) | ((value >> (7 - bit % 8)) & 1);
+  }
+  return symbol;
+}
+inline void xgb_ellpack_write(device atomic_uint* output, ulong index, uint bits, uint symbol) {
+  for (uint j = 0; j < bits; ++j) {
+    if ((symbol >> (bits - 1 - j)) & 1) {
+      ulong bit = index * bits + j, byte = 8 + bit / 8;
+      uint shift = uint(byte % 4) * 8 + uint(7 - bit % 8);
+      atomic_fetch_or_explicit(output + byte / 4, 1u << shift, memory_order_relaxed);
+    }
+  }
+}
+kernel void xgb_ellpack_symbols(device const uint* cuts [[buffer(0)]],
+                                device atomic_uint* maximum [[buffer(1)]],
+                                constant uint& features [[buffer(2)]],
+                                uint f [[thread_position_in_grid]]) {
+  if (f < features) atomic_fetch_max_explicit(maximum, cuts[f + 1] - cuts[f], memory_order_relaxed);
+}
+kernel void xgb_ellpack_pack(device const uchar* index [[buffer(0)]],
+                             device const ulong* rows [[buffer(1)]],
+                             device const uint* cuts [[buffer(2)]],
+                             device atomic_uint* output [[buffer(3)]],
+                             constant EllpackParams& p [[buffer(4)]],
+                             uint2 tid [[thread_position_in_grid]]) {
+  ulong i = ulong(tid.y) * p.stride + tid.x;
+  if (i >= p.rows * p.stride) return;
+  ulong row = i / p.stride;
+  uint slot = uint(i % p.stride), symbol = p.dense ? p.symbols : p.symbols - 1;
+  ulong begin = rows[row], end = rows[row + 1];
+  if (p.dense) {
+    symbol = xgb_read_bin(index, begin + slot, p.width);
+  } else if (p.stride == p.features) {
+    ulong low = begin, high = end;
+    while (low < high) {
+      ulong mid = low + (high - low) / 2;
+      if (xgb_read_bin(index, mid, p.width) < cuts[slot])
+        low = mid + 1;
+      else
+        high = mid;
+    }
+    if (low < end) {
+      uint bin = xgb_read_bin(index, low, p.width);
+      if (bin < cuts[slot + 1]) symbol = bin - cuts[slot];
+    }
+  } else if (slot < end - begin) {
+    symbol = xgb_read_bin(index, begin + slot, p.width);
+  }
+  xgb_ellpack_write(output, i + p.row_offset * p.stride, p.bits, symbol);
+}
+kernel void xgb_ellpack_copy(device const uchar* head [[buffer(0)]],
+                             device const uchar* tail [[buffer(1)]],
+                             device atomic_uint* output [[buffer(2)]],
+                             constant EllpackParams& p [[buffer(3)]],
+                             uint2 tid [[thread_position_in_grid]]) {
+  ulong i = ulong(tid.y) * p.stride + tid.x;
+  if (i < p.rows * p.stride) {
+    uint symbol = xgb_ellpack_read(head, tail, p.split, i, p.bits);
+    xgb_ellpack_write(output, i + p.row_offset * p.stride, p.bits, symbol);
+  }
+}
+kernel void xgb_ellpack_count(device const uchar* head [[buffer(0)]],
+                              device const uchar* tail [[buffer(1)]],
+                              device ulong* rows [[buffer(2)]],
+                              constant EllpackParams& p [[buffer(3)]],
+                              uint tid [[thread_position_in_grid]]) {
+  ulong r = tid;
+  if (r == 0) rows[0] = 0;
+  if (r >= p.rows) return;
+  ulong count = 0;
+  for (uint j = 0; j < p.stride; ++j) {
+    uint value = xgb_ellpack_read(head, tail, p.split, r * p.stride + j, p.bits);
+    count += p.dense || value != p.symbols - 1;
+  }
+  rows[r + 1] = count;
+}
+kernel void xgb_ellpack_unpack(
+    device const uchar* head [[buffer(0)]], device const uchar* tail [[buffer(1)]],
+    device const ulong* rows [[buffer(2)]], device const uint* cuts [[buffer(3)]],
+    device uchar* index [[buffer(4)]], device atomic_uint* hits [[buffer(5)]],
+    constant EllpackParams& p [[buffer(6)]], uint tid [[thread_position_in_grid]]) {
+  ulong r = tid;
+  if (r >= p.rows) return;
+  ulong offset = rows[r];
+  for (uint j = 0; j < p.stride; ++j) {
+    uint value = xgb_ellpack_read(head, tail, p.split, r * p.stride + j, p.bits);
+    if (!p.dense && value == p.symbols - 1) continue;
+    uint global = p.stride == p.features ? value + cuts[j] : value;
+    uint stored = p.dense ? value : global;
+    if (p.width == 1)
+      index[offset] = uchar(stored);
+    else if (p.width == 2)
+      ((device ushort*)index)[offset] = ushort(stored);
+    else
+      ((device uint*)index)[offset] = stored;
+    atomic_fetch_add_explicit(hits + global, 1u, memory_order_relaxed);
+    ++offset;
+  }
+}

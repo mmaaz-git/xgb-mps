@@ -227,6 +227,21 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.input_prepare_gpu_time_ns)};
   info["input_debug_readback_bytes"] =
       Integer{static_cast<std::int64_t>(stats.input_debug_readback_bytes)};
+  info["ellpack_pack_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_pack_dispatches)};
+  info["ellpack_copy_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_copy_dispatches)};
+  info["ellpack_restore_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_restore_dispatches)};
+  info["ellpack_cache_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_cache_dispatches)};
+  info["ellpack_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.ellpack_gpu_time_ns)};
+  info["ellpack_debug_readback_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_debug_readback_bytes)};
+  info["ellpack_cached_host_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_cached_host_bytes)};
+  info["ellpack_cached_device_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_cached_device_bytes)};
   info["adapter_prepare_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.adapter_prepare_dispatches)};
   info["adapter_index_dispatches"] =
@@ -443,6 +458,14 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["input_recode_dispatches"] = Integer{0};
   info["input_prepare_gpu_time_ns"] = Integer{0};
   info["input_debug_readback_bytes"] = Integer{0};
+  info["ellpack_pack_dispatches"] = Integer{0};
+  info["ellpack_copy_dispatches"] = Integer{0};
+  info["ellpack_restore_dispatches"] = Integer{0};
+  info["ellpack_cache_dispatches"] = Integer{0};
+  info["ellpack_gpu_time_ns"] = Integer{0};
+  info["ellpack_debug_readback_bytes"] = Integer{0};
+  info["ellpack_cached_host_bytes"] = Integer{0};
+  info["ellpack_cached_device_bytes"] = Integer{0};
   info["adapter_prepare_dispatches"] = Integer{0};
   info["adapter_index_dispatches"] = Integer{0};
   info["adapter_gpu_time_ns"] = Integer{0};

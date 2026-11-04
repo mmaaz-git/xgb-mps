@@ -96,6 +96,9 @@ struct Statistics {
       input_debug_readback_bytes;
   std::uint64_t adapter_prepare_dispatches, adapter_index_dispatches, adapter_gpu_time_ns,
       adapter_debug_readback_bytes;
+  std::uint64_t ellpack_pack_dispatches, ellpack_copy_dispatches, ellpack_restore_dispatches,
+      ellpack_cache_dispatches, ellpack_gpu_time_ns, ellpack_debug_readback_bytes,
+      ellpack_cached_host_bytes, ellpack_cached_device_bytes;
 };
 
 class Histogram {

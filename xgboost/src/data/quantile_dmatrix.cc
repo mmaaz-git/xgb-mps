@@ -18,6 +18,7 @@
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_cuda_sketch.h"
 #include "../common/metal_sketch.h"
+#include "metal_page_source.h"
 #include "metal_quantile.h"
 #endif
 
@@ -126,7 +127,87 @@ void MakeSketches(Context const* ctx,
     *cuts = common::metal::MakeCudaCuts(sketch->Read(), ext.n_features, p.max_bin, types);
   sketch.reset();
 }
+std::shared_ptr<GHistIndexMatrix> MakeIndexBatch(Context const* ctx, DMatrixProxy* proxy,
+                                                 float missing, BatchParam const& p,
+                                                 common::HistogramCuts const& cuts,
+                                                 MetaInfo const& info, bst_idx_t expected_rows,
+                                                 bst_idx_t base_row, bst_idx_t expected_nnz) {
+  auto rows = BatchSamples(proxy);
+  CHECK_EQ(rows, expected_rows);
+  CHECK_EQ(BatchColumns(proxy), info.num_col_);
+  auto page = std::make_shared<GHistIndexMatrix>(rows, base_row, common::HistogramCuts{cuts},
+                                                 p.max_bin, info.IsDense());
+  page->ResizeIndex(ctx, expected_nnz, info.IsDense());
+  if (info.IsDense()) page->index.SetBinOffset(page->cut.Ptrs());
+  bst_idx_t offset = 0;
+  AdapterWindows(ctx, proxy, missing, [&](auto const& input) {
+    input.WriteIndex(info.feature_types.ConstHostSpan(), page.get(), 0, offset);
+    offset += input.NonMissing();
+  });
+  CHECK_EQ(offset, expected_nnz) << "Non-missing counts changed between iterations";
+  page->InitColumns(ctx, p.sparse_thresh);
+  proxy->Info().num_row_ = rows;
+  proxy->Info().num_col_ = info.num_col_;
+  proxy->Info().num_nonzero_ = offset;
+  return page;
+}
 }  // namespace metal_impl
+MetalPageSource::MetalPageSource(
+    Context const* ctx,
+    std::shared_ptr<DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>> iter,
+    DMatrixProxy* proxy, BatchParam p, ExtMemConfig const& config, std::shared_ptr<Cache> cache,
+    common::HistogramCuts cuts, ExternalDataInfo const& ext, MetaInfo* info, bool validation)
+    : Super{config.missing, ctx->Threads(), static_cast<bst_feature_t>(ext.n_features),
+            std::move(cache)} {
+  auto layout = common::metal::MakeEllpackInfo(cuts, ext.row_stride, info->IsDense());
+  std::vector<bst_idx_t> batch_rows;
+  for (std::size_t i = 0; i < ext.n_batches; ++i)
+    batch_rows.push_back(ext.base_rowids[i + 1] - ext.base_rowids[i]);
+  auto plan = common::metal::PlanEllpackCache(layout, batch_rows, validation,
+                                              config.cache_host_ratio, config.min_cache_page_bytes,
+                                              common::metal::CacheWorkingSetBytes());
+  metal_cache_->ctx = *ctx;
+  metal_cache_->cuts = cuts;
+  metal_cache_->max_bin = p.max_bin;
+  metal_cache_->sparse_thresh = p.sparse_thresh;
+  p.n_prefetch_batches = 2;
+  this->param_ = p;
+  for (auto rows : plan.rows) batch_ptr_.push_back(batch_ptr_.back() + rows);
+  LOG(INFO) << "Metal cache pages: " << plan.rows.size() << ", host ratio: " << plan.host_ratio
+            << ", min page bytes: " << plan.min_page_bytes;
+  iter->Reset();
+  std::size_t batch = 0;
+  bst_idx_t offset = 0;
+  while (iter->Next()) {
+    CHECK_LT(batch, ext.n_batches) << "Different number of batches returned between iterations";
+    auto raw =
+        metal_impl::MakeIndexBatch(ctx, proxy, config.missing, p, cuts, *info, batch_rows[batch],
+                                   ext.base_rowids[batch], ext.batch_nnz[batch]);
+    info->Extend(proxy->Info(), false, true);
+    auto packed =
+        common::metal::MakeCompressedPage(layout, batch_rows[batch], ext.base_rowids[batch]);
+    packed->Pack(*raw);
+    raw.reset();
+    auto target = plan.mapping[batch];
+    if (target == metal_cache_->pages.size()) {
+      if (!metal_cache_->pages.empty()) metal_cache_->pages.back()->Commit(plan.host_ratio);
+      metal_cache_->pages.push_back(common::metal::MakeCompressedPage(
+          layout, plan.rows[target], batch_ptr_[target], plan.bytes[target]));
+      offset = 0;
+    }
+    metal_cache_->pages.back()->Copy(*packed, offset);
+    offset += batch_rows[batch];
+    ++batch;
+  }
+  CHECK_EQ(batch, ext.n_batches) << "Different number of batches returned between iterations";
+  metal_cache_->pages.back()->Commit(plan.host_ratio);
+  for (auto bytes : plan.bytes) cache_info_->Push(bytes);
+  cache_info_->Commit();
+  metal_cache_->offsets = cache_info_->offset;
+  // No callback or input-array references survive cache construction.
+  iter.reset();
+  this->Fetch();
+}
 #endif
 
 namespace cpu_impl {

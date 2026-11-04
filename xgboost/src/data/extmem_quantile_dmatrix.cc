@@ -16,6 +16,7 @@
 #include "sparse_page_source.h"     // for MakeCachePrefix
 
 #if defined(XGBOOST_USE_METAL)
+#include "metal_page_source.h"
 #include "metal_quantile.h"
 #endif
 
@@ -50,15 +51,15 @@ ExtMemQuantileDMatrix::ExtMemQuantileDMatrix(DataIterHandle iter_handle, DMatrix
 
   BatchParam p{max_bin, tree::TrainParam::DftSparseThreshold()};
   if (fmat_ctx_.IsMPS()) {
-    CHECK(!on_host_) << "Metal ExtMemQuantileDMatrix currently requires DataIter(on_host=False); "
-                        "the host/device adaptive cache is not implemented.";
-    CHECK(detail::HostRatioIsAuto(config.cache_host_ratio)) << error::CacheHostRatioNotImpl();
+    if (!on_host_)
+      CHECK(detail::HostRatioIsAuto(config.cache_host_ratio)) << error::CacheHostRatioNotImpl();
     try {
-      this->InitFromMPS(&fmat_ctx_, iter, proxy, p, config.missing, ref);
+      this->InitFromMPS(&fmat_ctx_, iter, proxy, p, config, ref);
     } catch (...) {
       // The class destructor is not called when construction fails. Release any
       // active readers before removing the partially written page cache.
       ghist_index_source_.reset();
+      metal_page_source_.reset();
       DeleteCacheFiles(cache_info_);
       throw;
     }
@@ -77,6 +78,7 @@ ExtMemQuantileDMatrix::ExtMemQuantileDMatrix(DataIterHandle iter_handle, DMatrix
 ExtMemQuantileDMatrix::~ExtMemQuantileDMatrix() {
   // Clear out all resources before deleting the cache file.
   ghist_index_source_.reset();
+  metal_page_source_.reset();
   std::visit([](auto &&ptr) { ptr.reset(); }, ellpack_page_source_);
 
   DeleteCacheFiles(cache_info_);
@@ -92,8 +94,10 @@ BatchSet<ExtSparsePage> ExtMemQuantileDMatrix::GetExtBatches(Context const *, Ba
 void ExtMemQuantileDMatrix::InitFromMPS(
     Context const* ctx,
     std::shared_ptr<DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>> iter,
-    DMatrixHandle proxy_handle, BatchParam const& p, float missing, std::shared_ptr<DMatrix> ref) {
+    DMatrixHandle proxy_handle, BatchParam const& p, ExtMemConfig const& config,
+    std::shared_ptr<DMatrix> ref) {
 #if defined(XGBOOST_USE_METAL)
+  auto missing = config.missing;
   auto proxy = MakeProxy(proxy_handle);
   ExternalDataInfo ext;
   common::HistogramCuts cuts{0};
@@ -104,23 +108,30 @@ void ExtMemQuantileDMatrix::InitFromMPS(
   n_batches_ = ext.n_batches;
   batch_ptr_ = ext.base_rowids;
 
-  // One cache page per input batch, as in CUDA's disk-backed path. Raw input is
-  // decoded and binned on Metal; no full-dataset gradient index is allocated.
-  auto id = MakeCache(this, ".gradient_index.page", false, cache_prefix_, &cache_info_);
-  ghist_index_source_ = std::make_shared<ExtGradientIndexPageSource>(
-      ctx, missing, &info_, cache_info_.at(id), p, cuts, iter, proxy, ext.base_rowids,
-      ext.batch_nnz);
+  if (on_host_) {
+    auto id = MakeCache(this, ".metal-ellpack.page", true, cache_prefix_, &cache_info_);
+    metal_page_source_ = std::make_shared<MetalPageSource>(
+        ctx, iter, proxy, p, config, cache_info_.at(id), cuts, ext, &info_, ref != nullptr);
+    batch_ptr_ = metal_page_source_->BatchPtr();
+    n_batches_ = batch_ptr_.size() - 1;
+  } else {
+    // CUDA's disk path retains one page per input batch.
+    auto id = MakeCache(this, ".gradient_index.page", false, cache_prefix_, &cache_info_);
+    ghist_index_source_ = std::make_shared<ExtGradientIndexPageSource>(
+        ctx, missing, &info_, cache_info_.at(id), p, cuts, iter, proxy, ext.base_rowids,
+        ext.batch_nnz);
+  }
   bst_idx_t batches = 0, rows = 0, nnz = 0;
   for (auto const& page : GetGradientIndexImpl()) {
-    CHECK_LT(batches, ext.n_batches);
-    CHECK_EQ(page.base_rowid, ext.base_rowids[batches]);
-    CHECK_EQ(page.Size(), ext.base_rowids[batches + 1] - ext.base_rowids[batches]);
+    CHECK_LT(batches, n_batches_);
+    CHECK_EQ(page.base_rowid, batch_ptr_[batches]);
+    CHECK_EQ(page.Size(), batch_ptr_[batches + 1] - batch_ptr_[batches]);
     CHECK_EQ(page.Features(), ext.n_features);
     rows += page.Size();
     nnz += page.row_ptr[page.Size()];
     ++batches;
   }
-  CHECK_EQ(batches, ext.n_batches);
+  CHECK_EQ(batches, n_batches_);
   CHECK_EQ(rows, ext.accumulated_rows);
   CHECK_EQ(nnz, ext.nnz);
   CHECK_EQ(cuts.HasCategorical(), info_.HasCategorical());
@@ -180,6 +191,9 @@ void ExtMemQuantileDMatrix::InitFromCPU(
 }
 
 [[nodiscard]] BatchSet<GHistIndexMatrix> ExtMemQuantileDMatrix::GetGradientIndexImpl() {
+#if defined(XGBOOST_USE_METAL)
+  if (metal_page_source_) return BatchSet{BatchIterator<GHistIndexMatrix>{metal_page_source_}};
+#endif
   return BatchSet{BatchIterator<GHistIndexMatrix>{this->ghist_index_source_}};
 }
 
@@ -190,9 +204,14 @@ BatchSet<GHistIndexMatrix> ExtMemQuantileDMatrix::GetGradientIndex(Context const
     CHECK(!detail::RegenGHist(param, batch_)) << error::InconsistentMaxBin();
   }
 
-  CHECK(this->ghist_index_source_)
+  CHECK(this->GHistIndexExists())
       << "The `ExtMemQuantileDMatrix` is initialized using GPU data, cannot be used for CPU.";
-  this->ghist_index_source_->Reset(param);
+#if defined(XGBOOST_USE_METAL)
+  if (metal_page_source_)
+    metal_page_source_->Reset(param);
+  else
+#endif
+    this->ghist_index_source_->Reset(param);
 
   if (!std::isnan(param.sparse_thresh) &&
       param.sparse_thresh != tree::TrainParam::DftSparseThreshold()) {
