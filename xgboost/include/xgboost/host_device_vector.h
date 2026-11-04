@@ -35,8 +35,10 @@
  *                        will be returned immediately.
  *
  * What if xgboost is compiled without CUDA?<br/>
- * In that case, there's a special implementation which always falls-back to
- * working with std::vector. This logic can be found in host_device_vector.cc
+ * With USE_METAL, host_device_vector_metal.cc manages owned shared Metal buffers
+ * and lazy std::vector mirrors. Metal device pointers are addresses in these
+ * shared allocations, not MTLBuffer handles. Without either GPU backend,
+ * host_device_vector.cc always works with std::vector.
  *
  * Why not consider CUDA unified memory?<br/>
  * We did consider. However, it poses complications if we need to support both

@@ -111,8 +111,8 @@ DeviceOrd CUDAOrdinal(DeviceOrd device, bool) {
   }
   if (input == "mps") {
 #if defined(XGBOOST_USE_METAL)
-    // The hybrid backend manages its Metal buffers separately; existing
-    // objectives, metrics and predictors continue using host storage.
+    // Keep the default storage choice for generic state until its consumers are
+    // migrated. Explicit native metadata uses DeviceOrd::MPS() independently.
     return DeviceOrd::CPU();
 #else
     LOG(FATAL) << "device=mps requires XGBoost built with USE_METAL=ON.";

@@ -14,7 +14,26 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **owned GPU prediction outputs**. Request
+Latest step: **Metal vector storage and metadata operations**. The generic vector
+layer now supports owned Metal allocations, GPU fills/copies/growth, and lazy
+host mirrors with CUDA-derived access rules. Native labels, weights, margins,
+survival bounds and feature weights retain this storage after import. Internal
+metadata slicing gathers rows on GPU; metadata copies/stacking and feature-type
+equality use Metal when their inputs have device storage.
+
+This is a storage foundation, not complete training residency. The execution
+context still selects host storage by default for generic state, and existing
+consumers can request host views. Public ordinary matrix slicing stays on CPU,
+as upstream does; external-memory matrix slicing remains unsupported.
+
+Focused validation passes **83 native cases / 1,432,716 exact fields / 33 rejected
+calls**, **20 new public tests**, and the **935-test interoperability regression**.
+Full regression passes **3,321 Python tests, one expected skip**, all **85
+rebuilt native check groups**, and the CPU-only build/API checks.
+[Storage validation](validation/cuda-metal-vector-state-m3.txt).
+No new benchmark or NVIDIA execution comparison.
+
+The preceding step added **owned GPU prediction outputs**. Request
 `predict(..., output_device="mps")` or `inplace_predict(..., output_device="mps")`
 to get an `xgb.MetalOutput`. PyTorch and MLX consume it through DLPack; `.numpy()`
 explicitly copies it to a host array. Existing default return types are unchanged.
@@ -109,9 +128,10 @@ remain exact. Full regression passes **2,791 Python tests, one skip**, every
 rebuilt native suite and the CPU-only build/API checks.
 [Metadata validation](validation/cuda-metal-metadata-m3.txt).
 
-Float metadata uses shared GPU destination views where eligible, with an explicit
-counted copy fallback. General metadata allocation, concatenation/slicing and
-broader device-state ownership still need work. No new benchmark.
+At that checkpoint, float metadata used shared views of host destinations with a
+counted copy fallback. The latest storage step above adds owned Metal allocations
+and internal concatenation/slicing. Broader consumer and state migration remains
+unfinished. No new benchmark.
 
 The preceding step added **native PyTorch/MLX Metal feature tensors and float16 input**.
 `QuantileDMatrix`, both external quantile cache modes and `inplace_predict` now
@@ -598,7 +618,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Native Apple feature tensors | Metal DLPack inputs for ordinary and quantile matrices, external iterators and inplace prediction/CPU fallback; GPU sparse entry packing, strided snapshots, half decoding and PyTorch/MLX synchronization. Native columnar masks and integer/string dictionaries use the same consumers; persistent dictionary ownership remains open |
 | Native prediction outputs | Explicit `output_device="mps"` returns owned private Metal results, with legacy/versioned DLPack exports to PyTorch/MLX, independent copy support and explicit host readback. Values, margins, leaves and SHAP outputs are supported; generic prediction state remains host-owned |
 | Native custom-gradient imports | CUDA typed casts and GPU pair packing for regular and split/value entry points; real PyTorch/MLX and legacy/versioned capsules. Safe shared destinations or counted copy fallback; generic allocation remains host-owned |
-| Native metadata imports | GPU typed copies/conversion and CUDA label/weight predicates; GPU query-ID RLE/prefix scans. Scalars, vectors, matrices, empty/strided data and half supported. Final group boundaries and group-size prefix sums remain host as in CUDA; general allocation/slicing/concatenation remain host |
+| Native metadata imports | GPU typed copies/conversion and CUDA label/weight predicates into owned Metal vectors; GPU query-ID RLE/prefix scans. Float metadata has lazy host mirrors. Internal row slicing, device copies/stacking and feature-type equality use Metal; group boundaries and group-size prefix sums remain host as in CUDA |
+| Generic vector storage | Explicit Metal storage ordinal with CUDA-derived host/device access states; GPU POD fills, copies, growth and concatenation, lazy readback, retained capacity and move ownership. Default execution-context storage and many consumers remain host-side |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
 | Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; scalar/vector split statistics retain integers |
@@ -1177,7 +1198,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port optional Snappy cache compression under the native opt-in.
 - [x] Add native Metal feature/metadata/gradient tensors and columnar masks/dictionaries.
 - [x] Add owned GPU prediction outputs and PyTorch/MLX DLPack consumers.
-- [ ] Complete remaining metadata/state operations and persistent dictionary ownership.
+- [x] Add generic Metal vector storage and internal metadata slice/copy/stack/equality operations.
+- [ ] Migrate remaining state allocations/consumers and persistent dictionary ownership.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.
 - [x] Port query maxima/counts/prefixes and reuse GPU metadata through ranking caches.
 - [x] Port remaining elementwise/survival metric sums and CUDA FP32 row arithmetic; validate multiclass labels on GPU.

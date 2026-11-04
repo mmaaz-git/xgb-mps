@@ -128,6 +128,10 @@ struct Statistics {
       output_snapshot_shared_input_bytes, output_snapshot_host_copy_bytes, output_snapshot_bytes,
       output_gpu_time_ns, output_host_readback_bytes, output_dlpack_exports, output_live_buffers,
       output_live_exports;
+  std::uint64_t vector_allocations, vector_live_buffers, vector_capacity_bytes,
+      vector_copy_dispatches, vector_copy_bytes, vector_fill_dispatches, vector_fill_bytes,
+      vector_upload_bytes, vector_readback_bytes, vector_host_copy_bytes, vector_gpu_time_ns,
+      metadata_gather_dispatches, metadata_gather_values, metadata_equal_dispatches;
 };
 
 class Histogram {

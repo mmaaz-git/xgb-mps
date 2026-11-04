@@ -1005,7 +1005,7 @@ auto Zeros(Context const *ctx, Index &&...index) {
 // Only first axis is supported for now.
 template <typename T, int32_t D>
 void Stack(Tensor<T, D> *l, Tensor<T, D> const &r) {
-  if (r.Device().IsCUDA()) {
+  if (r.Device().IsCUDA() || r.Device().IsMPS()) {
     l->SetDevice(r.Device());
   }
   l->ModifyInplace([&](HostDeviceVector<T> *data, common::Span<size_t, D> shape) {

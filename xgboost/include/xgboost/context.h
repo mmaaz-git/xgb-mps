@@ -47,13 +47,15 @@ struct DeviceOrd {
     kCUDA = 1,
     kSyclDefault = 2,
     kSyclCPU = 3,
-    kSyclGPU = 4
+    kSyclGPU = 4,
+    kMetal = 5
   } device{kCPU};
   // CUDA or Sycl device ordinal.
   bst_d_ordinal_t ordinal{CPUOrdinal()};
 
   [[nodiscard]] bool IsCUDA() const { return device == kCUDA; }
   [[nodiscard]] bool IsCPU() const { return device == kCPU; }
+  [[nodiscard]] bool IsMPS() const { return device == kMetal; }
   [[nodiscard]] bool IsSyclDefault() const { return device == kSyclDefault; }
   [[nodiscard]] bool IsSyclCPU() const { return device == kSyclCPU; }
   [[nodiscard]] bool IsSyclGPU() const { return device == kSyclGPU; }
@@ -71,6 +73,8 @@ struct DeviceOrd {
    * @brief Constructor for CPU.
    */
   [[nodiscard]] constexpr static auto CPU() { return DeviceOrd{kCPU, CPUOrdinal()}; }
+  // Metal storage ordinal. The hybrid execution Context is migrated separately.
+  [[nodiscard]] constexpr static auto MPS() { return DeviceOrd{kMetal, 0}; }
   /**
    * @brief Constructor for CUDA device.
    *
@@ -116,6 +120,8 @@ struct DeviceOrd {
     switch (device) {
       case DeviceOrd::kCPU:
         return DeviceSym::CPU();
+      case DeviceOrd::kMetal:
+        return "mps";
       case DeviceOrd::kCUDA:
         return DeviceSym::CUDA() + (':' + std::to_string(ordinal));
       case DeviceOrd::kSyclDefault:
@@ -181,8 +187,9 @@ struct Context : public XGBoostParameter<Context> {
    */
   [[nodiscard]] bool IsCPU() const { return Device().IsCPU(); }
   /**
-   * @brief Select the hybrid Metal histogram backend. Device() describes storage;
-   *        the first Metal backend retains host storage for non-histogram stages.
+   * @brief Select Metal execution. Device() remains the default host-storage
+   *        selector for unmigrated generic state; native metadata can independently
+   *        carry a Metal storage ordinal.
    */
   [[nodiscard]] bool IsMPS() const { return device == "mps"; }
   /**

@@ -10,6 +10,10 @@
 #include "xgboost/data.h"                // for FeatureType
 #include "xgboost/host_device_vector.h"  // for HostDeviceVector
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_vector.h"
+#endif
+
 #if !defined(XGBOOST_USE_CUDA)
 
 #include "../common/common.h"  // for AssertGPUSupport
@@ -45,6 +49,18 @@ void CheckFeatureTypes(HostDeviceVector<FeatureType> const& lhs,
                        HostDeviceVector<FeatureType> const& rhs) {
   CHECK_EQ(lhs.Size(), rhs.Size()) << error::InconsistentFeatureTypes();
   if (lhs.DeviceCanRead() || rhs.DeviceCanRead()) {
+#if defined(XGBOOST_USE_METAL)
+    auto device = lhs.DeviceCanRead() ? lhs.Device() : rhs.Device();
+    CHECK(device.IsMPS());
+    lhs.SetDevice(device);
+    rhs.SetDevice(device);
+    auto left = lhs.ConstDeviceSpan(), right = rhs.ConstDeviceSpan();
+    CHECK(common::metal::EqualBytes(
+        {reinterpret_cast<std::byte const*>(left.data()), left.size_bytes()},
+        {reinterpret_cast<std::byte const*>(right.data()), right.size_bytes()}))
+        << error::InconsistentFeatureTypes();
+    return;
+#endif
     return cuda_impl::CheckFeatureTypes(lhs, rhs);
   }
   auto const& h_lhs = lhs.ConstHostVector();

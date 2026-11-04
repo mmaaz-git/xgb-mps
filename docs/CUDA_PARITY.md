@@ -6,9 +6,9 @@ that those operations execute on the GPU. Metal compute is the implementation
 technology; `mps` is the public device selector. Apple's Metal Performance Shaders
 library is not a replacement for XGBoost's custom CUDA kernels.
 
-Current architecture: CPU owns XGBoost's data structures and orchestrates training;
-selected stages dispatch Metal kernels. Remaining CPU execution is explicitly
-listed below. This is not yet a complete GPU backend.
+Current architecture: CPU orchestrates training and still owns much of the generic
+state; selected stages and native inputs/metadata own Metal buffers. Remaining
+CPU execution is explicitly listed below. This is not yet a complete GPU backend.
 
 Current priority is complete operation coverage and correctness. Performance
 experiments are deferred until the missing GPU paths are implemented; existing
@@ -101,14 +101,14 @@ must be reported rather than hidden by widening test tolerances.
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add host dense/columnar and native Metal tensor/columnar ingestion, resident sketches and bins; native metadata conversion/validation is supported; distributed sketch collectives remain open |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Ordinary in-memory DMatrix now compresses raw CSR directly with separate lazy CPU views and cache-generation tracking. MPS-origin external disk caches now store/read compressed pages; internal quantile cuts+ELLPACK save/load is implemented. Ordinary external on_host selection now uses CUDA single-/multiple-page defaults. Optional Snappy compute compression/decompression now follows the native fallback opt-in, sparse eligibility and forced-prefetch rules. Mapped-file zero-copy remains open; CPU-origin external matrices retain their existing compatibility path |
-| Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `data/data.cu`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Prediction/SHAP row-level mapping and raw-input preparation now run on GPU; explicit MPS QuantileDMatrix training adapters also recode on GPU; native metadata typed conversion, label/weight predicates and query-ID RLE/scan now run on GPU; native integer/string dictionary imports gather exact bytes on GPU; final group boundaries, persistent dictionary storage/copies and general metadata ownership/manipulation remain host |
+| Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `data/data.cu`, `metainfo.cu`, `array_interface.cu` | Category sorting/schema checks/lower-bound mapping/first-unknown search, row-code mapping, native dictionary gathers and metadata conversion/validation/query-ID grouping run on GPU. Native float metadata retains Metal vector storage; internal row gathers, device copies/stacking and feature-type equality run on Metal. Group boundaries and public ordinary row slicing remain host as upstream; persistent dictionary storage/copies and remaining allocation/consumer migration remain open |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
 | CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack tensors and native columnar tables feed ordinary/quantile constructors, iterators and inplace prediction/CPU fallback through owned GPU snapshots. Metadata imports use GPU conversion/validation/grouping; custom gradients use GPU typed pair packing. Explicit `output_device="mps"` returns owned GPU predictions, including leaves and SHAP, with legacy/versioned DLPack exports to PyTorch/MLX. Known runtimes synchronize; generic producers/consumers must finish writes. Portable stream handshakes and end-to-end device ownership remain open. NVIDIA-specific interfaces cannot consume Metal memory |
-| CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Shared-memory Metal runtime, guarded host-memory views for ordinary gradients, quantization and leaf assignment, model-local row workspaces, reused command queue and histogram buffers; persistent end-to-end device ownership and asynchronous scheduling missing |
+| CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Owned shared Metal vector allocations with CUDA-derived access states, GPU fills/copies/growth and lazy host mirrors; native float metadata uses them. Reused queues/histograms/workspaces and guarded host views remain. The execution context still defaults generic state to host storage; remaining consumers, persistent end-to-end ownership and asynchronous scheduling are unfinished |
 
 Paths in the table are relative to `xgboost/src` and denote starting points, not
 an exhaustive symbol audit. [The generated source inventory](../validation/cuda-inventory.json)
@@ -2870,13 +2870,15 @@ no such import-time finite-value predicate, matching CUDA. Validation occurs
 after the copy, so invalid float metadata may already be stored when an error
 is raised, as in the source CUDA setter.
 
-The destination keeps the existing `MetaInfo` allocation. Safe synchronous
+At this checkpoint, the destination kept the existing `MetaInfo` allocation. Safe synchronous
 shared-buffer views allow GPU writes directly into it; otherwise a GPU buffer
 and counted host copy provide the fallback. No input payload is converted through
 NumPy or a CPU element loop. This does not claim private end-to-end GPU metadata
 ownership. Eight new counters expose GPU copies, conversions, validations, QID
 commands, element counts, shared output bytes, host payload copies and GPU time.
-CPU builds report zero and reject the new entry point explicitly.
+CPU builds report zero and reject the new entry point explicitly. The later Metal
+vector step below replaces float destinations with owned GPU storage and lazy
+host mirrors; the conversion/validation kernels remain connected.
 
 Group sizes follow CUDA's integer conversion and host prefix sum, retaining zero
 sizes and overflow validation. FP32/FP64 group-size inputs reject; binary16 follows
@@ -3223,5 +3225,113 @@ build/API/device/cache checks. No production or test changes followed the final
 build/run; documentation was finalized afterward.
 [Validation record](../validation/cuda-metal-output-m3.txt).
 No new performance benchmark, NVIDIA execution or other Apple-device comparison.
-Generic metadata Slice/Extend, persistent state/dictionary ownership, remaining
-source-arithmetic audits and GPU collectives remain open.
+Generic metadata Slice/Extend was the next gap, addressed below. Persistent
+state/dictionary ownership, remaining source-arithmetic audits and GPU collectives
+remain open.
+
+
+## Metal vector storage and internal metadata operations
+
+CUDA authority: `common/host_device_vector.cu`,
+`common/device_vector.cuh::DeviceUVectorImpl`, `data/data.cu::SliceMetaInfo`,
+`data/metainfo.cu::CheckFeatureTypes`, and shared `MetaInfo::Extend` /
+`linalg::Stack` control flow. CUDA performs host copies when the relevant access
+states already permit them; a CUDA ordinal alone does not imply device work.
+
+`DeviceOrd::MPS()` now identifies Metal storage independently of the existing
+execution-context selector. `host_device_vector_metal.cc` implements the same
+three access states: host writable, both sides readable, or device writable.
+Explicit device access creates/synchronizes an owned shared Metal allocation;
+mutable host access invalidates the device copy, and device writes invalidate
+the host mirror. Host readback is lazy and repeated reads do not copy again.
+Metal device pointers are addresses in owned shared allocations, **not** the
+MTLBuffer handles used by Metal DLPack descriptors.
+
+GPU byte kernels fill POD payloads without floating-point conversion; GPU blits
+copy, preserve growth prefixes and append arrays. Capacity survives shrinkage.
+Like CUDA's DeviceUVector, device `Resize(n)` does not promise initialization of
+new elements; `Resize(n, value)` fills them explicitly. Host resize retains
+std::vector initialization. Constructors, initializer-list/host/device copies,
+moves, device switches, CPU access and all existing explicitly instantiated
+payload types are supported, including FP64 bytes, gradient pairs and tree
+structures. CUDA-style source-device adoption and access-state branch choices
+are retained. Shared buffers and synchronous commands are Metal-specific;
+asynchronous CUDA stream behavior is not claimed.
+
+Mixed host/native iterator metadata remains supported. A host source can append
+directly into a device destination, and a device-only source can supply the
+storage device for a CPU destination. Self-extension snapshots the original
+extent before resizing; it avoids the upstream implementation's unsafe
+post-resize self-size calculation. Overlapping native buffer copies use a GPU
+temporary. These defined compatibility behaviors do not reproduce invalid
+memory access. Bounds, overflow and unsupported storage ordinals reject.
+
+Native float metadata imports now write directly into these allocations. Labels,
+weights, base margins, survival bounds and feature weights retain device storage;
+conversion/validation and existing metadata counters remain connected. Public
+getters explicitly obtain host views, as upstream's GetInfo does. Replacing a
+same-shaped GPU field reuses its allocation and invalidates its old host mirror.
+Group boundaries remain host vectors as in CUDA.
+
+Internal `MetaInfo::Slice` dispatches to Metal for an MPS execution context.
+Labels and margins gather complete rows with all targets, and bounds/weights use
+one-column gathers; empty fields remain empty. Row IDs may repeat or reorder.
+Out-of-range IDs report an error before an invalid device read. The CUDA code
+uses unchecked gathers for those invalid inputs; its undefined behavior is not
+reproduced. `MetaInfo::Copy`/`Extend` and `linalg::Stack` retain Metal vector
+storage where selected. Feature-type equality uses a GPU byte comparison when
+either input has a valid device copy.
+
+Public ordinary `SimpleDMatrix::Slice` explicitly makes a CPU context upstream,
+even for CUDA-origin matrices. It remains host-side here and still preserves
+native-origin metadata correctly. External-memory matrices continue to reject
+row slicing. Those choices are source-defined behavior, not unported GPU work.
+Ranking group-aware row slicing is not added; group orchestration remains the
+higher-level upstream responsibility.
+
+This step **does not** change the default storage returned by
+`Context(device="mps").Device()` from CPU to Metal. That change requires migrating
+the remaining generic consumers and dispatchers. Existing consumers can still
+request HostSpan/HostView and cause an explicit mirror readback; training
+predictions, gradients, model/dictionary storage and other state are not all
+resident. The new storage path makes that migration possible and already serves
+native metadata, but it is not a claim of end-to-end residency or speedup.
+
+Fourteen counters report vector allocations/live buffers/capacity, copy and fill
+commands/bytes, host-to-device import bytes, explicit readback bytes, CPU payload
+fallback bytes, GPU time, metadata gathers/values and feature-type comparisons.
+Capacity is the sum of owned vector buffers, not whole-process or peak GPU memory.
+Copy totals include synchronization and growth; commands are synchronous. Existing
+metadata shared/copy counters still describe the conversion destination binding.
+CPU-only builds report zero. Native statistics consumers must rebuild again.
+
+Focused validation passes **83 native cases / 1,432,716 exact fields / 33 rejected
+calls**, covering access transitions, repeated access without transfers, source
+and destination copy states, float bit patterns, signed/unsigned widths, all
+struct payload families, retained capacity, ownership/moves, mixed and self
+extension, overlapping copies, metadata row oracles, shape preservation,
+copy/stack residency, malformed requests and feature-type equality. The existing
+**935-test** interoperability regression passes. **20 new Python tests** check
+lazy metadata mirrors and allocation reuse, empty/host/native replacement,
+external iterator concatenation with empty and mixed batches, model bytes,
+public slicing restrictions, and binary metadata round trips with real Torch/MLX.
+
+For model-byte comparisons, both inputs use identical feature-page boundaries.
+The first fixture compared external pages with one in-memory matrix; weighted
+CUDA-derived sketch merging can select different cuts across those layouts.
+The corrected experiment isolates metadata storage without changing values or
+numeric tolerances. Other fixture corrections preserve matrix metadata shapes
+and explicitly assert external-memory slicing rejection. A first shader build
+also exposed mismatched scalar/vector thread-grid attribute types, which were
+corrected before native execution passed.
+
+Final full regression completed **2026-11-04 22:10:53–22:19:44 UTC** (8m51s):
+**3,321 Python tests passed, one expected skip** (620 warnings, 185.45s), all
+**85 rebuilt native check groups**, the source reference updater, and the
+CPU-only build/API/device/cache checks. No production or test changes followed
+the final build/run; documentation was finalized afterward.
+[Validation record](../validation/cuda-metal-vector-state-m3.txt).
+No new benchmark, NVIDIA execution or other Apple-device comparison.
+Remaining work includes migrating generic allocations
+and their consumers, persistent dictionary ownership, remaining CUDA arithmetic
+and operation audits, GPU collectives and cross-hardware validation.

@@ -26,6 +26,7 @@
 #include "metal_adapter.h"
 #include "metal_auc.h"
 #include "metal_category.h"
+#include "metal_vector.h"
 #include "metal_constraints.h"
 #include "metal_cuda_sketch.h"
 #include "metal_data.h"
@@ -168,6 +169,10 @@ std::atomic<std::uint64_t> prediction_shared_output_bytes{0},
     output_dlpack_exports{0},
     output_live_buffers{0},
     output_live_exports{0};
+std::atomic<std::uint64_t> vector_allocations{0}, vector_live_buffers{0}, vector_capacity_bytes{0},
+    vector_copy_dispatches{0}, vector_copy_bytes{0}, vector_fill_dispatches{0}, vector_fill_bytes{0},
+    vector_upload_bytes{0}, vector_readback_bytes{0}, vector_host_copy_bytes{0}, vector_gpu_time_ns{0},
+    metadata_gather_dispatches{0}, metadata_gather_values{0}, metadata_equal_dispatches{0};
 std::atomic<std::uint64_t> ellpack_csr_dispatches{0}, ellpack_csr_values{0}, ellpack_csr_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
     ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
@@ -310,6 +315,7 @@ class Runtime {
   id<MTLComputePipelineState> tensor_gather_bytes_pipeline;
   id<MTLComputePipelineState> metadata_convert_pipeline, metadata_validate_pipeline,
       metadata_qid_mark_pipeline, metadata_qid_starts_pipeline, metadata_qid_counts_pipeline;
+  id<MTLComputePipelineState> vector_fill_pipeline, vector_equal_pipeline, metadata_gather_pipeline;
   id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
       ellpack_copy_pipeline, ellpack_count_pipeline, ellpack_unpack_pipeline;
   id<MTLComputePipelineState> ellpack_adapter_pipeline, ellpack_null_pipeline, ellpack_csr_pipeline;
@@ -405,6 +411,9 @@ class Runtime {
       gradient_import_pipeline = make_pipeline(@"xgb_import_gradient_pairs");
       tensor_gather_bytes_pipeline = make_pipeline(@"xgb_tensor_gather_bytes");
       metadata_convert_pipeline = make_pipeline(@"xgb_metadata_convert");
+      vector_fill_pipeline = make_pipeline(@"xgb_vector_fill");
+      vector_equal_pipeline = make_pipeline(@"xgb_vector_equal");
+      metadata_gather_pipeline = make_pipeline(@"xgb_metadata_gather");
       metadata_validate_pipeline = make_pipeline(@"xgb_metadata_validate");
       metadata_qid_mark_pipeline = make_pipeline(@"xgb_metadata_qid_mark");
       metadata_qid_starts_pipeline = make_pipeline(@"xgb_metadata_qid_starts");
@@ -2024,7 +2033,21 @@ Statistics GetStatistics() {
           output_host_readback_bytes.load(std::memory_order_relaxed),
           output_dlpack_exports.load(std::memory_order_relaxed),
           output_live_buffers.load(std::memory_order_relaxed),
-          output_live_exports.load(std::memory_order_relaxed)};
+          output_live_exports.load(std::memory_order_relaxed),
+          vector_allocations.load(std::memory_order_relaxed),
+          vector_live_buffers.load(std::memory_order_relaxed),
+          vector_capacity_bytes.load(std::memory_order_relaxed),
+          vector_copy_dispatches.load(std::memory_order_relaxed),
+          vector_copy_bytes.load(std::memory_order_relaxed),
+          vector_fill_dispatches.load(std::memory_order_relaxed),
+          vector_fill_bytes.load(std::memory_order_relaxed),
+          vector_upload_bytes.load(std::memory_order_relaxed),
+          vector_readback_bytes.load(std::memory_order_relaxed),
+          vector_host_copy_bytes.load(std::memory_order_relaxed),
+          vector_gpu_time_ns.load(std::memory_order_relaxed),
+          metadata_gather_dispatches.load(std::memory_order_relaxed),
+          metadata_gather_values.load(std::memory_order_relaxed),
+          metadata_equal_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2039,6 +2062,219 @@ void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>*
     duration->fetch_add(static_cast<std::uint64_t>(elapsed * 1e9), std::memory_order_relaxed);
 }
 }  // namespace
+namespace {
+class MetalVectorBuffer final : public VectorBuffer {
+  id<MTLBuffer> buffer_{nil};
+  std::size_t size_{0}, capacity_{0};
+
+  void Blit(id<MTLBuffer> source, std::size_t source_offset, id<MTLBuffer> target,
+            std::size_t target_offset, std::size_t bytes) const {
+    if (!bytes) return;
+    auto command = [GetRuntime().queue commandBuffer];
+    auto blit = [command blitCommandEncoder];
+    [blit copyFromBuffer:source sourceOffset:source_offset toBuffer:target
+      destinationOffset:target_offset size:bytes];
+    [blit endEncoding];
+    CompleteOperation(command, &vector_copy_dispatches, &vector_gpu_time_ns);
+    vector_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+
+ public:
+  ~MetalVectorBuffer() override {
+    if (buffer_) {
+      vector_live_buffers.fetch_sub(1, std::memory_order_relaxed);
+      vector_capacity_bytes.fetch_sub(capacity_, std::memory_order_relaxed);
+    }
+  }
+  void* Data() const override { return buffer_ ? buffer_.contents : nullptr; }
+  std::size_t SizeBytes() const override { return size_; }
+  void Resize(std::size_t bytes) override {
+    if (bytes > capacity_) {
+      @autoreleasepool {
+        auto& rt = GetRuntime();
+        CHECK_LE(bytes, rt.device.maxBufferLength);
+        auto capacity = std::max<std::size_t>(16, bytes);
+        auto replacement = [rt.device newBufferWithLength:capacity
+                                                 options:MTLResourceStorageModeShared];
+        CHECK(replacement);
+        Blit(buffer_, 0, replacement, 0, size_);
+        if (!buffer_) vector_live_buffers.fetch_add(1, std::memory_order_relaxed);
+        vector_allocations.fetch_add(1, std::memory_order_relaxed);
+        vector_capacity_bytes.fetch_add(capacity - capacity_, std::memory_order_relaxed);
+        buffer_ = replacement;
+        capacity_ = capacity;
+      }
+    }
+    size_ = bytes;
+  }
+  void Fill(Span<std::byte const> pattern, std::size_t offset, std::size_t bytes) override {
+    CHECK(!pattern.empty() && pattern.size() <= 4096);
+    CHECK_LE(offset, size_);
+    CHECK_LE(bytes, size_ - offset);
+    CHECK_EQ(bytes % pattern.size(), 0);
+    if (!bytes) return;
+    @autoreleasepool {
+      auto& rt = GetRuntime();
+      auto command = [rt.queue commandBuffer];
+      auto e = [command computeCommandEncoder];
+      struct { std::uint64_t offset, bytes, width; } p{offset, bytes, pattern.size()};
+      [e setComputePipelineState:rt.vector_fill_pipeline];
+      [e setBuffer:buffer_ offset:0 atIndex:0];
+      [e setBytes:pattern.data() length:pattern.size() atIndex:1];
+      [e setBytes:&p length:sizeof(p) atIndex:2];
+      // Bounded grid, with a strided byte loop for buffers above 2^32 bytes.
+      auto threads = std::min<std::size_t>(bytes, 1 << 20);
+      [e dispatchThreads:MTLSizeMake(threads, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &vector_fill_dispatches, &vector_gpu_time_ns);
+      vector_fill_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+  }
+  void Copy(VectorBuffer const& source, std::size_t source_offset, std::size_t offset,
+            std::size_t bytes) override {
+    auto const* input = dynamic_cast<MetalVectorBuffer const*>(&source);
+    CHECK(input);
+    CHECK_LE(source_offset, input->size_);
+    CHECK_LE(bytes, input->size_ - source_offset);
+    CHECK_LE(offset, size_);
+    CHECK_LE(bytes, size_ - offset);
+    if (!bytes || (input == this && source_offset == offset)) return;
+    @autoreleasepool {
+      if (input == this && (source_offset > offset ? source_offset - offset : offset - source_offset) < bytes) {
+        auto temporary = Allocate(GetRuntime(), bytes);
+        Blit(input->buffer_, source_offset, temporary, 0, bytes);
+        Blit(temporary, 0, buffer_, offset, bytes);
+      } else {
+        Blit(input->buffer_, source_offset, buffer_, offset, bytes);
+      }
+    }
+  }
+  void Import(void const* source, std::size_t offset, std::size_t bytes) override {
+    CHECK_LE(offset, size_);
+    CHECK_LE(bytes, size_ - offset);
+    CHECK(source || !bytes);
+    if (!bytes) return;
+    @autoreleasepool {
+      auto& rt = GetRuntime();
+      auto in = TryBorrowMemory(rt.device, source, bytes, 1);
+      if (!in.buffer || MemoryRangesOverlap(source, bytes, Data(), size_)) {
+        in = {Upload(rt, source, bytes), 0};
+        vector_host_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+      }
+      Blit(in.buffer, in.offset, buffer_, offset, bytes);
+      vector_upload_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+  }
+  void Readback(void* destination, std::size_t bytes) const override {
+    CHECK_EQ(bytes, size_);
+    CHECK(destination || !bytes);
+    if (!bytes) return;
+    @autoreleasepool {
+      auto& rt = GetRuntime();
+      auto out = TryBorrowMemory(rt.device, destination, bytes, 1);
+      bool shared = out.buffer != nil && !MemoryRangesOverlap(destination, bytes, Data(), size_);
+      if (!shared) out = {Allocate(rt, bytes), 0};
+      Blit(buffer_, 0, out.buffer, out.offset, bytes);
+      if (!shared) {
+        std::memcpy(destination, out.buffer.contents, bytes);
+        vector_host_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+      }
+      vector_readback_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+  }
+};
+
+BorrowedMemory VectorInput(Runtime const& rt, void const* data, std::size_t bytes,
+                           std::size_t alignment) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, alignment);
+  if (!input.buffer) {
+    input = {Upload(rt, data, bytes), 0};
+    vector_host_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
+}  // namespace
+
+std::unique_ptr<VectorBuffer> MakeVectorBuffer() { return std::make_unique<MetalVectorBuffer>(); }
+
+bool EqualBytes(Span<std::byte const> lhs, Span<std::byte const> rhs) {
+  if (lhs.size() != rhs.size()) return false;
+  if (lhs.empty()) return true;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto left = VectorInput(rt, lhs.data(), lhs.size(), 1);
+    auto right = VectorInput(rt, rhs.data(), rhs.size(), 1);
+    std::uint32_t zero = 0;
+    auto status = Upload(rt, &zero, 4);
+    auto command = [rt.queue commandBuffer];
+    auto e = [command computeCommandEncoder];
+    std::uint64_t n = lhs.size();
+    [e setComputePipelineState:rt.vector_equal_pipeline];
+    [e setBuffer:left.buffer offset:left.offset atIndex:0];
+    [e setBuffer:right.buffer offset:right.offset atIndex:1];
+    [e setBuffer:status offset:0 atIndex:2];
+    [e setBytes:&n length:sizeof(n) atIndex:3];
+    [e dispatchThreads:MTLSizeMake(std::min<std::size_t>(n, 1 << 20), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &metadata_equal_dispatches, &vector_gpu_time_ns);
+    return *static_cast<std::uint32_t const*>(status.contents) == 0;
+  }
+}
+
+void GatherRows(Span<float const> input, std::size_t rows, std::size_t columns,
+                Span<std::uint64_t const> indices, Span<float> output) {
+  CHECK(columns && rows <= std::numeric_limits<std::size_t>::max() / columns);
+  CHECK_EQ(input.size(), rows * columns);
+  CHECK_LE(indices.size(), std::numeric_limits<std::size_t>::max() / columns);
+  CHECK_EQ(output.size(), indices.size() * columns);
+  if (output.empty()) return;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto in = VectorInput(rt, input.data(), input.size_bytes(), 4);
+    auto ids = VectorInput(rt, indices.data(), indices.size_bytes(), 8);
+    auto out = TryBorrowMemory(rt.device, output.data(), output.size_bytes(), 4);
+    bool shared = out.buffer != nil;
+    if (!shared) out = {Allocate(rt, output.size_bytes()), 0};
+    std::uint32_t zero = 0;
+    auto status = Upload(rt, &zero, 4);
+    auto command = [rt.queue commandBuffer];
+    auto snapshot = [&](BorrowedMemory source, std::size_t bytes) {
+      auto buffer = Allocate(rt, bytes);
+      auto blit = [command blitCommandEncoder];
+      [blit copyFromBuffer:source.buffer sourceOffset:source.offset toBuffer:buffer
+        destinationOffset:0 size:bytes];
+      [blit endEncoding];
+      vector_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+      vector_copy_dispatches.fetch_add(1, std::memory_order_relaxed);
+      return BorrowedMemory{buffer, 0};
+    };
+    if (MemoryRangesOverlap(input.data(), input.size_bytes(), output.data(), output.size_bytes()))
+      in = snapshot(in, input.size_bytes());
+    if (MemoryRangesOverlap(indices.data(), indices.size_bytes(), output.data(), output.size_bytes()))
+      ids = snapshot(ids, indices.size_bytes());
+    auto e = [command computeCommandEncoder];
+    struct { std::uint64_t rows, columns, count; } p{rows, columns, output.size()};
+    [e setComputePipelineState:rt.metadata_gather_pipeline];
+    [e setBuffer:in.buffer offset:in.offset atIndex:0];
+    [e setBuffer:ids.buffer offset:ids.offset atIndex:1];
+    [e setBuffer:out.buffer offset:out.offset atIndex:2];
+    [e setBuffer:status offset:0 atIndex:3];
+    [e setBytes:&p length:sizeof(p) atIndex:4];
+    [e dispatchThreads:MTLSizeMake(std::min<std::size_t>(output.size(), 1 << 20), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &metadata_gather_dispatches, &vector_gpu_time_ns);
+    CHECK_EQ(*static_cast<std::uint32_t const*>(status.contents), 0) << "Metadata row index out of range.";
+    if (!shared) {
+      std::memcpy(output.data(), out.buffer.contents, output.size_bytes());
+      vector_host_copy_bytes.fetch_add(output.size_bytes(), std::memory_order_relaxed);
+    }
+    metadata_gather_values.fetch_add(output.size(), std::memory_order_relaxed);
+  }
+}
+
 namespace {
 struct PredictionOutput {
   Span<float> host;
@@ -7036,6 +7272,29 @@ void CopyNativeGradients(StringView grad, StringView hess, bst_idx_t rows,
     gradient_import_pairs.fetch_add(count, std::memory_order_relaxed);
   }
 }
+void SliceMetadata(MetaInfo const& info, Span<bst_idx_t const> indices, MetaInfo* output) {
+  auto matrix = [&](linalg::Matrix<float> const& source, linalg::Matrix<float>* target) {
+    if (!source.Size()) return;
+    source.SetDevice(DeviceOrd::MPS());
+    target->SetDevice(DeviceOrd::MPS());
+    target->Reshape(indices.size(), source.Shape(1));
+    GatherRows(source.Data()->ConstDeviceSpan(), source.Shape(0), source.Shape(1), indices,
+               target->Data()->DeviceSpan());
+  };
+  auto vector = [&](HostDeviceVector<float> const& source, HostDeviceVector<float>* target) {
+    if (source.Empty()) return;
+    source.SetDevice(DeviceOrd::MPS());
+    target->SetDevice(DeviceOrd::MPS());
+    target->Resize(indices.size());
+    GatherRows(source.ConstDeviceSpan(), source.Size(), 1, indices, target->DeviceSpan());
+  };
+  matrix(info.labels, &output->labels);
+  matrix(info.base_margin_, &output->base_margin_);
+  vector(info.labels_lower_bound_, &output->labels_lower_bound_);
+  vector(info.labels_upper_bound_, &output->labels_upper_bound_);
+  vector(info.weights_, &output->weights_);
+}
+
 void SetMetadata(MetaInfo* info, StringView field, StringView descriptor) {
   auto kind = static_cast<std::uint32_t>(data::MapMetaField(field, true));
   MetalTensor input{descriptor, true};
@@ -7070,13 +7329,15 @@ void SetMetadata(MetaInfo* info, StringView field, StringView descriptor) {
     if (kind == 0 || kind == 2) {
       auto target = kind == 0 ? &info->labels : &info->base_margin_;
       // CUDA preserves array shape here; only the CPU setter calls ReshapeInfo.
+      target->SetDevice(DeviceOrd::MPS());
       target->Reshape(input.rows, input.columns);
-      output = target->Data()->HostSpan();
+      output = target->Data()->DeviceSpan();
     } else {
       auto target = kind == 1 ? &info->weights_ : kind == 3 ? &info->labels_lower_bound_
                     : kind == 4 ? &info->labels_upper_bound_ : &info->feature_weights;
+      target->SetDevice(DeviceOrd::MPS());
       target->Resize(count);
-      output = target->HostSpan();
+      output = target->DeviceSpan();
     }
     if (!count) return;
     @autoreleasepool {

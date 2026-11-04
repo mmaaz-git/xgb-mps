@@ -8081,3 +8081,40 @@ kernel void xgb_snappy_decompress(device const uchar* input [[buffer(0)]],
   }
   if (lane == 0) statuses[group] = status ? status : (cursor != c.bytes ? 7u : 0u);
 }
+
+// Byte operations preserve POD payloads without floating-point conversion.
+struct VectorFillParams { ulong offset, bytes, width; };
+kernel void xgb_vector_fill(device uchar* output [[buffer(0)]],
+                            constant uchar* pattern [[buffer(1)]],
+                            constant VectorFillParams& p [[buffer(2)]],
+                            uint tid [[thread_position_in_grid]], uint threads [[threads_per_grid]]) {
+  for (ulong i = tid; i < p.bytes; i += threads) output[p.offset + i] = pattern[i % p.width];
+}
+kernel void xgb_vector_equal(device const uchar* lhs [[buffer(0)]],
+                             device const uchar* rhs [[buffer(1)]],
+                             device atomic_uint* status [[buffer(2)]],
+                             constant ulong& count [[buffer(3)]],
+                             uint tid [[thread_position_in_grid]], uint threads [[threads_per_grid]]) {
+  for (ulong i = tid; i < count; i += threads) {
+    if (lhs[i] != rhs[i]) {
+      atomic_fetch_or_explicit(status, 1u, memory_order_relaxed);
+      return;
+    }
+  }
+}
+struct MetadataGatherParams { ulong rows, columns, count; };
+kernel void xgb_metadata_gather(device const uint* input [[buffer(0)]],
+                                device const ulong* indices [[buffer(1)]],
+                                device uint* output [[buffer(2)]],
+                                device atomic_uint* status [[buffer(3)]],
+                                constant MetadataGatherParams& p [[buffer(4)]],
+                                uint tid [[thread_position_in_grid]], uint threads [[threads_per_grid]]) {
+  for (ulong i = tid; i < p.count; i += threads) {
+    ulong source = indices[i / p.columns];
+    if (source >= p.rows) {
+      atomic_fetch_or_explicit(status, 1u, memory_order_relaxed);
+    } else {
+      output[i] = input[source * p.columns + i % p.columns];
+    }
+  }
+}

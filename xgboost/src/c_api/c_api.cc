@@ -412,6 +412,22 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["output_dlpack_exports"] = Integer{static_cast<std::int64_t>(stats.output_dlpack_exports)};
   info["output_live_buffers"] = Integer{static_cast<std::int64_t>(stats.output_live_buffers)};
   info["output_live_exports"] = Integer{static_cast<std::int64_t>(stats.output_live_exports)};
+  info["vector_allocations"] = Integer{static_cast<std::int64_t>(stats.vector_allocations)};
+  info["vector_live_buffers"] = Integer{static_cast<std::int64_t>(stats.vector_live_buffers)};
+  info["vector_capacity_bytes"] = Integer{static_cast<std::int64_t>(stats.vector_capacity_bytes)};
+  info["vector_copy_dispatches"] = Integer{static_cast<std::int64_t>(stats.vector_copy_dispatches)};
+  info["vector_copy_bytes"] = Integer{static_cast<std::int64_t>(stats.vector_copy_bytes)};
+  info["vector_fill_dispatches"] = Integer{static_cast<std::int64_t>(stats.vector_fill_dispatches)};
+  info["vector_fill_bytes"] = Integer{static_cast<std::int64_t>(stats.vector_fill_bytes)};
+  info["vector_upload_bytes"] = Integer{static_cast<std::int64_t>(stats.vector_upload_bytes)};
+  info["vector_readback_bytes"] = Integer{static_cast<std::int64_t>(stats.vector_readback_bytes)};
+  info["vector_host_copy_bytes"] = Integer{static_cast<std::int64_t>(stats.vector_host_copy_bytes)};
+  info["vector_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.vector_gpu_time_ns)};
+  info["metadata_gather_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.metadata_gather_dispatches)};
+  info["metadata_gather_values"] = Integer{static_cast<std::int64_t>(stats.metadata_gather_values)};
+  info["metadata_equal_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.metadata_equal_dispatches)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -711,6 +727,20 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["output_dlpack_exports"] = Integer{0};
   info["output_live_buffers"] = Integer{0};
   info["output_live_exports"] = Integer{0};
+  info["vector_allocations"] = Integer{0};
+  info["vector_live_buffers"] = Integer{0};
+  info["vector_capacity_bytes"] = Integer{0};
+  info["vector_copy_dispatches"] = Integer{0};
+  info["vector_copy_bytes"] = Integer{0};
+  info["vector_fill_dispatches"] = Integer{0};
+  info["vector_fill_bytes"] = Integer{0};
+  info["vector_upload_bytes"] = Integer{0};
+  info["vector_readback_bytes"] = Integer{0};
+  info["vector_host_copy_bytes"] = Integer{0};
+  info["vector_gpu_time_ns"] = Integer{0};
+  info["metadata_gather_dispatches"] = Integer{0};
+  info["metadata_gather_values"] = Integer{0};
+  info["metadata_equal_dispatches"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};

@@ -57,6 +57,10 @@
 #include "xgboost/span.h"                     // for Span, operator!=, SpanIterator
 #include "xgboost/string_view.h"              // for operator==, operator<<, StringView
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_metadata.h"
+#endif
+
 namespace dmlc {
 DMLC_REGISTRY_ENABLE(::xgboost::data::SparsePageFormatReg<::xgboost::SparsePage>);
 DMLC_REGISTRY_ENABLE(::xgboost::data::SparsePageFormatReg<::xgboost::CSCPage>);
@@ -429,6 +433,12 @@ MetaInfo MetaInfo::Slice(Context const* ctx, common::Span<bst_idx_t const> ridxs
   /**
    * Sample Info
    */
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    common::metal::SliceMetadata(*this, ridxs, &out);
+    return out;
+  }
+#endif
   if (ctx->IsCUDA()) {
     cuda_impl::SliceMetaInfo(ctx, *this, ridxs, &out);
     return out;

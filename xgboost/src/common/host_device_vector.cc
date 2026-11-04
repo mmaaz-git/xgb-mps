@@ -3,6 +3,7 @@
  */
 #ifndef XGBOOST_USE_CUDA
 #ifndef XGBOOST_USE_SYCL
+#ifndef XGBOOST_USE_METAL
 
 // dummy implementation of HostDeviceVector in case CUDA is not used
 
@@ -206,5 +207,6 @@ template class HostDeviceVector<std::size_t>;
 
 }  // namespace xgboost
 
+#endif  // XGBOOST_USE_METAL
 #endif  // XGBOOST_USE_SYCL
 #endif  // XGBOOST_USE_CUDA
