@@ -125,8 +125,8 @@ class Runtime {
       ranking_bias_dispatch_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
-  id<MTLComputePipelineState> gradient_sampling_norm_pipeline, gradient_sampling_threshold_pipeline,
-      gradient_sampling_apply_pipeline;
+  id<MTLComputePipelineState> gradient_sampling_norm_pipeline, gradient_sampling_prefix_pipeline,
+      gradient_sampling_threshold_pipeline, gradient_sampling_apply_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
   id<MTLComputePipelineState> shared_pipeline, gradient_maximum_pipeline, gradient_scale_pipeline;
@@ -233,6 +233,7 @@ class Runtime {
       ranking_bias_dispatch_pipeline = make_pipeline(@"xgb_ranking_bias_dispatch");
       ranking_bias_update_pipeline = make_pipeline(@"xgb_ranking_bias_update");
       gradient_sampling_norm_pipeline = make_pipeline(@"xgb_gradient_sampling_norm");
+      gradient_sampling_prefix_pipeline = make_pipeline(@"xgb_gradient_sampling_prefix");
       gradient_sampling_threshold_pipeline = make_pipeline(@"xgb_gradient_sampling_threshold");
       gradient_sampling_apply_pipeline = make_pipeline(@"xgb_gradient_sampling_apply");
       prefix_double_pair_pipeline = make_pipeline(@"xgb_prefix_double_pair");
@@ -2424,15 +2425,14 @@ void GradientSample(linalg::MatrixView<GradientPair const> split_gradients,
       [e endEncoding];
       SortShape shape{rows, 1, 1, 1, static_cast<std::uint32_t>((rows + 255) / 256)};
       auto sorted = EncodeColumnSort(rt, command, regularized, shape);
-      auto cdf = Allocate(rt, rows * sizeof(float));
+      auto cdf = Allocate(rt, ((rows + 255) / 256) * sizeof(float));
       auto n = static_cast<std::uint32_t>(rows);
       e = [command computeCommandEncoder];
       CHECK(e);
-      [e setComputePipelineState:rt.quantile_cdf_pipeline];
+      [e setComputePipelineState:rt.gradient_sampling_prefix_pipeline];
       [e setBuffer:sorted offset:0 atIndex:0];
-      [e setBuffer:regularized offset:0 atIndex:1];
-      [e setBuffer:cdf offset:0 atIndex:2];
-      [e setBytes:&n length:sizeof(n) atIndex:3];
+      [e setBuffer:cdf offset:0 atIndex:1];
+      [e setBytes:&n length:sizeof(n) atIndex:2];
       [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
       e = [command computeCommandEncoder];

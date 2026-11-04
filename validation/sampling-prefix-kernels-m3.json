@@ -1,0 +1,111 @@
+{
+  "device": "Apple M3",
+  "repeats": 5,
+  "scope": "GPU prefix only; excludes sort, staging and compilation",
+  "cases": [
+    {
+      "rows": 257,
+      "kernel": "baseline_full_prefix",
+      "gpu_seconds": [
+        2.2417e-05,
+        2.25e-05,
+        2.25e-05,
+        2.25e-05,
+        2.2375e-05
+      ]
+    },
+    {
+      "rows": 257,
+      "kernel": "vector_full_prefix",
+      "gpu_seconds": [
+        8.75e-06,
+        8.75e-06,
+        8.75e-06,
+        8.667e-06,
+        8.75e-06
+      ]
+    },
+    {
+      "rows": 257,
+      "kernel": "vector_checkpoints",
+      "gpu_seconds": [
+        5.292e-06,
+        5.292e-06,
+        5.375e-06,
+        5.292e-06,
+        5.333e-06
+      ]
+    },
+    {
+      "rows": 100000,
+      "kernel": "baseline_full_prefix",
+      "gpu_seconds": [
+        0.007873333,
+        0.00785825,
+        0.00786425,
+        0.007827083,
+        0.007885708
+      ]
+    },
+    {
+      "rows": 100000,
+      "kernel": "vector_full_prefix",
+      "gpu_seconds": [
+        0.002299375,
+        0.002399,
+        0.002328792,
+        0.002377792,
+        0.002313542
+      ]
+    },
+    {
+      "rows": 100000,
+      "kernel": "vector_checkpoints",
+      "gpu_seconds": [
+        0.000797125,
+        0.000767458,
+        0.000795792,
+        0.000744417,
+        0.000780375
+      ]
+    },
+    {
+      "rows": 1000000,
+      "kernel": "baseline_full_prefix",
+      "gpu_seconds": [
+        0.081038292,
+        0.081823458,
+        0.080592917,
+        0.080792625,
+        0.080622042
+      ]
+    },
+    {
+      "rows": 1000000,
+      "kernel": "vector_full_prefix",
+      "gpu_seconds": [
+        0.024693875,
+        0.025026625,
+        0.025036375,
+        0.024775583,
+        0.02497625
+      ]
+    },
+    {
+      "rows": 1000000,
+      "kernel": "vector_checkpoints",
+      "gpu_seconds": [
+        0.007727833,
+        0.007894625,
+        0.007835083,
+        0.00796275,
+        0.007985958
+      ]
+    }
+  ],
+  "status": "complete",
+  "baseline_commit": "91e1c99",
+  "baseline_shader_sha256": "dc7a06f57cb99e348098bdd4941eb089669d110801cabc5cb0c9d28251e4a85a",
+  "candidate_shader_sha256": "0133bd4b068afd4d44cf4a5cd4f69da73962994ecf173845249cb27eb8a9f90d",
+  "validation": "Every full prefix entry and every tile-end checkpoint compared bit-for-bit with CPU, after warmup and each of five randomized trials."
+}

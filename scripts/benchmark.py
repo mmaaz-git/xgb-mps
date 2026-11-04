@@ -164,7 +164,7 @@ def main():
                 assert (completed > 0) == (device == "mps")
                 timings[device].append(elapsed)
                 preds[device] = model.predict(d)
-                print(f"  {device} repeat {repeat+1}/{args.repeats}: {elapsed:.3f}s, {completed} GPU dispatches, {gpu_seconds:.3f}s GPU time", flush=True)
+                print(f"  {device} repeat {repeat+1}/{args.repeats}: {elapsed:.3f}s, {completed} histogram dispatches, {gpu_seconds:.3f}s histogram GPU time", flush=True)
                 report["in_progress"] = dict(rows=n, seconds=timings, memory=memory,
                                               dispatch_statistics=dispatch_statistics, clock_checks=clock_checks,
                                               metric_histories=metric_histories)

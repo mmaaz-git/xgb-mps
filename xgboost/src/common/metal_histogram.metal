@@ -2211,7 +2211,8 @@ kernel void xgb_quantile_weight_cdf(device const uint2* records [[buffer(0)]],
                                     constant uint& rows [[buffer(3)]],
                                     uint target [[threadgroup_position_in_grid]],
                                     uint tid [[thread_index_in_threadgroup]]) {
-  threadgroup float tile[256];
+  threadgroup float4 vector_tile[64];
+  threadgroup float* tile = (threadgroup float*)vector_tile;
   threadgroup uint slow_group[8];
   threadgroup uint accumulated;
   if (tid == 0) accumulated = 0;
@@ -2245,7 +2246,23 @@ kernel void xgb_quantile_weight_cdf(device const uint2* records [[buffer(0)]],
           tile[i] = sum;
         }
       } else {
-        for (uint i = first; i < length; ++i) {
+        // Keep the addition order while loading/storing four shared values at
+        // once. Scalar shared-memory accesses stall this serial dependency chain.
+        uint i = first;
+        for (; i < length && (i & 3); ++i) {
+          sum += tile[i];
+          tile[i] = sum;
+        }
+        for (; i + 4 <= length; i += 4) {
+          float4 values = vector_tile[i / 4];
+          values.x = sum + values.x;
+          values.y = values.x + values.y;
+          values.z = values.y + values.z;
+          values.w = values.z + values.w;
+          sum = values.w;
+          vector_tile[i / 4] = values;
+        }
+        for (; i < length; ++i) {
           sum += tile[i];
           tile[i] = sum;
         }
@@ -3801,6 +3818,45 @@ kernel void xgb_gradient_sampling_norm(device const float2* gradients [[buffer(0
   norms[row] = xgb_mvs_sqrt(sum);
 }
 
+// Norms are zero, positive normal floats or infinity: a positive binary32 square
+// root cannot be subnormal. Their ascending radix keys contain the original bits
+// with the sign bit flipped. Avoid indirect gathers and store one prefix per tile;
+// threshold search reconstructs its few queried entries from these checkpoints.
+kernel void xgb_gradient_sampling_prefix(device const uint2* sorted [[buffer(0)]],
+                                         device float* checkpoints [[buffer(1)]],
+                                         constant uint& rows [[buffer(2)]],
+                                         uint tid [[thread_index_in_threadgroup]]) {
+  threadgroup float4 tile[64];
+  float sum = 0;
+  for (ulong begin = 0; begin < rows; begin += 256) {
+    ((threadgroup float*)tile)[tid] =
+        begin + tid < rows ? as_type<float>(sorted[begin + tid].x ^ 0x80000000u) : 0;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (!tid) {
+      for (uint i = 0; i < 64; ++i) {
+        float4 values = tile[i];
+        sum += values.x;
+        sum += values.y;
+        sum += values.z;
+        sum += values.w;
+      }
+      checkpoints[begin / 256] = sum;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+}
+
+inline float xgb_mvs_prefix(device const uint2* sorted, device const float* checkpoints,
+                            ulong index, ulong rows) {
+  ulong block = index / 256;
+  if ((index & 255) == 255 || index + 1 == rows) return checkpoints[block];
+  float sum = block ? checkpoints[block - 1] : 0;
+  for (ulong i = block * 256; i <= index; ++i) {
+    sum += as_type<float>(sorted[i].x ^ 0x80000000u);
+  }
+  return sum;
+}
+
 kernel void xgb_gradient_sampling_threshold(device const uint2* sorted [[buffer(0)]],
                                             device const float* norms [[buffer(1)]],
                                             device const float* prefix [[buffer(2)]],
@@ -3816,7 +3872,7 @@ kernel void xgb_gradient_sampling_threshold(device const uint2* sorted [[buffer(
       low = i + 1;
       continue;
     }
-    float u = xgb_mvs_divide(prefix[i], denominator);
+    float u = xgb_mvs_divide(xgb_mvs_prefix(sorted, prefix, ulong(i), p.rows), denominator);
     if (u > lower && u <= upper) {
       output[0] = u;
       return;
@@ -3826,7 +3882,7 @@ kernel void xgb_gradient_sampling_threshold(device const uint2* sorted [[buffer(
     else
       low = i + 1;
   }
-  output[0] = xgb_mvs_divide(prefix[p.rows - 1], float(p.sample_rows));
+  output[0] = xgb_mvs_divide(prefix[(p.rows - 1) / 256], float(p.sample_rows));
 }
 
 kernel void xgb_gradient_sampling_apply(device float2* output [[buffer(0)]],

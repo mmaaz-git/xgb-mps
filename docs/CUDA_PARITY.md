@@ -101,8 +101,11 @@ All per-row sampling calculations execute on GPU. The host selects one seed per
 tree, supplies matrix metadata and waits for the result. Input/output storage is
 still staged; reduced-gradient replay recomputes the GPU norms/sort/threshold from
 the original split gradients. The ordered FP32 prefix preserves CPU decisions but
-limits parallelism. Persistent sampling state and faster threshold construction
-remain performance work.
+limits parallelism. The optimized kernel reads four sorted values into registers
+at a time and writes one checkpoint per 256 rows. Threshold search reconstructs
+only its queried entries from those checkpoints, preserving the same addition
+order. Persistent sampling state and further threshold/sort optimization remain
+performance work.
 
 ## Survival precision limitation
 

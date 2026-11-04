@@ -1187,3 +1187,61 @@ The [native sampling report](validation/gradient-sampling-m3.txt) covers **498 e
 cases / 6.75 million rows**, plus six production sampler/replay checks. The
 [coverage ledger](docs/CUDA_PARITY.md#gradient-based-sampling-behavior) explains the
 CPU numerical contract and remaining synchronization/ordered-prefix costs.
+
+### Sampling prefix optimization
+
+The initial gradient sampler spent most GPU time on its ordered FP32 prefix.
+Vector loads into registers now avoid scalar shared-memory stalls. Sampling stores
+one prefix checkpoint per 256 rows; threshold search reconstructs only the queried
+entries. Weighted quantiles also use vector loads/stores for their nonnegative,
+normal-input prefix path. All additions retain CPU order, and all **601 Python
+tests and native suites** still pass under Metal API Validation.
+
+The [isolated kernel comparison](validation/sampling-prefix-kernels-m3.json) checks
+every output against CPU in randomized trial order. At one million entries, the
+full prefix falls from **80.79 ms to 24.98 ms**; sampling's checkpoint-only prefix
+takes **7.89 ms**. These exclude sorting, staging and the rest of training.
+
+End-to-end gradient-sampled training, 20 rounds, depth 6, 32 features,
+`subsample=0.5`, eight CPU threads, medians of three alternating CPU/MPS pairs:
+
+| Rows | CPU, latest | MPS, initial | MPS, optimized | CPU / optimized MPS |
+| ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 0.166 s | 0.448 s | 0.307 s | 0.54× |
+| 1,000,000 | 1.397 s | 2.972 s | 1.448 s | 0.96× |
+
+The million-row MPS run is **51.3% shorter** than its initial measurement;
+sampling GPU time falls from **1.684 s to 0.282 s**. Its CPU baseline changes from
+1.405 s to 1.397 s across sessions. Both reports have zero CPU/MPS prediction
+difference. CPU remains slightly faster; this is not a large GPU-over-CPU speedup.
+[Initial measurements](validation/benchmark-gradient-sampling-v1-m3.json) and
+[optimized measurements](validation/benchmark-gradient-sampling-v2-m3.json) retain
+all timings, dispatch counters and clock checks.
+
+```sh
+.venv/bin/python scripts/benchmark.py --rows 100000 1000000 --features 32 \
+  --rounds 20 --threads 8 --repeats 3 --subsample 0.5 \
+  --sampling-method gradient_based --output results/my-gradient-sampling.json
+git show 91e1c99:xgboost/src/common/metal_histogram.metal > results/sampling-baseline.metal
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
+  scripts/metal_sampling_prefix_benchmark.mm -framework Metal -framework Foundation \
+  -o results/metal_sampling_prefix_benchmark
+results/metal_sampling_prefix_benchmark xgboost/src/common/metal_histogram.metal \
+  results/sampling-baseline.metal > results/my-prefix-comparison.json
+```
+
+The [larger 3M-row × 128-feature run](validation/benchmark-gradient-sampling-wide-v1-m3.json)
+also has zero CPU/MPS prediction difference, with medians **13.817 s CPU /
+15.115 s MPS (0.91×)** over three pairs. Individual timings vary substantially:
+CPU 13.78–19.33 s and MPS 12.38–17.25 s. The process lifetime peak RSS reaches
+5.98 GB; system-wide swap usage is roughly 20–22 GiB during this session and cannot
+be attributed solely to the benchmark. These measurements include fresh matrix
+construction and first quantization, and do not establish a clean hardware limit
+or a large-workload speedup. All wall/monotonic clock checks pass; no recorded run
+crosses a detected sleep discontinuity.
+
+```sh
+.venv/bin/python scripts/benchmark.py --rows 3000000 --features 128 \
+  --rounds 20 --threads 8 --repeats 3 --subsample 0.5 --float32-generation \
+  --sampling-method gradient_based --output results/my-wide-gradient-sampling.json
+```
