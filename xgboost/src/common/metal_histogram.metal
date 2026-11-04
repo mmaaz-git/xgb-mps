@@ -4666,21 +4666,101 @@ struct SketchFinalizeTask {
   ulong begin, end, workspace;
   uint capacity, intermediate_budget, final_budget, padding;
 };
+inline uint xgb_sketch_select(device const float4* input, uint count, uint n, uint k,
+                               float begin, float range) {
+  if (!k) return 0;
+  float product = xgb_fmul_preserve(float(k), range);
+  float rank = xgb_fmul_preserve(2.f, xgb_fadd_preserve(xgb_fdiv_preserve(product, float(n)), begin));
+  // The serial cursor starts at one and advances using the next entry's rank.
+  uint low = 2, high = count;
+  while (low < high) {
+    uint mid = low + (high - low) / 2;
+    if (xgb_sketch_ge(rank, xgb_fadd_preserve(input[mid].y, input[mid].x)))
+      low = mid + 1;
+    else
+      high = mid;
+  }
+  uint cursor = low - 1;
+  if (cursor == count - 1) return count;  // Serial loop breaks here.
+  return xgb_sketch_less(rank, xgb_fadd_preserve(xgb_sketch_next(input[cursor]),
+                                                xgb_sketch_prev(input[cursor + 1])))
+             ? cursor
+             : cursor + 1;
+}
+// One SIMD group per column. Independent monotonic rank searches preserve the
+// serial cursor's selections; a prefix count removes repeated selected entries.
+inline uint xgb_sketch_prune_parallel(device const float4* input, uint count, uint budget,
+                                      device float4* output, uint tid,
+                                      threadgroup uint* state) {
+  if (count <= budget || budget <= 1) {
+    uint n = min(count, budget);
+    for (uint i = tid; i < n; i += 32) output[i] = input[i];
+    threadgroup_barrier(mem_flags::mem_device);
+    return n;
+  }
+  float begin = input[0].y;
+  float range = xgb_fsub_preserve(input[count - 1].x, begin);
+  bool ordered = isfinite(begin) && isfinite(range) && !xgb_sketch_less(range, 0.f);
+  for (uint i = 2 + tid; i < count; i += 32) {
+    float key = xgb_fadd_preserve(input[i].y, input[i].x);
+    float previous = xgb_fadd_preserve(input[i - 1].y, input[i - 1].x);
+    ordered = ordered && !isnan(key) && !isnan(previous) && !xgb_sketch_less(key, previous);
+  }
+  if (!simd_all(ordered)) {
+    // Unrepaired summaries and nonfinite ranks retain the exact serial behavior.
+    if (!tid) state[0] = xgb_sketch_prune(input, count, budget, output);
+    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+    return state[0];
+  }
+  if (!tid) {
+    output[0] = input[0];
+    state[0] = 1;
+    state[1] = 0;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  uint n = budget - 1;
+  for (ulong base = 1; base < n; base += 32) {
+    ulong k = base + tid;
+    uint selected = count, previous = count;
+    if (k < n) {
+      selected = xgb_sketch_select(input, count, n, uint(k), begin, range);
+      previous = xgb_sketch_select(input, count, n, uint(k - 1), begin, range);
+    }
+    bool keep = selected < count && selected != previous;
+    uint prefix = simd_prefix_exclusive_sum(uint(keep));
+    uint length = simd_sum(uint(keep));
+    uint last = simd_max(keep ? selected : 0);
+    if (keep) output[state[0] + prefix] = input[selected];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (!tid) {
+      state[0] += length;
+      if (length) state[1] = last;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (!tid && state[1] != count - 1) output[state[0]++] = input[count - 1];
+  threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+  return state[0];
+}
 kernel void xgb_sketch_finalize(device const float4* entries [[buffer(0)]],
                                 device const ulong2* levels [[buffer(1)]],
                                 device const SketchFinalizeTask* tasks [[buffer(2)]],
                                 device float4* current [[buffer(3)]],
                                 device float4* merged [[buffer(4)]],
                                 device uint* sizes [[buffer(5)]],
-                                uint column [[thread_position_in_grid]]) {
+                                uint column [[threadgroup_position_in_grid]],
+                                uint tid [[thread_index_in_threadgroup]]) {
   auto task = tasks[column];
   auto a = current + task.workspace;
   auto b = merged + task.workspace;
   uint count = 0;
+  threadgroup uint merged_count, state[2];
   for (ulong l = task.begin; l < task.end; ++l) {
     ulong2 level = levels[l];
-    uint n = xgb_sketch_merge(a, count, entries + level.x, uint(level.y), b);
-    count = xgb_sketch_prune(b, n, task.intermediate_budget, a);
+    if (!tid) merged_count = xgb_sketch_merge(a, count, entries + level.x, uint(level.y), b);
+    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+    count = xgb_sketch_prune_parallel(b, merged_count, task.intermediate_budget, a, tid, state);
   }
-  sizes[column] = xgb_sketch_prune(a, count, task.final_budget, b);
+  count = xgb_sketch_prune_parallel(a, count, task.final_budget, b, tid, state);
+  if (!tid) sizes[column] = count;
 }

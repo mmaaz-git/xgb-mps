@@ -1512,3 +1512,16 @@ round-to-nearest-even step including subnormals. The
 [division validation](validation/sketch-fp32-division-m3.txt) checks 5,830,328
 arithmetic inputs, all 942 sketch cases and all 700 Python tests (one skipped).
 The first measurements above precede this optimization.
+
+After exact FP32 division, the [million-row report](validation/benchmark-sketch-million-v2-m3.json)
+measures **4.501 s CPU / 5.111 s MPS**, with sketch GPU time **121.9 ms**;
+the [wide report](validation/benchmark-sketch-wide-v2-m3.json) measures
+**10.014 s / 9.758 s**, with sketch GPU time **54.9 ms**. The million-row kernel
+improves about 18%, but these full-training timings do not establish a speedup
+from the optimization. The reports retain the variability and memory conditions.
+
+The next implementation assigns one SIMD group to each column and parallelizes
+pruning's rank searches and removal of duplicate selections. Merge/rank repair
+retain their original order. GPU validation of monotonic rank keys selects a
+serial GPU path for irregular summaries. Native summaries and all 700 Python
+tests still pass; measurements of this change follow separately.

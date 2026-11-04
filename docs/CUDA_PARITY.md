@@ -275,8 +275,11 @@ again to the requested final budget. FP32 operation order, subnormal ranks and
 comparison behavior match the CPU sketch. Pruning uses a native FP32 quotient
 estimate corrected by exact integer residuals and rounded once with
 guard/round/sticky bits. A 5,830,328-input check matches CPU division exactly for
-finite/infinite/zero results and checks NaN classification. Each column has one GPU thread; columns run
-in parallel, while operations within a column remain sequential.
+finite/infinite/zero results and checks NaN classification. Each column uses one
+32-lane SIMD group. Merge and rank repair retain their serial order; pruning
+performs independent binary searches and removes repeated selected entries with
+SIMD prefix counts. GPU checks require monotonic search keys and a finite,
+nonnegative rank range; irregular summaries use the original serial GPU pruning.
 
 This is partial sketch coverage. CPU ingestion still builds and sorts queues,
 flushes them into levels and performs streaming compaction. The GPU stage copies

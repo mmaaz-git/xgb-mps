@@ -2665,8 +2665,9 @@ std::vector<WQSummaryContainer> FinalizeSketches(Span<SketchFinalization const> 
     [e setBuffer:current offset:0 atIndex:3];
     [e setBuffer:merged offset:0 atIndex:4];
     [e setBuffer:sizes offset:0 atIndex:5];
-    [e dispatchThreads:MTLSizeMake(columns.size(), 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    CHECK_EQ(rt.sketch_finalize_pipeline.threadExecutionWidth, 32);
+    [e dispatchThreadgroups:MTLSizeMake(columns.size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
     [e endEncoding];
     [command commit];
     [command waitUntilCompleted];
