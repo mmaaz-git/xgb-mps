@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -119,7 +120,8 @@ class Runtime {
   id<MTLComputePipelineState> ranking_map_stats_pipeline, ranking_pairs_pipeline,
       ranking_normalize_pipeline, ranking_gather_pipeline, ranking_mean_labels_pipeline,
       ranking_mean_sample_pipeline, ranking_mean_gather_pipeline, ranking_bias_sum_pipeline,
-      ranking_bias_update_pipeline;
+      ranking_bias_finish_pipeline, ranking_bias_update_pipeline, ranking_bias_pairs_pipeline,
+      ranking_bias_dispatch_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
@@ -223,6 +225,9 @@ class Runtime {
       ranking_mean_sample_pipeline = make_pipeline(@"xgb_ranking_mean_sample");
       ranking_mean_gather_pipeline = make_pipeline(@"xgb_ranking_mean_gather");
       ranking_bias_sum_pipeline = make_pipeline(@"xgb_ranking_bias_sum");
+      ranking_bias_finish_pipeline = make_pipeline(@"xgb_ranking_bias_finish");
+      ranking_bias_pairs_pipeline = make_pipeline(@"xgb_ranking_bias_pairs");
+      ranking_bias_dispatch_pipeline = make_pipeline(@"xgb_ranking_bias_dispatch");
       ranking_bias_update_pipeline = make_pipeline(@"xgb_ranking_bias_update");
       prefix_double_pair_pipeline = make_pipeline(@"xgb_prefix_double_pair");
       prefix_double_pair_add_pipeline = make_pipeline(@"xgb_prefix_double_pair_add");
@@ -1639,7 +1644,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
   // Host work is query-size/launch metadata only. Actual pair indices, labels
   // and gradients are generated on GPU. Reuse a 64 MiB pair buffer across
   // batches; a single larger query is allowed up to the device buffer limit.
-  auto budget_pairs = (64ull << 20) / (sizeof(GradientPair) + (mean ? 16 : 0) + (positions ? 16 : 0));
+  auto budget_pairs = (64ull << 20) / (sizeof(GradientPair) + (mean ? 16 : 0) + (positions ? 20 : 0));
   std::vector<std::uint32_t> batches{0};
   std::uint64_t max_pairs = 0;
   for (std::size_t g = 0; g < n_groups; ++g) {
@@ -1662,8 +1667,13 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
     auto discount = Upload(rt, discounts.data(), discounts.size_bytes());
     auto inverse = Upload(rt, inverse_idcg.data(), inverse_idcg.size_bytes());
     auto pair_buffer = Allocate(rt, max_pairs * sizeof(GradientPair));
+    if (positions) CHECK_LE(max_pairs, std::numeric_limits<std::uint32_t>::max());
+    auto selected = Allocate(rt, positions ? max_pairs * 4 : 4);
+    auto selected_count = Allocate(rt, 16);
     auto bias_pair = Allocate(rt, positions ? max_pairs * 16 : 16);
     auto bias_row = Allocate(rt, positions ? predictions.size() * 16 : 16);
+    auto bias_segments = (n_groups + 127) / 128;
+    auto bias_partial = Allocate(rt, positions ? positions * bias_segments * 16ull : 16);
     auto bias_sum = Allocate(rt, positions ? positions * 16ull : 16);
     auto bias_positive = Upload(rt, bias.positive.data(), bias.positive.size_bytes());
     auto bias_negative = Upload(rt, bias.negative.data(), bias.negative.size_bytes());
@@ -1679,11 +1689,38 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
     auto map_stats = Allocate(rt, kind == RankingLossKind::kMAP ? predictions.size() * 2 * sizeof(double) : 16);
     auto command = [rt.queue commandBuffer];
     CHECK(command);
+    id<MTLCounterSampleBuffer> timing = nil;
+    std::vector<char const*> phases;
+    if (auto requested = std::getenv("XGBOOST_METAL_PROFILE_RANKING"); requested && std::strcmp(requested, "1") == 0) {
+      CHECK([rt.device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])
+          << "This Metal device does not support compute-stage timestamp sampling.";
+      auto desc = [MTLCounterSampleBufferDescriptor new];
+      for (id<MTLCounterSet> set in rt.device.counterSets) {
+        if ([set.name isEqualToString:MTLCommonCounterSetTimestamp]) { desc.counterSet = set; break; }
+      }
+      CHECK(desc.counterSet) << "No Metal timestamp counter set is available.";
+      desc.storageMode = MTLStorageModeShared;
+      desc.sampleCount = 2 * (batches.size() * 8 + 16);
+      NSError* error = nil;
+      timing = [rt.device newCounterSampleBufferWithDescriptor:desc error:&error];
+      CHECK(timing) << ErrorText(error);
+    }
+    auto encoder = [&](char const* phase) -> id<MTLComputeCommandEncoder> {
+      if (!timing) return [command computeCommandEncoder];
+      auto desc = [MTLComputePassDescriptor computePassDescriptor];
+      auto attachment = desc.sampleBufferAttachments[0];
+      attachment.sampleBuffer = timing;
+      attachment.startOfEncoderSampleIndex = 2 * phases.size();
+      attachment.endOfEncoderSampleIndex = 2 * phases.size() + 1;
+      CHECK_LT(attachment.endOfEncoderSampleIndex, timing.sampleCount);
+      phases.push_back(phase);
+      return [command computeCommandEncoderWithDescriptor:desc];
+    };
     auto order = EncodeGroupSort(rt, command, input, offsets, predictions.size(), 1, n_groups, max_group_size);
     GroupOrder label_order{};
     if (mean) {
       auto ranked_labels = Allocate(rt, predictions.size_bytes());
-      auto e = [command computeCommandEncoder];
+      auto e = encoder("mean_labels");
       CHECK(e);
       [e setComputePipelineState:rt.ranking_mean_labels_pipeline];
       [e setBuffer:order.records offset:0 atIndex:0];
@@ -1700,7 +1737,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
         std::uint64_t rows, label_stride;
         std::uint32_t groups, topk, kind, weighted, minus, exponential;
       } p{predictions.size(), labels.Stride(0), static_cast<std::uint32_t>(n_groups), 0, 0, 0, 0, 0};
-      auto e = [command computeCommandEncoder];
+      auto e = encoder("map_prefix");
       CHECK(e);
       [e setComputePipelineState:rt.ranking_map_stats_pipeline];
       [e setBuffer:order.records offset:0 atIndex:0];
@@ -1728,7 +1765,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
            static_cast<std::uint32_t>(exponential), static_cast<std::uint32_t>(!weights.empty()), norm_bits, static_cast<std::uint32_t>(mean), seed, positions};
       static_assert(sizeof(p) == 80);
       if (mean) {
-        auto e = [command computeCommandEncoder];
+        auto e = encoder("sample_pairs");
         CHECK(e);
         [e setComputePipelineState:rt.ranking_mean_sample_pipeline];
         [e setBuffer:order.records offset:0 atIndex:0];
@@ -1743,9 +1780,15 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
         [e dispatchThreads:MTLSizeMake(end - begin, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
         [e endEncoding];
       }
+      if (positions) {
+        auto blit = [command blitCommandEncoder];
+        CHECK(blit);
+        [blit fillBuffer:selected_count range:NSMakeRange(0, 16) value:0];
+        [blit endEncoding];
+      }
       auto tiles = tasks[end].tile_begin - tasks[begin].tile_begin;
       if (tiles) {
-        auto e = [command computeCommandEncoder];
+        auto e = encoder("pair_gradients");
         CHECK(e);
         [e setComputePipelineState:rt.ranking_pairs_pipeline];
         [e setBuffer:order.records offset:0 atIndex:0];
@@ -1761,10 +1804,41 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
         [e setBuffer:bias_pair offset:0 atIndex:10];
         [e setBuffer:bias_positive offset:0 atIndex:11];
         [e setBuffer:bias_negative offset:0 atIndex:12];
+        [e setBuffer:selected offset:0 atIndex:13];
+        [e setBuffer:selected_count offset:0 atIndex:14];
         [e dispatchThreadgroups:MTLSizeMake(tiles, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [e endEncoding];
       }
-      auto e = [command computeCommandEncoder];
+      if (positions) {
+        auto e = encoder("bias_dispatch");
+        CHECK(e);
+        [e setComputePipelineState:rt.ranking_bias_dispatch_pipeline];
+        [e setBuffer:selected_count offset:0 atIndex:0];
+        [e dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [e endEncoding];
+        e = encoder("bias_pairs");
+        CHECK(e);
+        [e setComputePipelineState:rt.ranking_bias_pairs_pipeline];
+        [e setBuffer:order.records offset:0 atIndex:0];
+        [e setBuffer:input offset:0 atIndex:1];
+        [e setBuffer:response offset:0 atIndex:2];
+        [e setBuffer:task_buffer offset:0 atIndex:3];
+        [e setBuffer:discount offset:0 atIndex:4];
+        [e setBuffer:inverse offset:0 atIndex:5];
+        [e setBuffer:map_stats offset:0 atIndex:6];
+        [e setBuffer:pair_buffer offset:0 atIndex:7];
+        [e setBytes:&p length:sizeof(p) atIndex:8];
+        [e setBuffer:sampled offset:0 atIndex:9];
+        [e setBuffer:bias_pair offset:0 atIndex:10];
+        [e setBuffer:bias_positive offset:0 atIndex:11];
+        [e setBuffer:bias_negative offset:0 atIndex:12];
+        [e setBuffer:selected offset:0 atIndex:13];
+        [e setBuffer:selected_count offset:0 atIndex:14];
+        [e dispatchThreadgroupsWithIndirectBuffer:selected_count indirectBufferOffset:4
+                           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+      }
+      auto e = encoder("normalize");
       CHECK(e);
       [e setComputePipelineState:rt.ranking_normalize_pipeline];
       [e setBuffer:pair_buffer offset:0 atIndex:0];
@@ -1776,7 +1850,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
       [e endEncoding];
       auto rows = std::uint64_t{groups[end]} - groups[begin];
       if (rows) {
-        e = [command computeCommandEncoder];
+        e = encoder("gather");
         CHECK(e);
         [e setComputePipelineState:mean ? rt.ranking_mean_gather_pipeline : rt.ranking_gather_pipeline];
         [e setBuffer:order.records offset:0 atIndex:0];
@@ -1800,18 +1874,30 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
       struct {
         std::uint32_t groups, positions;
         double regularizer;
-      } p{static_cast<std::uint32_t>(n_groups), positions, bias.regularizer};
-      static_assert(sizeof(p) == 16);
-      auto e = [command computeCommandEncoder];
+        std::uint32_t segments, padding;
+      } p{static_cast<std::uint32_t>(n_groups), positions, bias.regularizer,
+          static_cast<std::uint32_t>(bias_segments), 0};
+      static_assert(sizeof(p) == 24);
+      auto e = encoder("bias_sum");
       CHECK(e);
       [e setComputePipelineState:rt.ranking_bias_sum_pipeline];
       [e setBuffer:bias_row offset:0 atIndex:0];
       [e setBuffer:offsets offset:0 atIndex:1];
-      [e setBuffer:bias_sum offset:0 atIndex:2];
+      [e setBuffer:bias_segments == 1 ? bias_sum : bias_partial offset:0 atIndex:2];
       [e setBytes:&p length:sizeof(p) atIndex:3];
-      [e dispatchThreads:MTLSizeMake(positions, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+      [e dispatchThreads:MTLSizeMake(positions, bias_segments, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
       [e endEncoding];
-      e = [command computeCommandEncoder];
+      if (bias_segments > 1) {
+        e = encoder("bias_finish");
+        CHECK(e);
+        [e setComputePipelineState:rt.ranking_bias_finish_pipeline];
+        [e setBuffer:bias_partial offset:0 atIndex:0];
+        [e setBuffer:bias_sum offset:0 atIndex:1];
+        [e setBytes:&p length:sizeof(p) atIndex:2];
+        [e dispatchThreads:MTLSizeMake(positions, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+        [e endEncoding];
+      }
+      e = encoder("bias_update");
       CHECK(e);
       [e setComputePipelineState:rt.ranking_bias_update_pipeline];
       [e setBuffer:bias_sum offset:0 atIndex:0];
@@ -1824,6 +1910,17 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    if (timing) {
+      auto data = [timing resolveCounterRange:NSMakeRange(0, 2 * phases.size())];
+      CHECK(data && data.length == 2 * phases.size() * sizeof(MTLCounterResultTimestamp));
+      auto samples = static_cast<MTLCounterResultTimestamp const*>(data.bytes);
+      for (std::size_t i = 0; i < phases.size(); ++i) {
+        auto begin = samples[2 * i].timestamp, end = samples[2 * i + 1].timestamp;
+        CHECK(begin != MTLCounterErrorValue && end != MTLCounterErrorValue && end >= begin);
+        LOG(CONSOLE) << "MPS ranking profile rows=" << predictions.size() << " phase=" << phases[i]
+                  << " gpu_ticks=" << end - begin;
+      }
+    }
     std::memcpy(output.data(), result.contents, output.size_bytes());
     if (positions) {
       std::memcpy(bias.positive.data(), bias_positive.contents, bias.positive.size_bytes());

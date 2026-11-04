@@ -102,7 +102,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **462 passed, 1 skipped**. The skip requires a machine without an
+- Python: **583 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **192 cases**, with every bin compared exactly to independent
@@ -1080,3 +1080,30 @@ Its NDCG@10 histories differ by at most `8.11e-5`; final CPU/MPS scores are
 This failed result remains published and is not treated as a validated speedup.
 Long-run mean-pairwise numerical agreement remains open work. Grouped ROC/PR-AUC
 is still the remaining ranking-metric CPU path.
+
+
+### Faster unbiased ranking
+
+Eligible unbiased pairs are now compacted on GPU and corrected with an indirect
+dispatch. This keeps software binary64 logarithms and bias arithmetic out of the
+ordinary pair kernel. Gradient gathering retains the original pair order.
+Cross-query bias sums use ordered 128-query blocks followed by a small reduction;
+this changes the association of double additions across blocks, with the same
+native gradient/state checks still passing.
+
+For the million-row, 20-round mean-sampled workloads above, median MPS training
+falls from **3.648 to 2.670 s for NDCG** and **3.765 to 2.665 s for MAP**—27% and
+29% less wall time. CPU remains faster: **2.109 s (0.79×)** and **2.334 s (0.88×)**.
+Maximum prediction differences remain `2.39e-7`. Raw intermediate and final
+[NDCG](validation/benchmark-ranking-unbiased-ndcg-v3-m3.json) and
+[MAP](validation/benchmark-ranking-unbiased-map-v3-m3.json) reports are retained.
+The [unbiased mean-pairwise failure](validation/benchmark-ranking-unbiased-pairwise-v2-m3.json)
+is unchanged; this optimization does not fix its numerical feedback issue.
+All **583 Python tests and native suites** pass under Metal API Validation.
+
+`XGBOOST_METAL_PROFILE_RANKING=1` enables optional per-encoder hardware timestamps
+on supported devices. These are reported as raw GPU ticks; grouped-sort encoders
+are not individually included. The [before](validation/profile-ranking-unbiased-v2.log)
+and [after](validation/profile-ranking-unbiased-v3.log) profiles identified the
+pair kernel as the main bottleneck. Instrumented runs are separate from the wall
+timings above.

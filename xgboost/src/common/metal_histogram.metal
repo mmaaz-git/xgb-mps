@@ -3264,58 +3264,33 @@ kernel void xgb_ranking_map_stats(device const uint2* records [[buffer(0)]],
   }
 }
 
-kernel void xgb_ranking_pairs(device const uint2* records [[buffer(0)]],
-                               device const uint* predictions [[buffer(1)]],
-                               device const uint* labels [[buffer(2)]],
-                               device const RankingPairTask* tasks [[buffer(3)]],
-                               device const ulong* discounts [[buffer(4)]],
-                               device const ulong* inverse [[buffer(5)]],
-                               device const ulong2* map_stats [[buffer(6)]],
-                               device uint2* pairs [[buffer(7)]],
-                               constant RankingGradientParams& p [[buffer(8)]],
-                               device const uint2* sampled [[buffer(9)]],
-                               device ulong2* bias_pair [[buffer(10)]],
-                               device const ulong* positive [[buffer(11)]],
-                               device const ulong* negative [[buffer(12)]],
-                               uint tile [[threadgroup_position_in_grid]],
-                               uint tid [[thread_index_in_threadgroup]]) {
-  threadgroup uint query;
-  if (tid == 0) {
-    uint lo = p.group_begin, hi = p.group_end;
-    ulong global_tile = p.tile_base + tile;
-    while (lo < hi) {
-      uint mid = lo + (hi - lo) / 2;
-      if (tasks[mid].tile_begin <= global_tile) lo = mid + 1;
-      else hi = mid;
-    }
-    query = lo - 1;
+inline uint2 xgb_rank_pair_indices(RankingPairTask task, ulong index, ulong output,
+                                     bool mean, device const uint2* sampled) {
+  if (mean) return sampled[output];
+  uint lo = 0, hi = task.topk;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (xgb_rank_pair_start(mid, task.count) <= index) lo = mid + 1;
+    else hi = mid;
   }
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  uint group = query;
-  RankingPairTask task = tasks[group];
-  ulong index = (p.tile_base + tile - task.tile_begin) * 256 + tid;
-  ulong count = p.mean ? ulong(task.topk) * task.count : xgb_rank_pair_start(task.topk, task.count);
-  if (index >= count) return;
-  ulong output = task.pair_begin - p.pair_base + index;
-  uint i, j;
-  if (p.mean) {
-    uint2 pair = sampled[output];
-    i = pair.x; j = pair.y;
-  } else {
-    uint lo = 0, hi = task.topk;
-    while (lo < hi) {
-      uint mid = lo + (hi - lo) / 2;
-      if (xgb_rank_pair_start(mid, task.count) <= index) lo = mid + 1;
-      else hi = mid;
-    }
-    i = lo - 1; j = uint(i + 1 + index - xgb_rank_pair_start(i, task.count));
-  }
+  uint i = lo - 1;
+  return uint2(i, uint(i + 1 + index - xgb_rank_pair_start(i, task.count)));
+}
+
+// Separate instantiations keep expensive bias logarithms out of the ordinary
+// pair kernel. Only compacted eligible pairs execute the unbiased instantiation.
+template <bool unbiased>
+inline uint2 xgb_rank_pair_gradient(device const uint2* records, device const uint* predictions,
+    device const uint* labels, device const ulong* discounts, device const ulong* inverse,
+    device const ulong2* map_stats, device ulong2* bias_pair, device const ulong* positive,
+    device const ulong* negative, constant RankingGradientParams& p, RankingPairTask task,
+    uint group, uint i, uint j, ulong output) {
   uint row_i = records[ulong(task.begin) + i].y, row_j = records[ulong(task.begin) + j].y;
   using namespace xgb_survival;
   D yi = From(as_type<float>(labels[ulong(row_i) * p.label_stride]));
   D yj = From(as_type<float>(labels[ulong(row_j) * p.label_stride]));
   if (p.positions) bias_pair[output] = ulong2(0);
-  if (xgb_deq(yi, yj)) { pairs[output] = uint2(0); return; }
+  if (xgb_deq(yi, yj)) return uint2(0);
   bool swap = yi < yj;
   uint high = swap ? row_j : row_i, low = swap ? row_i : row_j;
   uint diff_bits = xgb_rank_fadd(predictions[high], predictions[low] ^ 0x80000000u);
@@ -3346,7 +3321,7 @@ kernel void xgb_ranking_pairs(device const uint2* records [[buffer(0)]],
   if (hessian < epsilon) hessian = epsilon;
   hessian = (hessian * delta) * two;
   uint high_position = high - task.begin, low_position = low - task.begin;
-  if (high_position < p.positions && low_position < p.positions) {
+  if (unbiased) {
     D tp{positive[high_position]}, tm{negative[low_position]};
     if ((tp > epsilon || xgb_deq(tp, epsilon)) && (tm > epsilon || xgb_deq(tm, epsilon))) {
       D denominator = tp * tm;
@@ -3362,7 +3337,94 @@ kernel void xgb_ranking_pairs(device const uint2* records [[buffer(0)]],
     bias_pair[output] = swap ? ulong2(irrelevant, relevant) : ulong2(relevant, irrelevant);
   }
   uint g = as_type<uint>(xgb_dto_float(gradient));
-  pairs[output] = uint2(swap ? g ^ 0x80000000u : g, as_type<uint>(xgb_dto_float(hessian)));
+  return uint2(swap ? g ^ 0x80000000u : g, as_type<uint>(xgb_dto_float(hessian)));
+}
+
+kernel void xgb_ranking_pairs(device const uint2* records [[buffer(0)]],
+                               device const uint* predictions [[buffer(1)]],
+                               device const uint* labels [[buffer(2)]],
+                               device const RankingPairTask* tasks [[buffer(3)]],
+                               device const ulong* discounts [[buffer(4)]],
+                               device const ulong* inverse [[buffer(5)]],
+                               device const ulong2* map_stats [[buffer(6)]],
+                               device uint2* pairs [[buffer(7)]],
+                               constant RankingGradientParams& p [[buffer(8)]],
+                               device const uint2* sampled [[buffer(9)]],
+                               device ulong2* bias_pair [[buffer(10)]],
+                               device const ulong* positive [[buffer(11)]],
+                               device const ulong* negative [[buffer(12)]],
+                               device uint* selected [[buffer(13)]],
+                               device atomic_uint* selected_count [[buffer(14)]],
+                               uint tile [[threadgroup_position_in_grid]],
+                               uint tid [[thread_index_in_threadgroup]]) {
+  threadgroup uint query;
+  if (tid == 0) {
+    uint lo = p.group_begin, hi = p.group_end;
+    ulong global_tile = p.tile_base + tile;
+    while (lo < hi) {
+      uint mid = lo + (hi - lo) / 2;
+      if (tasks[mid].tile_begin <= global_tile) lo = mid + 1;
+      else hi = mid;
+    }
+    query = lo - 1;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  uint group = query;
+  RankingPairTask task = tasks[group];
+  ulong index = (p.tile_base + tile - task.tile_begin) * 256 + tid;
+  ulong count = p.mean ? ulong(task.topk) * task.count : xgb_rank_pair_start(task.topk, task.count);
+  if (index >= count) return;
+  ulong output = task.pair_begin - p.pair_base + index;
+  uint2 pair = xgb_rank_pair_indices(task, index, output, p.mean, sampled);
+  pairs[output] = xgb_rank_pair_gradient<false>(records, predictions, labels, discounts, inverse,
+      map_stats, bias_pair, positive, negative, p, task, group, pair.x, pair.y, output);
+  if (p.positions) {
+    uint a = records[ulong(task.begin) + pair.x].y, b = records[ulong(task.begin) + pair.y].y;
+    uint ya = labels[ulong(a) * p.label_stride], yb = labels[ulong(b) * p.label_stride];
+    bool active = a - task.begin < p.positions && b - task.begin < p.positions &&
+                  ya != yb && ((ya | yb) & 0x7fffffffu) != 0;
+    uint count = simd_sum(uint(active)), begin = 0;
+    if ((tid & 31) == 0 && count) begin = atomic_fetch_add_explicit(selected_count, count, memory_order_relaxed);
+    begin = simd_broadcast(begin, 0);
+    uint offset = simd_prefix_exclusive_sum(uint(active));
+    if (active) selected[begin + offset] = uint(output);
+  }
+}
+
+kernel void xgb_ranking_bias_pairs(device const uint2* records [[buffer(0)]],
+                               device const uint* predictions [[buffer(1)]],
+                               device const uint* labels [[buffer(2)]],
+                               device const RankingPairTask* tasks [[buffer(3)]],
+                               device const ulong* discounts [[buffer(4)]],
+                               device const ulong* inverse [[buffer(5)]],
+                               device const ulong2* map_stats [[buffer(6)]],
+                               device uint2* pairs [[buffer(7)]],
+                               constant RankingGradientParams& p [[buffer(8)]],
+                               device const uint2* sampled [[buffer(9)]],
+                               device ulong2* bias_pair [[buffer(10)]],
+                               device const ulong* positive [[buffer(11)]],
+                               device const ulong* negative [[buffer(12)]],
+                               device const uint* selected [[buffer(13)]],
+                               device const uint* selected_count [[buffer(14)]],
+                               uint tid [[thread_position_in_grid]]) {
+  if (tid >= selected_count[0]) return;
+  ulong output = selected[tid], global_pair = p.pair_base + output;
+  uint lo = p.group_begin, hi = p.group_end;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (tasks[mid].pair_begin <= global_pair) lo = mid + 1;
+    else hi = mid;
+  }
+  uint group = lo - 1;
+  RankingPairTask task = tasks[group];
+  uint2 pair = xgb_rank_pair_indices(task, global_pair - task.pair_begin, output, p.mean, sampled);
+  pairs[output] = xgb_rank_pair_gradient<true>(records, predictions, labels, discounts, inverse,
+      map_stats, bias_pair, positive, negative, p, task, group, pair.x, pair.y, output);
+}
+// A nonzero dispatch avoids device-specific zero-grid handling. The correction
+// kernel immediately returns when the compacted list is empty.
+kernel void xgb_ranking_bias_dispatch(device uint* count [[buffer(0)]]) {
+  count[1] = max(1u, count[0] / 256u + uint((count[0] & 255u) != 0)); count[2] = 1; count[3] = 1;
 }
 
 kernel void xgb_ranking_normalize(device const uint2* pairs [[buffer(0)]],
@@ -3554,21 +3616,36 @@ kernel void xgb_ranking_mean_gather(device const uint2* records [[buffer(0)]],
 }
 
 
-struct RankingBiasParams { uint groups, positions; ulong regularizer; };
-// Preserve CPU query order; independent original-list positions run in parallel.
+struct RankingBiasParams { uint groups, positions; ulong regularizer; uint segments, padding; };
+// Sum independent query blocks in parallel. A single thread per position would
+// leave most GPU cores idle for large datasets. Within each block, preserve order.
 kernel void xgb_ranking_bias_sum(device const ulong2* rows [[buffer(0)]],
                                   device const uint* groups [[buffer(1)]],
                                   device ulong2* sums [[buffer(2)]],
                                   constant RankingBiasParams& p [[buffer(3)]],
-                                  uint position [[thread_position_in_grid]]) {
+                                  uint2 tid [[thread_position_in_grid]]) {
   using namespace xgb_survival;
+  uint position = tid.x, segment = tid.y;
   D li = zero, lj = zero;
-  for (uint group = 0; group < p.groups; ++group) {
+  ulong end = min(ulong(p.groups), (ulong(segment) + 1) * 128);
+  for (uint group = segment * 128; group < end; ++group) {
     uint begin = groups[group], count = groups[group + 1] - begin;
     if (position < count) {
       ulong2 value = rows[ulong(begin) + position];
       li = li + D{value.x}; lj = lj + D{value.y};
     }
+  }
+  sums[ulong(segment) * p.positions + position] = ulong2(li.bits, lj.bits);
+}
+kernel void xgb_ranking_bias_finish(device const ulong2* partial [[buffer(0)]],
+                                     device ulong2* sums [[buffer(1)]],
+                                     constant RankingBiasParams& p [[buffer(2)]],
+                                     uint position [[thread_position_in_grid]]) {
+  using namespace xgb_survival;
+  D li = zero, lj = zero;
+  for (uint segment = 0; segment < p.segments; ++segment) {
+    ulong2 value = partial[ulong(segment) * p.positions + position];
+    li = li + D{value.x}; lj = lj + D{value.y};
   }
   sums[position] = ulong2(li.bits, lj.bits);
 }

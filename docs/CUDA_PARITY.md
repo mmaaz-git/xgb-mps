@@ -156,7 +156,8 @@ is retained in the published failed report; strict checks were not weakened.
 
 
 Unbiased loss corrections and bias updates now execute on GPU. Per-row cost
-accumulation and cross-query sums retain CPU order; logarithms/powers use software
+accumulation retains CPU order; cross-query sums use ordered 128-query blocks
+and a final block reduction, changing addition association; logarithms/powers use software
 binary64. Small bias vectors return to host for serialization. Native multi-step
 and multi-batch tests validate gradients and state. A large unbiased mean-pairwise
 training case still fails strict prediction equivalence (maximum 0.421501, RMS
