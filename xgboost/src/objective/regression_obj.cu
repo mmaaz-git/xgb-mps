@@ -604,24 +604,25 @@ class ExpectileRegression : public FitIntercept {
     auto mean = label_mean.HostView()(0);
 
     linalg::Matrix<GradientPair> gpair;
-    gpair.SetDevice(ctx_->Device());
-    gpair.Reshape(info.num_row_, n_targets);
-    auto gpair_view = gpair.View(ctx_->Device());
-
-    auto labels = info.labels.View(ctx_->Device());
-    info.weights_.SetDevice(ctx_->Device());
-    auto weights = common::MakeOptionalWeights(ctx_->Device(), info.weights_);
-    alpha_.SetDevice(ctx_->Device());
-    auto alpha = ctx_->IsCPU() ? alpha_.ConstHostSpan() : alpha_.ConstDeviceSpan();
-
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::InitExpectileGradients(mean, info.labels.Data()->ConstHostSpan(),
-                                            info.weights_.ConstHostSpan(), alpha_.ConstHostSpan(),
-                                            gpair.Data()->HostSpan());
+      common::metal::InitExpectileGradients(
+          mean, common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), common::metal::ConstDeviceSpan(alpha_),
+          common::metal::PrepareGradientOutput(&gpair, info.num_row_, n_targets));
     } else
 #endif
     {
+      gpair.SetDevice(ctx_->Device());
+      gpair.Reshape(info.num_row_, n_targets);
+      auto gpair_view = gpair.View(ctx_->Device());
+
+      auto labels = info.labels.View(ctx_->Device());
+      info.weights_.SetDevice(ctx_->Device());
+      auto weights = common::MakeOptionalWeights(ctx_->Device(), info.weights_);
+      alpha_.SetDevice(ctx_->Device());
+      auto alpha = ctx_->IsCPU() ? alpha_.ConstHostSpan() : alpha_.ConstDeviceSpan();
+
       linalg::ElementWiseKernel(ctx_, gpair_view,
                                 [=] XGBOOST_DEVICE(std::size_t i, std::size_t j) mutable {
                                   auto diff = mean - labels(i, 0);
@@ -1107,7 +1108,11 @@ class MeanAbsoluteError : public ObjFunction {
   void InitEstimation(MetaInfo const& info, linalg::Vector<float>* base_score) const override {
     CheckInitInputs(info);
     auto const n_targets = this->Targets(info);
-    base_score->SetDevice(ctx_->Device());
+    auto device = ctx_->Device();
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) device = DeviceOrd::MPS();
+#endif
+    base_score->SetDevice(device);
     base_score->Reshape(n_targets);
 
     double sum_weight{0.0};
@@ -1122,7 +1127,7 @@ class MeanAbsoluteError : public ObjFunction {
     if (common::CloseTo(sum_weight, 0.0)) {
       // Mostly for handling empty dataset test.
       LOG(WARNING) << "Sum of weights is close to 0.0, skipping base score estimation.";
-      *base_score = linalg::Zeros<float>(ctx_, base_score->Shape(0));
+      *base_score = linalg::Vector<float>({base_score->Shape(0)}, device);
       return;
     }
 
@@ -1134,16 +1139,17 @@ class MeanAbsoluteError : public ObjFunction {
     }
     CHECK_EQ(mean.Size(), n_targets);
 
-    HostDeviceVector<float> predt(info.labels.Size(), 0.0f, ctx_->Device());
-    auto predt_view = linalg::MakeTensorView(ctx_, &predt, info.num_row_, n_targets);
-    mean.SetDevice(ctx_->Device());
-    auto mean_view = mean.View(ctx_->Device());
+    HostDeviceVector<float> predt(info.labels.Size(), 0.0f, device);
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::BroadcastTargets(mean.Data()->ConstHostSpan(), predt.HostSpan());
+      common::metal::BroadcastTargets(common::metal::ConstDeviceSpan(*mean.Data()),
+                                      common::metal::DeviceSpan(predt));
     } else
 #endif
     {
+      auto predt_view = linalg::MakeTensorView(ctx_, &predt, info.num_row_, n_targets);
+      mean.SetDevice(ctx_->Device());
+      auto mean_view = mean.View(ctx_->Device());
       linalg::ElementWiseKernel(ctx_, predt_view,
                                 [=] XGBOOST_DEVICE(std::size_t i, std::size_t j) mutable {
                                   predt_view(i, j) = mean_view(j);

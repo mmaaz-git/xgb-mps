@@ -1,0 +1,92 @@
+Initialization/statistics/stump GPU storage
+============================================
+Date: 2026-11-04
+Host: Apple M3 MacBook Air, 8 CPU / 10 GPU cores / 16 GB unified memory.
+Baseline: 04e3178271bc75fc9ac0f413220a688822e42781 (objective storage).
+Homebrew libomp selected through DYLD_LIBRARY_PATH before Python.
+
+Authority/scope
+---------------
+CUDA common/stats.cu, common/numeric.cu, tree/fit_stump.cu and objective
+initialization source define arithmetic and placement. Means, medians/quantiles,
+generic reductions and stump fitting now receive explicit Metal storage;
+objective initialization keeps its GPU-stage payloads on that storage.
+Lower wrappers use guarded shared input/output bindings, GPU result publication,
+strided byte copies and empty-result fills. Sort inputs starting at a nonzero
+offset are packed with a GPU blit. Scratch results preserve input/output aliases
+and no-write-on-invalid behavior. Class-histogram initial output/padding is
+snapshotted on GPU. Multiclass centering reads its scalar on GPU and snapshots
+an aliased scalar before writing. Existing arithmetic kernels unchanged; the new
+center kernel uses the existing software-FP32 subtraction helper.
+Read-only/unshareable inputs use counted uploads; gradient sum inputs need
+8-byte float2 alignment although host GradientPair permits 4. Host output
+compatibility uses a counted copy only when direct sharing is unavailable.
+Seven native statistics fields appended and exported in JSON, zero in CPU builds.
+All native clients rebuilt for the enlarged structure. Commands synchronous.
+
+Preserved host work
+-------------------
+Scalar sums/status checks, FP32 generic-sum batch aggregation and CUDA-defined
+expectile/absolute-error finalizers stay on host. Expectile reads one float mean
+and its target vector; absolute error reads target means and fitted weights.
+No claim of distributed GPU collective support; single-worker initialization
+is validated. No shader reduction/sort/gradient/stump formulas changed.
+
+Focused validation
+------------------
+PASS 250 native cases / 3,625 field checks / three rejected calls, Metal API
+validation enabled. Actual InitEstimation covers 14 objective families, 33/258/
+1026 rows, one/three targets where supported and weighted/unweighted inputs.
+Statistics/stump interfaces cover 0/1/33/257/4097 rows, repeated calls, explicit
+CPU/MPS handoffs and storage access states. Counters require no unexpected vector
+readback or initialization payload staging; expectile/absolute finalizers must
+read exactly the small source-defined byte counts. CPU/source references,
+strided FP32/precise-pair results and padding, empty zero/NaN fills, aliased
+mean/quantile output, overlapping center scalar, read-only input, offset packing,
+4-byte aligned gradient input and rejected weighted/class-histogram calls checked.
+Center subtraction matches FP32 bits for signed zeros/subnormals/infinities;
+NaNs checked by classification. Final live vector gauges zero.
+Log: results/initialization-state-focused-v4.log.
+
+Corrections during fixture validation:
+- OptionalWeights requires an explicit scalar/span constructor; fixed new fixture.
+- A new direct CPU check of a 4097-row FP32 mean exposed accumulation-order
+  differences. The independent FP32-term sum showed the longer CPU serial path
+  rounded more: independent sum 1.7490847354129073, Metal absolute error
+  2.43e-8, CPU absolute error 1.98e-5. Both backends are checked against their own forward-error
+  bound based on accumulation depth, matching the existing source-oracle approach.
+  Existing kernels, tests and tolerances unchanged. Other CPU fixtures keep 3e-6
+  scaled tolerance; dyadic/copy references remain exact.
+
+Full regression
+---------------
+PASS: 2026-11-04T22:44:49Z through 2026-11-04T22:52:54Z (8m05s), FULL_EXIT=0.
+- Final Metal build passed.
+- All 87 rebuilt native check groups and source reference updater passed.
+- Existing initialization oracle: 164 cases / 7,220,670 exact gradient pairs /
+  14,441,340 bitwise copied floats.
+- Production median/mean API: 56 cases; generic/optional-weight reductions:
+  63 cases / 14,982,576 values, including nonfinite and empty inputs.
+- CUDA linalg: 258 cases / 10,499,275 fields / 660,150 packed-class witnesses;
+  maximum independent reduction-bound ratio 0.106798212.
+- 3,321 Python tests passed, one expected skip, 622 warnings, 191.79 seconds.
+  Skip: unavailable-device test on a host with a real accessible GPU.
+  Warnings remain existing deprecation/data/parameter notices.
+- CPU-only build (31 build steps) and API/device/cache checks passed.
+Driver: results/run-initialization-state-full-v1.sh.
+Session: tmux xgb-initialization-state-full.
+Logs under results/: initialization-state-full-driver-v1.log,
+build-initialization-state-final-v1.log, test-initialization-state-full-v1.log,
+configure-cpu-initialization-state-v1.log, build-cpu-initialization-state-v1.log,
+check-cpu-initialization-state-v1.log.
+No production/test changes after the final build/run; documentation finalized
+afterward. Changed C++/CUDA sections formatted; git diff --check clean.
+
+Limits/remaining work
+---------------------
+Ranking, metrics, predictor/updater consumers, public result plumbing and
+persistent dictionaries still have ownership work. Generic execution Context
+continues to default to CPU storage until remaining dispatchers are migrated.
+Other CUDA operation/arithmetic audits, GPU collectives and cross-hardware
+validation remain unfinished. No new benchmark, NVIDIA execution comparison
+or other Apple-device measurement.

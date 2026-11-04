@@ -224,15 +224,20 @@ class QuantileRegression : public ObjFunction {
     CHECK(!alpha_.Empty());
 
     auto n_targets = this->Targets(info);
-    base_score->SetDevice(ctx_->Device());
+    auto device = ctx_->Device();
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) device = DeviceOrd::MPS();
+#endif
+    base_score->SetDevice(device);
     base_score->Reshape(n_targets);
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       std::vector<common::metal::QuantileRequest> requests;
       for (auto alpha : param_.quantile_alpha.Get()) requests.push_back({0, 0, alpha});
-      common::metal::Quantiles(info.labels.HostView(), info.weights_.ConstHostSpan(), requests,
-                                base_score->HostView().Values());
+      common::metal::Quantiles(info.labels.View(device),
+                               common::metal::ConstDeviceSpan(info.weights_), requests,
+                               base_score->View(device).Values());
     } else
 #endif
     if (ctx_->IsCUDA()) {
@@ -289,7 +294,7 @@ class QuantileRegression : public ObjFunction {
     // Global mean. There's no strong preference on whether weighted mean should be used
     // with weighted quantiles. The proper way to do this might be using an approximated
     // quantile algorithm with stream inputs, but it's also much more expensive.
-    auto intercept = base_score->View(this->ctx_->Device());
+    auto intercept = base_score->View(device);
     collective::SafeColl(collective::GlobalSum(ctx_, intercept));
     double n_workers = collective::GetWorldSize();
     linalg::VecScaDiv(ctx_, intercept, n_workers);

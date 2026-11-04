@@ -8,6 +8,7 @@
 
 #include <cassert>  // for assert
 #include <limits>
+#include <utility>  // as_const
 
 #include "../collective/aggregator.h"  // for GlobalSum
 #include "../common/common.h"          // for AssertGPUSupport
@@ -228,13 +229,19 @@ class SoftmaxMultiClassObj : public ObjFunction {
     std::int64_t n_classes = this->param_.num_class;
     ValidateLabel(this->ctx_, info, n_classes);
 
-    *base_score = linalg::Zeros<float>(this->ctx_, n_classes);
+    auto device = ctx_->Device();
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) device = DeviceOrd::MPS();
+#endif
+    base_score->SetDevice(device);
+    base_score->Reshape(n_classes);
+    auto intercept = base_score->View(device);
+    base_score->Data()->Fill(0.0f);
 
     std::size_t n = info.labels.Size();
     // Calculate probability
-    auto labels = info.labels.View(ctx_->Device());
-    auto weights = common::MakeOptionalWeights(this->ctx_->Device(), info.weights_);
-    auto intercept = base_score->View(ctx_->Device());
+    auto labels = info.labels.View(device);
+    auto weights = common::MakeOptionalWeights(device, info.weights_);
     CHECK_EQ(intercept.Size(), n_classes);
     CHECK_EQ(n, info.num_row_);
     linalg::SmallHistogram(ctx_, labels, weights, intercept);
@@ -250,13 +257,13 @@ class SoftmaxMultiClassObj : public ObjFunction {
     linalg::Vector<float> mean;
     linalg::LogE(this->ctx_, intercept, kRtEps);
     common::Mean(this->ctx_, intercept, &mean);
-    auto d_mean = mean.View(this->ctx_->Device());
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::VectorArithmetic(common::metal::VectorOp::kSubtract, intercept, d_mean(0));
+      common::metal::Center(intercept, std::as_const(mean).View(DeviceOrd::MPS()));
       return;
     }
 #endif
+    auto d_mean = mean.View(this->ctx_->Device());
     TransformKernel(this->ctx_, intercept, [=] XGBOOST_DEVICE(float v) { return v - d_mean(0); });
   }
 

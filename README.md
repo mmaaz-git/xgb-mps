@@ -14,7 +14,26 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **resident objective inputs and gradient outputs**. Regression,
+Latest step: **GPU storage through initialization and stump fitting**. Means,
+weighted means, medians/quantiles, class priors, initial gradients and prediction
+broadcasts now consume Metal inputs and publish results with GPU copies or fills.
+Their objective callers retain Metal storage through the GPU stages. Multiclass
+centering reads its mean on GPU. CUDA's scalar returns and expectile/absolute-error
+host finalizers remain intact.
+
+New native validation passes **250 cases / 3,625 field checks / three rejected
+calls**, checking actual objective initialization, CPU comparisons, independently
+bounded FP32 reductions, access states, strides, empty inputs, aliasing and guarded
+fallbacks. Full regression passes **3,321 Python tests, one expected skip**, all
+**87 rebuilt native check groups**, and the CPU-only build/API checks.
+[Initialization storage validation](validation/cuda-metal-initialization-state-m3.txt).
+
+This is another consumer migration, not complete training residency. Ranking,
+metrics, tree/prediction callers and public result plumbing still need work. The
+execution context still defaults generic state to CPU storage. No benchmark or
+NVIDIA execution comparison was run for this step.
+
+The preceding step added **resident objective inputs and gradient outputs**. Regression,
 classification, absolute/quantile and AFT objective calls now consume explicit
 Metal spans and write gradients into owned Metal storage. Their prediction
 transforms, plus scalar regression and AFT base-margin conversions, retain it.
@@ -29,8 +48,8 @@ Full regression passes **3,321 Python tests, one expected skip**, all **86
 rebuilt native check groups**, and the CPU-only build/API checks.
 [Objective storage validation](validation/cuda-metal-objective-state-m3.txt).
 
-This closes objective-level storage gaps. Initialization reductions, ranking,
-metrics, tree/prediction callers and public result plumbing still need consumer
+This closed objective-level storage gaps. Ranking, metrics, tree/prediction
+callers and public result plumbing still need consumer
 migration and can request host mirrors. The execution context still defaults
 generic state to CPU storage. No new speedup or NVIDIA execution claim.
 
@@ -420,7 +439,7 @@ category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
 The major remaining areas are general metadata/state ownership and manipulation,
-persistent dictionary storage, remaining initialization/state operations,
+persistent dictionary storage, remaining state operations,
 CUDA algorithm alignment and distributed collectives. Compressed disk caches,
 internal ELLPACK save/load and optional Snappy compute compression are implemented.
 Sensitive AFT tails and some
@@ -643,14 +662,14 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
 | Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; scalar/vector split statistics retain integers |
-| Root statistics / stump fitting | All scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; final root weights run on GPU; vector cover sums targets in binary64 before FP32 conversion; objective stump fitting retains its separate binary64 GPU reduction |
+| Root statistics / stump fitting | All scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; final root weights run on GPU; vector cover sums targets in binary64 before FP32 conversion; objective stump fitting retains its separate binary64 GPU reduction and owned Metal input/output storage |
 | Reduced-gradient leaf fitting | Original value scales → float sampling replay → per-row integer conversion → integer leaf/page sums; binary64 view for regularized/clipped final weights; host tree receives completed leaves |
 | Linear coordinate descent | GPU FP32 sums, CUDA residual/Hessian rules and original selector snapshots; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
 | Generic sums | CUDA-source FP32 generic reductions with final double return; optional-weight reductions use binary64; scalar default weights need no array dispatch |
-| Means | GPU scalar FP32 terms and accumulation; per-target sample and weighted sample means use binary64 terms/reductions; parallel association can differ from CUB |
-| Objective initialization | GPU multiclass packed class-weight histogram, normalization/logarithm/centering, expectile initial gradients/Hessians and absolute-error target-mean broadcast; quantile vector normalization also runs on GPU; generic allocation/state remain host |
+| Means | GPU scalar FP32 terms and accumulation; per-target sample and weighted sample means use binary64 terms/reductions; parallel association can differ from CUB; resident inputs and GPU result publication |
+| Objective initialization | GPU multiclass packed class-weight histogram, normalization/logarithm/centering, expectile initial gradients/Hessians and absolute-error target-mean broadcast; quantile vector normalization also runs on GPU; these callers retain Metal payload storage, with source-defined scalar returns and expectile/absolute-error host finalizers |
 | Objective validation / base scores | GPU logistic, gamma, squared-log, Poisson/Tweedie and multiclass label checks; checked logistic/gamma intercepts and logarithm/logit conversion, including Cox base-score conversion; device label views and owned scalar base-margin storage, with results published only after validation succeeds |
-| Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
+| Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort; resident inputs and GPU result/empty-NaN publication |
 | Gradients | CUDA-source FP32/FP64 expressions for squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass and expectile; adaptive absolute-error and quantile gradients preserve source expressions, FP32 residual-root sums and binary64 weight sums; host scale-statistic collective matches upstream; explicit Metal input spans and owned gradient outputs avoid implicit objective-level host mirrors |
 | AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; gradient and transform payloads retain owned Metal storage; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU. Metric consumers still need storage migration |
 | Prediction transforms | CUDA-source sigmoid, exponential, hinge, cumulative expectile and quantile insertion sorting with preserved subnormals; multiclass softmax uses sequential binary64 sums of FP32 terms, and argmax preserves source NaN/subnormal comparisons; nonranking objective transforms retain Metal vector storage |
@@ -708,6 +727,15 @@ objective-specific initialization work. `small_histogram_dispatches` and
 all four contribute to `initialization_gpu_time_ns`, separately from ordinary
 objective GPU time. `float_mean_dispatches` is a subset of `mean_dispatches`,
 whose duration remains in `mean_gpu_time_ns`; do not add these counts together.
+`initialization_shared_input_bytes` / `initialization_shared_output_bytes` count
+eligible payload bindings. `initialization_host_input_bytes` /
+`initialization_host_output_bytes` count compatibility staging for unshareable
+views. GPU publication/snapshot copies and empty-result fills are reported by
+`initialization_copy_dispatches`, `initialization_copy_bytes` and
+`initialization_fill_dispatches`; their GPU duration also contributes to
+`initialization_gpu_time_ns`. These are scoped binding/copy counters, excluding
+control arguments and source-defined scalar returns/status checks; they do not
+measure whole-training transfers.
 `label_validation_dispatches` / `label_validation_gpu_time_ns` and
 `base_score_dispatches` / `base_score_gpu_time_ns` report objective label checking
 and intercept conversion separately. Invalid checked inputs still count completed
@@ -1219,6 +1247,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Add native Metal feature/metadata/gradient tensors and columnar masks/dictionaries.
 - [x] Add owned GPU prediction outputs and PyTorch/MLX DLPack consumers.
 - [x] Add generic Metal vector storage and internal metadata slice/copy/stack/equality operations.
+- [x] Keep nonranking objective inputs/gradients/transforms in Metal vector storage.
+- [x] Keep initialization/statistics/stump payloads on Metal through their GPU stages.
 - [ ] Migrate remaining state allocations/consumers and persistent dictionary ownership.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.
 - [x] Port query maxima/counts/prefixes and reuse GPU metadata through ranking caches.

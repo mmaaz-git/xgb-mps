@@ -282,13 +282,13 @@ void TransformKernel(Context const* ctx, TensorView<T, D> t, Fn&& fn) {
 // vector-scalar multiplication
 template <auto _tag = detail::SysTag()>
 void VecScaMul(Context const* ctx, linalg::VectorView<float> x, double mul) {
-  CHECK_EQ(x.Device().ordinal, ctx->Device().ordinal);
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
     common::metal::VectorArithmetic(common::metal::VectorOp::kScale, x, mul);
     return;
   }
 #endif
+  CHECK_EQ(x.Device().ordinal, ctx->Device().ordinal);
   TransformKernel(ctx, x, [=] XGBOOST_DEVICE(float v) { return v * mul; });
 }
 
@@ -300,13 +300,13 @@ void VecScaDiv(Context const* ctx, linalg::VectorView<float> x, double div) {
 
 template <auto _tag = detail::SysTag()>
 void LogE(Context const* ctx, linalg::VectorView<float> x, float rt_eps = 0.0f) {
-  CHECK_EQ(x.Device().ordinal, ctx->Device().ordinal);
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
     common::metal::VectorArithmetic(common::metal::VectorOp::kLog, x, rt_eps);
     return;
   }
 #endif
+  CHECK_EQ(x.Device().ordinal, ctx->Device().ordinal);
   TransformKernel(ctx, x, [=] XGBOOST_DEVICE(float v) { return log(v + rt_eps); });
 }
 

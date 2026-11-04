@@ -8118,3 +8118,23 @@ kernel void xgb_metadata_gather(device const uint* input [[buffer(0)]],
     }
   }
 }
+
+// Store raw result bytes into strided outputs. source_stride == 0 broadcasts a
+// scalar pattern, preserving signed zeros, NaNs and software-binary64 payloads.
+struct InitializationStoreParams { ulong count, width, source_stride, target_stride; };
+kernel void xgb_initialization_store(device const uchar* source [[buffer(0)]],
+                                     device uchar* target [[buffer(1)]],
+                                     constant InitializationStoreParams& p [[buffer(2)]],
+                                     uint tid [[thread_position_in_grid]], uint threads [[threads_per_grid]]) {
+  for (ulong i = tid; i < p.count * p.width; i += threads) {
+    ulong element = i / p.width, byte = i % p.width;
+    target[element * p.target_stride + byte] = source[element * p.source_stride + byte];
+  }
+}
+kernel void xgb_vector_center(device uint* values [[buffer(0)]],
+                               device const uint* mean [[buffer(1)]],
+                               constant ulong& stride [[buffer(2)]],
+                               uint row [[thread_position_in_grid]]) {
+  using namespace xgb_metric_math;
+  values[ulong(row)*stride] = (F{values[ulong(row)*stride]} - F{mean[0]}).bits;
+}

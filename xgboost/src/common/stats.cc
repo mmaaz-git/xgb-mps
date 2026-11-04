@@ -17,8 +17,9 @@
 #include "xgboost/logging.h"             // CHECK_EQ
 
 #if defined(XGBOOST_USE_METAL)
-#include "metal_reduction.h"
 #include "metal_quantile.h"
+#include "metal_reduction.h"
+#include "metal_vector.h"
 #endif
 
 namespace xgboost::common {
@@ -26,10 +27,12 @@ void Median(Context const* ctx, linalg::Matrix<float> const& t,
             HostDeviceVector<float> const& weights, linalg::Tensor<float, 1>* out) {
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
+    out->SetDevice(DeviceOrd::MPS());
     out->Reshape(t.Shape(1));
     std::vector<metal::QuantileRequest> requests;
     for (std::uint32_t i = 0; i < t.Shape(1); ++i) requests.push_back({i, 0, 0.5});
-    metal::Quantiles(t.HostView(), weights.ConstHostSpan(), requests, out->HostView().Values());
+    metal::Quantiles(t.View(DeviceOrd::MPS()), metal::ConstDeviceSpan(weights), requests,
+                     out->View(DeviceOrd::MPS()).Values());
     return;
   }
 #endif
@@ -61,17 +64,18 @@ void Median(Context const* ctx, linalg::Matrix<float> const& t,
 }
 
 void Mean(Context const* ctx, linalg::VectorView<float const> v, linalg::Vector<float>* out) {
-  out->SetDevice(ctx->Device());
-  out->Reshape(1);
-
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
+    out->SetDevice(DeviceOrd::MPS());
+    out->Reshape(1);
     std::size_t shape[2]{v.Size(), 1}, strides[2]{v.Stride(0), 1};
-    linalg::MatrixView<float const> matrix{v.Values(), shape, strides, ctx->Device()};
-    metal::Mean(metal::MeanKind::kFloat32, matrix, {}, out->HostView());
+    linalg::MatrixView<float const> matrix{v.Values(), shape, strides, v.Device()};
+    metal::Mean(metal::MeanKind::kFloat32, matrix, {}, out->View(DeviceOrd::MPS()));
     return;
   }
 #endif
+  out->SetDevice(ctx->Device());
+  out->Reshape(1);
   if (ctx->IsCUDA()) {
     cuda_impl::Mean(ctx, v, out->View(ctx->Device()));
   } else if (ctx->IsSycl()) {
@@ -88,13 +92,15 @@ void Mean(Context const* ctx, linalg::VectorView<float const> v, linalg::Vector<
 }
 
 void SampleMean(Context const* ctx, linalg::Matrix<float> const& v, linalg::Vector<float>* out) {
-  *out = linalg::Zeros<float>(ctx, std::max(v.Shape(1), decltype(v.Shape(1)){1}));
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
-    metal::Mean(metal::MeanKind::kSample, v.HostView(), {}, out->HostView());
+    *out = linalg::Vector<float>({std::max<std::size_t>(v.Shape(1), 1)}, DeviceOrd::MPS());
+    metal::Mean(metal::MeanKind::kSample, v.View(DeviceOrd::MPS()), {},
+                out->View(DeviceOrd::MPS()));
     return;
   }
 #endif
+  *out = linalg::Zeros<float>(ctx, std::max(v.Shape(1), decltype(v.Shape(1)){1}));
   if (!ctx->IsCUDA()) {
     auto h_v = v.HostView();
     CHECK(h_v.CContiguous());
@@ -121,14 +127,16 @@ void SampleMean(Context const* ctx, linalg::Matrix<float> const& v, linalg::Vect
 
 void WeightedSampleMean(Context const* ctx, linalg::Matrix<float> const& v,
                         HostDeviceVector<float> const& w, linalg::Vector<float>* out) {
-  *out = linalg::Zeros<float>(ctx, std::max(v.Shape(1), decltype(v.Shape(1)){1}));
   CHECK_EQ(v.Shape(0), w.Size());
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
-    metal::Mean(metal::MeanKind::kWeightedSample, v.HostView(), w.ConstHostSpan(), out->HostView());
+    *out = linalg::Vector<float>({std::max<std::size_t>(v.Shape(1), 1)}, DeviceOrd::MPS());
+    metal::Mean(metal::MeanKind::kWeightedSample, v.View(DeviceOrd::MPS()),
+                metal::ConstDeviceSpan(w), out->View(DeviceOrd::MPS()));
     return;
   }
 #endif
+  *out = linalg::Zeros<float>(ctx, std::max(v.Shape(1), decltype(v.Shape(1)){1}));
   if (!ctx->IsCUDA()) {
     auto h_v = v.HostView();
     auto h_w = w.ConstHostSpan();

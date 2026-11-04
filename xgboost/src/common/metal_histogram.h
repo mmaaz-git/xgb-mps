@@ -132,6 +132,11 @@ struct Statistics {
       vector_copy_dispatches, vector_copy_bytes, vector_fill_dispatches, vector_fill_bytes,
       vector_upload_bytes, vector_readback_bytes, vector_host_copy_bytes, vector_gpu_time_ns,
       metadata_gather_dispatches, metadata_gather_values, metadata_equal_dispatches;
+  // Initialization payload bindings/fallbacks, plus GPU publication copies/fills.
+  // Excludes control arguments and source-defined scalar status/result readbacks.
+  std::uint64_t initialization_shared_input_bytes, initialization_shared_output_bytes,
+      initialization_host_input_bytes, initialization_host_output_bytes,
+      initialization_copy_dispatches, initialization_copy_bytes, initialization_fill_dispatches;
 };
 
 class Histogram {

@@ -85,17 +85,20 @@ inline void FitStump(Context const*, linalg::TensorView<GradientPair const, 2>,
 
 void FitStump(Context const* ctx, linalg::Matrix<GradientPair> const& gpair, bst_target_t n_targets,
               linalg::Vector<float>* out) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    out->SetDevice(DeviceOrd::MPS());
+    out->Reshape(n_targets);
+    common::metal::FitStump(gpair.View(DeviceOrd::MPS()), out->View(DeviceOrd::MPS()));
+    return;
+  }
+#endif
   out->SetDevice(ctx->Device());
   out->Reshape(n_targets);
 
   gpair.SetDevice(ctx->Device());
   auto gpair_t = gpair.View(ctx->Device().IsSycl() ? DeviceOrd::CPU() : ctx->Device());
-#if defined(XGBOOST_USE_METAL)
-  if (ctx->IsMPS()) {
-    common::metal::FitStump(gpair_t, out->HostView());
-    return;
-  }
-#endif
+
   ctx->IsCUDA() ? cuda_impl::FitStump(ctx, gpair_t, out->View(ctx->Device()))
                 : cpu_impl::FitStump(ctx, gpair_t, out->HostView());
 }

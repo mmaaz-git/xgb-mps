@@ -82,13 +82,13 @@ must be reported rather than hidden by widening test tolerances.
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly from resident sorted indices; GPU-owned interaction masks and monotonic bounds, group unions, ascending feature filtering, bound initialization/growth; candidate staging and tree metadata remain host |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; columns use modern CUDA Philox weighted priorities and Thrust Feistel shuffle with GPU compaction/ordering; shuffle key setup and cache metadata remain host as in CUDA, while feature arrays still stage through host |
-| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, multiclass packed class priors and normalization/log/centering, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; native metadata import validation also runs on Metal. These gradient outputs now retain Metal vector storage; validation and objective input/output spans avoid implicit host mirrors. Host-input validation, initialization reductions and other callers still need migration |
+| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, multiclass packed class priors and normalization/log/centering, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; native metadata import validation also runs on Metal. These gradient outputs now retain Metal vector storage; validation and objective input/output spans avoid implicit host mirrors. Initialization/statistics/stump callers now also retain Metal inputs/outputs through GPU stages; other consumers still need migration |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; multiclass softmax follows source sequential binary64 accumulation of FP32 terms and argmax handles source NaN/subnormal comparisons; identity transforms require no dispatch. Nonranking objective transforms now retain explicit Metal vector storage |
 | Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; checked results publish by GPU blit only on success and retain Metal vector storage; expectile's host margin loop matches upstream host execution |
-| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal source-expression gradients, FP32 residual-root sums, binary64 optional-weight sums and quantile prediction sorting; upstream host scale-statistic collective restored for empty/nonempty workers; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; gradient payloads now retain Metal vector storage. Generic initialization/state work still needs migration |
+| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal source-expression gradients, FP32 residual-root sums, binary64 optional-weight sums and quantile prediction sorting; upstream host scale-statistic collective restored for empty/nonempty workers; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; gradient payloads now retain Metal vector storage. Initialization means/broadcasts/stumps/quantiles now retain Metal storage; source-defined expectile/absolute host finalizers remain. Other generic state work still needs migration |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms, now with explicit Metal input/output storage; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
-| Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Other initialization/state work still requires porting/audit |
+| Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Means, medians/quantiles and stump wrappers now consume Metal spans and publish strided outputs/empty fills on GPU. Other state work still requires porting/audit |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
 | Prediction cache from leaf IDs | `predictor/predictor.cu` | Metal; supports strided target slices and negated sampling positions |
 | SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA; input decoding/category mapping now runs on GPU; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
@@ -3418,3 +3418,88 @@ Device() still defaults to CPU and must not be flipped without the remaining
 dispatcher audit. Persistent dictionary ownership, other CUDA operation/arithmetic
 audits, GPU collectives and cross-hardware validation remain open.
 No new benchmark, NVIDIA execution or other Apple-device comparison.
+
+
+## Initialization and stump payloads retain Metal storage
+
+CUDA authority is `common/stats.cu`, `common/numeric.cu`, `tree/fit_stump.cu`
+and the objective initialization methods in `init_estimation.cc`,
+`multiclass_obj.cu`, `regression_obj.cu` and `quantile_obj.cu`. This step connects
+the previously implemented statistics/initialization kernels to Metal vector
+storage. It does not change their reduction, sorting, quantile, gradient or
+stump arithmetic.
+
+`Mean`, `SampleMean`, `WeightedSampleMean`, `Median`, generic `Reduce` and
+`tree::FitStump` select explicit MPS input/output storage before generic host
+accesses. Scalar FP32 mean input strides are retained. Generic sums still return
+host scalars, including the source-defined FP32 batching/aggregate boundary;
+optional-weight sums still use binary64. Mean denominator/error scalars and
+class-histogram validation flags remain host checks. These are distinct from
+full-array readbacks. GPU collective support remains a separate open requirement;
+this step validates single-worker initialization.
+
+The lower bindings guard eligible unified-memory views. Unshareable/read-only
+inputs use counted uploads; gradient reduction inputs require eight-byte Metal
+float2 alignment even though C++ GradientPair permits four. Offset input views
+are bound directly, or copied on GPU into offset-zero buffers for sort helpers.
+Results are computed into GPU scratch and published with a byte-copy kernel that
+preserves FP32/binary64/POD representations, output strides and padding. Empty
+means/stumps use GPU zero fills; empty quantiles use GPU NaN fills. Publication
+after computation preserves aliased input/output behavior. Class histograms
+snapshot their existing backing storage on GPU; validation failures leave the
+original output unchanged. Host output compatibility uses a counted copy only
+when direct sharing is unavailable. All commands complete synchronously.
+
+GLM-like and Newton-based base-score estimation now constructs/consumes device
+storage. Multiclass priors retain device labels, weights, bins, normalization,
+logs and the mean scalar; a new GPU centering kernel performs the existing FP32
+subtraction without reading that scalar on CPU. It snapshots an overlapping mean
+on GPU before updating the vector. Quantile base-score normalization keeps its
+device vector. Expectile initial gradient/Hessian construction and absolute-error
+target broadcasts feed resident gradient/stump stages. CUDA's explicit host
+expectile mean/final monotonic projection and absolute-error target-mean addition
+remain on host. The tests account for exactly those small readbacks.
+
+Seven initialization payload/copy counters are appended to the native statistics
+structure and public JSON (zero in a CPU-only build). Shared input/output and
+host input/output fields count binding/fallback bytes, not unique allocations or
+whole-program traffic. Copy dispatches/bytes include result publication and
+packed/alias snapshots; fill dispatches cover empty-result initialization. Their
+GPU duration contributes to `initialization_gpu_time_ns`, while existing reduction
+and mean durations retain their separate scopes. Control parameters, small
+status checks and source-defined scalar returns are excluded. Native clients
+must be rebuilt for the enlarged statistics structure.
+
+Validation adds **250 native cases / 3,625 field checks / three rejected calls**
+with Metal API validation. Actual initialization covers 14 objective families,
+weighted/unweighted data, scalar/multiple targets and multiple row counts. Public
+statistics/stump calls cover empty/single/33/257/4097 rows, repeated calls, explicit
+CPU/MPS handoffs, output ownership and no unexpected readback/staging. Strided
+FP32/precise-pair output guards, NaN/zero fills, offset sorting, aliased mean and
+quantile outputs, overlapping centering scalars, read-only inputs and four-byte
+aligned gradient input fallbacks are checked. Center subtraction is checked
+bitwise for signed zeros, subnormals and infinities (NaNs by classification).
+Invalid weighted means and invalid/overflowing class histograms preserve output.
+Final live vector gauges return to zero.
+
+The first new fixture needed OptionalWeights' explicit scalar constructor. Its
+initial direct CPU comparison for a 4,097-row FP32 mean also exposed the expected
+accumulation-order difference: the CPU's longer serial path rounded further from
+the independent sum of FP32 terms. That fixture now bounds each backend's error
+independently by its accumulation depth. Existing numerical kernels, CPU/source
+oracles and test tolerances were not changed. Other well-conditioned CPU fixtures
+retain the 3e-6 scaled tolerance; exact dyadic and copy tests remain exact.
+
+Final full regression completed **2026-11-04 22:44:49–22:52:54 UTC** (8m05s):
+**3,321 Python tests passed, one expected skip** (622 warnings, 191.79s), all
+**87 rebuilt native check groups**, the source reference updater, and the CPU-only
+build/API/device/cache checks. The skip is the unavailable-device test on a host
+with an accessible GPU. No production or test changes followed the final build/run;
+documentation was finalized afterward.
+[Validation record](../validation/cuda-metal-initialization-state-m3.txt).
+Remaining ownership work includes ranking, metrics, predictor/updater consumers,
+public prediction result plumbing and persistent dictionaries. The execution
+context still defaults generic state to CPU and must not be switched globally
+before those consumers are audited. Other CUDA operation/arithmetic audits, GPU
+collectives and cross-hardware validation remain open. No benchmark, NVIDIA
+execution or other Apple-device comparison was run.

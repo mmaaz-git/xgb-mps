@@ -428,6 +428,20 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["metadata_gather_values"] = Integer{static_cast<std::int64_t>(stats.metadata_gather_values)};
   info["metadata_equal_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.metadata_equal_dispatches)};
+  info["initialization_shared_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.initialization_shared_input_bytes)};
+  info["initialization_shared_output_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.initialization_shared_output_bytes)};
+  info["initialization_host_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.initialization_host_input_bytes)};
+  info["initialization_host_output_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.initialization_host_output_bytes)};
+  info["initialization_copy_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.initialization_copy_dispatches)};
+  info["initialization_copy_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.initialization_copy_bytes)};
+  info["initialization_fill_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.initialization_fill_dispatches)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -741,6 +755,13 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["metadata_gather_dispatches"] = Integer{0};
   info["metadata_gather_values"] = Integer{0};
   info["metadata_equal_dispatches"] = Integer{0};
+  info["initialization_shared_input_bytes"] = Integer{0};
+  info["initialization_shared_output_bytes"] = Integer{0};
+  info["initialization_host_input_bytes"] = Integer{0};
+  info["initialization_host_output_bytes"] = Integer{0};
+  info["initialization_copy_dispatches"] = Integer{0};
+  info["initialization_copy_bytes"] = Integer{0};
+  info["initialization_fill_dispatches"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};

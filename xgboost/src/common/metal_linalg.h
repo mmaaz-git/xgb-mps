@@ -10,6 +10,8 @@ enum class VectorOp : std::uint32_t { kScale = 0, kLog = 1, kSubtract = 2 };
 // Scale uses binary64 multiplication followed by FP32 narrowing; log first adds
 // its FP32 epsilon; subtraction is FP32. Untouched strided elements are retained.
 void VectorArithmetic(VectorOp op, linalg::VectorView<float> values, double parameter);
+// Subtract a GPU-resident scalar with the same FP32 operation as VectorArithmetic.
+void Center(linalg::VectorView<float> values, linalg::VectorView<float const> mean);
 // CUDA packs runs of sorted, distinct labels into consecutive bins. It does not
 // scatter back to class IDs when classes are absent. Inputs must be finite and
 // distinct-run count <= output size; overflow is rejected before host output changes.

@@ -169,6 +169,9 @@ std::atomic<std::uint64_t> prediction_shared_output_bytes{0},
     output_dlpack_exports{0},
     output_live_buffers{0},
     output_live_exports{0};
+std::atomic<std::uint64_t> initialization_shared_input_bytes{0}, initialization_shared_output_bytes{0},
+    initialization_host_input_bytes{0}, initialization_host_output_bytes{0},
+    initialization_copy_dispatches{0}, initialization_copy_bytes{0}, initialization_fill_dispatches{0};
 std::atomic<std::uint64_t> vector_allocations{0}, vector_live_buffers{0}, vector_capacity_bytes{0},
     vector_copy_dispatches{0}, vector_copy_bytes{0}, vector_fill_dispatches{0}, vector_fill_bytes{0},
     vector_upload_bytes{0}, vector_readback_bytes{0}, vector_host_copy_bytes{0}, vector_gpu_time_ns{0},
@@ -315,6 +318,7 @@ class Runtime {
   id<MTLComputePipelineState> tensor_gather_bytes_pipeline;
   id<MTLComputePipelineState> metadata_convert_pipeline, metadata_validate_pipeline,
       metadata_qid_mark_pipeline, metadata_qid_starts_pipeline, metadata_qid_counts_pipeline;
+  id<MTLComputePipelineState> initialization_store_pipeline, vector_center_pipeline;
   id<MTLComputePipelineState> vector_fill_pipeline, vector_equal_pipeline, metadata_gather_pipeline;
   id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
       ellpack_copy_pipeline, ellpack_count_pipeline, ellpack_unpack_pipeline;
@@ -411,6 +415,8 @@ class Runtime {
       gradient_import_pipeline = make_pipeline(@"xgb_import_gradient_pairs");
       tensor_gather_bytes_pipeline = make_pipeline(@"xgb_tensor_gather_bytes");
       metadata_convert_pipeline = make_pipeline(@"xgb_metadata_convert");
+      initialization_store_pipeline = make_pipeline(@"xgb_initialization_store");
+      vector_center_pipeline = make_pipeline(@"xgb_vector_center");
       vector_fill_pipeline = make_pipeline(@"xgb_vector_fill");
       vector_equal_pipeline = make_pipeline(@"xgb_vector_equal");
       metadata_gather_pipeline = make_pipeline(@"xgb_metadata_gather");
@@ -2047,7 +2053,14 @@ Statistics GetStatistics() {
           vector_gpu_time_ns.load(std::memory_order_relaxed),
           metadata_gather_dispatches.load(std::memory_order_relaxed),
           metadata_gather_values.load(std::memory_order_relaxed),
-          metadata_equal_dispatches.load(std::memory_order_relaxed)};
+          metadata_equal_dispatches.load(std::memory_order_relaxed),
+          initialization_shared_input_bytes.load(std::memory_order_relaxed),
+          initialization_shared_output_bytes.load(std::memory_order_relaxed),
+          initialization_host_input_bytes.load(std::memory_order_relaxed),
+          initialization_host_output_bytes.load(std::memory_order_relaxed),
+          initialization_copy_dispatches.load(std::memory_order_relaxed),
+          initialization_copy_bytes.load(std::memory_order_relaxed),
+          initialization_fill_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2959,6 +2972,105 @@ Transform TransformFromName(char const* name) {
 }
 
 namespace {
+BorrowedMemory InitializationInput(Runtime const& rt, void const* data, std::size_t bytes,
+                                   std::size_t alignment = 4) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, alignment);
+  if (input.buffer) initialization_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  else {
+    input = {Upload(rt, data, bytes), 0};
+    initialization_host_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
+id<MTLBuffer> InitializationSnapshot(Runtime const& rt, id<MTLCommandBuffer> command,
+                                     BorrowedMemory input, std::size_t bytes) {
+  auto result = Allocate(rt, bytes);
+  if (bytes) {
+    auto e = [command blitCommandEncoder];
+    [e copyFromBuffer:input.buffer sourceOffset:input.offset toBuffer:result destinationOffset:0 size:bytes];
+    [e endEncoding];
+    initialization_copy_dispatches.fetch_add(1, std::memory_order_relaxed);
+    initialization_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return result;
+}
+// Sort helpers consume offset-zero buffers. Preserve device payloads with a blit
+// when a borrowed view starts inside a VM page, instead of uploading via the CPU.
+id<MTLBuffer> InitializationPacked(Runtime const& rt, id<MTLCommandBuffer> command,
+                                   void const* data, std::size_t bytes) {
+  auto input = InitializationInput(rt, data, bytes);
+  return input.offset ? InitializationSnapshot(rt, command, input, bytes) : input.buffer;
+}
+template <typename T>
+class InitializationOutput {
+  linalg::VectorView<T> view_;
+  bool shared_;
+ public:
+  BorrowedMemory memory;
+  InitializationOutput(Runtime const& rt, linalg::VectorView<T> view, bool initialize = false)
+      : view_{view} {
+    CHECK(view.Size() <= 1 || view.Stride(0) > 0);
+    if (view.Size()) {
+      CHECK(!view.Values().empty());
+      CHECK_LE(view.Size()-1, (view.Values().size()-1) / std::max<std::size_t>(view.Stride(0), 1));
+    }
+    auto bytes = view.Values().size_bytes();
+    memory = TryBorrowMemory(rt.device, view.Values().data(), bytes, alignof(T));
+    shared_ = memory.buffer != nil;
+    if (shared_) initialization_shared_output_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    else if (initialize || view.Size() != view.Values().size() || view.Stride(0) != 1) {
+      memory = {Upload(rt, view.Values().data(), bytes), 0};
+      initialization_host_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    } else memory = {Allocate(rt, bytes), 0};
+  }
+  void Store(Runtime const& rt, id<MTLCommandBuffer> command, BorrowedMemory source,
+              std::size_t source_stride = sizeof(T)) {
+    if (!view_.Size()) return;
+    CHECK_LE(view_.Size(), std::numeric_limits<std::size_t>::max()/sizeof(T));
+    struct { std::uint64_t count, width, source_stride, target_stride; }
+      p{view_.Size(), sizeof(T), source_stride, view_.Stride(0)*sizeof(T)};
+    auto e = [command computeCommandEncoder];
+    [e setComputePipelineState:rt.initialization_store_pipeline];
+    [e setBuffer:source.buffer offset:source.offset atIndex:0];
+    [e setBuffer:memory.buffer offset:memory.offset atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(std::min<std::size_t>(view_.Size()*sizeof(T), 1<<20),1,1)
+        threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [e endEncoding];
+    if (source_stride) {
+      initialization_copy_dispatches.fetch_add(1, std::memory_order_relaxed);
+      initialization_copy_bytes.fetch_add(view_.Size()*sizeof(T), std::memory_order_relaxed);
+    } else initialization_fill_dispatches.fetch_add(1, std::memory_order_relaxed);
+  }
+  void Publish() const {
+    if (!shared_ && !view_.Values().empty()) {
+      std::memcpy(view_.Values().data(), memory.buffer.contents, view_.Values().size_bytes());
+      initialization_host_output_bytes.fetch_add(view_.Values().size_bytes(), std::memory_order_relaxed);
+    }
+  }
+};
+template <typename T>
+void CopyInitializationResult(Runtime const& rt, id<MTLBuffer> result, linalg::VectorView<T> view) {
+  if (!view.Size()) return;
+  InitializationOutput<T> out{rt, view};
+  auto command = [rt.queue commandBuffer];
+  out.Store(rt, command, {result,0});
+  CompleteOperation(command, nullptr, &initialization_gpu_time_ns);
+  out.Publish();
+}
+template <typename T>
+void FillInitialization(linalg::VectorView<T> view, T value) {
+  if (!view.Size()) return;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto pattern = Upload(rt, &value, sizeof(T));  // Scalar fill argument, not a payload array.
+    InitializationOutput<T> out{rt, view};
+    auto command = [rt.queue commandBuffer];
+    out.Store(rt, command, {pattern,0}, 0);
+    CompleteOperation(command, nullptr, &initialization_gpu_time_ns);
+    out.Publish();
+  }
+}
 id<MTLBuffer> EncodeGradientSum(Runtime& rt, linalg::MatrixView<GradientPair const> gradients,
                                 id<MTLCommandBuffer> command) {
   auto rows = gradients.Shape(0), targets = gradients.Shape(1);
@@ -2967,7 +3079,7 @@ id<MTLBuffer> EncodeGradientSum(Runtime& rt, linalg::MatrixView<GradientPair con
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
   CHECK_LE(targets, 65535);
   auto values = gradients.Values();
-  auto input = Upload(rt, values.data(), values.size_bytes());
+  auto input = InitializationInput(rt, values.data(), values.size_bytes(), 8);
   auto blocks = (rows + 255) / 256;
   auto partial = Allocate(rt, blocks * targets * sizeof(GradientPairPrecise));
   auto output = Allocate(rt, targets * sizeof(GradientPairPrecise));
@@ -2980,7 +3092,7 @@ id<MTLBuffer> EncodeGradientSum(Runtime& rt, linalg::MatrixView<GradientPair con
   auto e = [command computeCommandEncoder];
   CHECK(e);
   [e setComputePipelineState:rt.gradient_sum_pipeline];
-  [e setBuffer:input offset:0 atIndex:0];
+  [e setBuffer:input.buffer offset:input.offset atIndex:0];
   [e setBuffer:partial offset:0 atIndex:1];
   [e setBytes:&p length:sizeof(p) atIndex:2];
   [e dispatchThreadgroups:MTLSizeMake(blocks, targets, 1)
@@ -3012,7 +3124,7 @@ void SumGradients(linalg::MatrixView<GradientPair const> gradients,
                   linalg::VectorView<GradientPairPrecise> output) {
   CHECK_EQ(gradients.Shape(1), output.Size());
   if (!gradients.Size()) {
-    for (std::size_t t = 0; t < output.Size(); ++t) output(t) = GradientPairPrecise{};
+    FillInitialization(output, GradientPairPrecise{});
     return;
   }
   @autoreleasepool {
@@ -3021,14 +3133,13 @@ void SumGradients(linalg::MatrixView<GradientPair const> gradients,
     CHECK(command);
     auto result = EncodeGradientSum(rt, gradients, command);
     CompleteGradientSum(command);
-    auto data = static_cast<GradientPairPrecise const*>(result.contents);
-    for (std::size_t t = 0; t < output.Size(); ++t) output(t) = data[t];
+    CopyInitializationResult(rt, result, output);
   }
 }
 void FitStump(linalg::MatrixView<GradientPair const> gradients, linalg::VectorView<float> output) {
   CHECK_EQ(gradients.Shape(1), output.Size());
   if (!gradients.Size()) {
-    for (std::size_t t = 0; t < output.Size(); ++t) output(t) = 0.0f;
+    FillInitialization(output, 0.0f);
     return;
   }
   @autoreleasepool {
@@ -3046,8 +3157,7 @@ void FitStump(linalg::MatrixView<GradientPair const> gradients, linalg::VectorVi
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     CompleteGradientSum(command);
-    auto data = static_cast<float const*>(result.contents);
-    for (std::size_t t = 0; t < output.Size(); ++t) output(t) = data[t];
+    CopyInitializationResult(rt, result, output);
     stump_dispatches.fetch_add(1, std::memory_order_relaxed);
   }
 }
@@ -3086,7 +3196,7 @@ double Sum(Span<float const> values) {
   CHECK_LE(values.size(), std::numeric_limits<std::uint32_t>::max());
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, values.data(), values.size_bytes());
+    auto input = InitializationInput(rt, values.data(), values.size_bytes(), alignof(float));
     auto blocks = (values.size() + 255) / 256;
     auto partial = Allocate(rt, blocks * sizeof(GradientPairPrecise));
     auto result = Allocate(rt, sizeof(GradientPairPrecise));
@@ -3099,7 +3209,7 @@ double Sum(Span<float const> values) {
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.mean_weight_pipeline];
-    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:input.buffer offset:input.offset atIndex:0];
     [e setBuffer:partial offset:0 atIndex:1];
     [e setBytes:&p length:sizeof(p) atIndex:2];
     [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -3133,7 +3243,7 @@ double SumFloat32(Span<float const> values) {
     auto& rt = GetRuntime();
     for (std::size_t offset = 0; offset < values.size(); offset += kLimit) {
       std::uint64_t n = std::min(kLimit, values.size() - offset);
-      auto input = Upload(rt, values.data() + offset, n * sizeof(float));
+      auto input = InitializationInput(rt, values.data() + offset, n * sizeof(float));
       auto command = [rt.queue commandBuffer];
       CHECK(command);
       do {
@@ -3142,17 +3252,17 @@ double SumFloat32(Span<float const> values) {
         auto e = [command computeCommandEncoder];
         CHECK(e);
         [e setComputePipelineState:rt.float32_sum_pipeline];
-        [e setBuffer:input offset:0 atIndex:0];
+        [e setBuffer:input.buffer offset:input.offset atIndex:0];
         [e setBuffer:output offset:0 atIndex:1];
         [e setBytes:&n length:sizeof(n) atIndex:2];
         [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [e endEncoding];
-        input = output;
+        input = {output, 0};
         n = blocks;
       } while (n > 1);
       CompleteOperation(command, &float_sum_dispatches, &float_sum_gpu_time_ns);
-      aggregate += *static_cast<float const*>(input.contents);
+      aggregate += *static_cast<float const*>(input.buffer.contents);
     }
   }
   return aggregate;
@@ -3165,7 +3275,7 @@ void VectorArithmetic(VectorOp op, linalg::VectorView<float> values, double para
   if (!values.Size()) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto buffer = Upload(rt, values.Values().data(), values.Values().size_bytes());
+    InitializationOutput<float> buffer{rt, values, true};
     struct {
       std::uint64_t count, stride;
       double parameter;
@@ -3177,13 +3287,37 @@ void VectorArithmetic(VectorOp op, linalg::VectorView<float> values, double para
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.vector_arithmetic_pipeline];
-    [e setBuffer:buffer offset:0 atIndex:0];
+    [e setBuffer:buffer.memory.buffer offset:buffer.memory.offset atIndex:0];
     [e setBytes:&p length:sizeof(p) atIndex:1];
     [e dispatchThreads:MTLSizeMake(values.Size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     CompleteOperation(command, &vector_arithmetic_dispatches, &initialization_gpu_time_ns);
-    std::memcpy(values.Values().data(), buffer.contents, values.Values().size_bytes());
+    buffer.Publish();
+  }
+}
+
+void Center(linalg::VectorView<float> values, linalg::VectorView<float const> mean) {
+  CHECK_EQ(mean.Size(), 1);
+  CHECK_LE(values.Size(), std::numeric_limits<std::uint32_t>::max());
+  if (!values.Size()) return;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto command = [rt.queue commandBuffer];
+    auto scalar = InitializationInput(rt, mean.Values().data(), sizeof(float));
+    if (MemoryRangesOverlap(mean.Values().data(), sizeof(float), values.Values().data(), values.Values().size_bytes()))
+      scalar = {InitializationSnapshot(rt, command, scalar, sizeof(float)), 0};
+    InitializationOutput<float> output{rt, values, true};
+    auto e = [command computeCommandEncoder];
+    std::uint64_t stride = values.Stride(0);
+    [e setComputePipelineState:rt.vector_center_pipeline];
+    [e setBuffer:output.memory.buffer offset:output.memory.offset atIndex:0];
+    [e setBuffer:scalar.buffer offset:scalar.offset atIndex:1];
+    [e setBytes:&stride length:sizeof(stride) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(values.Size(),1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [e endEncoding];
+    CompleteOperation(command, &vector_arithmetic_dispatches, &initialization_gpu_time_ns);
+    output.Publish();
   }
 }
 
@@ -3197,7 +3331,7 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
     CHECK_GT(rows, 0) << "weights must contain at least one non-zero value.";
   }
   if (!rows || (!targets && !weighted)) {
-    for (std::size_t t = 0; t < output.Size(); ++t) output(t) = 0;
+    FillInitialization(output, 0.0f);
     return;
   }
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
@@ -3206,8 +3340,8 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
     auto& rt = GetRuntime();
     auto command = [rt.queue commandBuffer];
     CHECK(command);
-    auto input = Upload(rt, values.Values().data(), values.Values().size_bytes());
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto input = InitializationInput(rt, values.Values().data(), values.Values().size_bytes());
+    auto weight = InitializationInput(rt, weights.data(), weights.size_bytes());
     struct Shape {
       std::uint64_t rows, stride0, stride1;
       std::uint32_t targets, blocks;
@@ -3219,15 +3353,14 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
       auto e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.float_mean_pipeline];
-      [e setBuffer:input offset:0 atIndex:0];
+      [e setBuffer:input.buffer offset:input.offset atIndex:0];
       [e setBuffer:output_buffer offset:0 atIndex:1];
       [e setBytes:&shape length:sizeof(shape) atIndex:2];
       [e dispatchThreadgroups:MTLSizeMake(targets, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
       CompleteOperation(command, &mean_dispatches, &mean_gpu_time_ns);
-      for (std::size_t t = 0; t < targets; ++t)
-        output(t) = static_cast<float const*>(output_buffer.contents)[t];
+      CopyInitializationResult(rt, output_buffer, output);
       float_mean_dispatches.fetch_add(1, std::memory_order_relaxed);
       return;
     }
@@ -3250,7 +3383,7 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
       auto e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.mean_weight_pipeline];
-      [e setBuffer:weight offset:0 atIndex:0];
+      [e setBuffer:weight.buffer offset:weight.offset atIndex:0];
       [e setBuffer:partial offset:0 atIndex:1];
       [e setBytes:&shape length:sizeof(shape) atIndex:2];
       [e dispatchThreadgroups:MTLSizeMake(shape.blocks, 1, 1)
@@ -3272,8 +3405,8 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
       auto e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.mean_pipeline];
-      [e setBuffer:input offset:0 atIndex:0];
-      [e setBuffer:weight offset:0 atIndex:1];
+      [e setBuffer:input.buffer offset:input.offset atIndex:0];
+      [e setBuffer:weight.buffer offset:weight.offset atIndex:1];
       [e setBuffer:denominator offset:0 atIndex:2];
       [e setBuffer:partial offset:0 atIndex:3];
       [e setBytes:&p length:sizeof(p) atIndex:4];
@@ -3297,8 +3430,8 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
       CHECK_GT(static_cast<GradientPairPrecise const*>(denominator.contents)->GetGrad(), 0.0)
           << "weights must contain at least one non-zero value.";
     }
-    for (std::size_t t = 0; t < output.Size(); ++t)
-      output(t) = targets ? static_cast<float const*>(result.contents)[t] : 0;
+    if (targets) CopyInitializationResult(rt, result, output);
+    else FillInitialization(output, 0.0f);
     mean_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     if (elapsed > 0)
@@ -3822,9 +3955,10 @@ void SmallHistogram(linalg::MatrixView<float const> indices, OptionalWeights con
     auto& rt = GetRuntime();
     auto command = [rt.queue commandBuffer];
     CHECK(command);
-    auto input = Upload(rt, indices.Values().data(), indices.Values().size_bytes());
-    auto weight = Upload(rt, weights.Data(), weights.Size() * sizeof(float));
-    auto output = Upload(rt, bins.Values().data(), bins.Values().size_bytes());
+    auto input = InitializationPacked(rt, command, indices.Values().data(), indices.Values().size_bytes());
+    auto weight = InitializationInput(rt, weights.Data(), weights.Size() * sizeof(float));
+    auto initial = InitializationInput(rt, bins.Values().data(), bins.Values().size_bytes());
+    auto output = InitializationSnapshot(rt, command, initial, bins.Values().size_bytes());
     auto bounds = Allocate(rt, (bins.Size() + 1) * sizeof(std::uint32_t));
     auto error = Allocate(rt, sizeof(std::uint32_t));
     struct {
@@ -3873,7 +4007,7 @@ void SmallHistogram(linalg::MatrixView<float const> indices, OptionalWeights con
     [e setComputePipelineState:rt.small_hist_sum_pipeline];
     [e setBuffer:sorted offset:0 atIndex:0];
     [e setBuffer:bounds offset:0 atIndex:1];
-    [e setBuffer:weight offset:0 atIndex:2];
+    [e setBuffer:weight.buffer offset:weight.offset atIndex:2];
     [e setBuffer:output offset:0 atIndex:3];
     [e setBytes:&p length:sizeof(p) atIndex:4];
     [e dispatchThreadgroups:MTLSizeMake(bins.Size(), 1, 1)
@@ -3882,7 +4016,7 @@ void SmallHistogram(linalg::MatrixView<float const> indices, OptionalWeights con
     CompleteOperation(command, &small_histogram_dispatches, &initialization_gpu_time_ns);
     CHECK_EQ(*static_cast<std::uint32_t const*>(error.contents), 0)
         << "SmallHistogram requires finite labels and no more distinct labels than bins.";
-    std::memcpy(bins.Values().data(), output.contents, bins.Values().size_bytes());
+    CopyInitializationResult(rt, output, linalg::MakeVec(bins.Values().data(), bins.Values().size()));
     if (rows) radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
   }
 }
@@ -5187,26 +5321,26 @@ void Quantiles(linalg::MatrixView<float const> values, Span<float const> weights
     CHECK_LE(request.alpha, 1);
   }
   if (!rows) {
-    std::fill(output.begin(), output.end(), std::numeric_limits<float>::quiet_NaN());
+    FillInitialization(linalg::MakeVec(output.data(), output.size()), std::numeric_limits<float>::quiet_NaN());
     return;
   }
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, values.Values().data(), values.Values().size_bytes());
     SortShape shape{rows, values.Stride(0), values.Stride(1), static_cast<std::uint32_t>(targets),
                     static_cast<std::uint32_t>((rows + 255) / 256)};
     auto command = [rt.queue commandBuffer];
     CHECK(command);
+    auto input = InitializationPacked(rt, command, values.Values().data(), values.Values().size_bytes());
     auto sorted = EncodeColumnSort(rt, command, input, shape);
     auto cdf = Allocate(rt, weights.empty() ? 4 : rows * targets * sizeof(std::uint32_t));
     if (!weights.empty()) {
-      auto weight = Upload(rt, weights.data(), weights.size_bytes());
+      auto weight = InitializationInput(rt, weights.data(), weights.size_bytes());
       auto e = [command computeCommandEncoder];
       CHECK(e);
       auto n = static_cast<std::uint32_t>(rows);
       [e setComputePipelineState:rt.quantile_cdf_pipeline];
       [e setBuffer:sorted offset:0 atIndex:0];
-      [e setBuffer:weight offset:0 atIndex:1];
+      [e setBuffer:weight.buffer offset:weight.offset atIndex:1];
       [e setBuffer:cdf offset:0 atIndex:2];
       [e setBytes:&n length:sizeof(n) atIndex:3];
       [e dispatchThreadgroups:MTLSizeMake(targets, 1, 1)
@@ -5235,7 +5369,7 @@ void Quantiles(linalg::MatrixView<float const> values, Span<float const> weights
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-    std::memcpy(output.data(), result.contents, output.size_bytes());
+    CopyInitializationResult(rt, result, linalg::MakeVec(output.data(), output.size()));
     radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
     quantile_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
@@ -6461,9 +6595,9 @@ void InitExpectileGradients(float mean, Span<float const> labels, Span<float con
   if (output.empty()) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto label = Upload(rt, labels.data(), labels.size_bytes());
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
-    auto levels = Upload(rt, alpha.data(), alpha.size_bytes());
+    auto label = InitializationInput(rt, labels.data(), labels.size_bytes());
+    auto weight = InitializationInput(rt, weights.data(), weights.size_bytes());
+    auto levels = InitializationInput(rt, alpha.data(), alpha.size_bytes());
     auto out = Allocate(rt, output.size_bytes());
     struct {
       std::uint64_t count;
@@ -6477,16 +6611,16 @@ void InitExpectileGradients(float mean, Span<float const> labels, Span<float con
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.expectile_init_pipeline];
-    [e setBuffer:label offset:0 atIndex:0];
-    [e setBuffer:weight offset:0 atIndex:1];
-    [e setBuffer:levels offset:0 atIndex:2];
+    [e setBuffer:label.buffer offset:label.offset atIndex:0];
+    [e setBuffer:weight.buffer offset:weight.offset atIndex:1];
+    [e setBuffer:levels.buffer offset:levels.offset atIndex:2];
     [e setBuffer:out offset:0 atIndex:3];
     [e setBytes:&p length:sizeof(p) atIndex:4];
     [e dispatchThreads:MTLSizeMake(output.size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     CompleteOperation(command, &expectile_init_dispatches, &initialization_gpu_time_ns);
-    std::memcpy(output.data(), out.contents, output.size_bytes());
+    CopyInitializationResult(rt, out, linalg::MakeVec(output.data(), output.size()));
   }
 }
 void BroadcastTargets(Span<float const> targets, Span<float> output) {
@@ -6497,7 +6631,7 @@ void BroadcastTargets(Span<float const> targets, Span<float> output) {
   if (output.empty()) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, targets.data(), targets.size_bytes());
+    auto input = InitializationInput(rt, targets.data(), targets.size_bytes());
     auto out = Allocate(rt, output.size_bytes());
     auto n = static_cast<std::uint32_t>(targets.size());
     auto command = [rt.queue commandBuffer];
@@ -6505,14 +6639,14 @@ void BroadcastTargets(Span<float const> targets, Span<float> output) {
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.broadcast_targets_pipeline];
-    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:input.buffer offset:input.offset atIndex:0];
     [e setBuffer:out offset:0 atIndex:1];
     [e setBytes:&n length:sizeof(n) atIndex:2];
     [e dispatchThreads:MTLSizeMake(output.size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     CompleteOperation(command, &prediction_init_dispatches, &initialization_gpu_time_ns);
-    std::memcpy(output.data(), out.contents, output.size_bytes());
+    CopyInitializationResult(rt, out, linalg::MakeVec(output.data(), output.size()));
   }
 }
 void TransformPredictions(Transform transform, Span<float> values, std::uint32_t targets) {
