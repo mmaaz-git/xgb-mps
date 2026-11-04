@@ -14,6 +14,9 @@ struct RankingAUCSums {
 // Stable descending scores and binary64 GPU scans/reductions. Results are
 // unnormalized; the caller retains XGBoost's prevalence/macro aggregation rules.
 // Predictions must not contain NaNs (sorting has no CPU reference ordering).
+// Calls are synchronous. Eligible shared input/output spans bind directly, with
+// guarded upload/publication fallbacks. Outputs may alias inputs: publication
+// follows all input reads. Optional diagnostics explicitly return host arrays.
 void ROCAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
             Span<float const> weights, bool multiclass, Span<ROCAUCSums> output);
 // Optional native validation diagnostics; unused by production metric callers.

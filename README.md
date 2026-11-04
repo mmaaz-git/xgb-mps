@@ -14,7 +14,27 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **resident scalar metric inputs**. Scalar/multiclass,
+Latest step: **resident AUC inputs and summaries**. Binary, multiclass, multilabel
+and grouped ROC/PR evaluators now consume Metal predictions, labels and weights.
+Multi-output summaries stay in owned Metal storage through normalization. Sorting
+accepts offset views directly; result publication supports aliased inputs and a
+counted fallback for unshareable outputs. Arithmetic kernels are unchanged.
+
+Focused validation passes **172 single-worker native cases / 392,552 field checks /
+five rejected calls**, **96 cases per worker** with two and three local workers,
+and all **170 public AUC tests**. Empty workers without local target metadata now
+enter the same collective path as populated workers, as CUDA requires.
+Full regression passes **3,325 Python tests, one expected skip**, all **89 rebuilt
+native check groups**, and the CPU-only build/API checks.
+[AUC storage validation](validation/cuda-metal-auc-state-m3.txt).
+
+Distributed AUC retains a documented host-summary collective fallback; these
+metric tests do not enable distributed MPS training. Precision/NDCG/MAP caches
+and metrics, ranking training, predictor/updater state, public result plumbing
+and persistent dictionaries still need ownership work. Generic context storage
+still defaults to CPU. No new benchmark or NVIDIA execution comparison.
+
+The preceding step added **resident scalar metric inputs**. Scalar/multiclass,
 quantile/expectile and AFT likelihood/interval-accuracy evaluators now consume
 Metal prediction, label, weight and level arrays without first requesting host
 mirrors or uploading those payloads again. CUDA's two-number reduction result,
@@ -28,10 +48,10 @@ Python tests, one expected skip**, all **88 rebuilt native check groups**, and t
 CPU-only build/API checks.
 [Metric storage validation](validation/cuda-metal-metric-state-m3.txt).
 
-AUC/ranking metrics, ranking training, predictor/updater state, public result
-plumbing and persistent dictionaries still need ownership work. The execution
-context continues to default generic state to CPU storage. No benchmark or
-NVIDIA execution comparison was run for this step.
+At that checkpoint, AUC/ranking metrics, ranking training, predictor/updater state,
+public result plumbing and persistent dictionaries still needed ownership work.
+The AUC portion is addressed by the latest step above. No benchmark or NVIDIA
+execution comparison was run for the scalar metric step.
 
 The preceding step added **GPU storage through initialization and stump fitting**. Means,
 weighted means, medians/quantiles, class priors, initial gradients and prediction
@@ -696,12 +716,12 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input conversion and row-level category mapping on GPU; raw packing/transfers remain host; approximate SHAP uses an explicit CPU fallback, as CUDA does not implement it |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
 | Ranking training | GPU query maxima/counts/integer prefixes and immutable cache reuse; stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, raw bounds, independent sign/cost truncation, parallel MAP prefixes, normalization and combined weights on Metal; unbiased bias updates use a deterministic global cost-factor policy |
-| ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; collective transport remains host |
-| Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior |
+| ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; resident inputs and summaries; distributed summary collective still stages through host |
+| Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior; resident inputs |
 | Column sampling | CUDA-source Philox weighted draws and Thrust Feistel unweighted shuffle; GPU compaction, stable priority ordering and integer feature sorting; 24 shuffle keys and cache metadata remain host as in CUDA, while feature arrays still stage through host |
-| Grouped ranking PR-AUC | CUDA-source FP32 cast boundaries, original-order positive totals, segmented binary64 prefixes, integral arithmetic and two-row validity; GPU sorting, validation and aggregation |
-| PR-AUC | Binary, multiclass and multilabel; CUDA-source term casts, separate recall/validity totals, source integral and invalid-output rules; GPU aggregation metadata and normalization; collective transport remains host |
-| Metrics | Scalar/multiclass and quantile/expectile FP32 row terms, GPU label checks and complete binary64 GPU sums; survival likelihood/accuracy binary64 terms and sums. These scalar callers and wrappers retain Metal inputs; ranking/AUC source arithmetic as above, with input ownership migration pending. Final ratios and collective transport remain host |
+| Grouped ranking PR-AUC | CUDA-source FP32 cast boundaries, original-order positive totals, segmented binary64 prefixes, integral arithmetic and two-row validity; GPU sorting, validation and aggregation; resident inputs |
+| PR-AUC | Binary, multiclass and multilabel; CUDA-source term casts, separate recall/validity totals, source integral and invalid-output rules; GPU aggregation metadata and normalization; resident inputs and summaries; distributed summary collective still stages through host |
+| Metrics | Scalar/multiclass and quantile/expectile FP32 row terms, GPU label checks and complete binary64 GPU sums; survival likelihood/accuracy binary64 terms and sums. These scalar callers and wrappers retain Metal inputs; AUC callers now retain inputs and multi-output summaries; precision/NDCG/MAP ownership migration remains pending. Final ratios and collective transport remain host |
 
 AFT gradient evaluation is entirely on GPU, including numerically sensitive
 censored rows. `survival_cpu_corrections` and `survival_cpu_time_ns` remain in the
@@ -723,9 +743,15 @@ are process-wide, so concurrent models contribute to the same totals.
 multiclass, quantile/expectile or survival metric call. `metric_label_dispatches`
 counts GPU multiclass validation, including calls rejected for invalid labels.
 `metric_shared_input_bytes` and `metric_host_input_bytes` count eligible bindings
-and fallback uploads for scalar/multiclass, quantile/expectile and survival metric
-inputs. They exclude final scalar results and do not yet cover AUC/ranking input
-bindings or whole-training transfers.
+and fallback uploads for scalar/multiclass, quantile/expectile, survival and AUC
+metric inputs (including grouped AUC and normalization summaries). They exclude
+final scalar results, precision/NDCG/MAP inputs and whole-training transfers.
+`metric_shared_output_bytes` / `metric_host_output_bytes` count AUC summary
+publication, including raw binary triples; `metric_copy_dispatches` /
+`metric_copy_bytes` count its GPU blits. `auc_final_readback_bytes` counts explicit
+8-byte normalization returns and 16-byte grouped returns; it excludes raw output
+publication and optional diagnostics. These counters count bindings, not ownership;
+native vector access-state/readback checks establish residency separately.
 `gradient_sampling_dispatches` and `gradient_sampling_gpu_time_ns` report the
 gradient-based sampler separately; they are also included in the general sampling
 counters and must not be added to those totals. `cuda_gradient_sampling_dispatches`

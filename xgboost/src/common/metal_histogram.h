@@ -137,8 +137,12 @@ struct Statistics {
   std::uint64_t initialization_shared_input_bytes, initialization_shared_output_bytes,
       initialization_host_input_bytes, initialization_host_output_bytes,
       initialization_copy_dispatches, initialization_copy_bytes, initialization_fill_dispatches;
-  // Scalar pointwise/adaptive/survival metric input bindings; excludes final scalars.
+  // Scalar and AUC metric input bindings; excludes final scalars.
   std::uint64_t metric_shared_input_bytes, metric_host_input_bytes;
+  // AUC summary publication (including raw binary triples) and explicit final
+  // normalization/grouped scalar readbacks; excludes optional trace diagnostics.
+  std::uint64_t metric_shared_output_bytes, metric_host_output_bytes, metric_copy_dispatches,
+      metric_copy_bytes, auc_final_readback_bytes;
 };
 
 class Histogram {

@@ -120,6 +120,8 @@ std::atomic<std::uint64_t> ranking_gradient_dispatches{0}, ranking_gradient_gpu_
 std::atomic<std::uint64_t> ranking_label_dispatches{0}, ranking_label_gpu_time_ns{0},
     ranking_cache_dispatches{0}, ranking_cache_gpu_time_ns{0};
 std::atomic<std::uint64_t> metric_shared_input_bytes{0}, metric_host_input_bytes{0};
+std::atomic<std::uint64_t> metric_shared_output_bytes{0}, metric_host_output_bytes{0},
+    metric_copy_dispatches{0}, metric_copy_bytes{0}, auc_final_readback_bytes{0};
 std::atomic<std::uint64_t> float_sum_dispatches{0}, float_sum_gpu_time_ns{0};
 std::atomic<std::uint64_t> row_workspace_allocations{0}, row_workspace_reuses{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
@@ -2063,7 +2065,12 @@ Statistics GetStatistics() {
           initialization_copy_bytes.load(std::memory_order_relaxed),
           initialization_fill_dispatches.load(std::memory_order_relaxed),
           metric_shared_input_bytes.load(std::memory_order_relaxed),
-          metric_host_input_bytes.load(std::memory_order_relaxed)};
+          metric_host_input_bytes.load(std::memory_order_relaxed),
+          metric_shared_output_bytes.load(std::memory_order_relaxed),
+          metric_host_output_bytes.load(std::memory_order_relaxed),
+          metric_copy_dispatches.load(std::memory_order_relaxed),
+          metric_copy_bytes.load(std::memory_order_relaxed),
+          auc_final_readback_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2975,6 +2982,33 @@ Transform TransformFromName(char const* name) {
 }
 
 namespace {
+// Guarded synchronous bindings for scalar and AUC metric payloads.
+BorrowedMemory MetricInput(Runtime const& rt, void const* data, std::size_t bytes,
+                             std::size_t alignment = 4) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, alignment);
+  if (input.buffer) metric_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  else {
+    input = {Upload(rt, data, bytes), 0};
+    metric_host_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
+// Compute into scratch before publication so output may alias any input.
+BorrowedMemory PublishAUC(Runtime const& rt, id<MTLCommandBuffer> command,
+                           id<MTLBuffer> result, void* output, std::size_t bytes) {
+  auto destination = TryBorrowMemory(rt.device, output, bytes, alignof(double));
+  if (destination.buffer) {
+    auto e = [command blitCommandEncoder];
+    CHECK(e);
+    [e copyFromBuffer:result sourceOffset:0 toBuffer:destination.buffer
+        destinationOffset:destination.offset size:bytes];
+    [e endEncoding];
+    metric_shared_output_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    metric_copy_dispatches.fetch_add(1, std::memory_order_relaxed);
+    metric_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return destination;
+}
 BorrowedMemory InitializationInput(Runtime const& rt, void const* data, std::size_t bytes,
                                    std::size_t alignment = 4) {
   auto input = TryBorrowMemory(rt.device, data, bytes, alignment);
@@ -3732,14 +3766,15 @@ id<MTLBuffer> EncodeRadixRecords(Runtime& rt, id<MTLCommandBuffer> command,
   return source;
 }
 id<MTLBuffer> EncodeColumnSort(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuffer> input,
-                               SortShape shape, bool descending = false) {
+                               SortShape shape, bool descending = false,
+                               std::size_t input_offset = 0) {
   auto size = shape.rows * shape.targets;
   CHECK_LE(size, std::numeric_limits<std::uint32_t>::max());
   auto source = Allocate(rt, size * 2 * sizeof(std::uint32_t));
   auto e = [command computeCommandEncoder];
   CHECK(e);
   [e setComputePipelineState:descending ? rt.roc_sort_init_pipeline : rt.sort_init_pipeline];
-  [e setBuffer:input offset:0 atIndex:0];
+  [e setBuffer:input offset:input_offset atIndex:0];
   [e setBuffer:source offset:0 atIndex:1];
   [e setBytes:&shape length:sizeof(shape) atIndex:2];
   [e dispatchThreads:MTLSizeMake(shape.rows, shape.targets, 1)
@@ -4135,7 +4170,8 @@ struct GroupOrder {
 };
 GroupOrder EncodeGroupSort(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuffer> input,
                            id<MTLBuffer> offsets, std::uint64_t rows, std::uint64_t stride,
-                           std::uint32_t n_groups, std::uint32_t max_group_size) {
+                           std::uint32_t n_groups, std::uint32_t max_group_size,
+                           std::size_t input_offset = 0) {
   struct {
     std::uint64_t rows, stride;
     std::uint32_t groups, padding;
@@ -4152,7 +4188,7 @@ GroupOrder EncodeGroupSort(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuff
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.group_sort_small_pipeline];
-    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:input offset:input_offset atIndex:0];
     [e setBuffer:offsets offset:0 atIndex:1];
     [e setBuffer:records offset:0 atIndex:2];
     [e setBytes:&p length:sizeof(p) atIndex:3];
@@ -4166,7 +4202,7 @@ GroupOrder EncodeGroupSort(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuff
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.group_sort_medium_pipeline];
-    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:input offset:input_offset atIndex:0];
     [e setBuffer:offsets offset:0 atIndex:1];
     [e setBuffer:records offset:0 atIndex:2];
     [e setBytes:&p length:sizeof(p) atIndex:3];
@@ -4176,7 +4212,7 @@ GroupOrder EncodeGroupSort(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuff
     [e endEncoding];
   } else {
     SortShape shape{p.rows, p.stride, 1, 1, static_cast<std::uint32_t>((p.rows + 255) / 256)};
-    records = EncodeColumnSort(rt, command, input, shape, true);
+    records = EncodeColumnSort(rt, command, input, shape, true, input_offset);
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.group_sort_key_pipeline];
@@ -4248,10 +4284,10 @@ RankingAUCSums RankingROCAUC(linalg::VectorView<float const> predictions,
   if (!n_groups) return {0, 0};
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, predictions.Values().data(), predictions.Values().size_bytes());
-    auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto input = MetricInput(rt, predictions.Values().data(), predictions.Values().size_bytes());
+    auto response = MetricInput(rt, labels.Values().data(), labels.Values().size_bytes());
     auto offsets = metadata->OffsetsBuffer();
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto weight = MetricInput(rt, weights.data(), weights.size_bytes());
     auto source = Allocate(rt, labels.Size() * 2 * sizeof(std::uint32_t));
     auto target = Allocate(rt, labels.Size() * 2 * sizeof(std::uint32_t));
     auto row_group = Allocate(rt, labels.Size() * sizeof(std::uint32_t));
@@ -4268,13 +4304,13 @@ RankingAUCSums RankingROCAUC(linalg::VectorView<float const> predictions,
     static_assert(sizeof(p) == 32 && sizeof(RankingAUCSums) == 16);
     GroupOrder order{Allocate(rt, 16), false};
     if (p.rows) {
-      order = EncodeGroupSort(rt, command, response, offsets, labels.Size(), labels.Stride(0),
-                              n_groups, max_group_size);
+      order = EncodeGroupSort(rt, command, response.buffer, offsets, labels.Size(), labels.Stride(0),
+                              n_groups, max_group_size, response.offset);
       auto e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.ranking_roc_init_pipeline];
       [e setBuffer:order.records offset:0 atIndex:0];
-      [e setBuffer:input offset:0 atIndex:1];
+      [e setBuffer:input.buffer offset:input.offset atIndex:1];
       [e setBuffer:offsets offset:0 atIndex:2];
       [e setBuffer:source offset:0 atIndex:3];
       [e setBuffer:row_group offset:0 atIndex:4];
@@ -4302,7 +4338,7 @@ RankingAUCSums RankingROCAUC(linalg::VectorView<float const> predictions,
     [e setComputePipelineState:rt.ranking_roc_score_pipeline];
     [e setBuffer:counts offset:0 atIndex:0];
     [e setBuffer:offsets offset:0 atIndex:1];
-    [e setBuffer:weight offset:0 atIndex:2];
+    [e setBuffer:weight.buffer offset:weight.offset atIndex:2];
     [e setBuffer:partial offset:0 atIndex:3];
     [e setBytes:&p length:sizeof(p) atIndex:4];
     [e dispatchThreadgroups:MTLSizeMake(n_groups, 1, 1)
@@ -4335,6 +4371,7 @@ RankingAUCSums RankingROCAUC(linalg::VectorView<float const> predictions,
       std::memcpy(individual.data(), partial.contents, individual.size_bytes());
     // Like cuda_impl::RankingAUC, preserve NaN from overflowing squared weights.
     // The shared metric finalizer checks finite scores after collective aggregation.
+    auc_final_readback_bytes.fetch_add(sizeof(RankingAUCSums), std::memory_order_relaxed);
     return *static_cast<RankingAUCSums const*>(output.contents);
   }
 }
@@ -5014,7 +5051,7 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
          std::size_t output_count, bool aggregate = false, AUCTrace* trace = nullptr) {
   auto rows = predictions.Shape(0), targets = predictions.Shape(1);
   CHECK_EQ(labels.Shape(0), rows);
-  CHECK_EQ(labels.Shape(1), multiclass ? 1 : targets);
+  if (rows) CHECK_EQ(labels.Shape(1), multiclass ? 1 : targets);
   CHECK_EQ(output_count, targets);
   CHECK(weights.empty() || weights.size() == rows);
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
@@ -5023,9 +5060,9 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
   CHECK(output);
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, predictions.Values().data(), predictions.Values().size_bytes());
-    auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto input = MetricInput(rt, predictions.Values().data(), predictions.Values().size_bytes());
+    auto response = MetricInput(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto weight = MetricInput(rt, weights.data(), weights.size_bytes());
     SortShape shape{rows, predictions.Stride(0), predictions.Stride(1),
                     static_cast<std::uint32_t>(targets),
                     static_cast<std::uint32_t>((rows + 255) / 256)};
@@ -5037,7 +5074,7 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
     auto result = Allocate(rt, targets * 3 * sizeof(double));
     id<MTLBuffer> prefix = Allocate(rt, 16);
     if (rows) {
-      auto sorted = EncodeColumnSort(rt, command, input, shape, true);
+      auto sorted = EncodeColumnSort(rt, command, input.buffer, shape, true, input.offset);
       struct {
         std::uint64_t rows, label_stride0, label_stride1;
         std::uint32_t targets, blocks, weighted, multiclass;
@@ -5053,8 +5090,8 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
       CHECK(e);
       [e setComputePipelineState:rt.roc_counts_pipeline];
       [e setBuffer:sorted offset:0 atIndex:0];
-      [e setBuffer:response offset:0 atIndex:1];
-      [e setBuffer:weight offset:0 atIndex:2];
+      [e setBuffer:response.buffer offset:response.offset atIndex:1];
+      [e setBuffer:weight.buffer offset:weight.offset atIndex:2];
       [e setBuffer:counts offset:0 atIndex:3];
       [e setBytes:&p length:sizeof(p) atIndex:4];
       [e dispatchThreads:MTLSizeMake(rows, targets, 1)
@@ -5066,8 +5103,8 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
         CHECK(e);
         [e setComputePipelineState:rt.pr_totals_pipeline];
         [e setBuffer:sorted offset:0 atIndex:0];
-        [e setBuffer:response offset:0 atIndex:1];
-        [e setBuffer:weight offset:0 atIndex:2];
+        [e setBuffer:response.buffer offset:response.offset atIndex:1];
+        [e setBuffer:weight.buffer offset:weight.offset atIndex:2];
         [e setBuffer:totals offset:0 atIndex:3];
         [e setBytes:&p length:sizeof(p) atIndex:4];
         [e dispatchThreadgroups:MTLSizeMake(targets, 1, 1)
@@ -5113,6 +5150,7 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
     [e setBytes:&result_params length:sizeof(result_params) atIndex:4];
     [e dispatchThreads:MTLSizeMake(targets, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
+    auto destination = PublishAUC(rt, command, result, output, targets * 3 * sizeof(double));
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
@@ -5125,7 +5163,10 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
       copy(prefix, 2 * rows * targets, &trace->prefixes);
       copy(totals, rows ? 2 * targets : 0, &trace->totals);
     }
-    std::memcpy(output, result.contents, targets * 3 * sizeof(double));
+    if (!destination.buffer) {
+      std::memcpy(output, result.contents, targets * 3 * sizeof(double));
+      metric_host_output_bytes.fetch_add(targets * 3 * sizeof(double), std::memory_order_relaxed);
+    }
     if (rows) {
       (precision_recall ? pr_auc_dispatches : roc_auc_dispatches)
           .fetch_add(1, std::memory_order_relaxed);
@@ -5162,7 +5203,7 @@ double NormalizeAUC(Span<double const> summaries) {
   CHECK_GT(summaries.size(), 0);
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, summaries.data(), summaries.size_bytes());
+    auto input = MetricInput(rt, summaries.data(), summaries.size_bytes(), alignof(double));
     auto output = Allocate(rt, sizeof(double));
     std::uint32_t targets = summaries.size() / 3;
     auto command = [rt.queue commandBuffer];
@@ -5170,7 +5211,7 @@ double NormalizeAUC(Span<double const> summaries) {
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.auc_normalize_pipeline];
-    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:input.buffer offset:input.offset atIndex:0];
     [e setBuffer:output offset:0 atIndex:1];
     [e setBytes:&targets length:sizeof(targets) atIndex:2];
     [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -5183,6 +5224,7 @@ double NormalizeAUC(Span<double const> summaries) {
     if (elapsed > 0)
       metric_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                    std::memory_order_relaxed);
+    auc_final_readback_bytes.fetch_add(sizeof(double), std::memory_order_relaxed);
     return *static_cast<double const*>(output.contents);
   }
 }
@@ -5199,10 +5241,10 @@ RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
   if (!n_groups) return {0, 0};
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, predictions.Values().data(), predictions.Values().size_bytes());
-    auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto input = MetricInput(rt, predictions.Values().data(), predictions.Values().size_bytes());
+    auto response = MetricInput(rt, labels.Values().data(), labels.Values().size_bytes());
     auto offsets = metadata->OffsetsBuffer();
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto weight = MetricInput(rt, weights.data(), weights.size_bytes());
     auto ids = Allocate(rt, predictions.Size() * sizeof(std::uint32_t));
     auto keys = Allocate(rt, predictions.Size() * sizeof(std::uint32_t));
     auto counts = Allocate(rt, predictions.Size() * 2 * sizeof(double));
@@ -5226,8 +5268,8 @@ RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
     auto total_encoder = [command computeCommandEncoder];
     CHECK(total_encoder);
     [total_encoder setComputePipelineState:rt.ranking_pr_totals_pipeline];
-    [total_encoder setBuffer:response offset:0 atIndex:0];
-    [total_encoder setBuffer:weight offset:0 atIndex:1];
+    [total_encoder setBuffer:response.buffer offset:response.offset atIndex:0];
+    [total_encoder setBuffer:weight.buffer offset:weight.offset atIndex:1];
     [total_encoder setBuffer:offsets offset:0 atIndex:2];
     [total_encoder setBuffer:totals offset:0 atIndex:3];
     [total_encoder setBytes:&p length:sizeof(p) atIndex:4];
@@ -5237,15 +5279,15 @@ RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
     GroupOrder order{Allocate(rt, 16), false};
     id<MTLBuffer> prefix = Allocate(rt, 16);
     if (p.rows) {
-      order = EncodeGroupSort(rt, command, input, offsets, p.rows, predictions.Stride(0), n_groups,
-                              max_group_size);
+      order = EncodeGroupSort(rt, command, input.buffer, offsets, p.rows, predictions.Stride(0), n_groups,
+                              max_group_size, input.offset);
       auto e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.ranking_pr_counts_pipeline];
       [e setBuffer:order.records offset:0 atIndex:0];
-      [e setBuffer:input offset:0 atIndex:1];
-      [e setBuffer:response offset:0 atIndex:2];
-      [e setBuffer:weight offset:0 atIndex:3];
+      [e setBuffer:input.buffer offset:input.offset atIndex:1];
+      [e setBuffer:response.buffer offset:response.offset atIndex:2];
+      [e setBuffer:weight.buffer offset:weight.offset atIndex:3];
       [e setBuffer:offsets offset:0 atIndex:4];
       [e setBuffer:ids offset:0 atIndex:5];
       [e setBuffer:keys offset:0 atIndex:6];
@@ -5304,6 +5346,7 @@ RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
         << "PR-AUC supports only binary relevance for learning to rank.";
     if (!individual.empty())
       std::memcpy(individual.data(), partial.contents, individual.size_bytes());
+    auc_final_readback_bytes.fetch_add(sizeof(RankingAUCSums), std::memory_order_relaxed);
     return *static_cast<RankingAUCSums const*>(output.contents);
   }
 }
@@ -6070,17 +6113,6 @@ void GradientSample(linalg::MatrixView<GradientPair const> split_gradients,
 }
 
 namespace {
-// Metric payloads remain device-authoritative; only the reduced scalar pair
-// crosses to the host, matching CUDA's transform_reduce return and collective.
-BorrowedMemory MetricInput(Runtime const& rt, void const* data, std::size_t bytes) {
-  auto input = TryBorrowMemory(rt.device, data, bytes, 4);
-  if (input.buffer) metric_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
-  else {
-    input = {Upload(rt, data, bytes), 0};
-    metric_host_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
-  }
-  return input;
-}
 struct MetricReduction {
   id<MTLBuffer> result;
   std::uint64_t passes;

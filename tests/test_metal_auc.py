@@ -49,6 +49,14 @@ def test_roc_auc(metal, metric, problem, weight_mode, ties):
     assert after[("roc_auc_dispatches" if metric == "auc" else "pr_auc_dispatches")] - before[("roc_auc_dispatches" if metric == "auc" else "pr_auc_dispatches")] == 1
     assert after["radix_sort_dispatches"] - before["radix_sort_dispatches"] == 1
     assert after["metric_dispatches"] - before["metric_dispatches"] == (1 if problem == "binary" else 2)
+    input_bytes = 4 * (n * targets + np.asarray(labels).size + (0 if weights is None else n))
+    summary_bytes = 0 if problem == "binary" else 24 * targets
+    assert after["metric_host_input_bytes"] == before["metric_host_input_bytes"]
+    assert after["metric_host_output_bytes"] == before["metric_host_output_bytes"]
+    assert after["metric_shared_input_bytes"] - before["metric_shared_input_bytes"] == input_bytes + summary_bytes
+    assert after["metric_shared_output_bytes"] - before["metric_shared_output_bytes"] == 24 * targets
+    assert after["metric_copy_bytes"] - before["metric_copy_bytes"] == 24 * targets
+    assert after["auc_final_readback_bytes"] - before["auc_final_readback_bytes"] == (0 if problem == "binary" else 8)
     np.testing.assert_allclose(actual, expected, rtol=2e-12, atol=2e-10)
     loaded = xgb.Booster(model_file=gpu.save_raw())
     loaded.set_param({"device": "mps", "eval_metric": metric})

@@ -96,8 +96,8 @@ must be reported rather than hidden by widening test tolerances.
 | Multiclass error and logloss | `metric/multiclass_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
 | Quantile and expectile metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 terms, subnormal-preserving products and complete binary64 GPU reductions; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
 | AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and complete binary64 sums; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
-| ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; collective transport remains host |
-| PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
+| ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; resident inputs/summaries; host-summary distributed collective fallback |
+| PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; resident inputs/summaries; host-summary distributed collective fallback |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add host dense/columnar and native Metal tensor/columnar ingestion, resident sketches and bins; native metadata conversion/validation is supported; distributed sketch collectives remain open |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Ordinary in-memory DMatrix now compresses raw CSR directly with separate lazy CPU views and cache-generation tracking. MPS-origin external disk caches now store/read compressed pages; internal quantile cuts+ELLPACK save/load is implemented. Ordinary external on_host selection now uses CUDA single-/multiple-page defaults. Optional Snappy compute compression/decompression now follows the native fallback opt-in, sparse eligibility and forced-prefetch rules. Mapped-file zero-copy remains open; CPU-origin external matrices retain their existing compatibility path |
@@ -3575,3 +3575,58 @@ Context.Device() still defaults generic state to CPU until those dispatchers and
 consumers are migrated. Remaining CUDA operation/arithmetic audits, GPU
 collectives and cross-hardware validation are unfinished. No benchmark, NVIDIA
 execution or other Apple-device comparison was run.
+
+## AUC inputs and summaries retain Metal storage
+
+Authority: `metric/auc.cu`, especially `MultiAUC` and `ScaleOutputs`. CUDA retains
+multi-output summaries through its GPU collective and normalization, whereas
+binary and grouped curves return small scalar results. The previous MPS path
+requested host inputs, copied summaries to host and uploaded them again. The
+single-worker path now uses explicit Metal prediction/label/weight views and an
+owned double vector for summaries. The CPU path and numerical kernels are unchanged.
+
+Column sorting and all three grouped-sort paths accept byte offsets, so strided
+shared input views need no packing copy. Labels, weights and normalization
+summaries bind with their own offsets; read-only/unshareable inputs use counted
+uploads. AUC computes into scratch and publishes to eligible output spans by GPU
+blit after all input reads, preserving aliased output semantics. An unshareable
+output uses counted host publication. Optional native trace/individual-query
+readbacks remain diagnostics, not production transfers.
+
+Empty local multi-output workers now skip the irrelevant label-column check and
+produce zero summaries before aggregation, matching CUDA. Global branch/shape
+metadata remains host collective work. Distributed multi-output evaluation still
+materializes **only the summary vector** for the existing CPU collective, then
+uploads it for GPU normalization. This explicitly remains a transport gap versus
+CUDA; no distributed MPS learner support is enabled by these metric tests.
+
+`metric_shared_input_bytes` / `metric_host_input_bytes` now include these AUC
+families and summaries. New shared/host output and GPU-copy counters expose summary
+publication; `auc_final_readback_bytes` counts 8-byte normalization and 16-byte
+grouped returns. Raw binary triples are counted as output publication. Diagnostics
+and scalar validation flags are excluded. All native clients must rebuild for
+the five appended statistics fields; the public CPU build exports zeros.
+
+With Metal API validation, the new actual-evaluator suite passes **172 cases /
+392,552 field checks / five rejected calls** on one worker. It checks input access
+states, repeats, GPU mutation and CPU handoffs, zero/absent/positive weights,
+empty/degenerate data and GPU-written invalid ranking labels. Exact binding tests
+exercise nonzero offsets, row/column strides, independent read-only fallbacks,
+aliases in every input slot, unaligned output fallback and unchanged guards.
+Grouped tests cover small/medium/radix sorting. Final vector allocation gauges are
+zero. **96 cases per worker** pass with two and three local workers, including
+empty workers with and without target metadata and all-empty datasets; assertions
+allow exactly the summary-only collective transfer. The existing **170 public
+AUC tests** pass with new binding/copy counters. No tolerance was widened.
+
+Full regression completed **2026-11-04 23:12:24–23:20:15 UTC** (7m51s): **3,325
+Python tests passed, one expected skip** (621 warnings, 191.32s), all **89 rebuilt
+native check groups**, the source reference updater and CPU-only build/API/device/
+cache checks. Existing source arithmetic, cancellation, cast-boundary, prefix and
+independent pair-counting oracles all passed unchanged. No production or test
+changes followed this final build/run; documentation was finalized afterward.
+[Validation record](../validation/cuda-metal-auc-state-m3.txt).
+Next ownership work is precision/NDCG/MAP caches and metrics, ranking objectives,
+predictor/updater consumers, public result plumbing and persistent dictionaries.
+CUDA operation/arithmetic audits, GPU collectives and NVIDIA/other-Apple hardware
+validation remain unfinished. No benchmark was run for this step.

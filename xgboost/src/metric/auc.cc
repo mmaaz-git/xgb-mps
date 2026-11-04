@@ -4,6 +4,7 @@
 #include "auc.h"
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_auc.h"
+#include "../common/metal_vector.h"
 #endif
 
 #include <algorithm>
@@ -83,35 +84,41 @@ std::tuple<double, double, double> BinaryAUC(common::Span<float const> predts,
  *   Machine Learning Models
  */
 template <typename BinaryAUC>
-double MultiAUC(Context const *ctx, common::Span<float const> predts, MetaInfo const &info,
-                std::size_t n_targets, std::int32_t n_threads, MultiAUCType type,
-                [[maybe_unused]] bool is_roc, BinaryAUC &&binary_auc) {
+double MultiAUC(Context const *ctx, HostDeviceVector<float> const &predictions,
+                MetaInfo const &info, std::size_t n_targets, std::int32_t n_threads,
+                MultiAUCType type, [[maybe_unused]] bool is_roc, BinaryAUC &&binary_auc) {
   CHECK_NE(n_targets, 0);
-  auto const labels = info.labels.HostView();
-  if (labels.Shape(0) != 0) {
+  if (info.labels.Shape(0) != 0) {
     if (type == MultiAUCType::kMultiClass) {
-      CHECK_EQ(labels.Shape(1), 1);
+      CHECK_EQ(info.labels.Shape(1), 1);
     } else {
-      CHECK_EQ(labels.Shape(1), n_targets);
+      CHECK_EQ(info.labels.Shape(1), n_targets);
     }
   }
-  auto n_samples = labels.Shape(0);
-  CHECK_EQ(predts.size(), n_samples * n_targets);
+  auto n_samples = info.labels.Shape(0);
+  CHECK_EQ(predictions.Size(), n_samples * n_targets);
 
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
-    std::vector<double> summaries(n_targets * 3);
-    common::metal::MultiAUC(linalg::MakeTensorView(ctx, predts, n_samples, n_targets), labels,
-                            info.weights_.ConstHostSpan(), type == MultiAUCType::kMultiClass,
-                            is_roc, summaries);
-    // Host collectives remain until the distributed Metal transport is implemented.
-    // Per-output metadata and post-collective normalization follow CUDA on GPU.
-    auto rc = collective::GlobalSum(ctx, linalg::MakeTensorView(ctx, summaries, n_targets, 3));
-    collective::SafeColl(rc);
-    return common::metal::NormalizeAUC(summaries);
+    auto predts = common::metal::ConstDeviceSpan(predictions);
+    HostDeviceVector<double> summaries(n_targets * 3, 0.0, DeviceOrd::MPS());
+    common::metal::MultiAUC(linalg::MakeTensorView(DeviceOrd::MPS(), predts, n_samples, n_targets),
+                            info.labels.View(DeviceOrd::MPS()),
+                            common::metal::ConstDeviceSpan(info.weights_),
+                            type == MultiAUCType::kMultiClass, is_roc, summaries.DeviceSpan());
+    if (collective::GlobalCommGroup()->IsDistributed()) {
+      // Compatibility boundary until Metal collective transport is implemented.
+      // CUDA keeps these summaries on device during Allreduce as well.
+      auto rc = collective::GlobalSum(
+          ctx, linalg::MakeTensorView(DeviceOrd::CPU(), summaries.HostSpan(), n_targets, 3));
+      collective::SafeColl(rc);
+    }
+    return common::metal::NormalizeAUC(summaries.ConstDeviceSpan());
   }
 #endif
 
+  auto predts = predictions.ConstHostSpan();
+  auto const labels = info.labels.HostView();
   std::vector<double> results_storage(n_targets * 3, 0);
   auto results = linalg::MakeTensorView(ctx, results_storage, n_targets, 3);
   auto local_area = results.Slice(linalg::All(), 0);
@@ -387,10 +394,10 @@ class EvalROCAUC : public EvalAUC<EvalROCAUC> {
     }
 #if defined(XGBOOST_USE_METAL)
     else if (ctx_->IsMPS()) {
-      auto result =
-          common::metal::RankingROCAUC(linalg::MakeVec(DeviceOrd::CPU(), predts.ConstHostSpan()),
-                                       info.labels.HostView().Slice(linalg::All(), 0),
-                                       info.group_ptr_, info.weights_.ConstHostSpan());
+      auto result = common::metal::RankingROCAUC(
+          linalg::MakeVec(DeviceOrd::MPS(), common::metal::ConstDeviceSpan(predts)),
+          info.labels.View(DeviceOrd::MPS()).Slice(linalg::All(), 0), info.group_ptr_,
+          common::metal::ConstDeviceSpan(info.weights_));
       auc = result.area;
       valid_groups = static_cast<std::uint32_t>(result.valid_groups);
     }
@@ -411,8 +418,8 @@ class EvalROCAUC : public EvalAUC<EvalROCAUC> {
       auc = cuda_impl::MultiROCAUC(ctx_, predts.ConstDeviceSpan(), info, &this->d_cache_, n_classes,
                                    MultiAUCType::kMultiClass);
     } else {
-      auc = MultiAUC(ctx_, predts.ConstHostVector(), info, n_classes, n_threads,
-                     MultiAUCType::kMultiClass, true, BinaryROCAUC);
+      auc = MultiAUC(ctx_, predts, info, n_classes, n_threads, MultiAUCType::kMultiClass, true,
+                     BinaryROCAUC);
     }
     return auc;
   }
@@ -423,8 +430,8 @@ class EvalROCAUC : public EvalAUC<EvalROCAUC> {
       return cuda_impl::MultiROCAUC(ctx_, predts.ConstDeviceSpan(), info, &this->d_cache_,
                                     n_targets, MultiAUCType::kMultiLabel);
     } else {
-      return MultiAUC(ctx_, predts.ConstHostVector(), info, n_targets, ctx_->Threads(),
-                      MultiAUCType::kMultiLabel, true, BinaryROCAUC);
+      return MultiAUC(ctx_, predts, info, n_targets, ctx_->Threads(), MultiAUCType::kMultiLabel,
+                      true, BinaryROCAUC);
     }
   }
 
@@ -439,8 +446,10 @@ class EvalROCAUC : public EvalAUC<EvalROCAUC> {
     else if (ctx_->IsMPS()) {
       common::metal::ROCAUCSums sums;
       common::metal::ROCAUC(
-          linalg::MakeTensorView(DeviceOrd::CPU(), predts.ConstHostSpan(), predts.Size(), 1),
-          info.labels.HostView(), info.weights_.ConstHostSpan(), false, {&sums, 1});
+          linalg::MakeTensorView(DeviceOrd::MPS(), common::metal::ConstDeviceSpan(predts),
+                                 predts.Size(), 1),
+          info.labels.View(DeviceOrd::MPS()), common::metal::ConstDeviceSpan(info.weights_), false,
+          {&sums, 1});
       std::tie(fp, tp, auc) = std::make_tuple(sums.fp, sums.tp, sums.area);
     }
 #endif
@@ -499,8 +508,10 @@ class EvalPRAUC : public EvalAUC<EvalPRAUC> {
     else if (ctx_->IsMPS()) {
       common::metal::ROCAUCSums sums;
       common::metal::PRAUC(
-          linalg::MakeTensorView(DeviceOrd::CPU(), predts.ConstHostSpan(), predts.Size(), 1),
-          info.labels.HostView(), info.weights_.ConstHostSpan(), false, {&sums, 1});
+          linalg::MakeTensorView(DeviceOrd::MPS(), common::metal::ConstDeviceSpan(predts),
+                                 predts.Size(), 1),
+          info.labels.View(DeviceOrd::MPS()), common::metal::ConstDeviceSpan(info.weights_), false,
+          {&sums, 1});
       std::tie(pr, re, auc) = std::make_tuple(sums.fp, sums.tp, sums.area);
     }
 #endif
@@ -519,8 +530,8 @@ class EvalPRAUC : public EvalAUC<EvalPRAUC> {
                                    MultiAUCType::kMultiClass);
     } else {
       auto n_threads = this->ctx_->Threads();
-      return MultiAUC(ctx_, predts.ConstHostSpan(), info, n_classes, n_threads,
-                      MultiAUCType::kMultiClass, false, BinaryPRAUC);
+      return MultiAUC(ctx_, predts, info, n_classes, n_threads, MultiAUCType::kMultiClass, false,
+                      BinaryPRAUC);
     }
   }
 
@@ -530,8 +541,8 @@ class EvalPRAUC : public EvalAUC<EvalPRAUC> {
       return cuda_impl::MultiPRAUC(ctx_, predts.ConstDeviceSpan(), info, &d_cache_, n_targets,
                                    MultiAUCType::kMultiLabel);
     } else {
-      return MultiAUC(ctx_, predts.ConstHostSpan(), info, n_targets, ctx_->Threads(),
-                      MultiAUCType::kMultiLabel, false, BinaryPRAUC);
+      return MultiAUC(ctx_, predts, info, n_targets, ctx_->Threads(), MultiAUCType::kMultiLabel,
+                      false, BinaryPRAUC);
     }
   }
 
@@ -546,10 +557,10 @@ class EvalPRAUC : public EvalAUC<EvalPRAUC> {
     }
 #if defined(XGBOOST_USE_METAL)
     else if (ctx_->IsMPS()) {
-      auto result =
-          common::metal::RankingPRAUC(linalg::MakeVec(DeviceOrd::CPU(), predts.ConstHostSpan()),
-                                      info.labels.HostView().Slice(linalg::All(), 0),
-                                      info.group_ptr_, info.weights_.ConstHostSpan());
+      auto result = common::metal::RankingPRAUC(
+          linalg::MakeVec(DeviceOrd::MPS(), common::metal::ConstDeviceSpan(predts)),
+          info.labels.View(DeviceOrd::MPS()).Slice(linalg::All(), 0), info.group_ptr_,
+          common::metal::ConstDeviceSpan(info.weights_));
       auc = result.area;
       valid_groups = static_cast<std::uint32_t>(result.valid_groups);
     }

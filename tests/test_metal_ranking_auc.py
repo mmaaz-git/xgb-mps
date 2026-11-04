@@ -38,8 +38,13 @@ def test_ranking_auc(metal, weights, ties, metric):
     before = xgb.metal_info()[counter]
     expected = score(cpu, data)
     assert xgb.metal_info()[counter] == before
+    before_bindings = xgb.metal_info()
     np.testing.assert_allclose(score(gpu, data), expected, rtol=2e-12, atol=2e-12)
-    assert xgb.metal_info()[counter] == before + 1
+    after = xgb.metal_info()
+    assert after[counter] == before + 1
+    assert after["metric_host_input_bytes"] == before_bindings["metric_host_input_bytes"]
+    assert after["metric_shared_input_bytes"] - before_bindings["metric_shared_input_bytes"] == 4 * (2 * n + (0 if weight is None else len(groups)))
+    assert after["auc_final_readback_bytes"] - before_bindings["auc_final_readback_bytes"] == 16
     loaded = xgb.Booster(model_file=gpu.save_raw())
     loaded.set_param({"device": "mps", "eval_metric": metric})
     np.testing.assert_allclose(score(loaded, data), expected, rtol=2e-12, atol=2e-12)
