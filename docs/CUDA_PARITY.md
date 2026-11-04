@@ -46,8 +46,9 @@ work, not accepted substitutes for CUDA behavior:
 - Quantile sketches: ordinary MPS matrices now use CUDA-derived raw sorting,
   FP32 scans and resident summaries, as detailed below. Explicit MPS
   QuantileDMatrix and both ExtMemQuantileDMatrix cache modes use the GPU adapter
-  frontend. Native device arrays, optional Snappy cache compression and distributed
-  sketch collectives remain open. Scan association,
+  frontend. Optional Snappy compute cache compression is now implemented under
+  the existing native opt-in; native device arrays and distributed sketch
+  collectives remain open. Scan association,
   sorting ties and rank-repair scheduling are explicitly bounded validation limits.
 - Interaction constraints now follow CUDA's cumulative group unions and ascending
   nonroot queries, with explicit overlapping-group tests; the former CPU history
@@ -97,7 +98,7 @@ must be reported rather than hidden by widening test tolerances.
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add GPU dense/columnar ingestion, resident sketches and bins; native device arrays and distributed sketch collectives remain open |
-| Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Ordinary in-memory DMatrix now compresses raw CSR directly with separate lazy CPU views and cache-generation tracking. MPS-origin external disk caches now store/read compressed pages; internal quantile cuts+ELLPACK save/load is implemented. Ordinary external on_host selection now uses CUDA single-/multiple-page defaults. Mapped-file zero-copy and optional Snappy remain open; CPU-origin external matrices retain their existing compatibility path |
+| Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Ordinary in-memory DMatrix now compresses raw CSR directly with separate lazy CPU views and cache-generation tracking. MPS-origin external disk caches now store/read compressed pages; internal quantile cuts+ELLPACK save/load is implemented. Ordinary external on_host selection now uses CUDA single-/multiple-page defaults. Optional Snappy compute compression/decompression now follows the native fallback opt-in, sparse eligibility and forced-prefetch rules. Mapped-file zero-copy remains open; CPU-origin external matrices retain their existing compatibility path |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Prediction/SHAP row-level mapping and raw-input preparation now run on GPU; explicit MPS QuantileDMatrix training adapters also recode on GPU; dictionary storage/copies and general metadata remain host |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
@@ -2697,3 +2698,77 @@ the training pipeline, generic state/model operations, sketch/CUDA algorithm
 alignment, interoperability, collectives and actual NVIDIA validation remain.
 The AFT corrections listed at that checkpoint have since been removed. No
 benchmark or NVIDIA execution comparison was run for the bound-state change.
+
+
+## Optional Snappy cache codec (2026-11-04)
+
+CUDA authority: `common/device_compression.cu/.cuh/.h` and
+`data/ellpack_page_source.cu`. The raw byte-format authority is
+[Google Snappy's format](https://github.com/google/snappy/blob/main/format_description.txt);
+[nvCOMP's Snappy API](https://docs.nvidia.com/cuda/nvcomp/c_api.html#snappy)
+describes batched chunk buffers, actual output sizes and completion/status handling.
+The Metal port does not link nvCOMP or emulate NVIDIA's hardware decompression engine.
+
+Two Metal compute kernels now encode and decode raw Snappy blocks. Encoding uses
+independent 32 KiB matching windows and real LZ77 backreferences; a block contains
+up to 2 MiB. The compressor's choices can differ from nvCOMP because the byte
+format admits many valid encodings. Decompression handles literals, all four
+extended-length forms, COPY1/COPY2/COPY4, uint32 varints and overlapping copies.
+It checks truncation, impossible offsets, declared-size mismatches, output bounds
+and trailing bytes before a reconstructed page can be published. Cooperation
+within a copy reads only the already-produced prefix, so overlap cannot race.
+
+Hash/output workspace is bounded to one block at a time, with an autorelease
+scope per block. Compressed blocks are coalesced into owned shared Metal storage;
+CPU work is metadata, raw length headers and completion/status inspection. Payload
+matching, encoding, copying and decoding execute on GPU. The host exchange helpers
+in `metal_snappy.h` are explicit diagnostic boundaries; cache production uses the
+same kernels directly on Metal buffers and performs no diagnostic byte readback.
+
+`CompressedPage::Commit` accepts the existing native compression ratio and
+`allow_decomp_fallback`. Apple has no CUDA DE capability, so the fallback opt-in is
+required, just as it is for CUDA's compute branch. The option is wired from
+`ExtMemConfig` for external quantile host caches, with default ratio 0.4. No new
+Python option or automatic enablement is introduced. Ordinary external matrices
+and disk caches keep their existing selection policy; public selection, throughput
+and profitability tuning are deferred.
+
+Eligibility follows `!IsDenseCompressed()`: `row_stride != features`, excluding
+both fully dense and feature-relative sparse pages. The host cache is split into
+a plain prefix and Snappy middle; its private device suffix is unchanged. Logical
+page offsets and `HostBytes` still describe original ELLPACK bytes.
+`HostStorageBytes` exposes the actual plain-plus-Snappy payload, which can also grow
+for incompressible inputs. These counts exclude allocation padding and metadata.
+The old full uncompressed page is released when committing.
+
+Every compressed read forces reconstruction into an owned private buffer even if
+`prefetch_copy=false`. `View`, `Restore`, GPU non-missing counts, diagnostic readback
+and copying a committed source all use that path. Views survive cache destruction;
+explicit CPU access remains the only host-bin materialization boundary. Disk IO
+continues to consume reconstructed raw ELLPACK views, without changing its format.
+
+Counters expose compression, decompression and coalescing dispatches, input,
+compressed and decoded bytes, explicit diagnostic readbacks and GPU time. CPU-only
+builds expose zeros. The statistics ABI changed, requiring all native executables
+to be rebuilt.
+
+Validation uses Google Snappy 1.2.1 as a test-only independent oracle in both
+directions, including COPY4 offsets above 65,535, non-minimal valid headers and
+literal lengths, overlap, random/incompressible/repeated data, partial chunks and
+2 MiB boundaries. Malformed streams and deterministic mutations are checked
+against Google's decoder; guard bytes are checked on success and failure.
+Cache tests independently calculate logical/physical byte counts and verify exact
+CPU bins/rows/hits/columns, sparse/dense/empty eligibility, native opt-in/defaults,
+both prefetch settings, interrupted CPU/MPS traversal, source copying and retained
+views. Six compressed-cache fits compare predictions, leaf IDs and exact SHAP with
+plain Metal training, plus CPU evaluation of the fitted model (absolute tolerance
+1e-5 for prediction/SHAP). Full regression passes 2,366 Python tests (one skip),
+every rebuilt native suite and CPU-only build/API checks. The final ELLPACK suite
+passes 355 cases, including multi-block cache reconstruction at nonzero offsets.
+Results are recorded in [the validation record](../validation/cuda-snappy-m3.txt).
+
+This closes the optional Snappy compute operation gap, not full CUDA parity.
+Mapped-file zero-copy, native Apple arrays/half, broader state/metadata ownership,
+remaining CUDA algorithm audits and GPU collectives still need work. Actual
+NVIDIA and other Apple GPU comparisons remain unperformed. No performance claim
+is made for the initial codec.

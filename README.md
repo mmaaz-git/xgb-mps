@@ -14,7 +14,29 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **ordinary external-memory host caches**.
+Latest step: **GPU Snappy compression and decompression for sparse host caches**.
+Metal now implements raw Snappy literals and all copy forms, including overlapping
+backreferences. The independent Google CPU codec validates both directions;
+repeated inputs actually compress. Cache reads reconstruct the original ELLPACK
+bytes on the GPU before training, prediction or CPU materialization.
+
+This follows CUDA's optional compute-fallback path: the existing native
+`ExtMemConfig::SetParamsForTest(ratio, true)` enables it for sparse external
+quantile host caches. Dense and feature-relative sparse pages bypass it. The
+unspecified compression ratio is 0.4 and blocks are 2 MiB. **It is disabled by
+default, has no new Python flag, and is not an Apple hardware decompression-engine
+claim.** Public selection and performance tuning remain deferred.
+
+Focused validation passes **248 valid codec cases / 346 rejected inputs /
+132,381,418 exact decoded bytes**, plus **408 external-cache cases**, **310 GPU
+consumer cases** and **237 public regressions**. Compressed and plain Metal fits
+agree exactly on predictions, leaf IDs and SHAP; CPU predictions are checked too.
+Full regression passes **2,366 Python tests, one skip**, every rebuilt native
+suite and the CPU-only checks. The expanded ELLPACK suite passes **355 cases**,
+including cache reconstruction across 2 MiB chunk boundaries. No new benchmark.
+[Snappy validation](validation/cuda-snappy-m3.txt).
+
+The preceding step added **ordinary external-memory host caches**.
 `DMatrix(DataIter(on_host=True))` now keeps its MPS quantized pages in Metal storage
 instead of writing a quantized disk cache. It follows CUDA's defaults: one input
 page stays private to the GPU, multiple pages use shared host storage, and ordinary
@@ -49,7 +71,7 @@ and the CPU-only build/API checks. A final resource-scope follow-up also passes 
 targeted build and IO suite. No new benchmark was run. [Disk-format validation](validation/cuda-disk-ellpack-m3.txt).
 
 Ordinary external host-cache selection is covered above. Mapped-file zero-copy
-and optional Snappy compression remain open.
+remains open; optional Snappy compute compression is covered above.
 CPU-origin external matrices retain the existing compatibility path; upstream CUDA
 rejects CPU-created external quantile matrices. Broader device/state and collective gaps remain.
 
@@ -285,7 +307,9 @@ Covertype margins remain outside tolerance. CPU wins are retained alongside gain
 ## Build and use
 
 Requires macOS, Xcode command-line tools, CMake, Ninja, Python, and OpenMP
-(`brew install libomp` if needed).
+(`brew install libomp` if needed). The native test suite also uses Google's
+independent Snappy library (`brew install snappy`, or set `SNAPPY_ROOT`). It is a
+test dependency only; the production Metal library does not link it.
 
 ```sh
 uv venv .venv

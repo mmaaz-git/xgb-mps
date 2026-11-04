@@ -26,7 +26,7 @@ void Same(float actual, float expected) {
         "CUDA reconstructed input value");
 }
 void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
-          std::size_t n = 37, bool lazy = false) {
+          std::size_t n = 37, bool lazy = false, float snappy = -1.0f) {
   constexpr unsigned cols = 7;
   constexpr std::size_t base = 73;
   Context ctx;
@@ -65,7 +65,7 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
   auto layout = metal::MakeEllpackInfo(cuts, stride, mode == 0);
   auto packed = metal::MakeCompressedPage(layout, n, base);
   packed->Pack(oracle);
-  packed->Commit(ratio);
+  packed->Commit(ratio, snappy, snappy >= 0);
   Check(packed->NonMissing() == oracle.index.Size(),
         "Actual compressed non-missing total");
   GHistIndexMatrix page;
@@ -271,6 +271,11 @@ int main() {
           Case(maximum, 0, ratio, false, 16513, lazy);
       Case(17, 2, .5, true, 5000, lazy); // Non-serial partition prefix.
     }
+    for (unsigned mode = 0; mode < 4; ++mode)
+      for (double ratio : {.23, 1.})
+        for (float compression : {.4f, 1.f})
+          for (bool copy : {false, true})
+            Case(257, mode, ratio, copy, 513, true, compression);
     std::printf(
         "PASS %zu cases / %zu exact fields / %zu histograms / %zu partitions / %zu input chunks\n",
         cases, fields, histograms, partitions, inputs);

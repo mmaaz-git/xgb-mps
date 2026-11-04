@@ -110,7 +110,8 @@ struct Fixture {
     });
   }
 };
-void Case(unsigned bins, unsigned mode, double ratio, bool empty) {
+void Case(unsigned bins, unsigned mode, double ratio, bool empty,
+          float snappy = -1.0f, std::size_t extra_bytes = 0) {
   Fixture fixture{bins, mode};
   std::vector<bst_idx_t> chunks =
       empty ? std::vector<bst_idx_t>{0, 0} : std::vector<bst_idx_t>{3, 0, 17, 13};
@@ -126,6 +127,7 @@ void Case(unsigned bins, unsigned mode, double ratio, bool empty) {
   std::size_t allocation = 0;
   for (auto n : chunks)
     allocation += common::CompressedBufferWriter::CalculateBufferSize(n * expected_stride, symbols);
+  allocation += extra_bytes;
   auto target = metal::MakeCompressedPage(info, rows, 73, allocation);
   bst_idx_t start = 0;
   for (auto n : chunks) {
@@ -148,7 +150,8 @@ void Case(unsigned bins, unsigned mode, double ratio, bool empty) {
     }
     Check(actual == expected, "Packed CUDA bytes");
     bytes_checked += expected.size();
-    source->Commit(ratio);
+    source->Commit(ratio, snappy, snappy >= 0);
+    Check(source->Readback() == expected, "Committed source bytes");
     target->Copy(*source, start);
     start += n;
   }
@@ -156,7 +159,11 @@ void Case(unsigned bins, unsigned mode, double ratio, bool empty) {
   std::vector<std::uint8_t> expected(allocation, 0);
   common::CompressedBufferWriter writer{symbols};
   for (std::size_t i = 0; i < values.size(); ++i) writer.WriteSymbol(expected.data(), values[i], i);
-  target->Commit(ratio);
+  auto start_commit = metal::GetStatistics();
+  target->Commit(ratio, snappy, snappy >= 0);
+  auto end_commit = metal::GetStatistics();
+  Check(target->NonMissing() == reference->index.Size(),
+        "Committed GPU non-missing count");
   Check(target->Readback() == expected, "Concatenated CUDA bytes and zero padding");
   bytes_checked += expected.size();
   auto host_bytes = ratio == 0   ? 0
@@ -164,6 +171,16 @@ void Case(unsigned bins, unsigned mode, double ratio, bool empty) {
                                  : std::max(std::size_t(allocation * ratio), std::size_t{1});
   Check(target->HostBytes() == host_bytes && target->DeviceBytes() == allocation - host_bytes,
         "Exact host/device split");
+  auto compressed = snappy >= 0 && info.row_stride != info.features
+                        ? std::min(host_bytes, std::size_t(host_bytes * snappy))
+                        : 0;
+  Check(end_commit.snappy_input_bytes - start_commit.snappy_input_bytes ==
+            compressed,
+        "Only selected sparse host bytes use Snappy");
+  Check(target->HostStorageBytes() == host_bytes - compressed +
+                                          end_commit.snappy_compressed_bytes -
+                                          start_commit.snappy_compressed_bytes,
+        "Logical and physical cache bytes are distinct");
   auto before = metal::GetStatistics();
   for (bool copy : {false, true}) {
     GHistIndexMatrix restored;
@@ -283,6 +300,15 @@ int main() {
       std::printf("checked %zu cases / %zu bytes / %zu fields\n", cases, bytes_checked, fields);
     }
     for (unsigned mode = 0; mode < 4; ++mode) Case(17, mode, .23, true);
+    for (unsigned mode = 0; mode < 4; ++mode)
+      for (double ratio : {0., 1e-6, .23, 1.})
+        for (float compression : {0.f, .4f, 1.f})
+          for (bool empty : {false, true})
+            Case(257, mode, ratio, empty, compression);
+    // Cache reads must reconstruct multiple 2MiB chunks at a nonzero byte
+    // offset. Concatenation padding is part of the original logical allocation.
+    Case(257, 2, .75, false, 1.f, 5u << 20);
+    Case(257, 2, 1., false, .4f, 6u << 20);
     std::printf("PASS %zu cases / %zu exact bytes / %zu exact fields\n", cases, bytes_checked,
                 fields);
   } catch (std::exception const& e) {

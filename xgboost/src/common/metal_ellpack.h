@@ -2,6 +2,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -34,6 +35,8 @@ class CompressedPage {
   virtual bst_idx_t BaseRow() const = 0;
   virtual std::size_t SizeBytes() const = 0;
   virtual std::size_t HostBytes() const = 0;
+  // Logical HostBytes stays stable; secondary Snappy storage can be smaller/larger.
+  virtual std::size_t HostStorageBytes() const = 0;
   virtual std::size_t DeviceBytes() const = 0;
   virtual void Pack(GHistIndexMatrix const& input) = 0;
   // Append raw CSR rows directly into compressed symbols. Zero window_rows selects
@@ -45,7 +48,11 @@ class CompressedPage {
   virtual void PushAdapter(AdapterInput const& input) = 0;
   virtual void EndAdapter() = 0;
   virtual void Copy(CompressedPage const& input, bst_idx_t row_offset) = 0;
-  virtual void Commit(double host_ratio) = 0;
+  // Apple has no CUDA decompression engine. As with CUDA's compute fallback,
+  // optional Snappy requires the existing native allow_decomp_fallback opt-in.
+  virtual void Commit(double host_ratio,
+                      float snappy_ratio = std::numeric_limits<float>::quiet_NaN(),
+                      bool allow_decomp_fallback = false) = 0;
   // Count actual compressed symbols on GPU; only the scalar result returns to host.
   virtual bst_idx_t NonMissing() const = 0;
   // Acquire a GPU view without unpacking rows, bins, hits or host columns.

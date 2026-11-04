@@ -42,6 +42,7 @@
 #include "metal_shader.h"
 #include "metal_shap.h"
 #include "metal_sketch.h"
+#include "metal_snappy.h"
 #include "metal_split.h"
 #include "metal_survival.h"
 #include "xgboost/logging.h"
@@ -130,6 +131,9 @@ std::atomic<std::uint64_t> ellpack_histogram_dispatches{0}, ellpack_partition_di
     ellpack_input_dispatches{0};
 std::atomic<std::uint64_t> ellpack_io_read_pages{0}, ellpack_io_write_pages{0},
     ellpack_io_read_bytes{0}, ellpack_io_write_bytes{0}, ellpack_io_dispatches{0};
+std::atomic<std::uint64_t> snappy_compress_dispatches{0}, snappy_decompress_dispatches{0},
+    snappy_copy_dispatches{0}, snappy_input_bytes{0}, snappy_compressed_bytes{0},
+    snappy_decoded_bytes{0}, snappy_host_readback_bytes{0}, snappy_gpu_time_ns{0};
 std::atomic<std::uint64_t> ellpack_csr_dispatches{0}, ellpack_csr_values{0}, ellpack_csr_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
     ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
@@ -271,6 +275,7 @@ class Runtime {
   id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
       ellpack_copy_pipeline, ellpack_count_pipeline, ellpack_unpack_pipeline;
   id<MTLComputePipelineState> ellpack_adapter_pipeline, ellpack_null_pipeline, ellpack_csr_pipeline;
+  id<MTLComputePipelineState> snappy_compress_pipeline, snappy_decompress_pipeline;
   id<MTLComputePipelineState> ellpack_histogram_pipeline, ellpack_shared_histogram_pipeline,
       ellpack_partition_pipeline, ellpack_input_pipeline;
   id<MTLComputePipelineState> adapter_count_pipeline, adapter_scatter_pipeline,
@@ -367,6 +372,8 @@ class Runtime {
       ellpack_adapter_pipeline = make_pipeline(@"xgb_ellpack_adapter");
       ellpack_csr_pipeline = make_pipeline(@"xgb_ellpack_csr");
       ellpack_null_pipeline = make_pipeline(@"xgb_ellpack_null");
+      snappy_compress_pipeline = make_pipeline(@"xgb_snappy_compress");
+      snappy_decompress_pipeline = make_pipeline(@"xgb_snappy_decompress");
       ellpack_histogram_pipeline = make_pipeline(@"xgb_histogram_ellpack");
       ellpack_shared_histogram_pipeline = make_pipeline(@"xgb_histogram_dense_shared_ellpack");
       ellpack_partition_pipeline = make_pipeline(@"xgb_partition_classify_ellpack");
@@ -1905,7 +1912,15 @@ Statistics GetStatistics() {
           ellpack_io_write_pages.load(std::memory_order_relaxed),
           ellpack_io_read_bytes.load(std::memory_order_relaxed),
           ellpack_io_write_bytes.load(std::memory_order_relaxed),
-          ellpack_io_dispatches.load(std::memory_order_relaxed)};
+          ellpack_io_dispatches.load(std::memory_order_relaxed),
+          snappy_compress_dispatches.load(std::memory_order_relaxed),
+          snappy_decompress_dispatches.load(std::memory_order_relaxed),
+          snappy_copy_dispatches.load(std::memory_order_relaxed),
+          snappy_input_bytes.load(std::memory_order_relaxed),
+          snappy_compressed_bytes.load(std::memory_order_relaxed),
+          snappy_decoded_bytes.load(std::memory_order_relaxed),
+          snappy_host_readback_bytes.load(std::memory_order_relaxed),
+          snappy_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6387,6 +6402,187 @@ id<MTLBuffer> EllpackPrivate(Runtime const& rt, std::size_t bytes) {
   CHECK(buffer) << "Metal private cache allocation failed.";
   return buffer;
 }
+struct SnappyWindow {
+  std::uint64_t input;
+  std::uint32_t bytes, padding;
+};
+struct SnappyChunk {
+  std::uint64_t source, destination;
+  std::uint32_t bytes, decoded;
+};
+static_assert(sizeof(SnappyWindow) == 16 && sizeof(SnappyChunk) == 24);
+struct MetalSnappy {
+  id<MTLBuffer> data;
+  std::vector<SnappyChunk> chunks;
+  std::size_t bytes{0}, decoded{0};
+};
+// A block is processed at a time, bounding transient hash/output workspace even
+// for multi-gigabyte cache pages. The actual codec reads/writes device buffers.
+MetalSnappy CompressSnappyBuffer(Runtime& rt, id<MTLBuffer> input, std::size_t offset,
+                                std::size_t bytes, std::size_t chunk_bytes) {
+  CHECK_GT(chunk_bytes, 0);
+  CHECK_LE(chunk_bytes, 1 << 21);
+  CHECK_LE(offset, input.length);
+  CHECK_LE(bytes, input.length - offset);
+  constexpr std::size_t kWindow = 32768, kCapacity = 2 * kWindow + 16, kHash = 4096;
+  MetalSnappy result;
+  result.decoded = bytes;
+  std::vector<id<MTLBuffer>> blocks;
+  for (std::size_t start = 0; start < bytes;) {
+    @autoreleasepool {
+      auto size = std::min(chunk_bytes, bytes - start);
+      std::vector<SnappyWindow> windows;
+      for (std::size_t begin = 0; begin < size; begin += kWindow)
+        windows.push_back({offset + start + begin,
+                           std::uint32_t(std::min(kWindow, size - begin)), 0});
+      std::uint32_t count = windows.size();
+      auto descriptors = Upload(rt, windows.data(), windows.size() * sizeof(SnappyWindow));
+      auto hashes = EllpackPrivate(rt, count * kHash * 4);
+      auto workspace = EllpackPrivate(rt, count * kCapacity);
+      auto lengths = Allocate(rt, count * 4);
+      auto command = [rt.queue commandBuffer];
+      auto e = [command computeCommandEncoder];
+      [e setComputePipelineState:rt.snappy_compress_pipeline];
+      [e setBuffer:input offset:0 atIndex:0];
+      [e setBuffer:descriptors offset:0 atIndex:1];
+      [e setBuffer:hashes offset:0 atIndex:2];
+      [e setBuffer:workspace offset:0 atIndex:3];
+      [e setBuffer:lengths offset:0 atIndex:4];
+      [e setBytes:&count length:sizeof(count) atIndex:5];
+      [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &snappy_compress_dispatches, &snappy_gpu_time_ns);
+      auto sizes = static_cast<std::uint32_t const*>(lengths.contents);
+      std::size_t header = 1;
+      for (auto value = size; value >= 128; value >>= 7) ++header;
+      std::size_t compressed = header;
+      for (std::uint32_t i = 0; i < count; ++i) {
+        CHECK_LE(sizes[i], kCapacity);
+        compressed += sizes[i];
+      }
+      auto block = Allocate(rt, compressed);
+      // CPU metadata/framing only. All literal and backreference payloads are GPU
+      // generated, and coalesced by blit without reading them back to the CPU.
+      auto dest = static_cast<std::uint8_t*>(block.contents);
+      auto remaining = size;
+      for (std::size_t i = 0; i < header; ++i) {
+        dest[i] = (remaining & 127) | (remaining >= 128 ? 128 : 0);
+        remaining >>= 7;
+      }
+      command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      std::size_t position = header;
+      for (std::uint32_t i = 0; i < count; ++i) {
+        [blit copyFromBuffer:workspace sourceOffset:i * kCapacity toBuffer:block
+          destinationOffset:position size:sizes[i]];
+        position += sizes[i];
+      }
+      [blit endEncoding];
+      CompleteOperation(command, &snappy_copy_dispatches, &snappy_gpu_time_ns);
+      result.chunks.push_back({result.bytes, start, std::uint32_t(compressed), std::uint32_t(size)});
+      CHECK_LE(compressed, rt.device.maxBufferLength - result.bytes);
+      result.bytes += compressed;
+      blocks.push_back(block);
+      start += size;
+    }
+  }
+  result.data = Allocate(rt, result.bytes);
+  if (!blocks.empty()) {
+    auto command = [rt.queue commandBuffer];
+    auto blit = [command blitCommandEncoder];
+    for (std::size_t i = 0; i < blocks.size(); ++i)
+      [blit copyFromBuffer:blocks[i] sourceOffset:0 toBuffer:result.data
+        destinationOffset:result.chunks[i].source size:result.chunks[i].bytes];
+    [blit endEncoding];
+    CompleteOperation(command, &snappy_copy_dispatches, &snappy_gpu_time_ns);
+  }
+  snappy_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  snappy_compressed_bytes.fetch_add(result.bytes, std::memory_order_relaxed);
+  return result;
+}
+void DecompressSnappyBuffer(Runtime& rt, MetalSnappy const& input, id<MTLBuffer> output,
+                            std::size_t offset) {
+  CHECK_LE(offset, output.length);
+  CHECK_LE(input.decoded, output.length - offset);
+  if (input.chunks.empty()) return;
+  auto chunks = input.chunks;
+  for (auto& c : chunks) c.destination += offset;
+  auto descriptors = Upload(rt, chunks.data(), chunks.size() * sizeof(SnappyChunk));
+  auto statuses = Allocate(rt, chunks.size() * 4);
+  auto command = [rt.queue commandBuffer];
+  auto e = [command computeCommandEncoder];
+  [e setComputePipelineState:rt.snappy_decompress_pipeline];
+  [e setBuffer:input.data offset:0 atIndex:0];
+  [e setBuffer:descriptors offset:0 atIndex:1];
+  [e setBuffer:output offset:0 atIndex:2];
+  [e setBuffer:statuses offset:0 atIndex:3];
+  [e dispatchThreadgroups:MTLSizeMake(chunks.size(), 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+  [e endEncoding];
+  CompleteOperation(command, &snappy_decompress_dispatches, &snappy_gpu_time_ns);
+  auto status = static_cast<std::uint32_t const*>(statuses.contents);
+  for (std::size_t i = 0; i < chunks.size(); ++i)
+    CHECK_EQ(status[i], 0) << "Invalid Metal Snappy block " << i;
+  snappy_decoded_bytes.fetch_add(input.decoded, std::memory_order_relaxed);
+}
+}  // namespace
+SnappyBlocks CompressSnappy(Span<std::uint8_t const> input, std::size_t chunk_bytes) {
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto source = Upload(rt, input.data(), input.size());
+    auto compressed = CompressSnappyBuffer(rt, source, 0, input.size(), chunk_bytes);
+    SnappyBlocks result;
+    auto ptr = static_cast<std::uint8_t const*>(compressed.data.contents);
+    result.data.assign(ptr, ptr + compressed.bytes);
+    for (auto c : compressed.chunks) {
+      result.offsets.push_back(c.source + c.bytes);
+      result.decoded_sizes.push_back(c.decoded);
+    }
+    snappy_host_readback_bytes.fetch_add(compressed.bytes, std::memory_order_relaxed);
+    return result;
+  }
+}
+std::vector<std::uint8_t> DecompressSnappy(SnappyBlocks const& input) {
+  @autoreleasepool {
+    CHECK_EQ(input.offsets.size(), input.decoded_sizes.size() + 1);
+    CHECK_EQ(input.offsets.front(), 0);
+    CHECK_EQ(input.offsets.back(), input.data.size());
+    auto& rt = GetRuntime();
+    MetalSnappy compressed;
+    compressed.bytes = input.data.size();
+    for (std::size_t i = 0; i < input.decoded_sizes.size(); ++i) {
+      CHECK_LE(input.offsets[i], input.offsets[i + 1]);
+      auto bytes = input.offsets[i + 1] - input.offsets[i];
+      CHECK_LE(bytes, std::numeric_limits<std::uint32_t>::max());
+      CHECK_LE(input.decoded_sizes[i], rt.device.maxBufferLength - compressed.decoded);
+      compressed.chunks.push_back({input.offsets[i], compressed.decoded, std::uint32_t(bytes),
+                                  input.decoded_sizes[i]});
+      compressed.decoded += input.decoded_sizes[i];
+    }
+    compressed.data = Upload(rt, input.data.data(), input.data.size());
+    // Guard bytes make the diagnostic boundary useful for malformed-stream tests.
+    CHECK_LE(compressed.decoded, rt.device.maxBufferLength - 32);
+    auto output = Allocate(rt, compressed.decoded + 32);
+    std::memset(output.contents, 0xa5, output.length);
+    auto ptr = static_cast<std::uint8_t const*>(output.contents);
+    auto check_guards = [&] {
+      for (std::size_t i = 0; i < 16; ++i) {
+        CHECK_EQ(ptr[i], 0xa5) << "Snappy destination guard overwritten";
+        CHECK_EQ(ptr[16 + compressed.decoded + i], 0xa5) << "Snappy destination guard overwritten";
+      }
+    };
+    try {
+      DecompressSnappyBuffer(rt, compressed, output, 16);
+    } catch (...) {
+      check_guards();
+      throw;
+    }
+    check_guards();
+    snappy_host_readback_bytes.fetch_add(compressed.decoded, std::memory_order_relaxed);
+    return {ptr + 16, ptr + 16 + compressed.decoded};
+  }
+}
+namespace {
 // The row prefix stays on GPU. Callers may read its final scalar for validation
 // or copy it only at the explicit host-materialization boundary.
 id<MTLBuffer> EllpackRowPtr(Runtime& rt, EllpackParams const& p, id<MTLBuffer> head,
@@ -6410,6 +6606,8 @@ class MetalCompressedPage final : public CompressedPage {
   EllpackInfo info_;
   bst_idx_t rows_, base_, written_{0};
   std::size_t bytes_, host_bytes_{0};
+  std::size_t plain_host_bytes_{0};
+  std::unique_ptr<MetalSnappy> snappy_;
   bool committed_{false};
   id<MTLBuffer> buffer_, head_, tail_;
   bool adapter_active_{false};
@@ -6428,6 +6626,32 @@ class MetalCompressedPage final : public CompressedPage {
   }
   id<MTLBuffer> Head() const { return committed_ ? head_ : buffer_; }
   id<MTLBuffer> Tail() const { return committed_ ? tail_ : buffer_; }
+  struct ReadView {
+    id<MTLBuffer> head, tail;
+    EllpackParams params;
+  };
+  ReadView Read(bool prefetch_copy = false) const {
+    ReadView view{Head(), Tail(), Params()};
+    // CUDA forces prefetch_copy when any host segment is Snappy-compressed.
+    if (snappy_ || (prefetch_copy && view.params.split)) {
+      auto& rt = GetRuntime();
+      auto full = EllpackPrivate(rt, bytes_);
+      auto command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      auto prefix = snappy_ ? plain_host_bytes_ : view.params.split;
+      if (prefix)
+        [blit copyFromBuffer:view.head sourceOffset:0 toBuffer:full destinationOffset:0 size:prefix];
+      if (bytes_ > view.params.split)
+        [blit copyFromBuffer:view.tail sourceOffset:0 toBuffer:full
+          destinationOffset:view.params.split size:bytes_ - view.params.split];
+      [blit endEncoding];
+      CompleteOperation(command, &ellpack_cache_dispatches, &ellpack_gpu_time_ns);
+      if (snappy_) DecompressSnappyBuffer(rt, *snappy_, full, prefix);
+      view.head = view.tail = full;
+      view.params.split = 0;
+    }
+    return view;
+  }
 
  public:
   MetalCompressedPage(EllpackInfo info, bst_idx_t rows, bst_idx_t base, std::size_t bytes)
@@ -6449,6 +6673,9 @@ class MetalCompressedPage final : public CompressedPage {
   bst_idx_t BaseRow() const override { return base_; }
   std::size_t SizeBytes() const override { return bytes_; }
   std::size_t HostBytes() const override { return host_bytes_; }
+  std::size_t HostStorageBytes() const override {
+    return snappy_ ? plain_host_bytes_ + snappy_->bytes : host_bytes_;
+  }
   std::size_t DeviceBytes() const override { return bytes_ - host_bytes_; }
   void Pack(GHistIndexMatrix const& input) override {
     @autoreleasepool {
@@ -6667,14 +6894,15 @@ class MetalCompressedPage final : public CompressedPage {
       CHECK_LE(row_offset, rows_);
       CHECK_LE(input.rows_, rows_ - row_offset);
       auto& rt = GetRuntime();
-      auto p = input.Params();
+      auto source_view = input.Read();
+      auto p = source_view.params;
       p.row_offset = row_offset;
       if (input.rows_ && info_.row_stride) {
         auto command = [rt.queue commandBuffer];
         auto e = [command computeCommandEncoder];
         [e setComputePipelineState:rt.ellpack_copy_pipeline];
-        [e setBuffer:input.Head() offset:0 atIndex:0];
-        [e setBuffer:input.Tail() offset:0 atIndex:1];
+        [e setBuffer:source_view.head offset:0 atIndex:0];
+        [e setBuffer:source_view.tail offset:0 atIndex:1];
         [e setBuffer:buffer_ offset:0 atIndex:2];
         [e setBytes:&p length:sizeof(p) atIndex:3];
         [e dispatchThreads:MTLSizeMake(info_.row_stride, input.rows_, 1)
@@ -6685,7 +6913,7 @@ class MetalCompressedPage final : public CompressedPage {
       written_ += input.rows_;
     }
   }
-  void Commit(double host_ratio) override {
+  void Commit(double host_ratio, float snappy_ratio, bool allow_decomp_fallback) override {
     @autoreleasepool {
       CHECK(!committed_);
       CHECK(!adapter_active_);
@@ -6696,18 +6924,28 @@ class MetalCompressedPage final : public CompressedPage {
                     : host_ratio == 1 ? bytes_
                                       : std::max(std::size_t(bytes_ * host_ratio), std::size_t{1});
       auto& rt = GetRuntime();
-      head_ = Allocate(rt, host_bytes_);
+      std::size_t compressed = 0;
+      // IsDenseCompressed in CUDA includes feature-relative sparse pages.
+      if (allow_decomp_fallback && info_.row_stride != info_.features) {
+        auto ratio = std::isnan(snappy_ratio) ? 0.4f : snappy_ratio;
+        CHECK_GE(ratio, 0.0f);
+        CHECK_LE(ratio, 1.0f);
+        compressed = std::min(host_bytes_, std::size_t(host_bytes_ * ratio));
+      }
+      plain_host_bytes_ = host_bytes_ - compressed;
+      if (compressed)
+        snappy_ = std::make_unique<MetalSnappy>(
+            CompressSnappyBuffer(rt, buffer_, plain_host_bytes_, compressed, 1 << 21));
+      head_ = Allocate(rt, plain_host_bytes_);
       if (!host_bytes_) {
         tail_ = buffer_;  // The complete cache page stays private to the GPU.
       } else {
         tail_ = EllpackPrivate(rt, bytes_ - host_bytes_);
         auto command = [rt.queue commandBuffer];
         auto blit = [command blitCommandEncoder];
-        [blit copyFromBuffer:buffer_
-                 sourceOffset:0
-                     toBuffer:head_
-            destinationOffset:0
-                         size:host_bytes_];
+        if (plain_host_bytes_)
+          [blit copyFromBuffer:buffer_ sourceOffset:0 toBuffer:head_
+            destinationOffset:0 size:plain_host_bytes_];
         if (bytes_ > host_bytes_) {
           [blit copyFromBuffer:buffer_
                    sourceOffset:host_bytes_
@@ -6736,30 +6974,14 @@ class MetalCompressedPage final : public CompressedPage {
       // supported Apple GPUs, but make the 32-bit counter contract explicit.
       CHECK_LE(rows_, std::numeric_limits<std::uint32_t>::max());
       auto& rt = GetRuntime();
-      auto p = Params();
-      auto head = Head(), tail = Tail();
-      if (prefetch_copy && p.split) {
-        auto full = EllpackPrivate(rt, bytes_);
-        auto command = [rt.queue commandBuffer];
-        auto blit = [command blitCommandEncoder];
-        [blit copyFromBuffer:head sourceOffset:0 toBuffer:full destinationOffset:0 size:p.split];
-        if (bytes_ > p.split)
-          [blit copyFromBuffer:tail
-                   sourceOffset:0
-                       toBuffer:full
-              destinationOffset:p.split
-                           size:bytes_ - p.split];
-        [blit endEncoding];
-        CompleteOperation(command, &ellpack_cache_dispatches, &ellpack_gpu_time_ns);
-        head = tail = full;
-        p.split = 0;
-      }
+      auto view = Read(prefetch_copy);
       output->cut = cuts;
       output->base_rowid = base_;
       output->max_numeric_bins_per_feat = max_bin;
       output->SetDense(info_.dense);
       output->SetMetalRows(rows_);
-      output->metal_page = std::make_shared<Page>(rt, cuts, info_, head, tail, p.split, bytes_);
+      output->metal_page = std::make_shared<Page>(rt, cuts, info_, view.head, view.tail,
+                                                view.params.split, bytes_);
       ellpack_view_pages.fetch_add(1, std::memory_order_relaxed);
     }
   }
@@ -6767,7 +6989,9 @@ class MetalCompressedPage final : public CompressedPage {
     @autoreleasepool {
       CHECK(!adapter_active_);
       CHECK_EQ(written_, rows_);
-      auto rows = EllpackRowPtr(GetRuntime(), Params(), Head(), Tail(), &ellpack_count_dispatches);
+      auto view = Read();
+      auto rows = EllpackRowPtr(GetRuntime(), view.params, view.head, view.tail,
+                                &ellpack_count_dispatches);
       return static_cast<std::uint64_t const*>(rows.contents)[rows_];
     }
   }
@@ -6779,14 +7003,15 @@ class MetalCompressedPage final : public CompressedPage {
   std::vector<std::uint8_t> Readback() const override {
     @autoreleasepool {
       auto& rt = GetRuntime();
+      auto view = Read();
       auto result = Allocate(rt, bytes_);
       auto command = [rt.queue commandBuffer];
       auto blit = [command blitCommandEncoder];
-      auto split = Params().split;
+      auto split = view.params.split;
       if (split)
-        [blit copyFromBuffer:Head() sourceOffset:0 toBuffer:result destinationOffset:0 size:split];
+        [blit copyFromBuffer:view.head sourceOffset:0 toBuffer:result destinationOffset:0 size:split];
       if (bytes_ > split)
-        [blit copyFromBuffer:Tail()
+        [blit copyFromBuffer:view.tail
                  sourceOffset:0
                      toBuffer:result
             destinationOffset:split

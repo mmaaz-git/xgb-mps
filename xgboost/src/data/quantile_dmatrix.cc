@@ -204,7 +204,9 @@ MetalPageSource::MetalPageSource(
     info->Extend(proxy->Info(), false, true);
     auto target = plan.mapping[batch];
     if (target == metal_cache_->pages.size()) {
-      if (!metal_cache_->pages.empty()) metal_cache_->pages.back()->Commit(plan.host_ratio);
+      if (!metal_cache_->pages.empty())
+        metal_cache_->pages.back()->Commit(plan.host_ratio, config.hw_decomp_ratio,
+                                           config.allow_decomp_fallback);
       metal_cache_->pages.push_back(common::metal::MakeCompressedPage(
           layout, plan.rows[target], batch_ptr_[target], plan.bytes[target]));
       offset = 0;
@@ -214,7 +216,8 @@ MetalPageSource::MetalPageSource(
     ++batch;
   }
   CHECK_EQ(batch, ext.n_batches) << "Different number of batches returned between iterations";
-  metal_cache_->pages.back()->Commit(plan.host_ratio);
+  metal_cache_->pages.back()->Commit(plan.host_ratio, config.hw_decomp_ratio,
+                                     config.allow_decomp_fallback);
   // Validate the actual compressed symbols, without building host bin/column
   // mirrors. Only one non-missing total per completed cache page is read back.
   for (auto const& page : metal_cache_->pages) nnz_ += page->NonMissing();

@@ -7824,3 +7824,152 @@ kernel void xgb_ellpack_null(device const ulong* counts [[buffer(0)]],
   if (ulong(tid.y) < p.rows && tid.x < p.stride && tid.x >= counts[tid.y])
     xgb_ellpack_write(output, ulong(tid.y) * p.stride + tid.x, p.bits, p.symbols - 1);
 }
+
+// Raw Snappy codec. Independent 32KiB matching windows produce tag streams that
+// are concatenated under one length header per block (normally 2MiB). Matches
+// never cross a window, but the decoder accepts all format-valid offsets/tags.
+struct SnappyWindow { ulong input; uint bytes, padding; };
+struct SnappyChunk { ulong source, destination; uint bytes, decoded; };
+constant uint kSnappyWindow = 32768;
+constant uint kSnappyCapacity = 2 * kSnappyWindow + 16;
+constant uint kSnappyHash = 4096;
+inline uint xgb_snappy_word(device const uchar* p) {
+  return uint(p[0]) | (uint(p[1]) << 8) | (uint(p[2]) << 16) | (uint(p[3]) << 24);
+}
+inline uint xgb_snappy_literal(device const uchar* input, uint begin, uint count,
+                               device uchar* output, uint pos) {
+  if (!count) return pos;
+  uint value = count - 1;
+  if (count <= 60) {
+    output[pos++] = uchar(value << 2);
+  } else if (count <= 256) {
+    output[pos++] = 60u << 2;
+    output[pos++] = uchar(value);
+  } else {
+    output[pos++] = 61u << 2;
+    output[pos++] = uchar(value);
+    output[pos++] = uchar(value >> 8);
+  }
+  for (uint i = 0; i < count; ++i) output[pos++] = input[begin + i];
+  return pos;
+}
+kernel void xgb_snappy_compress(device const uchar* input [[buffer(0)]],
+                                 device const SnappyWindow* windows [[buffer(1)]],
+                                 device uint* hashes [[buffer(2)]],
+                                 device uchar* output [[buffer(3)]],
+                                 device uint* lengths [[buffer(4)]],
+                                 constant uint& count [[buffer(5)]],
+                                 uint tid [[thread_position_in_grid]]) {
+  if (tid >= count) return;
+  auto src = input + windows[tid].input;
+  auto dst = output + ulong(tid) * kSnappyCapacity;
+  auto table = hashes + ulong(tid) * kSnappyHash;
+  for (uint i = 0; i < kSnappyHash; ++i) table[i] = 0;
+  uint n = windows[tid].bytes, pos = 0, anchor = 0, out = 0;
+  while (pos + 4 <= n) {
+    uint word = xgb_snappy_word(src + pos);
+    uint key = (word * 0x1e35a7bdu) >> 20;
+    uint previous = table[key];
+    table[key] = pos + 1;
+    if (previous && xgb_snappy_word(src + previous - 1) == word) {
+      uint start = pos, reference = previous - 1, offset = pos - reference;
+      pos += 4;
+      while (pos < n && src[pos] == src[reference + pos - start]) ++pos;
+      out = xgb_snappy_literal(src, anchor, start - anchor, dst, out);
+      uint remaining = pos - start;
+      while (remaining) {
+        uint length = min(remaining, 64u);
+        dst[out++] = uchar(((length - 1) << 2) | 2u);
+        dst[out++] = uchar(offset);
+        dst[out++] = uchar(offset >> 8);
+        remaining -= length;
+      }
+      anchor = pos;
+    } else {
+      ++pos;
+    }
+  }
+  out = xgb_snappy_literal(src, anchor, n - anchor, dst, out);
+  // Capacity is conservative: literal bytes plus <=3 bytes/run, or 3 bytes
+  // per >=4-byte match (and at most 3 final-copy bytes), are <2*n+16.
+  lengths[tid] = out;
+}
+kernel void xgb_snappy_decompress(device const uchar* input [[buffer(0)]],
+                                   device const SnappyChunk* chunks [[buffer(1)]],
+                                   device uchar* output [[buffer(2)]],
+                                   device uint* statuses [[buffer(3)]],
+                                   uint group [[threadgroup_position_in_grid]],
+                                   uint lane [[thread_index_in_threadgroup]],
+                                   uint lanes [[threads_per_threadgroup]]) {
+  SnappyChunk c = chunks[group];
+  auto src = input + c.source;
+  auto dst = output + c.destination;
+  threadgroup uint cursor, produced, length, offset, literal, status;
+  if (lane == 0) {
+    cursor = produced = status = 0;
+    uint header = 0;
+    bool complete = false;
+    for (uint i = 0; i < 5; ++i) {
+      if (cursor == c.bytes) break;
+      uint byte = src[cursor++];
+      if (i == 4 && byte > 15) break;
+      header |= (byte & 127u) << (7 * i);
+      if (!(byte & 128u)) { complete = true; break; }
+    }
+    if (!complete || header != c.decoded) status = 1;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  while (!status && produced < c.decoded) {
+    if (lane == 0) {
+      if (cursor == c.bytes) {
+        status = 2;
+      } else {
+        uint tag = src[cursor++], type = tag & 3u;
+        offset = 0;
+        if (!type) {
+          ulong len = (tag >> 2) + 1;
+          if (len > 60) {
+            uint bytes = uint(len) - 60;
+            if (bytes > c.bytes - cursor) {
+              status = 3;
+            } else {
+              len = 0;
+              for (uint i = 0; i < bytes; ++i) len |= ulong(src[cursor++]) << (8 * i);
+              ++len;
+            }
+          }
+          if (!status) {
+            if (len > c.bytes - cursor || len > c.decoded - produced) {
+              status = 4;
+            } else {
+              length = uint(len);
+              literal = cursor;
+              cursor += length;
+            }
+          }
+        } else {
+          uint bytes = type == 3 ? 4 : type;
+          length = type == 1 ? ((tag >> 2) & 7u) + 4 : (tag >> 2) + 1;
+          if (bytes > c.bytes - cursor) {
+            status = 5;
+          } else {
+            for (uint i = 0; i < bytes; ++i) offset |= uint(src[cursor++]) << (8 * i);
+            if (type == 1) offset |= (tag >> 5) << 8;
+            if (!offset || offset > produced || length > c.decoded - produced) status = 6;
+          }
+        }
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (status) break;
+    for (uint i = lane; i < length; i += lanes) {
+      // A backreference can overlap its destination. Every lane reads only the
+      // prefix before this tag, repeating its pattern instead of racing writes.
+      dst[produced + i] = offset ? dst[produced - offset + i % offset] : src[literal + i];
+    }
+    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+    if (lane == 0) produced += length;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (lane == 0) statuses[group] = status ? status : (cursor != c.bytes ? 7u : 0u);
+}

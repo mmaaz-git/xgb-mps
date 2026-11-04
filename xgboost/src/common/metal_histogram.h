@@ -107,6 +107,9 @@ struct Statistics {
   std::uint64_t ellpack_csr_dispatches, ellpack_csr_values, ellpack_csr_input_bytes;
   std::uint64_t ellpack_io_read_pages, ellpack_io_write_pages, ellpack_io_read_bytes,
       ellpack_io_write_bytes, ellpack_io_dispatches;
+  std::uint64_t snappy_compress_dispatches, snappy_decompress_dispatches, snappy_copy_dispatches,
+      snappy_input_bytes, snappy_compressed_bytes, snappy_decoded_bytes, snappy_host_readback_bytes,
+      snappy_gpu_time_ns;
 };
 
 class Histogram {

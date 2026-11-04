@@ -261,6 +261,18 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ellpack_io_read_bytes"] = Integer{static_cast<std::int64_t>(stats.ellpack_io_read_bytes)};
   info["ellpack_io_write_bytes"] = Integer{static_cast<std::int64_t>(stats.ellpack_io_write_bytes)};
   info["ellpack_io_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_io_dispatches)};
+  info["snappy_compress_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.snappy_compress_dispatches)};
+  info["snappy_decompress_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.snappy_decompress_dispatches)};
+  info["snappy_copy_dispatches"] = Integer{static_cast<std::int64_t>(stats.snappy_copy_dispatches)};
+  info["snappy_input_bytes"] = Integer{static_cast<std::int64_t>(stats.snappy_input_bytes)};
+  info["snappy_compressed_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.snappy_compressed_bytes)};
+  info["snappy_decoded_bytes"] = Integer{static_cast<std::int64_t>(stats.snappy_decoded_bytes)};
+  info["snappy_host_readback_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.snappy_host_readback_bytes)};
+  info["snappy_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.snappy_gpu_time_ns)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -506,6 +518,14 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ellpack_io_read_bytes"] = Integer{0};
   info["ellpack_io_write_bytes"] = Integer{0};
   info["ellpack_io_dispatches"] = Integer{0};
+  info["snappy_compress_dispatches"] = Integer{0};
+  info["snappy_decompress_dispatches"] = Integer{0};
+  info["snappy_copy_dispatches"] = Integer{0};
+  info["snappy_input_bytes"] = Integer{0};
+  info["snappy_compressed_bytes"] = Integer{0};
+  info["snappy_decoded_bytes"] = Integer{0};
+  info["snappy_host_readback_bytes"] = Integer{0};
+  info["snappy_gpu_time_ns"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};

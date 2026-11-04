@@ -18,6 +18,7 @@
 #include "../xgboost/src/common/metal_input.h"
 #include "../xgboost/src/data/gradient_index.h"
 #include "../xgboost/src/data/proxy_dmatrix.h"
+#include "xgboost/learner.h"
 
 using namespace xgboost;
 namespace metal = common::metal;
@@ -61,8 +62,11 @@ struct Input {
     return 1;
   }
 };
-void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats, bool weighted,
-          bool on_host = false, double ratio = std::nan(""), std::int64_t minimum = 0, bool ordinary = false, bool single = false) {
+void Case(std::filesystem::path const &dir, int bins, unsigned layout,
+          bool cats, bool weighted, bool on_host = false,
+          double ratio = std::nan(""), std::int64_t minimum = 0,
+          bool ordinary = false, bool single = false, float snappy = -1.0f,
+          bool allow_snappy = false) {
   constexpr std::size_t cols = 7, rows = 1029;
   std::shared_ptr<DMatrix> proxy = std::make_shared<data::DMatrixProxy>();
   Input input{static_cast<data::DMatrixProxy*>(proxy.get())};
@@ -74,7 +78,8 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   for (std::size_t r = 0; r < rows; ++r) {
     for (std::size_t f = 0; f < cols; ++f) {
       float value = cats && f == 2 ? float(r % 7) : float(int((r * 193 + f * 17) % 997) - 498) / 8;
-      if (layout == 3 || (layout == 1 && (r + f) % 5 == 0) ||
+      if (layout == 3 ||
+          ((layout == 1 || (layout == 4 && r != 0)) && (r + f) % 5 == 0) ||
           (layout == 2 && (f == 6 || (r + f) % 17 != 0)))
         value = -99;
       input.values[r * cols + f] = value;
@@ -82,6 +87,7 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   }
   ExtMemConfig config{(dir / "pages").string(), on_host, float(ratio), minimum, -99, 2};
   config.device = "mps";
+  config.SetParamsForTest(snappy, allow_snappy);
   auto handle = static_cast<DataIterHandle>(&input);
   auto proxy_handle = static_cast<DMatrixHandle>(&proxy);
   auto before = metal::GetStatistics();
@@ -96,6 +102,8 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
                                  Input::Reset, Input::Next, bins, config));
   }
   auto after = metal::GetStatistics();
+  Check(after.snappy_host_readback_bytes == before.snappy_host_readback_bytes,
+        "Production cache does not use diagnostic codec readbacks");
   Check(ordinary ? after.ellpack_csr_dispatches > before.ellpack_csr_dispatches || layout == 3
                  : after.adapter_prepare_dispatches > before.adapter_prepare_dispatches,
         "GPU construction");
@@ -127,6 +135,7 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   for (auto const& page : cpu->GetBatches<GHistIndexMatrix>(&ctx, BatchParam{})) oracle = &page;
   Check(oracle && oracle->Size() == rows, "CPU reference shape");
   auto expected_sizes = input.sizes;
+  std::size_t expected_snappy = 0;
   if (on_host && !ordinary) {
     unsigned stride = 0, maximum = 0;
     for (std::size_t r = 0; r < rows; ++r)
@@ -150,7 +159,22 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
         expected_sizes.back() += n;
       }
     }
+    if (allow_snappy && stride != cols && sizes.size() > 1) {
+      auto fraction = std::isnan(snappy) ? .4f : snappy;
+      for (auto bytes : sizes) {
+        auto host = ratio == 0 ? 0
+                    : ratio == 1
+                        ? bytes
+                        : std::max(std::size_t(bytes * ratio), std::size_t{1});
+        expected_snappy += std::min(host, std::size_t(host * fraction));
+      }
+    }
   }
+  Check(after.snappy_input_bytes - before.snappy_input_bytes == expected_snappy,
+        "Independent sparse-layout and ratio selection for Snappy bytes");
+  Check((after.snappy_compress_dispatches >
+         before.snappy_compress_dispatches) == (expected_snappy > 0),
+        "Selected cache compression executes on GPU");
   std::vector<bst_idx_t> expected_ptr{0};
   for (auto n : expected_sizes) expected_ptr.push_back(expected_ptr.back() + n);
   Check(matrix->NumBatches() == expected_sizes.size(), "Cached batch count");
@@ -292,6 +316,61 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
             "Regeneration has no CPU quantized mirror");
     }
   }
+  if (expected_snappy && layout == 2) {
+    for (auto data : {matrix, cpu}) {
+      data->Info().labels.Reshape(rows, 1);
+      for (std::size_t r = 0; r < rows; ++r)
+        data->Info().labels.HostView()(r, 0) = float(r % 19) / 7;
+    }
+    std::unique_ptr<Learner> compressed{Learner::Create({matrix})};
+    std::unique_ptr<Learner> plain{Learner::Create({cpu})};
+    for (auto learner : {compressed.get(), plain.get()}) {
+      learner->SetParams({{"device", "mps"},
+                          {"tree_method", "hist"},
+                          {"max_bin", std::to_string(bins)},
+                          {"max_depth", "3"},
+                          {"base_score", "0.5"},
+                          {"nthread", "2"}});
+      learner->Configure();
+    }
+    auto first = metal::GetStatistics();
+    for (int i = 0; i < 3; ++i)
+      compressed->UpdateOneIter(i, matrix);
+    auto trained = metal::GetStatistics();
+    Check(trained.snappy_decompress_dispatches >
+                  first.snappy_decompress_dispatches &&
+              trained.ellpack_host_materializations ==
+                  first.ellpack_host_materializations &&
+              trained.snappy_host_readback_bytes ==
+                  first.snappy_host_readback_bytes,
+          "Training consumes GPU-decompressed views without host mirrors");
+    for (int i = 0; i < 3; ++i)
+      plain->UpdateOneIter(i, cpu);
+    std::vector<std::vector<float>> gpu_predictions;
+    for (unsigned kind = 0; kind < 4; ++kind) {
+      HostDeviceVector<float> actual, reference;
+      compressed->Predict(matrix, true, &actual, 0, 0, false, kind == 1,
+                          kind == 2, false, kind == 3);
+      plain->Predict(cpu, true, &reference, 0, 0, false, kind == 1, kind == 2,
+                     false, kind == 3);
+      Check(actual.ConstHostVector() == reference.ConstHostVector(),
+            "Snappy/plain training, margins, leaf IDs and exact SHAP agree");
+      gpu_predictions.push_back(actual.ConstHostVector());
+    }
+    compressed->SetParam("device", "cpu");
+    compressed->Configure();
+    for (unsigned kind = 0; kind < 4; ++kind) {
+      HostDeviceVector<float> actual;
+      compressed->Predict(matrix, true, &actual, 0, 0, false, kind == 1,
+                          kind == 2, false, kind == 3);
+      auto const &values = actual.ConstHostVector();
+      Check(values.size() == gpu_predictions[kind].size(),
+            "CPU prediction shape");
+      for (std::size_t i = 0; i < values.size(); ++i)
+        Check(std::abs(values[i] - gpu_predictions[kind][i]) <= 1e-5f,
+              "CPU model prediction/SHAP comparison");
+    }
+  }
   matrix.reset();
   if (retained) {
     Check(!retained->HostReadable(),
@@ -348,6 +427,12 @@ int main() {
           for (bool weighted : {false, true})
             for (bool single : {false, true})
               Case(dir, bins, layout, cats, weighted, true, std::nan(""), 0, true, single);
+    for (unsigned layout = 0; layout < 5; ++layout)
+      for (bool allow : {false, true})
+        for (float compression : {0.f, .4f, 1.f, std::nanf("")})
+          for (double ratio : {0., .23, 1.})
+            Case(dir, 257, layout, true, true, true, ratio, 0, false, false,
+                 compression, allow);
     std::filesystem::remove(dir);
     std::printf("PASS %zu cases / %zu cached page visits / %zu exact fields\n", cases, pages,
                 fields);
