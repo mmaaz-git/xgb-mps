@@ -21,6 +21,10 @@ The squared-error training baseline remains slower than CPU. These are specific
 workloads, not CUDA-equivalent performance or guaranteed gains on other hardware.
 Raw measurements and slower cases are retained below.
 
+Grouped ranking ROC-AUC evaluation now measures **9.62× faster than CPU** for one
+million rows in 1,024-row queries. Complete ranking training with this metric each
+round measures **1.29×**; the metric gain includes avoiding quadratic pair enumeration.
+
 [Published CUDA workload replays](docs/PUBLISHED_BENCHMARKS.md) now include full
 HIGGS (10.5M training rows, 1,000 rounds): **190.85 s CPU / 193.74 s MPS**, one
 paired run. Covertype (500 rounds) takes **33.32 s / 70.29 s**, medians of three
@@ -1253,4 +1257,51 @@ crosses a detected sleep discontinuity.
 .venv/bin/python scripts/benchmark.py --rows 3000000 --features 128 \
   --rounds 20 --threads 8 --repeats 3 --subsample 0.5 --float32-generation \
   --sampling-method gradient_based --output results/my-wide-gradient-sampling.json
+```
+
+### Grouped ranking ROC-AUC update
+
+Grouped ROC now runs label sorting, pair counting, weighting, query normalization
+and final aggregation on GPU. Parallel merges count concordant and tied pairs
+without enumerating the quadratic pair matrix. Equal labels retain input order;
+short queries, zero weights, squared-weight underflow/overflow and exceptional
+prediction values retain the tested CPU behavior. Grouped PR-AUC remains CPU.
+
+All **616 Python tests (one skipped)** and native suites pass, including
+[272 grouped ROC cases](validation/ranking-roc-m3.txt) against upstream CPU and
+234 million independently enumerated reference pairs. Three million-row analytic
+cases each represent 500 billion pairs and exercise 64-bit counts. The separate
+CPU-only build also passes its compatibility checks.
+
+Public metric evaluation on fixed base margins, warm prediction caches, eight CPU
+threads, medians of three alternating pairs:
+
+| Rows | Rows per query | CPU | MPS | CPU / MPS |
+| ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 128 | 1.758 ms | 1.221 ms | 1.44× |
+| 100,000 | 1,024 | 9.331 ms | 1.304 ms | 7.15× |
+| 1,000,000 | 128 | 17.172 ms | 7.922 ms | 2.17× |
+| 1,000,000 | 1,024 | 84.650 ms | 8.796 ms | **9.62×** |
+
+All reported CPU/MPS scores agree exactly. These measurements exclude training,
+matrix construction and runtime compilation. First-evaluation times, inputs'
+hashes, memory snapshots, counters and clock checks are in the
+[metric report](validation/benchmark-ranking-roc-metric-v1-m3.json). The gain includes
+the different pair-counting algorithm; it is not a general hardware speed ratio.
+
+The [complete training benchmark](validation/benchmark-ranking-roc-training-v1-m3.json)
+uses one million rows, 32 features, 1,024-row queries, pairwise top-k ranking with
+32 pairs per sample, depth 6 and 20 rounds, evaluating grouped ROC every round.
+Fresh DMatrix construction and quantization are included. Median time is
+**4.585 s CPU / 3.544 s MPS (1.29×)** over three alternating pairs; the maximum
+prediction difference is **7.15e-7** and metric histories pass the existing strict
+comparison. This is the observed training gain for that workload.
+
+```sh
+.venv/bin/python scripts/benchmark_ranking_auc.py --rows 100000 1000000 \
+  --query-sizes 128 1024 --threads 8 --repeats 3 --output results/my-ranking-roc.json
+.venv/bin/python scripts/benchmark.py --rows 1000000 --features 32 \
+  --objective rank:pairwise --query-size 1024 --rank-pairs 32 --rank-method topk \
+  --eval-metric auc --rounds 20 --threads 8 --repeats 3 \
+  --output results/my-ranking-roc-training.json
 ```
