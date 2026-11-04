@@ -1,0 +1,80 @@
+{
+  "baseline_commit": "989ee7af7363ba853e3d8e1113aba3cfab6e1543",
+  "candidate_commit": "6e87d0375080ec5b7e81106db91724a289d233dc",
+  "comparisons": [
+    {
+      "device": "cpu",
+      "repeat": 1,
+      "test_margin_values": 929624,
+      "bitwise_equal": true,
+      "baseline_sha256": "1f276f08e64708933e62e48804d1c5e8ffabc2100029896c7d30aa1f81ddcd83",
+      "candidate_sha256": "1f276f08e64708933e62e48804d1c5e8ffabc2100029896c7d30aa1f81ddcd83"
+    },
+    {
+      "device": "mps",
+      "repeat": 1,
+      "test_margin_values": 929624,
+      "bitwise_equal": true,
+      "baseline_sha256": "097013f7aeb9dc4fbd0dd8d938b53a27a03f5d3d78743655ec005b1785cf37db",
+      "candidate_sha256": "097013f7aeb9dc4fbd0dd8d938b53a27a03f5d3d78743655ec005b1785cf37db"
+    },
+    {
+      "device": "cpu",
+      "repeat": 2,
+      "test_margin_values": 929624,
+      "bitwise_equal": true,
+      "baseline_sha256": "1f276f08e64708933e62e48804d1c5e8ffabc2100029896c7d30aa1f81ddcd83",
+      "candidate_sha256": "1f276f08e64708933e62e48804d1c5e8ffabc2100029896c7d30aa1f81ddcd83"
+    },
+    {
+      "device": "mps",
+      "repeat": 2,
+      "test_margin_values": 929624,
+      "bitwise_equal": true,
+      "baseline_sha256": "097013f7aeb9dc4fbd0dd8d938b53a27a03f5d3d78743655ec005b1785cf37db",
+      "candidate_sha256": "097013f7aeb9dc4fbd0dd8d938b53a27a03f5d3d78743655ec005b1785cf37db"
+    },
+    {
+      "device": "cpu",
+      "repeat": 3,
+      "test_margin_values": 929624,
+      "bitwise_equal": true,
+      "baseline_sha256": "1f276f08e64708933e62e48804d1c5e8ffabc2100029896c7d30aa1f81ddcd83",
+      "candidate_sha256": "1f276f08e64708933e62e48804d1c5e8ffabc2100029896c7d30aa1f81ddcd83"
+    },
+    {
+      "device": "mps",
+      "repeat": 3,
+      "test_margin_values": 929624,
+      "bitwise_equal": true,
+      "baseline_sha256": "097013f7aeb9dc4fbd0dd8d938b53a27a03f5d3d78743655ec005b1785cf37db",
+      "candidate_sha256": "097013f7aeb9dc4fbd0dd8d938b53a27a03f5d3d78743655ec005b1785cf37db"
+    }
+  ],
+  "baseline_medians": {
+    "cpu": 30.194103749934584,
+    "mps": 92.50357804214582
+  },
+  "candidate_medians": {
+    "cpu": 33.32027141703293,
+    "mps": 70.28855616692454
+  },
+  "mps_wall_time_reduction_fraction": 0.24015310915973254,
+  "clock_max_abs_difference_seconds": 0.001104462891817093,
+  "gpu_histogram_median_seconds": {
+    "baseline": 35.171618221,
+    "candidate": 15.615938992
+  },
+  "histogram_dispatch_counts": {
+    "baseline": [
+      21500,
+      21500,
+      21500
+    ],
+    "candidate": [
+      21500,
+      21500,
+      21500
+    ]
+  }
+}

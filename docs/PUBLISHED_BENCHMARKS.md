@@ -172,3 +172,43 @@ clang++ -O2 -std=c++17 -fobjc-arc scripts/metal_histogram_benchmark.mm \
 results/metal_histogram_compare xgboost/src/common/metal_histogram.metal \
   results/baseline.metal 2 > results/histogram-comparison.json
 ```
+
+## Covertype after the binary-column change
+
+Three new alternating CPU/MPS pairs at `6e87d03` give medians of **33.320 s CPU /
+70.289 s MPS (0.474×)**. Compared with the initial MPS median of 92.504 s, observed
+MPS training time is **24.0% lower**. Median histogram GPU time drops from
+**35.172 to 15.616 s**, with exactly **21,500 histogram dispatches** in every run.
+In the first pair, split evaluation stays at 8.80 / 8.77 s and partition work at
+3.22 / 3.19 s before/after, consistent with the targeted histogram improvement.
+
+These before/after training runs are separate sessions. The CPU median moved
+from 30.194 to 33.320 s, so the wall-time reduction includes environmental
+variation. The randomized kernel comparison and GPU component timings provide
+additional evidence for the optimization; they do not establish a guaranteed
+24% gain on other runs or machines. Within these measurements, CPU remains
+about twice as fast as MPS on Covertype.
+
+All six before/after margin-array comparisons (three CPU and three MPS) are
+**bit-for-bit identical**, verified with both array comparisons and SHA-256
+hashes. The optimization changes performance without changing this workload's
+predictions. Each new CPU/MPS pair still has the same seven strict margin
+mismatches and zero class disagreements. Accuracy remains 89.4564%. The report
+is explicitly `prediction_equivalence_failed`, not a claim of complete numerical
+equivalence. Maximum wall/monotonic disagreement across all twelve initial and
+new Covertype workers is 0.00111 s.
+
+[Raw repeated runs](../validation/published-covtype-500-lowbin-m3.json) and
+[before/after verification](../validation/published-covtype-lowbin-verification-m3.json).
+Reproduce the updated workload with:
+
+```sh
+.venv/bin/python scripts/benchmark_published.py --preset gbm2018-covtype \
+  --threads 8 --repeats 3 --output results/published-covtype-lowbin-v1.json
+```
+
+The next performance investigations are gradient/index reuse in wide histograms,
+row-partition memory traffic, and synchronization overhead from many small GPU
+commands. The current results do not establish a hardware-only limit. The target
+is useful, measured MPS gains over this machine's CPU; historical CUDA ratios help
+select workloads rather than define an identical speedup requirement.

@@ -20,6 +20,13 @@ The squared-error training baseline remains slower than CPU. These are specific
 workloads, not CUDA-equivalent performance or guaranteed gains on other hardware.
 Raw measurements and slower cases are retained below.
 
+[Published CUDA workload replays](docs/PUBLISHED_BENCHMARKS.md) now include full
+HIGGS (10.5M training rows, 1,000 rounds): **190.85 s CPU / 193.74 s MPS**, one
+paired run. Covertype (500 rounds) takes **33.32 s / 70.29 s**, medians of three
+pairs. Binary-column histogram optimization reduced its MPS time from 92.50 s.
+All predicted test classes agree; HIGGS passes strict margin checks, while seven
+Covertype margins remain outside tolerance. CPU wins are retained alongside gains.
+
 ## Build and use
 
 Requires macOS, Xcode command-line tools, CMake, Ninja, Python, and OpenMP
@@ -1128,8 +1135,8 @@ One- and two-bin dense features now accumulate exact integer gradients in regist
 and reduce within SIMD groups before global atomic updates. This reduces contention
 on binary columns. Validation passes **576 native histogram cases**, all other
 native suites and **583 Python tests (one skipped)** under Metal API Validation.
-The end-to-end performance of this change is being measured against the published
-workloads; isolated kernel gains are not presented as training gains.
+The end-to-end performance is recorded below; isolated kernel gains are not
+presented as training gains.
 
 
 The full published **HIGGS workload (10.5M training rows, 1,000 rounds)** now
@@ -1140,3 +1147,16 @@ approximately a tie on the M3. See the [raw report](validation/published-higgs-1
 and [methodology](docs/PUBLISHED_BENCHMARKS.md) for setup time, memory, GPU timings
 and differences from the historical hardware/software. The published CUDA ratios
 serve to select workloads, not as promised speedups on an Apple chip.
+
+
+The optimized **500-round Covertype** replay completes in median **33.320 s CPU /
+70.289 s MPS (0.474×)** over three alternating pairs. MPS wall time is **24.0% lower**
+than its 92.504 s baseline; median histogram GPU time falls from **35.172 to
+15.616 s** with the same 21,500 histogram dispatches per run. CPU timing also
+shifted between sessions, so the observed wall reduction is not a guaranteed gain.
+All six before/after CPU and MPS prediction arrays are bit-for-bit identical.
+The same seven CPU/MPS margin mismatches remain, with zero class disagreements and
+89.4564% test accuracy. CPU remains about twice as fast on this workload.
+[Raw runs](validation/published-covtype-500-lowbin-m3.json) and
+[verification hashes](validation/published-covtype-lowbin-verification-m3.json)
+are retained with the [source benchmarks and reproduction commands](docs/PUBLISHED_BENCHMARKS.md).
