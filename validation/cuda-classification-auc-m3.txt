@@ -1,0 +1,97 @@
+CUDA-source classification ROC/PR-AUC and GPU normalization on Apple M3
+Date: 2026-11-04
+Source base: ec7ae91 plus the classification-AUC changes accompanying this record.
+
+Authority: metric/auc.cu BinaryAUC, BinaryROCAUC, BinaryPRAUC, MultiAUC, MultiPRAUC,
+  ScaleOutputs; metric/auc.h CalcDeltaPRAUC and TrapezoidArea.
+
+Changes:
+  Curve negatives: float((1.0-double(label))*double(weight)), then promote; every
+  row uses this rule. Positives FP32 label*weight then promote. PR independent
+  totals use sorted FP32 (1.f-label)*weight and label*weight terms, then reduce f64.
+  GPU source integral shared with grouped PR. Old stabilized helper/table removed.
+  Raw ROC fp/tp/area are retained for degeneracy. Binary PR nonpositive original
+  totals give {0,0,0}; nonempty multi-output PR gives {1,1,NaN}. Empty outputs0.
+  GPU result kernel prepares raw triples or (local_area,output_weight,integral).
+  GPU NormalizeAUC implements source per-output division, weighted sum and final
+  ratio. Multiclass ROC uses prevalence weights; multilabel ROC/PR use macro mean.
+  Production metric MultiAUC routes MPS through preparation + existing host
+  GlobalSum + GPU NormalizeAUC. CPU/CUDA algorithm paths remain unchanged.
+  Intermediate triples still stage through host even locally; GPU collective
+  transport/residency remains incomplete. Binary final host GlobalRatio unchanged.
+  Generic metric dispatch/time counts normalization and empty metadata preparation;
+  curve/sort family dispatch counts retain nonempty-curve scope. No stats ABI change.
+  Optional internal AUCTrace exposes GPU terms/prefixes/totals to native tests;
+  production callers pass no trace. Internal PRAUC signature changed, so ALL native
+  tests were rebuilt for final validation. Public Python/C API signatures unchanged.
+
+Before/after:
+  test-classification-auc-cuda-before-v1.log failed old ec7ae91 library on:
+  CUDA binary ROC retains raw positive mass for degenerate curves.
+  New source contracts pass. Initial strict serial source PR comparison failed
+  for 257 rows with 240-bit weight range: GPU NaN, serial .92810485868686943.
+  Captured-prefix checks established that GPU sums satisfy the FP64 bound, and
+  the source formula on those GPU endpoints yields NaN. This is explicit
+  ill-conditioning/association handling, not a widened ordinary tolerance.
+
+Native tests/metal_auc_api.cc:
+  PASS four exact CUDA binary degenerate-output/cast contracts.
+  PASS25 GPU normalization/metadata cases + three rejected shapes: up to65535
+  outputs, weighting, empty preparation, guards, input immutability, zero/negative/
+  NaN/infinite fields, underflow-scale numbers, multiclass/multilabel and ROC/PR.
+  Counter assertions prove GPU preparation and normalization commands.
+  PASS486 ROC cases /7,607,088 score-label pairs,420 independent weighted pairs.
+  PASS486 PR cases /7,607,088 pairs,519 independent mathematical integral checks.
+  Includes all old families plus non-dyadic fractional labels/weights. Compatible
+  production CPU checks retained. Ordinary PR source maxerror1.65978342e-14;
+  normal2e-10abs +2e-12relative PR and prior ROC thresholds retained.
+
+Explicit extreme-weight contract:
+  Former stable-integral accuracy expectation is replaced with CUDA-source
+  arithmetic, not silently retained/relaxed. All extreme corpus cases remain.
+  Exact float-term casts:1,690,464 fields. Prefixes:1,690,464 fields checked
+  against a five-limb320-bit exact accumulator of nonnegative FP32 input terms.
+  Each prefix bound (gamma_d+2u)*rounded_exact_sum, u=2^-53,
+  gamma_d=d*u/(1-d*u); d=10*number_of_256-element_prefix_levels. The independent
+  recall totals use d=ceil(rows/256)+8 for local sequential sums+GPU reduction.
+  Source integral runs on captured GPU endpoints; four binary64 ULPs/logarithm
+  propagated via abs((b/a)/a), plus summation/arithmetic error budget. This tests
+  observed operation behavior without assuming CUB's association or claiming
+  libdevice precision. 78 source-integral curves pass, including15 NaNs.
+  Max prefix/bound=.168983743; max integral/bound=.0197548906.
+  Two-row weights[1e30f,1], labels[0,1], scores[1,0] now EXACT PR area1, matching
+  the source cancellation formula. True continuous integral is about5e-31;
+  earlier Metal retained that small result. This is NOT an accuracy improvement.
+  Apple arm64 long double remains binary64, not a high-precision oracle.
+
+Public tests/test_metal_auc.py:
+  PASS97 (26 new),19 expected warnings,1.70s focused. Existing ordinary CPU metric,
+  training/reload checks and tolerances retained. New fractional terms cover
+  binary/multilabel ROC/PR, ties, normal/subnormal/large weights against source
+  formulas, and model reload. Underflow validity cases added. Metric dispatch
+  deltas prove1 curve command for binary and2 (curve+normalization) for multi-output.
+  Existing extreme-weight test now explicitly requires the source result1.
+
+Limits:
+  No actual NVIDIA or cross-Apple execution. Parallel association, NVCC contraction,
+  libdevice logarithms and extreme cancellation remain architecture-dependent.
+  Diagnostic stage checks do not prove the same NaN/result on a particular NVIDIA.
+  Host staging/collectives, grouped ROC source evidence and other coverage-ledger
+  gaps remain. No new benchmark. Full CUDA parity NOT complete.
+
+Runs:
+  build-driver-v1 11:26:51-11:26:56UTC exit0; initial native stress mismatch above.
+  native-driver-v2 11:31:09-11:31:18UTC exit0 with captured-stage validation.
+  focused-driver-v3 11:33:48-11:33:54UTC exit0, native+97public PASS.
+  Logs prefix results/*classification-auc-cuda*.
+
+Full regression:
+  results/run-classification-auc-cuda-full-v1.sh, 11:35:37-11:39:51UTC exit0.
+  build-classification-auc-cuda-final-v1.log: PASS final Metal build.
+  test-classification-auc-cuda-full-v1.log: PASS every rebuilt native suite and
+  test-only CUDA-source linear reference updater; 1666 Python passed,1 skipped,
+  371 expected warnings,96.29s. Final native AUC counts/bounds match those above.
+  build-cpu-classification-auc-cuda-v1.log: PASS CPU-only build.
+  check-cpu-classification-auc-cuda-v1.log: PASS unavailable backend and clear
+  device=mps error in CPU-only build.
+  No production/test changes after the full run started. No benchmarks run.

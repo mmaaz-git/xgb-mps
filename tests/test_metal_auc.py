@@ -1,4 +1,4 @@
-"""ROC-AUC dispatch and CPU equivalence through the public metric API."""
+"""Classification AUC CUDA formulas, GPU dispatch and compatible CPU checks."""
 import numpy as np
 import pytest
 import xgboost as xgb
@@ -45,6 +45,7 @@ def test_roc_auc(metal, metric, problem, weight_mode, ties):
     after = xgb.metal_info()
     assert after[("roc_auc_dispatches" if metric == "auc" else "pr_auc_dispatches")] - before[("roc_auc_dispatches" if metric == "auc" else "pr_auc_dispatches")] == 1
     assert after["radix_sort_dispatches"] - before["radix_sort_dispatches"] == 1
+    assert after["metric_dispatches"] - before["metric_dispatches"] == (1 if problem == "binary" else 2)
     np.testing.assert_allclose(actual, expected, rtol=2e-12, atol=2e-10)
     loaded = xgb.Booster(model_file=gpu.save_raw())
     loaded.set_param({"device": "mps", "eval_metric": metric})
@@ -96,7 +97,8 @@ def test_roc_training(metal, metric, targets):
 def test_pr_extreme_weight_integral(metal):
     # With a huge negative weight ranked above a small positive one, true
     # PR-AUC is about 1/(2*w). The upstream subtraction of two rounded logs
-    # returns one instead. The stable Metal integral retains the small area.
+    # returns one instead. CUDA uses that same expression, so source-aligned
+    # Metal intentionally reproduces one; this is not an accuracy improvement.
     weights = np.array([1e30, 1], dtype=np.float32)
     d = xgb.DMatrix(np.ones((2, 1)), label=[0, 1], weight=weights, base_margin=[1, 0])
     params = dict(objective="reg:squarederror", eval_metric="aucpr", base_score=.5, nthread=2)
@@ -104,7 +106,75 @@ def test_pr_extreme_weight_integral(metal):
     gpu = xgb.train(params | {"device": "mps"}, d, 0)
     assert score(cpu, d) == 1.0
     before = xgb.metal_info()["pr_auc_dispatches"]
-    # XGBoost formats metric text with 17 fixed decimal places. The native API
-    # test checks the underlying ~5e-31 value with a relative tolerance.
-    assert score(gpu, d) == 0.0
+    assert score(gpu, d) == 1.0
     assert xgb.metal_info()["pr_auc_dispatches"] == before + 1
+
+
+@pytest.mark.parametrize("metric", ["auc", "aucpr"])
+def test_cuda_auc_underflow_validity(metal, metric):
+    labels = np.full(2, np.nextafter(np.float32(1), np.float32(0)), dtype=np.float32)
+    weights = np.full(2, np.finfo(np.float32).smallest_subnormal, dtype=np.float32)
+    d = xgb.DMatrix(np.ones((2, 1)), label=labels, weight=weights, base_margin=[1, 0], nthread=2)
+    p = dict(device="mps", eval_metric=metric, base_score=.5, nthread=2)
+    gpu = xgb.train(p, d, 0)
+    before = xgb.metal_info()["metric_dispatches"]
+    with pytest.warns(UserWarning, match="only positive or negative"):
+        assert np.isnan(score(gpu, d))
+    assert xgb.metal_info()["metric_dispatches"] == before + 1
+
+
+def cuda_curve_reference(labels, scores, weights, pr):
+    """Source-formula oracle for well-conditioned CUDA classification curves."""
+    order = np.argsort(-scores, kind="stable")
+    fp_terms = np.array([(1.0 - float(labels[i])) * float(weights[i]) for i in order], dtype=np.float32)
+    tp_terms = labels[order] * weights[order]
+    total_fp = float(np.sum((np.float32(1) - labels[order]) * weights[order], dtype=np.float64))
+    total_tp = float(np.sum(tp_terms, dtype=np.float64))
+    if pr and (total_fp <= 0 or total_tp <= 0):
+        return float("nan")
+    fp, tp, fp0, tp0, area = 0.0, 0.0, 0.0, 0.0, 0.0
+    for k, i in enumerate(order):
+        fp += float(fp_terms[k])
+        tp += float(tp_terms[k])
+        if k + 1 < len(order) and scores[i] == scores[order[k + 1]]:
+            continue
+        if pr:
+            previous, recall = tp0 / total_tp, tp / total_tp
+            h = (fp - fp0) / (tp - tp0) if tp != tp0 else 0.0
+            a = h + 1
+            b = (fp0 - h * tp0) / total_tp if tp != tp0 else 0.0
+            area += ((recall - previous - b / a *
+                      (np.log(a * recall + b) - np.log(a * previous + b))) / a
+                     if b != 0 else (recall - previous) / a)
+        else:
+            area += abs(fp - fp0) * (tp + tp0) * .5
+        fp0, tp0 = fp, tp
+    return area if pr else area / (fp * tp) if fp * tp else float("nan")
+
+
+@pytest.mark.parametrize("metric", ["auc", "aucpr"])
+@pytest.mark.parametrize("targets", [1, 3])
+@pytest.mark.parametrize("ties", [False, True])
+@pytest.mark.parametrize("mode", ["normal", "tiny", "large"])
+def test_cuda_auc_fractional_terms(metal, metric, targets, ties, mode):
+    rng = np.random.default_rng(427)
+    n = 4097
+    labels = rng.uniform(.01, .99, (n, targets)).astype(np.float32)
+    margins = (rng.integers(-4, 5, (n, targets)) if ties else rng.normal(size=(n, targets))).astype(np.float32)
+    weights = rng.uniform(.1, 4, n).astype(np.float32)
+    if mode == "tiny":
+        weights = (rng.integers(1, 9, n).astype(np.float32) * np.finfo(np.float32).smallest_subnormal)
+    elif mode == "large":
+        weights *= np.float32(1e30)
+    d = xgb.DMatrix(np.ones((n, 1)), label=labels, weight=weights, base_margin=margins, nthread=2)
+    p = dict(device="mps", objective="reg:squarederror", num_target=targets,
+             eval_metric=metric, base_score=.5, nthread=2)
+    gpu = xgb.train(p, d, 0)
+    expected = np.mean([cuda_curve_reference(labels[:, t], margins[:, t], weights, metric == "aucpr")
+                        for t in range(targets)])
+    before = xgb.metal_info()["metric_dispatches"]
+    np.testing.assert_allclose(score(gpu, d), expected, rtol=2e-12, atol=2e-10)
+    assert xgb.metal_info()["metric_dispatches"] == before + (1 if targets == 1 else 2)
+    loaded = xgb.Booster(model_file=gpu.save_raw())
+    loaded.set_param({"device": "mps", "eval_metric": metric})
+    np.testing.assert_allclose(score(loaded, d), expected, rtol=2e-12, atol=2e-10)

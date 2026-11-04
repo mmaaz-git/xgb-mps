@@ -14,13 +14,14 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **CUDA-source grouped PR-AUC**. Metal now follows CUDA's
-false-positive rounding, original-order recall totals, integral arithmetic and
-query-validity rules. Final validation passes **1,640 Python tests (one skipped)**,
-every rebuilt native suite and the CPU-only build/API check. Grouped PR coverage
-includes 297 native cases over 14.2 million rows, 16 edge/cast checks and 53 public
-grouped-AUC tests.
-[Validation](validation/cuda-ranking-pr-m3.txt) · [Scope](docs/CUDA_PARITY.md#ranking-metric-numerical-behavior).
+Latest validated step: **CUDA-source classification AUC and GPU normalization**.
+ROC/PR terms, recall totals and degenerate outputs now follow CUDA; multi-output
+normalization and weighted averaging run on Metal. Focused validation passes 486
+native cases per curve type, 25 normalization/metadata cases and 97 public tests.
+Full regression passes **1,666 Python tests**, every rebuilt native suite and the
+CPU-only build check. Extreme-weight PR now reproduces CUDA's less accurate
+integral arithmetic, documented with explicit regression cases.
+[Validation](validation/cuda-classification-auc-m3.txt) · [Scope](docs/CUDA_PARITY.md#classification-auc-arithmetic-and-normalization).
 Actual NVIDIA execution equivalence remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
@@ -128,11 +129,11 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input staging and category recoding remain host |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
 | Ranking training | Stable grouped sorting, NDCG cache/label checks and top-k and mean-sampled pairwise/NDCG/MAP pairs, gradients and normalization, including unbiased loss corrections and position-bias updates, on Metal |
-| ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
+| ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; collective transport remains host |
 | Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior |
 | Column sampling | GPU feature initialization, CPU-compatible MT19937 draws, uniform/weighted selection, stable priority ordering and integer feature sorting; tree/level/node caches remain host |
 | Grouped ranking PR-AUC | CUDA-source FP32 cast boundaries, original-order positive totals, segmented binary64 prefixes, integral arithmetic and two-row validity; GPU sorting, validation and aggregation |
-| PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
+| PR-AUC | Binary, multiclass and multilabel; CUDA-source term casts, separate recall/validity totals, source integral and invalid-output rules; GPU aggregation metadata and normalization; collective transport remains host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision with CUDA-source arithmetic/fallbacks; GPU label validation and NDCG cache initialization |
 
 AFT gradient evaluation is still hybrid for numerically sensitive censored rows.
@@ -141,8 +142,8 @@ rows with the original CPU formula. `survival_cpu_corrections` and
 `survival_cpu_time_ns` expose this work. Ordinary and uncensored rows stay on GPU;
 this is not complete AFT GPU coverage. AFT metrics and transforms execute on GPU.
 
-Input views and categorical recoding remain on the host. GPU metric kernels produce
-scaled block sums, with the final small reduction in host FP64. Metal has no native
+Input views and categorical recoding remain on the host. Many elementwise metric
+kernels produce scaled block sums, with the final small reduction in host FP64. Metal has no native
 FP64 arithmetic. Split selection uses software binary64 operations and exact
 integer scans to preserve histogram precision and CUDA candidate ordering. Tolerances and
 numerical edge cases are tested explicitly.
@@ -304,11 +305,16 @@ On Apple M3, 2026-11-03:
   1,693,795 gradient pairs** cover offsets, guards, read-only inputs, split VM
   regions and overlapping input/output storage. **49 production leaf cases /
   1,118,257 row positions** add page offsets, strided/subnormal Hessians and empty leaves.
-- ROC-AUC: **432 production cases / 6,761,856 score-label pairs** and **420
-  independent weighted-pair checks**. Includes both dense layouts, padded strides,
-  signed-zero ties, subnormal scores/weights, extreme weight ranges, degenerate
-  inputs, and recursive scans spanning three levels. Normalized comparisons use
-  `2e-12` absolute/relative tolerances; general bitwise agreement is not promised.
+- Classification ROC/PR-AUC: **486 cases / 7,607,088 score-label pairs per curve**,
+  420 independent weighted-pair checks and 519 independent integral checks.
+  CUDA-source cast/output fixtures, three-level scans, fractional labels, strides,
+  subnormal/extreme weights and degeneracy are covered. **25 GPU normalization /
+  metadata cases** include 65,535 outputs and three shape errors; **97 public tests**
+  cover CPU/source agreement, reloads and GPU normalization dispatch. Extreme PR
+  uses exact-term and bounded-prefix/source-arithmetic checks: 1,690,464 terms and
+  prefixes each, 78 curves including 15 NaNs. The old stabilized PR accuracy
+  contract has explicitly changed to CUDA source behavior; see the
+  [validation record](validation/cuda-classification-auc-m3.txt).
 - Grouped ranking ROC-AUC: **272 production cases / 234,208,157 independently
   enumerated pairs**, compared with both upstream CPU and an independent pair
   reference. Three additional million-row analytic cases each represent
@@ -564,6 +570,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Align linear FP32 arithmetic and selector snapshots with CUDA source.
 - [x] Align precision/NDCG/MAP arithmetic, prefixes and degenerate-query weighting with CUDA source.
 - [x] Align grouped PR-AUC term rounding, recall totals, integral and query validity with CUDA source.
+- [x] Align classification AUC arithmetic/output rules and port multi-output normalization to GPU.
 - [ ] Align sketch algorithms and column/ranking streams with CUDA.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
@@ -2201,3 +2208,30 @@ indexing; hardware reduction/logarithm equivalence is still unverified.
 Final validation passes **1,640 Python tests (one skipped)**, every rebuilt native
 suite and the CPU-only build/API check. Classification AUC arithmetic, grouped ROC
 source evidence and other ledger gaps remain. No performance benchmark or NVIDIA execution comparison was run.
+
+
+### CUDA classification AUC and GPU normalization
+
+Binary, multiclass and multilabel ROC/PR now use CUDA's FP32 cast boundaries,
+separate PR recall/validity totals and distinct invalid-output rules. GPU kernels
+prepare local aggregation metadata and perform per-output normalization, weighted
+sums and final averaging. Host collective transport and staging remain.
+
+The PR integral now follows CUDA's difference of logarithms. This removes the
+previous stabilized formula's accuracy advantage for extreme row weights:
+the documented `1e30` negative-weight example now returns `1`, as the source
+requires, instead of approximately `5e-31`. Extreme-prefix association can also
+change NaN outcomes. Exact terms, independently bounded prefixes and source
+arithmetic on captured endpoints test those cases without claiming identical
+NVIDIA execution.
+
+Focused validation passes **486 native cases per curve**, **25 normalization /
+metadata cases**, four exact cast/output checks, and **97 public tests**. Ordinary
+thresholds are unchanged; the extreme-case contract is explicitly documented.
+Full validation passes **1,666 Python tests, one skip**, all rebuilt native suites
+and the CPU-only build/device check. The Python regression took 96.29 seconds;
+the complete build-and-test run finished successfully in 4 minutes 14 seconds.
+[Validation](validation/cuda-classification-auc-m3.txt).
+
+Grouped ROC source evidence, remaining CUDA algorithms, ownership, interoperability
+and GPU collectives remain open. No performance benchmark was run.

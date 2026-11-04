@@ -51,7 +51,8 @@ work, not accepted substitutes for CUDA behavior:
   execution remain unverified; they are not cross-device bitwise guarantees.
 - Precision/NDCG/MAP now follow CUDA-source arithmetic and degenerate-query
   weighting. Parallel scan/reduction association remains architecture-dependent;
-  grouped ROC and classification AUC still need their remaining CUDA-source audits.
+  classification AUC now also follows CUDA term/output rules and GPU normalization;
+  grouped ROC still needs its remaining source/rounding evidence.
 - Scalar split enumeration now follows CUDA's exclusive numeric scan and strict
   missing-direction comparison; vector scans now preserve CUDA inclusive scans,
   double chunk argmax and FP32 updates. Other reduction order, quantile statistics
@@ -85,8 +86,8 @@ must be reported rather than hidden by widening test tolerances.
 | Multiclass error and logloss | `metric/multiclass_metric.cu` | Metal loss calculation and scaled block reductions; final small reduction in host FP64 |
 | Quantile and expectile metrics | `metric/elementwise_metric.cu` | Metal loss calculation, subnormal-preserving products and binary64 block reductions; small final host sum |
 | AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and binary64 block sums; small final host reduction |
-| ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and tied-score trapezoids on Metal; per-output normalization and aggregation remain host |
-| PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and stable continuous integration on Metal; final per-output degeneracy checks and aggregation remain host |
+| ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; collective transport remains host |
+| PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Group/Hessian weighting, sorted-column weighted summaries, streaming level compaction, final numeric merging, rank repair and pruning use Metal. Row ingestion/queue folding, value sorting and category collection remain CPU. Final cut materialization is host-side in both CUDA and Metal. SparsePage bin assignment and hit counts use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
@@ -274,9 +275,9 @@ and the CPU-only build/API check.
 
 These tests establish source-formula agreement for the tested inputs, not NVIDIA
 execution equivalence. CUB associations, NVCC contraction, libdevice logarithms
-and severe cancellation can differ. Classification PR still retains its older
-stabilized integral and CPU-style term formation pending a separate source-alignment
-change; grouped ROC also needs its source/rounding evidence completed.
+and severe cancellation can differ. Classification AUC now uses the source-aligned
+implementation described below; grouped ROC still needs its source/rounding evidence
+completed.
 
 NDCG cache initialization uses software-binary64 logarithms for discounts and
 parallel ideal-gain sums. Native tests compare 3.55 million discounts and include
@@ -291,6 +292,65 @@ this machine. Linear NDCG labels retain upstream's lack of relevance validation;
 exponential NDCG and binary ranking labels are checked on GPU, including negative
 subnormals and tolerance boundaries.
 
+
+## Classification AUC arithmetic and normalization
+
+Binary, multiclass and multilabel ROC/PR curves now follow `metric/auc.cu`'s
+`BinaryAUC`, `MultiAUC` and PR-total rules. Each curve's negative term is
+`float((1.0-double(label))*double(weight))`, then promoted to binary64; positive
+terms round `label*weight` in FP32. PR independently reduces sorted FP32
+`(1.f-label)*weight` and `label*weight` terms for validity/recall totals. The
+negative total deliberately has a different rounding boundary from curve terms.
+ROC retains raw FP/TP/area even for degenerate curves. Invalid binary PR returns
+`{0,0,0}`; nonempty invalid multi-output PR returns `{1,1,NaN}`. Empty outputs are
+zero triples. Those distinctions matter when workers aggregate results.
+
+`xgb_auc_result` prepares local area, aggregation weight and integral on GPU.
+`xgb_auc_normalize` implements CUDA `ScaleOutputs`: per-output division, prevalence
+weights for multiclass ROC, macro averaging for multilabel ROC and PR, parallel
+weighted sums, and the final ratio. Production multiclass/multilabel metrics use
+both kernels. Host code retains the collective transport and stages the small
+triples between commands, including local execution; fully resident aggregation
+and GPU collectives remain open. Binary final host ratios match CUDA's placement.
+Normalization commands increment the existing generic `metric_dispatches` and
+GPU-time counters. Curve-family and sort counters retain their existing scope;
+empty output preparation is recorded as a generic metric command. No statistics
+ABI changed. Optional internal `AUCTrace` readbacks are used only by native tests.
+
+**Numerical compatibility intentionally replaces the earlier stabilized PR
+integral.** Both classification and grouped PR now use
+`metric/auc.h::CalcDeltaPRAUC`'s difference-of-logarithms sequence. For a negative
+row weighted `1e30` preceding a positive row weighted `1`, this source formula
+returns `1`, while the mathematical integral is approximately `5e-31`. The old
+Metal formula retained the small area; the new exact fixture requires `1`.
+This is source alignment, not an accuracy improvement or proof of NVIDIA results.
+With extreme weights, different legal prefix associations can also produce NaNs
+or substantially different areas. These limitations are not hidden by comparing
+only ordinary datasets.
+
+Validation retains all prior input families and adds non-dyadic fractional terms:
+**486 native cases / 7,607,088 score-label pairs for each of ROC and PR**, 420
+independent weighted-pair checks and 519 independent integral checks. Ordinary
+source/compatible CPU thresholds remain unchanged; maximum ordinary PR source
+error is `1.660e-14`. Four exact output/cast fixtures and **25 GPU normalization /
+metadata cases**, including 65,535 outputs, empty metadata, NaNs, zeros, guards
+and rejected shapes, test the new operations. All **97 public AUC tests** pass,
+including 26 added cases, model reloads and explicit normalization-dispatch checks.
+
+The extreme-weight validation contract is explicitly different from the former
+stabilized-integral contract. It verifies **1,690,464 FP/TP terms exactly** and
+**1,690,464 prefixes against independent 320-bit integer sums**. Prefix error uses
+`(gamma_d + 2u) * exact_sum`, with `u=2^-53`, `gamma_d=d*u/(1-d*u)` and a bound on
+the depth of the GPU additions. Recall totals receive their own reduction bound.
+The source integral is then evaluated on the captured GPU endpoints: four ULPs
+per logarithm are propagated through the source expression, plus reduction error.
+This is a tested math budget, not a libdevice accuracy guarantee. All 78 checked
+extreme curves pass, including **15 source-formula NaNs**; maximum prefix/bound
+and integral/bound ratios are `0.1690` and `0.01976`. CUDA's CUB association, compiler
+contraction, actual NVIDIA execution and cross-Apple behavior remain unverified.
+Full regression passes **1,666 Python tests, one skip**, all rebuilt native suites
+and the CPU-only build/device check (2026-11-04, 11:35:37–11:39:51 UTC).
+[Validation record](../validation/cuda-classification-auc-m3.txt).
 
 ## Ranking gradient numerical behavior
 

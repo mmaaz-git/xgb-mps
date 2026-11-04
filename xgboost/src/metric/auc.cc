@@ -98,6 +98,20 @@ double MultiAUC(Context const *ctx, common::Span<float const> predts, MetaInfo c
   auto n_samples = labels.Shape(0);
   CHECK_EQ(predts.size(), n_samples * n_targets);
 
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    std::vector<double> summaries(n_targets * 3);
+    common::metal::MultiAUC(linalg::MakeTensorView(ctx, predts, n_samples, n_targets), labels,
+                            info.weights_.ConstHostSpan(), type == MultiAUCType::kMultiClass,
+                            is_roc, summaries);
+    // Host collectives remain until the distributed Metal transport is implemented.
+    // Per-output metadata and post-collective normalization follow CUDA on GPU.
+    auto rc = collective::GlobalSum(ctx, linalg::MakeTensorView(ctx, summaries, n_targets, 3));
+    collective::SafeColl(rc);
+    return common::metal::NormalizeAUC(summaries);
+  }
+#endif
+
   std::vector<double> results_storage(n_targets * 3, 0);
   auto results = linalg::MakeTensorView(ctx, results_storage, n_targets, 3);
   auto local_area = results.Slice(linalg::All(), 0);
@@ -108,19 +122,6 @@ double MultiAUC(Context const *ctx, common::Span<float const> predts, MetaInfo c
   auto predts_t = linalg::MakeTensorView(ctx, predts, n_samples, n_targets);
 
   if (n_samples != 0) {
-#if defined(XGBOOST_USE_METAL)
-    if (ctx->IsMPS()) {
-      std::vector<common::metal::ROCAUCSums> sums(n_targets);
-      auto operation = is_roc ? common::metal::ROCAUC : common::metal::PRAUC;
-      operation(predts_t, labels, info.weights_.ConstHostSpan(),
-                            type == MultiAUCType::kMultiClass, sums);
-      for (std::size_t c = 0; c < n_targets; ++c) {
-        tp(c) = sums[c].tp;
-        auc(c) = sums[c].area;
-        local_area(c) = sums[c].fp * sums[c].tp;
-      }
-    } else
-#endif
     common::ParallelFor(n_targets, n_threads, [&](auto c) {
       std::vector<float> proba(n_samples);
       std::vector<float> response(n_samples);

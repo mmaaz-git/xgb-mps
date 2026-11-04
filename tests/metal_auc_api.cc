@@ -1,7 +1,10 @@
 // Production GPU AUC compared with upstream CPU and independent weighted pairs.
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <numeric>
 #include <random>
@@ -24,6 +27,35 @@ std::tuple<double, double, double> BinaryROCAUC(Context const*, common::Span<flo
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
+void CudaContracts() {
+  using namespace xgboost;
+  size_t shape[2]{1, 1};
+  std::vector<float> predictions{0}, labels{1};
+  common::metal::ROCAUCSums out;
+  common::metal::ROCAUC({predictions, shape, DeviceOrd::CPU()}, {labels, shape, DeviceOrd::CPU()},
+                        {}, false, {&out, 1});
+  Check(out.fp == 0 && out.tp == 1 && out.area == 0,
+        "CUDA binary ROC retains raw positive mass for degenerate curves");
+  common::metal::PRAUC({predictions, shape, DeviceOrd::CPU()}, {labels, shape, DeviceOrd::CPU()},
+                       {}, false, {&out, 1});
+  Check(out.fp == 0 && out.tp == 0 && out.area == 0,
+        "CUDA binary PR returns zero triples for nonpositive original totals");
+  shape[0] = 2;
+  predictions = {0, 0};
+  labels = {.25f, .25f};
+  std::vector<float> weights{.7f, .7f};
+  common::metal::ROCAUC({predictions, shape, DeviceOrd::CPU()}, {labels, shape, DeviceOrd::CPU()},
+                        weights, false, {&out, 1});
+  double fp = 2 * double(float((1.0 - double(labels[0])) * double(weights[0])));
+  double tp = 2 * double(labels[0] * weights[0]);
+  Check(out.fp == fp && out.tp == tp && out.area == (fp * tp) * .5,
+        "CUDA curve terms must round once after binary64 negative expression");
+  common::metal::PRAUC({predictions, shape, DeviceOrd::CPU()}, {labels, shape, DeviceOrd::CPU()},
+                       weights, false, {&out, 1});
+  Check(out.fp == 1 && out.tp == 1 && out.area == 1.0 / (fp / tp + 1),
+        "CUDA tied PR must use rounded curve terms");
+  std::puts("PASS four exact CUDA binary AUC degenerate/cast contracts");
+}
 size_t current_n, current_targets, current_target;
 int current_layout, current_mode;
 void Close(double actual, double expected, char const* field = "pair", double atol = 0) {
@@ -35,8 +67,267 @@ void Close(double actual, double expected, char const* field = "pair", double at
         "n=%zu targets=%zu layout=%d mode=%d target=%zu field=%s actual %.17g, expected %.17g\n",
         current_n, current_targets, current_layout, current_mode, current_target, field, actual,
         expected);
-    throw std::runtime_error("ROC-AUC differs from CPU beyond reduction-order tolerance");
+    throw std::runtime_error("AUC differs from its CUDA-source comparison contract");
   }
+}
+struct CudaCurves {
+  xgboost::common::metal::ROCAUCSums roc, pr;
+};
+CudaCurves CudaReference(std::vector<float> const& scores, std::vector<float> const& labels,
+                         std::vector<float> const& weights, bool multi) {
+  if (scores.empty()) return {};
+  std::vector<size_t> order(scores.size());
+  std::iota(order.begin(), order.end(), 0);
+  std::stable_sort(order.begin(), order.end(),
+                   [&](auto a, auto b) { return scores[a] > scores[b]; });
+  double total_fp = 0, total_tp = 0;
+  for (auto i : order) {
+    float w = weights.empty() ? 1 : weights[i];
+    total_fp += (1.f - labels[i]) * w;
+    total_tp += labels[i] * w;
+  }
+  double fp = 0, tp = 0, prev_fp = 0, prev_tp = 0, roc = 0, pr = 0;
+  for (size_t k = 0; k < order.size(); ++k) {
+    auto i = order[k];
+    float w = weights.empty() ? 1 : weights[i];
+    fp += float((1.0 - double(labels[i])) * double(w));
+    tp += labels[i] * w;
+    if (k + 1 < order.size() && scores[i] == scores[order[k + 1]]) continue;
+    roc += (std::abs(fp - prev_fp) * (tp + prev_tp)) * .5;
+    if (total_fp <= 0 || total_tp <= 0) {
+      pr = NAN;
+    } else {
+      double previous = prev_tp / total_tp, recall = tp / total_tp;
+      double h = tp == prev_tp ? 0 : (fp - prev_fp) / (tp - prev_tp), a = h + 1;
+      double b = tp == prev_tp ? 0 : (prev_fp - h * prev_tp) / total_tp;
+      pr += b != 0 ? (recall - previous -
+                      b / a * (std::log(a * recall + b) - std::log(a * previous + b))) /
+                         a
+                   : (recall - previous) / a;
+    }
+    prev_fp = fp;
+    prev_tp = tp;
+  }
+  using xgboost::common::metal::ROCAUCSums;
+  bool invalid = total_fp <= 0 || total_tp <= 0;
+  return {{fp, tp, roc}, invalid && !multi ? ROCAUCSums{} : ROCAUCSums{1, 1, pr}};
+}
+// Exact nonnegative FP32 sum in units of 2^-149. Five limbs cover all finite
+// FP32 inputs even at UINT32_MAX rows; Apple long double is not extra precision.
+struct ExactFloatSum {
+  std::array<uint64_t, 5> words{};
+  void Add(float value) {
+    Check(value >= 0 && std::isfinite(value), "Exact sum input domain");
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    uint32_t exponent = (bits >> 23) & 255, mantissa = bits & 0x7fffff;
+    if (exponent) mantissa |= 0x800000;
+    uint32_t shift = exponent ? exponent - 1 : 0;
+    unsigned __int128 carry = static_cast<unsigned __int128>(mantissa) << (shift % 64);
+    for (size_t i = shift / 64; carry && i < words.size(); ++i) {
+      carry += words[i];
+      words[i] = uint64_t(carry);
+      carry >>= 64;
+    }
+    Check(!carry, "Exact sum overflow");
+  }
+  double Rounded() const {
+    int last = 4;
+    while (last >= 0 && !words[last]) --last;
+    if (last < 0) return 0;
+    unsigned high = unsigned(last * 64 + 63 - __builtin_clzll(words[last]));
+    unsigned shift = high > 52 ? high - 52 : 0, word = shift / 64, offset = shift % 64;
+    uint64_t top = words[word] >> offset;
+    if (offset && word + 1 < words.size()) top |= words[word + 1] << (64 - offset);
+    top &= (uint64_t{1} << 53) - 1;
+    if (shift) {
+      unsigned guard = shift - 1;
+      bool round = (words[guard / 64] >> (guard % 64)) & 1, sticky = false;
+      for (unsigned i = 0; i < guard / 64; ++i) sticky |= words[i] != 0;
+      if (guard % 64) sticky |= (words[guard / 64] & ((uint64_t{1} << (guard % 64)) - 1)) != 0;
+      if (round && (sticky || (top & 1))) ++top;
+    }
+    return std::ldexp(double(top), int(shift) - 149);
+  }
+};
+size_t traced_prefixes = 0, traced_terms = 0, traced_curves = 0, source_nan_curves = 0;
+double max_prefix_ratio = 0, max_integral_ratio = 0;
+// Validate the stages separately when the complete curve is ill-conditioned.
+// Prefixes have a forward-error bound against exact integer sums. The source
+// integral then receives those observed endpoints, without assuming CUB's tree.
+void CheckTrace(std::vector<float> const& scores, std::vector<float> const& labels,
+                std::vector<float> const& weights, xgboost::common::metal::AUCTrace const& trace,
+                size_t target, double actual) {
+  size_t n = scores.size();
+  if (!n) return;
+  std::vector<size_t> order(n);
+  std::iota(order.begin(), order.end(), 0);
+  std::stable_sort(order.begin(), order.end(),
+                   [&](auto a, auto b) { return scores[a] > scores[b]; });
+  unsigned levels = 1;
+  for (size_t blocks = (n + 255) / 256; blocks > 1; blocks = (blocks + 255) / 256) ++levels;
+  constexpr double u = 0x1p-53;
+  auto check_sum = [&](double value, ExactFloatSum const& sum, size_t depth) {
+    double exact = sum.Rounded(), gamma = depth * u / (1 - depth * u);
+    double bound = (gamma + 2 * u) * exact;
+    double error = std::abs(value - exact);
+    if (bound) max_prefix_ratio = std::max(max_prefix_ratio, error / bound);
+    Check(error <= bound, "GPU AUC prefix exceeds FP64 forward-error bound against exact sum");
+  };
+  ExactFloatSum fp_sum, tp_sum, fp_total;
+  for (size_t k = 0; k < n; ++k) {
+    auto i = order[k];
+    float w = weights.empty() ? 1 : weights[i];
+    float fp = float((1.0 - double(labels[i])) * double(w)), tp = labels[i] * w;
+    size_t index = 2 * (target * n + k);
+    Check(trace.terms[index] == double(fp) && trace.terms[index + 1] == double(tp),
+          "GPU AUC term differs from CUDA FP32 cast contract");
+    traced_terms += 2;
+    fp_sum.Add(fp);
+    tp_sum.Add(tp);
+    fp_total.Add((1.f - labels[i]) * w);
+    check_sum(trace.prefixes[index], fp_sum, 10 * levels);
+    check_sum(trace.prefixes[index + 1], tp_sum, 10 * levels);
+    traced_prefixes += 2;
+  }
+  double total_fp = trace.totals[2 * target], total_tp = trace.totals[2 * target + 1];
+  check_sum(total_fp, fp_total, (n + 255) / 256 + 8);
+  check_sum(total_tp, tp_sum, (n + 255) / 256 + 8);
+  if (total_fp <= 0 || total_tp <= 0) return;
+  double fp0 = 0, tp0 = 0, expected = 0, sum_abs = 0, log_bound = 0;
+  auto ulp = [](double v) { return std::abs(std::nextafter(v, INFINITY) - v); };
+  for (size_t k = 0; k < n; ++k) {
+    if (k + 1 < n && scores[order[k]] == scores[order[k + 1]]) continue;
+    size_t index = 2 * (target * n + k);
+    double fp = trace.prefixes[index], tp = trace.prefixes[index + 1];
+    double previous = tp0 / total_tp, recall = tp / total_tp;
+    double h = tp == tp0 ? 0 : (fp - fp0) / (tp - tp0), a = h + 1;
+    double b = tp == tp0 ? 0 : (fp0 - h * tp0) / total_tp;
+    double term = (recall - previous) / a;
+    if (b != 0) {
+      double l1 = std::log(a * recall + b), l0 = std::log(a * previous + b);
+      term = (recall - previous - b / a * (l1 - l0)) / a;
+      // Allow four binary64 ULPs per logarithm, propagated through the exact
+      // source expression. This is a tested math budget, not a libdevice claim.
+      log_bound += std::abs((b / a) / a) * 4 * (ulp(l0) + ulp(l1));
+    }
+    expected += term;
+    sum_abs += std::abs(term);
+    fp0 = fp;
+    tp0 = tp;
+  }
+  ++traced_curves;
+  if (std::isnan(expected)) {
+    ++source_nan_curves;
+    Check(std::isnan(actual), "CUDA source formula on observed prefixes must propagate NaN");
+    return;
+  }
+  if (!std::isfinite(expected)) {
+    Check(actual == expected, "CUDA source formula infinity classification");
+    return;
+  }
+  double depth = n + (n + 255) / 256 + 32;
+  double gamma = depth * u / (1 - depth * u);
+  double bound = log_bound + (gamma + 64 * u) * (sum_abs + log_bound);
+  double error = std::abs(actual - expected);
+  if (bound) max_integral_ratio = std::max(max_integral_ratio, error / bound);
+  if (!(error <= bound)) {
+    std::fprintf(stderr, "trace actual=%.17g expected=%.17g bound=%.17g\n", actual, expected,
+                 bound);
+    throw std::runtime_error("GPU PR integral exceeds source/log/reduction error budget");
+  }
+}
+void CheckNormalization() {
+  using namespace xgboost;
+  size_t checked = 0;
+  auto run = [&](std::vector<double> const& input) {
+    double sum = 0, weight = 0;
+    for (size_t t = 0; t < input.size() / 3; ++t) {
+      if (input[3 * t] > 0) {
+        sum += (input[3 * t + 2] / input[3 * t]) * input[3 * t + 1];
+        weight += input[3 * t + 1];
+      } else {
+        sum = NAN;
+      }
+    }
+    double expected = weight != 0 && !std::isnan(sum) ? sum / weight : NAN;
+    auto snapshot = input;
+    auto before = common::metal::GetStatistics();
+    auto actual = common::metal::NormalizeAUC(input);
+    auto after = common::metal::GetStatistics();
+    Check(after.metric_dispatches == before.metric_dispatches + 1,
+          "AUC normalization did not execute a GPU command");
+    Check(std::memcmp(input.data(), snapshot.data(), input.size() * sizeof(double)) == 0,
+          "AUC normalization modified its collective input");
+    Close(actual, expected, "CUDA ScaleOutputs", 2e-12);
+    ++checked;
+  };
+  for (auto input : std::vector<std::vector<double>>{{2, 3, 1},
+                                                     {2, 3, 1, 4, 1, 3},
+                                                     {0, 1, 1},
+                                                     {-1, 2, 1},
+                                                     {NAN, 1, 1},
+                                                     {2, 0, 1},
+                                                     {2, 1, NAN},
+                                                     {2, -1, 1},
+                                                     {2, 1, 1, 2, -1, 1},
+                                                     {INFINITY, 1, 1},
+                                                     {2, INFINITY, 1},
+                                                     {1e-300, 1e-200, 5e-301}})
+    run(input);
+  for (size_t targets : {1, 2, 31, 257, 65535}) {
+    std::vector<double> summaries(targets * 3);
+    for (size_t t = 0; t < targets; ++t) {
+      summaries[3 * t] = 1 + double(t % 17);
+      summaries[3 * t + 1] = 1 + double(t % 5);
+      summaries[3 * t + 2] = double(t % 11) / 19;
+    }
+    run(summaries);
+  }
+  for (bool multiclass : {false, true}) {
+    for (bool roc : {false, true}) {
+      for (size_t rows : {0, 4}) {
+        size_t shape[2]{rows, 3}, label_shape[2]{rows, multiclass ? 1ul : 3ul};
+        std::vector<float> scores(rows * 3), labels(rows * label_shape[1]), weights(rows, .7f);
+        for (size_t i = 0; i < scores.size(); ++i) scores[i] = float(i % 5);
+        for (size_t i = 0; i < labels.size(); ++i)
+          labels[i] = multiclass ? float(i % 3) : float(i % 3) / 3;
+        std::vector<double> output(13, -971);
+        auto before = common::metal::GetStatistics();
+        common::metal::MultiAUC({scores, shape, DeviceOrd::CPU()},
+                                {labels, label_shape, DeviceOrd::CPU()}, weights, multiclass, roc,
+                                {output.data() + 2, 9});
+        Check(common::metal::GetStatistics().metric_dispatches == before.metric_dispatches + 1,
+              "Per-output CUDA aggregation metadata did not run on GPU");
+        Check(output.front() == -971 && output.back() == -971, "AUC aggregate output guard");
+        for (size_t t = 0; t < 3; ++t) {
+          std::vector<float> p(rows), y(rows);
+          for (size_t r = 0; r < rows; ++r) {
+            p[r] = scores[r * 3 + t];
+            y[r] = multiclass ? float(labels[r] == t) : labels[r * 3 + t];
+          }
+          auto reference = CudaReference(p, y, weights, true);
+          auto curve = roc ? reference.roc : reference.pr;
+          double local = roc ? curve.fp * curve.tp : (rows ? 1.0 : 0.0);
+          double weight = rows ? (roc && multiclass ? curve.tp : 1.0) : 0.0;
+          Close(output[2 + 3 * t], local, "GPU local_area");
+          Close(output[3 + 3 * t], weight, "GPU output_weight");
+          Close(output[4 + 3 * t], curve.area, "GPU integral", 2e-12);
+        }
+        ++checked;
+      }
+    }
+  }
+  for (auto bad : std::vector<std::vector<double>>{{}, {1, 2}, std::vector<double>(65536 * 3)}) {
+    bool rejected = false;
+    try {
+      common::metal::NormalizeAUC(bad);
+    } catch (std::exception const&) {
+      rejected = true;
+    }
+    Check(rejected, "Invalid normalization shape accepted");
+  }
+  std::printf("PASS %zu GPU normalization/metadata cases and three shape errors\n", checked);
 }
 long double ReferencePR(std::vector<float> const& scores, std::vector<float> const& labels,
                         std::vector<float> const& weights) {
@@ -60,7 +351,7 @@ long double ReferencePR(std::vector<float> const& scores, std::vector<float> con
     for (size_t k = begin; k < end; ++k) {
       auto i = order[k];
       auto w = weights.empty() ? 1.0f : weights[i];
-      df += k == 0 ? (1.0 - labels[i]) * w : (1.0f - labels[i]) * w;
+      df += float((1.0 - double(labels[i])) * double(w));
       dt += labels[i] * w;
     }
     if (dt > 0) {
@@ -78,17 +369,18 @@ long double ReferencePR(std::vector<float> const& scores, std::vector<float> con
 }
 int main() {
   try {
+    CudaContracts();
+    CheckNormalization();
     using namespace xgboost;
     Context cpu;
     cpu.Init({{"nthread", "2"}, {"device", "cpu"}});
     std::mt19937 rng(718);
     size_t cases = 0, checked = 0, pair_cases = 0, pr_references = 0;
     double max_pr_difference = 0;
-    size_t ill_conditioned_differences = 0;
     for (size_t n : {0, 1, 2, 31, 255, 256, 257, 4097, 65537})
       for (size_t targets : {1, 3})
         for (int layout = 0; layout < 3; ++layout)
-          for (int mode = 0; mode < 8; ++mode) {
+          for (int mode = 0; mode < 9; ++mode) {
             current_n = n;
             current_targets = targets;
             current_layout = layout;
@@ -122,6 +414,7 @@ int main() {
                 if (multiclass && mode == 3 && row % 7 == 0)
                   v = std::numeric_limits<float>::denorm_min();
                 if (mode == 6) v = 1;
+                if (mode == 8) v = float(rng() % 1001) / 1000;
                 y(row, t) = v;
               }
               if (!weights.empty()) {
@@ -129,6 +422,7 @@ int main() {
                 if (mode == 3) w = std::ldexp(float(rng() % 127), -149);
                 if (mode == 4) w = std::ldexp(w, int(rng() % 241) - 120);
                 if (mode == 7) w = 0;
+                if (mode == 8) w = float(rng() % 101) / 7;
                 weights[row] = w;
               }
             }
@@ -142,7 +436,9 @@ int main() {
                   "ROC did not use one batched GPU sort");
             std::vector<common::metal::ROCAUCSums> pr_result(targets);
             auto pr_before = common::metal::GetStatistics();
-            common::metal::PRAUC(p, y, weights, multiclass, pr_result);
+            common::metal::AUCTrace trace;
+            common::metal::PRAUC(p, y, weights, multiclass, pr_result,
+                                 mode == 4 ? &trace : nullptr);
             auto pr_after = common::metal::GetStatistics();
             Check(pr_after.pr_auc_dispatches - pr_before.pr_auc_dispatches == size_t(n != 0),
                   "PR-AUC dispatch counter mismatch");
@@ -156,42 +452,49 @@ int main() {
                 scores[row] = p(row, t);
                 response[row] = multiclass ? float(y(row, 0) == t) : y(row, t);
               }
-              double fp = 0, tp = 0, area = 0;
-              if (n)
-                std::tie(fp, tp, area) = metric::BinaryROCAUC(
-                    &cpu, scores, linalg::MakeVec(response.data(), n, DeviceOrd::CPU()),
-                    common::OptionalWeights{weights});
-              auto expected_pr = metric::BinaryPRAUC(
-                  &cpu, scores, linalg::MakeVec(response.data(), n, DeviceOrd::CPU()),
-                  common::OptionalWeights{weights});
-              Close(pr_result[t].fp, std::get<0>(expected_pr), "PR fp");
-              Close(pr_result[t].tp, std::get<1>(expected_pr), "PR tp");
-              // Preserve accuracy of the continuous integral when the upstream
-              // difference-of-logs expression loses precision at extreme weights.
+              auto expected = CudaReference(scores, response, weights, multiclass || targets > 1);
+              double fp = expected.roc.fp, tp = expected.roc.tp, area = expected.roc.area;
+              Close(pr_result[t].fp, expected.pr.fp, "CUDA PR fp");
+              Close(pr_result[t].tp, expected.pr.tp, "CUDA PR tp");
               if (mode == 4) {
-                auto expected = std::get<2>(expected_pr), actual = pr_result[t].area;
-                if (std::isfinite(actual) &&
-                    (!std::isfinite(expected) || std::abs(actual - expected) > 2e-10))
-                  ++ill_conditioned_differences;
-              } else
-                Close(pr_result[t].area, std::get<2>(expected_pr), "PR area", 2e-10);
-              if (mode != 4 && std::isfinite(pr_result[t].area))
-                max_pr_difference = std::max(
-                    max_pr_difference, std::abs(pr_result[t].area - std::get<2>(expected_pr)));
-              if (n <= 257) {
+                CheckTrace(scores, response, weights, trace, t, pr_result[t].area);
+              } else {
+                Close(pr_result[t].area, expected.pr.area, "CUDA PR area", 2e-10);
+              }
+              if (mode != 4 && std::isfinite(pr_result[t].area) && std::isfinite(expected.pr.area))
+                max_pr_difference =
+                    std::max(max_pr_difference, std::abs(pr_result[t].area - expected.pr.area));
+              // The mathematical integral remains a reference for well-conditioned
+              // curves. Extreme-weight source arithmetic is tested explicitly below.
+              if (n <= 257 && mode != 4 && expected.pr.fp == 1) {
                 Close(pr_result[t].area, double(ReferencePR(scores, response, weights)),
                       "PR independent integral", 2e-10);
                 ++pr_references;
               }
+              if (n && mode != 4 && std::all_of(response.begin(), response.end(), [](float v) {
+                    return v == 0 || v == 1;
+                  })) {
+                if (fp > 0 && tp > 0) {
+                  auto cpu_roc = metric::BinaryROCAUC(
+                      &cpu, scores, linalg::MakeVec(response.data(), n, DeviceOrd::CPU()),
+                      common::OptionalWeights{weights});
+                  Close(result[t].fp, std::get<0>(cpu_roc), "compatible CPU ROC fp");
+                  Close(result[t].tp, std::get<1>(cpu_roc), "compatible CPU ROC tp");
+                  Close(result[t].area, std::get<2>(cpu_roc), "compatible CPU ROC area");
+                }
+                auto cpu_pr = metric::BinaryPRAUC(
+                    &cpu, scores, linalg::MakeVec(response.data(), n, DeviceOrd::CPU()),
+                    common::OptionalWeights{weights});
+                if (expected.pr.fp == 1)
+                  Close(pr_result[t].area, std::get<2>(cpu_pr), "compatible CPU PR", 2e-10);
+              }
               Close(result[t].fp, fp, "fp");
               Close(result[t].tp, tp, "tp");
               if (mode == 4 && fp > 0 && tp > 0) {
-                // With a 240-bit weight range, upstream's differences of cumulative
-                // sums can lose a tiny trapezoid. Bound the observable normalized
-                // AUC error, rather than relative error of a near-zero area.
                 Close(result[t].area / (fp * tp), area / (fp * tp), "normalized area", 2e-12);
-              } else
+              } else {
                 Close(result[t].area, area, "area");
+              }
               if (n <= 257 && mode < 5) {
                 long double pairs = 0;
                 for (size_t i = 0; i < n; ++i)
@@ -227,7 +530,7 @@ int main() {
         cases, checked, pair_cases);
     std::printf(
         "PASS %zu production PR-AUC cases / %zu score-label pairs, %zu long-double "
-        "integral checks; maximum CPU difference %.9g\n",
+        "integral checks; maximum CUDA-source difference %.9g\n",
         cases, checked, pr_references, max_pr_difference);
     {
       size_t shape[2]{2, 1};
@@ -235,14 +538,17 @@ int main() {
       common::metal::ROCAUCSums result;
       common::metal::PRAUC({scores, shape, DeviceOrd::CPU()}, {labels, shape, DeviceOrd::CPU()},
                            weights, false, {&result, 1});
-      Close(result.area, 1.0 / (2.0 * weights[0]), "tiny PR area");
+      Check(result.area == 1.0, "CUDA PR difference-of-logs cancellation must match source");
       auto cpu_result = metric::BinaryPRAUC(&cpu, scores,
           linalg::MakeVec(labels.data(), labels.size(), DeviceOrd::CPU()), common::OptionalWeights{weights});
       Check(std::get<2>(cpu_result) == 1.0, "Update the documented upstream cancellation example");
       std::printf("PASS extreme-weight PR integral %.17g; upstream CPU %.17g\n", result.area, std::get<2>(cpu_result));
     }
-    std::printf("Extreme-weight PR cases with unstable CPU differences: %zu\n",
-                ill_conditioned_differences);
+    std::printf(
+        "PASS %zu exact terms / %zu bounded prefixes / %zu source-integral curves "
+        "(%zu NaN); max prefix/bound %.9g, integral/bound %.9g\n",
+        traced_terms, traced_prefixes, traced_curves, source_nan_curves, max_prefix_ratio,
+        max_integral_ratio);
     return 0;
   } catch (std::exception const& e) {
     std::fprintf(stderr, "FAIL: %s\n", e.what());

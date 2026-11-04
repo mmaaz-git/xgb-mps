@@ -166,7 +166,8 @@ class Runtime {
   id<MTLComputePipelineState> sort_init_pipeline, radix_rank_pipeline, radix_scatter_pipeline,
       prefix_u32_pipeline, prefix_add_pipeline, quantile_cdf_pipeline, quantile_select_pipeline;
   id<MTLComputePipelineState> roc_sort_init_pipeline, roc_counts_pipeline, roc_area_pipeline,
-      pr_area_pipeline, prefix_double_pair_pipeline, prefix_double_pair_add_pipeline;
+      pr_area_pipeline, pr_totals_pipeline, auc_result_pipeline, auc_normalize_pipeline,
+      prefix_double_pair_pipeline, prefix_double_pair_add_pipeline;
   id<MTLComputePipelineState> group_sort_small_pipeline, group_sort_medium_pipeline,
       group_sort_key_pipeline, group_sort_export_pipeline, ranking_score_pipeline,
       ranking_map_labels_pipeline;
@@ -346,6 +347,9 @@ class Runtime {
       roc_counts_pipeline = make_pipeline(@"xgb_roc_counts");
       roc_area_pipeline = make_pipeline(@"xgb_roc_area");
       pr_area_pipeline = make_pipeline(@"xgb_pr_area");
+      pr_totals_pipeline = make_pipeline(@"xgb_pr_totals");
+      auc_result_pipeline = make_pipeline(@"xgb_auc_result");
+      auc_normalize_pipeline = make_pipeline(@"xgb_auc_normalize");
       group_sort_small_pipeline = make_pipeline(@"xgb_group_sort_small");
       group_sort_medium_pipeline = make_pipeline(@"xgb_group_sort_medium");
       group_sort_key_pipeline = make_pipeline(@"xgb_group_sort_key");
@@ -3640,21 +3644,17 @@ id<MTLBuffer> EncodeDoublePrefix(Runtime& rt, id<MTLCommandBuffer> command, id<M
 }  // namespace
 namespace {
 void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
-         Span<float const> weights, bool multiclass, bool precision_recall,
-         Span<ROCAUCSums> output) {
+         Span<float const> weights, bool multiclass, bool precision_recall, void* output,
+         std::size_t output_count, bool aggregate = false, AUCTrace* trace = nullptr) {
   auto rows = predictions.Shape(0), targets = predictions.Shape(1);
   CHECK_EQ(labels.Shape(0), rows);
   CHECK_EQ(labels.Shape(1), multiclass ? 1 : targets);
-  CHECK_EQ(output.size(), targets);
+  CHECK_EQ(output_count, targets);
   CHECK(weights.empty() || weights.size() == rows);
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
   CHECK_LE(targets, 65535);
-  if (!rows || !targets) {
-    std::fill(output.begin(), output.end(),
-              precision_recall ? ROCAUCSums{1, 1, std::numeric_limits<double>::quiet_NaN()}
-                               : ROCAUCSums{});
-    return;
-  }
+  if (!targets) return;
+  CHECK(output);
   @autoreleasepool {
     auto& rt = GetRuntime();
     auto input = Upload(rt, predictions.Values().data(), predictions.Values().size_bytes());
@@ -3665,68 +3665,106 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
                     static_cast<std::uint32_t>((rows + 255) / 256)};
     auto command = [rt.queue commandBuffer];
     CHECK(command);
-    auto sorted = EncodeColumnSort(rt, command, input, shape, true);
     auto counts = Allocate(rt, rows * targets * 2 * sizeof(double));
+    auto totals = Allocate(rt, targets * 2 * sizeof(double));
+    auto area = Allocate(rt, targets * 2 * sizeof(double));
+    auto result = Allocate(rt, targets * 3 * sizeof(double));
+    id<MTLBuffer> prefix = Allocate(rt, 16);
+    if (rows) {
+      auto sorted = EncodeColumnSort(rt, command, input, shape, true);
+      struct {
+        std::uint64_t rows, label_stride0, label_stride1;
+        std::uint32_t targets, blocks, weighted, multiclass;
+      } p{rows,
+          labels.Stride(0),
+          labels.Stride(1),
+          shape.targets,
+          shape.blocks,
+          static_cast<std::uint32_t>(!weights.empty()),
+          static_cast<std::uint32_t>(multiclass)};
+      static_assert(sizeof(p) == 40);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.roc_counts_pipeline];
+      [e setBuffer:sorted offset:0 atIndex:0];
+      [e setBuffer:response offset:0 atIndex:1];
+      [e setBuffer:weight offset:0 atIndex:2];
+      [e setBuffer:counts offset:0 atIndex:3];
+      [e setBytes:&p length:sizeof(p) atIndex:4];
+      [e dispatchThreads:MTLSizeMake(rows, targets, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      prefix = EncodeDoublePrefix(rt, command, counts, rows, targets);
+      if (precision_recall) {
+        e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt.pr_totals_pipeline];
+        [e setBuffer:sorted offset:0 atIndex:0];
+        [e setBuffer:response offset:0 atIndex:1];
+        [e setBuffer:weight offset:0 atIndex:2];
+        [e setBuffer:totals offset:0 atIndex:3];
+        [e setBytes:&p length:sizeof(p) atIndex:4];
+        [e dispatchThreadgroups:MTLSizeMake(targets, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+      }
+      auto partial = Allocate(rt, shape.blocks * targets * 2 * sizeof(double));
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:precision_recall ? rt.pr_area_pipeline : rt.roc_area_pipeline];
+      [e setBuffer:sorted offset:0 atIndex:0];
+      [e setBuffer:prefix offset:0 atIndex:1];
+      [e setBuffer:partial offset:0 atIndex:2];
+      [e setBytes:&p length:sizeof(p) atIndex:3];
+      if (precision_recall) [e setBuffer:totals offset:0 atIndex:4];
+      [e dispatchThreadgroups:MTLSizeMake(shape.blocks, targets, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.gradient_sum_finish_pipeline];
+      [e setBuffer:partial offset:0 atIndex:0];
+      [e setBuffer:area offset:0 atIndex:1];
+      [e setBytes:&shape length:sizeof(shape) atIndex:2];
+      [e dispatchThreadgroups:MTLSizeMake(targets, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
     struct {
-      std::uint64_t rows, label_stride0, label_stride1;
-      std::uint32_t targets, blocks, weighted, multiclass;
-    } p{rows,
-        labels.Stride(0),
-        labels.Stride(1),
-        shape.targets,
-        shape.blocks,
-        static_cast<std::uint32_t>(!weights.empty()),
-        static_cast<std::uint32_t>(multiclass)};
-    static_assert(sizeof(p) == 40);
+      std::uint64_t rows;
+      std::uint32_t targets, precision_recall, aggregate, multiclass;
+    } result_params{rows, static_cast<std::uint32_t>(targets),
+                    static_cast<std::uint32_t>(precision_recall),
+                    static_cast<std::uint32_t>(aggregate), static_cast<std::uint32_t>(multiclass)};
+    static_assert(sizeof(result_params) == 24);
     auto e = [command computeCommandEncoder];
     CHECK(e);
-    [e setComputePipelineState:rt.roc_counts_pipeline];
-    [e setBuffer:sorted offset:0 atIndex:0];
-    [e setBuffer:response offset:0 atIndex:1];
-    [e setBuffer:weight offset:0 atIndex:2];
-    [e setBuffer:counts offset:0 atIndex:3];
-    [e setBytes:&p length:sizeof(p) atIndex:4];
-    [e dispatchThreads:MTLSizeMake(rows, targets, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-    [e endEncoding];
-    auto prefix = EncodeDoublePrefix(rt, command, counts, rows, targets);
-    auto partial = Allocate(rt, shape.blocks * targets * 2 * sizeof(double));
-    auto area = Allocate(rt, targets * 2 * sizeof(double));
-    e = [command computeCommandEncoder];
-    CHECK(e);
-    [e setComputePipelineState:precision_recall ? rt.pr_area_pipeline : rt.roc_area_pipeline];
-    [e setBuffer:sorted offset:0 atIndex:0];
-    [e setBuffer:prefix offset:0 atIndex:1];
-    [e setBuffer:partial offset:0 atIndex:2];
-    [e setBytes:&p length:sizeof(p) atIndex:3];
-    [e dispatchThreadgroups:MTLSizeMake(shape.blocks, targets, 1)
-        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-    [e endEncoding];
-    e = [command computeCommandEncoder];
-    CHECK(e);
-    [e setComputePipelineState:rt.gradient_sum_finish_pipeline];
-    [e setBuffer:partial offset:0 atIndex:0];
+    [e setComputePipelineState:rt.auc_result_pipeline];
+    [e setBuffer:prefix offset:0 atIndex:0];
     [e setBuffer:area offset:0 atIndex:1];
-    [e setBytes:&shape length:sizeof(shape) atIndex:2];
-    [e dispatchThreadgroups:MTLSizeMake(targets, 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e setBuffer:totals offset:0 atIndex:2];
+    [e setBuffer:result offset:0 atIndex:3];
+    [e setBytes:&result_params length:sizeof(result_params) atIndex:4];
+    [e dispatchThreads:MTLSizeMake(targets, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-    auto sums = static_cast<double const*>(prefix.contents);
-    auto areas = static_cast<double const*>(area.contents);
-    for (std::size_t t = 0; t < targets; ++t) {
-      auto offset = 2 * ((t + 1) * rows - 1);
-      output[t] = {sums[offset], sums[offset + 1], areas[2 * t]};
-      bool invalid = output[t].fp <= 0 || output[t].tp <= 0;
-      if (precision_recall) {
-        output[t] = {1, 1, invalid ? std::numeric_limits<double>::quiet_NaN() : output[t].area};
-      } else if (invalid)
-        output[t] = {};
+    if (trace) {
+      auto copy = [](id<MTLBuffer> buffer, std::size_t count, std::vector<double>* out) {
+        auto data = static_cast<double const*>(buffer.contents);
+        out->assign(data, data + count);
+      };
+      copy(counts, 2 * rows * targets, &trace->terms);
+      copy(prefix, 2 * rows * targets, &trace->prefixes);
+      copy(totals, rows ? 2 * targets : 0, &trace->totals);
     }
-    (precision_recall ? pr_auc_dispatches : roc_auc_dispatches)
-        .fetch_add(1, std::memory_order_relaxed);
-    radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
+    std::memcpy(output, result.contents, targets * 3 * sizeof(double));
+    if (rows) {
+      (precision_recall ? pr_auc_dispatches : roc_auc_dispatches)
+          .fetch_add(1, std::memory_order_relaxed);
+      radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
+    }
     metric_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     if (elapsed > 0) {
@@ -3737,15 +3775,50 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
     }
   }
 }
-
 }  // namespace
 void ROCAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
             Span<float const> weights, bool multiclass, Span<ROCAUCSums> output) {
-  AUC(predictions, labels, weights, multiclass, false, output);
+  static_assert(sizeof(ROCAUCSums) == 3 * sizeof(double));
+  AUC(predictions, labels, weights, multiclass, false, output.data(), output.size());
 }
 void PRAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
-           Span<float const> weights, bool multiclass, Span<ROCAUCSums> output) {
-  AUC(predictions, labels, weights, multiclass, true, output);
+           Span<float const> weights, bool multiclass, Span<ROCAUCSums> output, AUCTrace* trace) {
+  AUC(predictions, labels, weights, multiclass, true, output.data(), output.size(), false, trace);
+}
+void MultiAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
+              Span<float const> weights, bool multiclass, bool is_roc, Span<double> output) {
+  CHECK_EQ(output.size(), predictions.Shape(1) * 3);
+  AUC(predictions, labels, weights, multiclass, !is_roc, output.data(), output.size() / 3, true);
+}
+double NormalizeAUC(Span<double const> summaries) {
+  CHECK_EQ(summaries.size() % 3, 0);
+  CHECK_LE(summaries.size() / 3, 65535);
+  CHECK_GT(summaries.size(), 0);
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, summaries.data(), summaries.size_bytes());
+    auto output = Allocate(rt, sizeof(double));
+    std::uint32_t targets = summaries.size() / 3;
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.auc_normalize_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:output offset:0 atIndex:1];
+    [e setBytes:&targets length:sizeof(targets) atIndex:2];
+    [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    metric_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      metric_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                   std::memory_order_relaxed);
+    return *static_cast<double const*>(output.contents);
+  }
 }
 
 RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,

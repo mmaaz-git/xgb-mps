@@ -2795,13 +2795,38 @@ kernel void xgb_roc_counts(device const uint2* sorted [[buffer(0)]],
     label = float((bits & 0x7fffffffu) == 0 ? tid.y == 0 : bits == as_type<uint>(float(tid.y)));
   }
   float w = p.weighted ? as_type<float>(weights[row]) : 1.0f;
-  // Upstream promotes only the first negative term before subtraction/product;
-  // all subsequent terms and all positive terms round their products to FP32.
-  XGBDouble fp = tid.x == 0
-      ? xgb_dmul(xgb_dsub(xgb_dfrom_float(1.0f), xgb_dfrom_float(label)), xgb_dfrom_float(w))
-      : xgb_dfrom_float(xgb_fmul_preserve(xgb_fsub_preserve(1.0f, label), w));
+  // CUDA forms every negative term in binary64, then rounds once to FP32.
+  XGBDouble fp = xgb_dfrom_float(xgb_dto_float(
+      xgb_dmul(xgb_dsub(xgb_dfrom_float(1.0f), xgb_dfrom_float(label)), xgb_dfrom_float(w))));
   XGBDouble tp = xgb_dfrom_float(xgb_fmul_preserve(label, w));
   counts[idx] = ulong2(fp.bits, tp.bits);
+}
+// PR's validity/recall totals use FP32 (1.f-label)*weight, unlike the
+// FP64-expression/FP32-cast negative terms used to construct each curve.
+kernel void xgb_pr_totals(device const uint2* sorted [[buffer(0)]],
+                          device const uint* labels [[buffer(1)]],
+                          device const uint* weights [[buffer(2)]],
+                          device ulong2* totals [[buffer(3)]], constant ROCParams& p [[buffer(4)]],
+                          uint target [[threadgroup_position_in_grid]],
+                          uint tid [[thread_index_in_threadgroup]],
+                          uint lane [[thread_index_in_simdgroup]],
+                          uint simd [[simdgroup_index_in_threadgroup]]) {
+  XGBDouble fp{0}, tp{0};
+  for (ulong i = tid; i < p.rows; i += 256) {
+    uint row = sorted[ulong(target) * p.rows + i].y;
+    uint bits =
+        labels[ulong(row) * p.label_stride0 + (p.multiclass ? 0 : ulong(target) * p.label_stride1)];
+    float label = as_type<float>(bits);
+    if (p.multiclass)
+      label = float((bits & 0x7fffffffu) == 0 ? target == 0 : bits == as_type<uint>(float(target)));
+    float weight = p.weighted ? as_type<float>(weights[row]) : 1.f;
+    fp = xgb_dadd(fp, xgb_dfrom_float(xgb_fmul_preserve(xgb_fsub_preserve(1.f, label), weight)));
+    tp = xgb_dadd(tp, xgb_dfrom_float(xgb_fmul_preserve(label, weight)));
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 result = xgb_reduce_double_pair(fp, tp, bounds, sums, lane, simd);
+  if (!tid) totals[target] = result;
 }
 inline ulong2 xgb_dpair_add(ulong2 a, ulong2 b) {
   return ulong2(xgb_dadd({a.x}, {b.x}).bits, xgb_dadd({a.y}, {b.y}).bits);
@@ -2884,60 +2909,33 @@ kernel void xgb_roc_area(device const uint2* sorted [[buffer(0)]],
   if (simd == 0 && lane == 0) partial[ulong(group.y) * p.blocks + group.x] = total;
 }
 
-// Stable integral of precision over recall. The CPU's difference of two logs
-// can cancel completely for highly unequal weights. This form uses nonnegative
-// terms and evaluates 1-log(1+x)/x directly for small x.
-constant ulong xgb_pr_log_ratio_coeff[] = {
-    0x3fe0000000000000ul,
-    0xbfd5555555555555ul,
-    0x3fd0000000000000ul,
-    0xbfc999999999999aul,
-    0x3fc5555555555555ul,
-    0xbfc2492492492492ul,
-    0x3fc0000000000000ul,
-    0xbfbc71c71c71c71cul,
-    0x3fb999999999999aul,
-    0xbfb745d1745d1746ul,
-    0x3fb5555555555555ul,
-    0xbfb3b13b13b13b14ul,
-    0x3fb2492492492492ul,
-    0xbfb1111111111111ul,
-    0x3fb0000000000000ul,
-    0xbfae1e1e1e1e1e1eul,
-    0x3fac71c71c71c71cul,
-    0xbfaaf286bca1af28ul,
-    0x3fa999999999999aul,
-    0xbfa8618618618618ul
-};
-inline XGBDouble xgb_pr_integral(XGBDouble fp0, XGBDouble fp1, XGBDouble tp0,
-                                XGBDouble tp1, XGBDouble total) {
+// metric/auc.h::CalcDeltaPRAUC, preserving CUDA's binary64 operation order.
+inline XGBDouble xgb_cuda_pr_integral(XGBDouble fp0, XGBDouble fp1, XGBDouble tp0, XGBDouble tp1,
+                                      XGBDouble total) {
   using namespace xgb_survival;
-  D dt = tp1 - tp0, df = fp1 - fp0;
-  if (!(dt > zero)) return zero;
-  // Parallel positive prefixes can differ by a rounding unit at block edges.
-  if (df < zero) df = zero;
-  D ds = dt + df, fraction = dt / ds, recall = dt / total, start = fp0 + tp0;
-  if (xgb_dzero(start)) return recall * fraction;
-  D x = ds / start, q, l;
-  if (x < From(0.125f)) {
-    q = x * Polynomial(x, xgb_pr_log_ratio_coeff, 20);
-    l = one - q;
+  D previous = tp0 / total, recall = tp1 / total, a, b;
+  if (!IsNaN(tp0) && !IsNaN(tp1) && xgb_deq(tp0, tp1)) {
+    a = one;
+    b = zero;
   } else {
-    l = Log(one + x) / x;
-    q = one - l;
+    D h = (fp1 - fp0) / (tp1 - tp0);
+    a = h + one;
+    b = (fp0 - h * tp0) / total;
   }
-  return recall * ((tp0 / start) * l + fraction * q);
+  if (!xgb_dzero(b))
+    return (recall - previous - (b / a) * (Log(a * recall + b) - Log(a * previous + b))) / a;
+  return (recall - previous) / a;
 }
 
 // Continuous precision-recall interpolation, following metric/auc.h.
 kernel void xgb_pr_area(device const uint2* sorted [[buffer(0)]],
-                         device const ulong2* prefix [[buffer(1)]],
-                         device ulong2* partial [[buffer(2)]],
-                         constant ROCParams& p [[buffer(3)]],
-                         uint2 group [[threadgroup_position_in_grid]],
-                         uint tid [[thread_index_in_threadgroup]],
-                         uint lane [[thread_index_in_simdgroup]],
-                         uint simd [[simdgroup_index_in_threadgroup]]) {
+                        device const ulong2* prefix [[buffer(1)]],
+                        device ulong2* partial [[buffer(2)]], constant ROCParams& p [[buffer(3)]],
+                        device const ulong2* totals [[buffer(4)]],
+                        uint2 group [[threadgroup_position_in_grid]],
+                        uint tid [[thread_index_in_threadgroup]],
+                        uint lane [[thread_index_in_simdgroup]],
+                        uint simd [[simdgroup_index_in_threadgroup]]) {
   ulong row = ulong(group.x) * 256 + tid, base = ulong(group.y) * p.rows;
   XGBDouble area{0};
   if (row < p.rows && (row + 1 == p.rows || sorted[base + row].x != sorted[base + row + 1].x)) {
@@ -2953,16 +2951,81 @@ kernel void xgb_pr_area(device const uint2* sorted [[buffer(0)]],
     }
     ulong2 prev = start ? prefix[base + start - 1] : ulong2(0), end = prefix[base + row];
     using namespace xgb_survival;
-    D total{prefix[base + p.rows - 1].y};
+    D negative{totals[group.y].x}, total{totals[group.y].y};
     D fp0{prev.x}, tp0{prev.y}, fp1{end.x}, tp1{end.y};
-    if (total > zero && D{prefix[base + p.rows - 1].x} > zero && !xgb_deq(tp0, tp1)) {
-      area = xgb_pr_integral(fp0, fp1, tp0, tp1, total);
-    }
+    if (negative < zero || xgb_dzero(negative) || total < zero || xgb_dzero(total))
+      area = D{0x7ff8000000000000ul};
+    else
+      area = xgb_cuda_pr_integral(fp0, fp1, tp0, tp1, total);
   }
   threadgroup int4 bounds[8];
   threadgroup ulong2 sums[8];
   ulong2 total = xgb_reduce_double_pair(area, {0}, bounds, sums, lane, simd);
   if (simd == 0 && lane == 0) partial[ulong(group.y) * p.blocks + group.x] = total;
+}
+
+struct AUCResultParams {
+  ulong rows;
+  uint targets, precision_recall, aggregate, multiclass;
+};
+// CUDA's curve output and per-output normalization metadata are prepared on GPU.
+// Binary PR's invalid {0,0,0} differs from nonempty multi-output PR's {1,1,NaN}.
+kernel void xgb_auc_result(device const ulong2* prefix [[buffer(0)]],
+                           device const ulong2* areas [[buffer(1)]],
+                           device const ulong2* totals [[buffer(2)]],
+                           device ulong* output [[buffer(3)]],
+                           constant AUCResultParams& p [[buffer(4)]],
+                           uint target [[thread_position_in_grid]]) {
+  using namespace xgb_survival;
+  D fp = zero, tp = zero, area = zero;
+  if (p.rows) {
+    fp = D{prefix[(ulong(target) + 1) * p.rows - 1].x};
+    tp = D{prefix[(ulong(target) + 1) * p.rows - 1].y};
+    area = D{areas[target].x};
+    if (p.precision_recall) {
+      D negative{totals[target].x}, positive{totals[target].y};
+      bool invalid =
+          negative < zero || xgb_dzero(negative) || positive < zero || xgb_dzero(positive);
+      bool multi = p.aggregate || p.multiclass || p.targets > 1;
+      fp = tp = invalid && !multi ? zero : one;
+      if (invalid) area = multi ? D{0x7ff8000000000000ul} : zero;
+    } else if (p.aggregate) {
+      fp = fp * tp;
+      tp = p.multiclass ? tp : one;
+    }
+  }
+  output[ulong(target) * 3] = fp.bits;
+  output[ulong(target) * 3 + 1] = tp.bits;
+  output[ulong(target) * 3 + 2] = area.bits;
+}
+// metric/auc.cu::ScaleOutputs after collective aggregation. A single GPU group
+// performs per-output normalization, weighted reduction and the final ratio.
+kernel void xgb_auc_normalize(device const ulong* input [[buffer(0)]],
+                              device ulong* output [[buffer(1)]],
+                              constant uint& targets [[buffer(2)]],
+                              uint tid [[thread_index_in_threadgroup]],
+                              uint lane [[thread_index_in_simdgroup]],
+                              uint simd [[simdgroup_index_in_threadgroup]]) {
+  using namespace xgb_survival;
+  D score = zero, weight = zero;
+  for (uint t = tid; t < targets; t += 256) {
+    D local{input[ulong(t) * 3]}, w{input[ulong(t) * 3 + 1]}, area{input[ulong(t) * 3 + 2]};
+    if (local > zero) {
+      score = score + (area / local) * w;
+      weight = weight + w;
+    } else {
+      score = D{0x7ff8000000000000ul};
+    }
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 result = xgb_reduce_double_pair(score, weight, bounds, sums, lane, simd);
+  if (!tid) {
+    score = D{result.x};
+    weight = D{result.y};
+    output[0] =
+        (!xgb_dzero(weight) && !IsNaN(score) ? score / weight : D{0x7ff8000000000000ul}).bits;
+  }
 }
 
 struct GroupSortParams {
@@ -4074,25 +4137,6 @@ struct RankingPRParams {
   ulong rows, prediction_stride, label_stride;
   uint groups, weighted;
 };
-
-// metric/auc.h::CalcDeltaPRAUC, preserving CUDA's binary64 operation order.
-// Classification PR retains its stabilized helper above for now.
-inline XGBDouble xgb_cuda_pr_integral(XGBDouble fp0, XGBDouble fp1, XGBDouble tp0, XGBDouble tp1,
-                                      XGBDouble total) {
-  using namespace xgb_survival;
-  D previous = tp0 / total, recall = tp1 / total, a, b;
-  if (!IsNaN(tp0) && !IsNaN(tp1) && xgb_deq(tp0, tp1)) {
-    a = one;
-    b = zero;
-  } else {
-    D h = (fp1 - fp0) / (tp1 - tp0);
-    a = h + one;
-    b = (fp0 - h * tp0) / total;
-  }
-  if (!xgb_dzero(b))
-    return (recall - previous - (b / a) * (Log(a * recall + b) - Log(a * previous + b))) / a;
-  return (recall - previous) / a;
-}
 
 // CUDA computes recall denominators from the original row order independently
 // of the sorted prefix scan. Only the positive total is consumed by the integral.
