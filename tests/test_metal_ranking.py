@@ -1,4 +1,6 @@
 """Ranking sort integration: exact ordering must execute on the GPU."""
+import json
+
 import numpy as np
 import pytest
 import xgboost as xgb
@@ -156,22 +158,30 @@ def test_ndcg_linear_cache_and_reuse(metal):
 
 
 @pytest.mark.parametrize("objective", ["rank:pairwise", "rank:ndcg", "rank:map"])
-def test_unbiased_gradient_path_is_explicit(metal, objective):
+@pytest.mark.parametrize("method", ["topk", "mean"])
+@pytest.mark.parametrize("query_size", [32, 4097])
+def test_unbiased_gradient_and_bias_updates(metal, objective, method, query_size):
     rng = np.random.default_rng(913)
-    x = rng.normal(size=(96, 4)).astype(np.float32)
-    labels = np.tile(np.r_[np.ones(8), np.zeros(24)], 3).astype(np.float32)
-    d = xgb.DMatrix(x, label=labels, group=[32, 32, 32], nthread=2)
+    x = rng.normal(size=(3 * query_size, 4)).astype(np.float32)
+    labels = np.tile(np.r_[np.ones(4), np.zeros(query_size - 4)], 3).astype(np.float32)
+    d = xgb.DMatrix(x, label=labels, group=[query_size] * 3, nthread=2)
     params = dict(objective=objective, tree_method="hist", max_depth=3, nthread=2,
-                  lambdarank_unbiased=True, lambdarank_pair_method="topk",
+                  lambdarank_unbiased=True, lambdarank_pair_method=method,
                   lambdarank_num_pair_per_sample=8, base_score=0)
     cpu = xgb.train(params | {"device": "cpu"}, d, 3)
     before = xgb.metal_info()
     gpu = xgb.train(params | {"device": "mps"}, d, 3)
     after = xgb.metal_info()
     assert after["group_sort_dispatches"] > before["group_sort_dispatches"]
-    # This mode is still an explicit CPU-gradient gap; sorting/cache are Metal.
-    assert after["ranking_gradient_dispatches"] == before["ranking_gradient_dispatches"]
+    assert after["ranking_gradient_dispatches"] - before["ranking_gradient_dispatches"] == 3
+    assert after["ranking_bias_dispatches"] - before["ranking_bias_dispatches"] == 3
     np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+    cpu_state = json.loads(cpu.save_config())["learner"]["objective"]
+    gpu_state = json.loads(gpu.save_config())["learner"]["objective"]
+    for key in ["ti+", "tj-"]:
+        np.testing.assert_allclose(gpu_state[key], cpu_state[key], rtol=2e-5, atol=2e-6)
+    assert not np.allclose(gpu_state["ti+"], 1)
+
 
 
 def test_mean_ranking_rounding_feedback(metal):

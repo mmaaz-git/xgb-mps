@@ -200,6 +200,7 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ranking_cache_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.ranking_cache_gpu_time_ns)};
   info["ranking_gradient_dispatches"] = Integer{static_cast<std::int64_t>(stats.ranking_gradient_dispatches)};
   info["ranking_gradient_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.ranking_gradient_gpu_time_ns)};
+  info["ranking_bias_dispatches"] = Integer{static_cast<std::int64_t>(stats.ranking_bias_dispatches)};
   info["ranking_pairs"] = Integer{static_cast<std::int64_t>(stats.ranking_pairs)};
   info["ranking_pair_batches"] = Integer{static_cast<std::int64_t>(stats.ranking_pair_batches)};
   info["roc_auc_dispatches"] = Integer{static_cast<std::int64_t>(stats.roc_auc_dispatches)};

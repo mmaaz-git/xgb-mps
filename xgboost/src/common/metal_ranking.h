@@ -29,14 +29,21 @@ struct RankingSums {
   double score, weight;
 };
 enum class RankingLossKind : std::uint32_t { kPairwise, kNDCG, kMAP };
-// Biased top-k or mean-sampled LambdaRank. Pair construction, statistics, normalization and
-// FP32 gradient accumulation execute on GPU; output is in original row order.
+struct RankingBias {
+  Span<double> positive, negative;
+  double regularizer{1};
+};
+// Top-k or mean-sampled LambdaRank. Nonempty bias vectors enable unbiased loss
+// and are updated on GPU, then copied back for objective serialization. Pair
+// construction, statistics, normalization and FP32 gradient accumulation execute
+// on GPU; output is in original row order.
 void RankingGradient(RankingLossKind kind, Span<float const> predictions,
                      linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
                      Span<float const> weights, std::uint32_t pairs, bool normalization,
                      bool score_normalization, bool exponential, double weight_norm,
                      Span<double const> discounts, Span<double const> inverse_idcg,
-                     Span<GradientPair> output, bool mean = false, std::uint32_t seed = 0);
+                     Span<GradientPair> output, bool mean = false, std::uint32_t seed = 0,
+                     RankingBias bias = {});
 // GPU sort and weighted query scoring in one command. NDCG uses the existing
 // cache's discounts and inverse ideal gains. Caller validates label semantics.
 RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const> predictions,

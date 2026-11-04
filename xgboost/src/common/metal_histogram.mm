@@ -48,7 +48,7 @@ std::atomic<std::uint64_t> pr_auc_dispatches{0}, pr_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> group_sort_dispatches{0}, group_sort_gpu_time_ns{0};
 std::atomic<std::uint64_t> ranking_metric_dispatches{0}, ranking_metric_gpu_time_ns{0};
 std::atomic<std::uint64_t> ranking_gradient_dispatches{0}, ranking_gradient_gpu_time_ns{0},
-    ranking_pairs{0}, ranking_pair_batches{0};
+    ranking_pairs{0}, ranking_pair_batches{0}, ranking_bias_dispatches{0};
 std::atomic<std::uint64_t> ranking_label_dispatches{0}, ranking_label_gpu_time_ns{0},
     ranking_cache_dispatches{0}, ranking_cache_gpu_time_ns{0};
 std::atomic<std::uint64_t> float_sum_dispatches{0}, float_sum_gpu_time_ns{0};
@@ -118,7 +118,8 @@ class Runtime {
   id<MTLComputePipelineState> ranking_labels_pipeline, ndcg_discount_pipeline, ndcg_ideal_pipeline;
   id<MTLComputePipelineState> ranking_map_stats_pipeline, ranking_pairs_pipeline,
       ranking_normalize_pipeline, ranking_gather_pipeline, ranking_mean_labels_pipeline,
-      ranking_mean_sample_pipeline, ranking_mean_gather_pipeline;
+      ranking_mean_sample_pipeline, ranking_mean_gather_pipeline, ranking_bias_sum_pipeline,
+      ranking_bias_update_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
@@ -221,6 +222,8 @@ class Runtime {
       ranking_mean_labels_pipeline = make_pipeline(@"xgb_ranking_mean_labels");
       ranking_mean_sample_pipeline = make_pipeline(@"xgb_ranking_mean_sample");
       ranking_mean_gather_pipeline = make_pipeline(@"xgb_ranking_mean_gather");
+      ranking_bias_sum_pipeline = make_pipeline(@"xgb_ranking_bias_sum");
+      ranking_bias_update_pipeline = make_pipeline(@"xgb_ranking_bias_update");
       prefix_double_pair_pipeline = make_pipeline(@"xgb_prefix_double_pair");
       prefix_double_pair_add_pipeline = make_pipeline(@"xgb_prefix_double_pair_add");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
@@ -984,7 +987,8 @@ Statistics GetStatistics() {
           ranking_gradient_dispatches.load(std::memory_order_relaxed),
           ranking_gradient_gpu_time_ns.load(std::memory_order_relaxed),
           ranking_pairs.load(std::memory_order_relaxed),
-          ranking_pair_batches.load(std::memory_order_relaxed)};
+          ranking_pair_batches.load(std::memory_order_relaxed),
+          ranking_bias_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1599,10 +1603,13 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
                       Span<float const> weights, std::uint32_t pairs, bool normalization,
                       bool score_normalization, bool exponential, double weight_norm,
                       Span<double const> discounts, Span<double const> inverse_idcg,
-                      Span<GradientPair> output, bool mean, std::uint32_t seed) {
+                      Span<GradientPair> output, bool mean, std::uint32_t seed, RankingBias bias) {
   auto values = linalg::MakeTensorView(DeviceOrd::CPU(), predictions, predictions.size());
   auto max_group_size = CheckGroupSort(values, groups);
   auto n_groups = groups.size() - 1;
+  CHECK_EQ(bias.positive.size(), bias.negative.size());
+  CHECK_LE(bias.positive.size(), std::numeric_limits<std::uint32_t>::max());
+  auto positions = static_cast<std::uint32_t>(bias.positive.size());
   CHECK_GE(pairs, 1);
   CHECK_EQ(labels.Size(), predictions.size());
   CHECK_EQ(output.size(), predictions.size());
@@ -1632,7 +1639,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
   // Host work is query-size/launch metadata only. Actual pair indices, labels
   // and gradients are generated on GPU. Reuse a 64 MiB pair buffer across
   // batches; a single larger query is allowed up to the device buffer limit.
-  auto budget_pairs = (64ull << 20) / (mean ? 24 : sizeof(GradientPair));
+  auto budget_pairs = (64ull << 20) / (sizeof(GradientPair) + (mean ? 16 : 0) + (positions ? 16 : 0));
   std::vector<std::uint32_t> batches{0};
   std::uint64_t max_pairs = 0;
   for (std::size_t g = 0; g < n_groups; ++g) {
@@ -1655,6 +1662,11 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
     auto discount = Upload(rt, discounts.data(), discounts.size_bytes());
     auto inverse = Upload(rt, inverse_idcg.data(), inverse_idcg.size_bytes());
     auto pair_buffer = Allocate(rt, max_pairs * sizeof(GradientPair));
+    auto bias_pair = Allocate(rt, positions ? max_pairs * 16 : 16);
+    auto bias_row = Allocate(rt, positions ? predictions.size() * 16 : 16);
+    auto bias_sum = Allocate(rt, positions ? positions * 16ull : 16);
+    auto bias_positive = Upload(rt, bias.positive.data(), bias.positive.size_bytes());
+    auto bias_negative = Upload(rt, bias.negative.data(), bias.negative.size_bytes());
     // Each sampled pair has two incidence nodes. A query's single generator
     // appends them in CPU order; rows can then accumulate independently.
     if (mean) CHECK_LE(max_pairs, (std::numeric_limits<std::uint32_t>::max() - 1ull) / 2);
@@ -1709,11 +1721,11 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
         std::uint64_t rows, label_stride, pair_base, tile_base;
         std::uint32_t group_begin, group_end, row_begin, kind;
         std::uint32_t normalized, score_normalized, exponential, weighted;
-        std::uint32_t weight_norm, mean, seed, padding;
+        std::uint32_t weight_norm, mean, seed, positions;
       } p{predictions.size(), labels.Stride(0), tasks[begin].pair_begin, tasks[begin].tile_begin,
            begin, end, groups[begin], static_cast<std::uint32_t>(kind),
            static_cast<std::uint32_t>(normalization), static_cast<std::uint32_t>(score_normalization),
-           static_cast<std::uint32_t>(exponential), static_cast<std::uint32_t>(!weights.empty()), norm_bits, static_cast<std::uint32_t>(mean), seed, 0};
+           static_cast<std::uint32_t>(exponential), static_cast<std::uint32_t>(!weights.empty()), norm_bits, static_cast<std::uint32_t>(mean), seed, positions};
       static_assert(sizeof(p) == 80);
       if (mean) {
         auto e = [command computeCommandEncoder];
@@ -1746,6 +1758,9 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
         [e setBuffer:pair_buffer offset:0 atIndex:7];
         [e setBytes:&p length:sizeof(p) atIndex:8];
         [e setBuffer:sampled offset:0 atIndex:9];
+        [e setBuffer:bias_pair offset:0 atIndex:10];
+        [e setBuffer:bias_positive offset:0 atIndex:11];
+        [e setBuffer:bias_negative offset:0 atIndex:12];
         [e dispatchThreadgroups:MTLSizeMake(tiles, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [e endEncoding];
       }
@@ -1775,14 +1790,46 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
           [e setBuffer:heads offset:0 atIndex:7];
           [e setBuffer:links offset:0 atIndex:8];
         }
+        [e setBuffer:bias_pair offset:0 atIndex:9];
+        [e setBuffer:bias_row offset:0 atIndex:10];
         [e dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [e endEncoding];
       }
+    }
+    if (positions) {
+      struct {
+        std::uint32_t groups, positions;
+        double regularizer;
+      } p{static_cast<std::uint32_t>(n_groups), positions, bias.regularizer};
+      static_assert(sizeof(p) == 16);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.ranking_bias_sum_pipeline];
+      [e setBuffer:bias_row offset:0 atIndex:0];
+      [e setBuffer:offsets offset:0 atIndex:1];
+      [e setBuffer:bias_sum offset:0 atIndex:2];
+      [e setBytes:&p length:sizeof(p) atIndex:3];
+      [e dispatchThreads:MTLSizeMake(positions, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+      [e endEncoding];
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.ranking_bias_update_pipeline];
+      [e setBuffer:bias_sum offset:0 atIndex:0];
+      [e setBuffer:bias_positive offset:0 atIndex:1];
+      [e setBuffer:bias_negative offset:0 atIndex:2];
+      [e setBytes:&p length:sizeof(p) atIndex:3];
+      [e dispatchThreads:MTLSizeMake(positions, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+      [e endEncoding];
     }
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
     std::memcpy(output.data(), result.contents, output.size_bytes());
+    if (positions) {
+      std::memcpy(bias.positive.data(), bias_positive.contents, bias.positive.size_bytes());
+      std::memcpy(bias.negative.data(), bias_negative.contents, bias.negative.size_bytes());
+      ranking_bias_dispatches.fetch_add(1, std::memory_order_relaxed);
+    }
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     RecordGroupSort(order.radix, elapsed);
     if (mean) RecordGroupSort(label_order.radix, 0);

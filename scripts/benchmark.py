@@ -50,6 +50,7 @@ def main():
     parser.add_argument("--max-depth", type=int, default=6)
     parser.add_argument("--query-size", type=int, default=128, help="Rows per query for ranking objectives")
     parser.add_argument("--rank-pairs", type=int, default=32)
+    parser.add_argument("--unbiased", action="store_true", help="Enable ranking position-bias correction")
     parser.add_argument("--rank-method", choices=["topk", "mean"], default="topk")
     parser.add_argument("--progress-every", type=int, default=0)
     parser.add_argument("--float32-generation", action="store_true",
@@ -68,7 +69,8 @@ def main():
     p = dict(tree_method="hist", objective=args.objective, max_depth=args.max_depth,
              max_bin=256, nthread=args.threads, seed=7, subsample=args.subsample)
     if is_ranking:
-        p.update(lambdarank_pair_method=args.rank_method, lambdarank_num_pair_per_sample=args.rank_pairs)
+        p.update(lambdarank_pair_method=args.rank_method, lambdarank_num_pair_per_sample=args.rank_pairs,
+                 lambdarank_unbiased=args.unbiased)
     if args.eval_metric:
         p["eval_metric"] = args.eval_metric
     if args.objective == "reg:quantileerror":
@@ -142,6 +144,7 @@ def main():
                     assert stats["roc_auc_dispatches"] == (args.rounds if device == "mps" else 0)
                 if is_ranking:
                     assert stats["ranking_gradient_dispatches"] == (args.rounds + 1 if device == "mps" else 0)
+                    assert stats["ranking_bias_dispatches"] == (args.rounds + 1 if device == "mps" and args.unbiased else 0)
                 completed = after["histogram_dispatches"] - before["histogram_dispatches"]
                 gpu_seconds = (after.get("gpu_time_ns", 0) - before.get("gpu_time_ns", 0)) / 1e9
                 assert (completed > 0) == (device == "mps")

@@ -157,7 +157,7 @@ class LambdaRankObj : public FitIntercept {
   bool TryMetalGradient(common::metal::RankingLossKind kind, std::uint32_t seed,
                          HostDeviceVector<float> const& predt, MetaInfo const& info,
                          linalg::Matrix<GradientPair>* out_gpair) {
-    if (!ctx_->IsMPS() || param_.lambdarank_unbiased) return false;
+    if (!ctx_->IsMPS()) return false;
     CHECK_EQ(info.labels.Shape(1), 1) << "multi-target for learning to rank is not yet supported.";
     out_gpair->SetDevice(DeviceOrd::CPU());
     out_gpair->Reshape(info.num_row_, 1);
@@ -171,7 +171,10 @@ class LambdaRankObj : public FitIntercept {
         p_cache_->DataGroupPtr(ctx_), info.weights_.ConstHostSpan(), param_.NumPair(),
         param_.lambdarank_normalization, param_.lambdarank_score_normalization,
         param_.ndcg_exp_gain, p_cache_->WeightNorm(), discounts, inverse,
-        out_gpair->HostView().Values(), param_.IsMean(), seed);
+        out_gpair->HostView().Values(), param_.IsMean(), seed,
+        {param_.lambdarank_unbiased ? ti_plus_.HostView().Values() : common::Span<double>{},
+         param_.lambdarank_unbiased ? tj_minus_.HostView().Values() : common::Span<double>{},
+         param_.Regularizer()});
     return true;
   }
 #endif
@@ -333,16 +336,17 @@ class LambdaRankObj : public FitIntercept {
       CHECK_EQ(info.weights_.Size(), n_groups) << error::GroupWeight();
     }
 
-    if ((ti_plus_.Empty() || li_full_.Empty()) && param_.lambdarank_unbiased) {
+    if ((ti_plus_.Empty() || (!ctx_->IsMPS() && li_full_.Empty())) && param_.lambdarank_unbiased) {
       CHECK_EQ(iter, 0);
       ti_plus_ = linalg::Constant<double>(ctx_, 1.0, p_cache_->MaxPositionSize());
       tj_minus_ = linalg::Constant<double>(ctx_, 1.0, p_cache_->MaxPositionSize());
 
-      li_ = linalg::Zeros<double>(ctx_, p_cache_->MaxPositionSize());
-      lj_ = linalg::Zeros<double>(ctx_, p_cache_->MaxPositionSize());
-
-      li_full_ = linalg::Zeros<double>(ctx_, info.num_row_);
-      lj_full_ = linalg::Zeros<double>(ctx_, info.num_row_);
+      if (!ctx_->IsMPS()) {
+        li_ = linalg::Zeros<double>(ctx_, p_cache_->MaxPositionSize());
+        lj_ = linalg::Zeros<double>(ctx_, p_cache_->MaxPositionSize());
+        li_full_ = linalg::Zeros<double>(ctx_, info.num_row_);
+        lj_full_ = linalg::Zeros<double>(ctx_, info.num_row_);
+      }
     }
     std::uint32_t seed{0};
     if (param_.IsMean()) {
@@ -350,7 +354,7 @@ class LambdaRankObj : public FitIntercept {
     }
     static_cast<Loss*>(this)->GetGradientImpl(seed, predt, info, out_gpair);
 
-    if (param_.lambdarank_unbiased) {
+    if (param_.lambdarank_unbiased && !ctx_->IsMPS()) {
       this->UpdatePositionBias();
     }
   }

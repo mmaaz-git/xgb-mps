@@ -208,10 +208,11 @@ def metal_info() -> dict:
     cover ranking label checks. ``ranking_cache_dispatches`` /
     ``ranking_cache_gpu_time_ns`` cover GPU NDCG cache initialization and overlap
     its grouped-sort duration. ``ranking_gradient_dispatches`` counts completed
-    biased top-k/mean gradient calls; ``ranking_pairs`` includes zero-contribution
+    top-k/mean gradient calls; ``ranking_pairs`` includes zero-contribution
     candidate pairs and ``ranking_pair_batches`` counts storage batches.
     ``ranking_gradient_gpu_time_ns`` overlaps grouped-sort and objective durations.
-    GPU durations exclude host work.
+    ``ranking_bias_dispatches`` counts unbiased position-bias updates; their time
+    is included in ranking-gradient duration. GPU durations exclude host work.
     Histogram ``staging_time_ns``, ``wait_time_ns``, and ``readback_time_ns`` measure
     host wall time; wait time overlaps GPU duration and must not be added to it.
     ``survival_cpu_corrections`` and ``survival_cpu_time_ns`` report the explicit

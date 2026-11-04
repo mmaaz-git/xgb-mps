@@ -3210,7 +3210,7 @@ struct RankingGradientParams {
   ulong rows, label_stride, pair_base, tile_base;
   uint group_begin, group_end, row_begin, kind;
   uint normalized, score_normalized, exponential, weighted;
-  uint weight_norm, mean, seed, padding;
+  uint weight_norm, mean, seed, positions;
 };
 inline ulong xgb_rank_pair_start(ulong i, ulong count) { return i * count - i * (i + 1) / 2; }
 
@@ -3274,6 +3274,9 @@ kernel void xgb_ranking_pairs(device const uint2* records [[buffer(0)]],
                                device uint2* pairs [[buffer(7)]],
                                constant RankingGradientParams& p [[buffer(8)]],
                                device const uint2* sampled [[buffer(9)]],
+                               device ulong2* bias_pair [[buffer(10)]],
+                               device const ulong* positive [[buffer(11)]],
+                               device const ulong* negative [[buffer(12)]],
                                uint tile [[threadgroup_position_in_grid]],
                                uint tid [[thread_index_in_threadgroup]]) {
   threadgroup uint query;
@@ -3311,6 +3314,7 @@ kernel void xgb_ranking_pairs(device const uint2* records [[buffer(0)]],
   using namespace xgb_survival;
   D yi = From(as_type<float>(labels[ulong(row_i) * p.label_stride]));
   D yj = From(as_type<float>(labels[ulong(row_j) * p.label_stride]));
+  if (p.positions) bias_pair[output] = ulong2(0);
   if (xgb_deq(yi, yj)) { pairs[output] = uint2(0); return; }
   bool swap = yi < yj;
   uint high = swap ? row_j : row_i, low = swap ? row_i : row_j;
@@ -3341,6 +3345,22 @@ kernel void xgb_ranking_pairs(device const uint2* records [[buffer(0)]],
   D hessian = sigmoid * (one - sigmoid), epsilon{0x3c9cd2b297d889bcul};  // CPU 1e-16
   if (hessian < epsilon) hessian = epsilon;
   hessian = (hessian * delta) * two;
+  uint high_position = high - task.begin, low_position = low - task.begin;
+  if (high_position < p.positions && low_position < p.positions) {
+    D tp{positive[high_position]}, tm{negative[low_position]};
+    if ((tp > epsilon || xgb_deq(tp, epsilon)) && (tm > epsilon || xgb_deq(tm, epsilon))) {
+      D denominator = tp * tm;
+      gradient = gradient / denominator;
+      hessian = hessian / denominator;
+    }
+    D cost = Log(one / (one - sigmoid)) * delta;
+    D li = (tm > epsilon || xgb_deq(tm, epsilon)) ? cost / tm : zero;
+    D lj = (tp > epsilon || xgb_deq(tp, epsilon)) ? cost / tp : zero;
+    // Costs are nonnegative. The sign bit tags the irrelevant endpoint, so
+    // the row gather can accumulate li/lj without repeating label comparisons.
+    ulong relevant = li.bits & ~kDoubleSign, irrelevant = lj.bits | kDoubleSign;
+    bias_pair[output] = swap ? ulong2(irrelevant, relevant) : ulong2(relevant, irrelevant);
+  }
   uint g = as_type<uint>(xgb_dto_float(gradient));
   pairs[output] = uint2(swap ? g ^ 0x80000000u : g, as_type<uint>(xgb_dto_float(hessian)));
 }
@@ -3378,6 +3398,14 @@ kernel void xgb_ranking_normalize(device const uint2* pairs [[buffer(0)]],
   }
 }
 
+inline void xgb_rank_add_bias(ulong tagged, thread xgb_survival::D& li,
+                              thread xgb_survival::D& lj) {
+  using namespace xgb_survival;
+  D value{tagged & ~kDoubleSign};
+  if (tagged & kDoubleSign) lj = lj + value;
+  else li = li + value;
+}
+
 kernel void xgb_ranking_gather(device const uint2* records [[buffer(0)]],
                                 device const RankingPairTask* tasks [[buffer(1)]],
                                 device const uint2* pairs [[buffer(2)]],
@@ -3385,6 +3413,8 @@ kernel void xgb_ranking_gather(device const uint2* records [[buffer(0)]],
                                 device const uint* weights [[buffer(4)]],
                                 device uint2* output [[buffer(5)]],
                                 constant RankingGradientParams& p [[buffer(6)]],
+                                device const ulong2* bias_pair [[buffer(9)]],
+                                device ulong2* bias_row [[buffer(10)]],
                                 uint tid [[thread_position_in_grid]]) {
   ulong index = ulong(p.row_begin) + tid;
   uint2 record = records[index];
@@ -3392,18 +3422,22 @@ kernel void xgb_ranking_gather(device const uint2* records [[buffer(0)]],
   RankingPairTask task = tasks[group];
   uint rank = uint(index - task.begin);
   uint2 sum(0);
+  xgb_survival::D li = xgb_survival::zero, lj = xgb_survival::zero;
   for (uint i = 0; i < min(rank, task.topk); ++i) {
     ulong offset = task.pair_begin - p.pair_base + xgb_rank_pair_start(i, task.count) + rank - i - 1;
     uint2 value = pairs[offset];
+    if (p.positions) xgb_rank_add_bias(bias_pair[offset].y, li, lj);
     sum = uint2(xgb_rank_fadd(sum.x, value.x ^ 0x80000000u), xgb_rank_fadd(sum.y, value.y));
   }
   if (rank < task.topk) {
     for (ulong j = ulong(rank) + 1; j < task.count; ++j) {
       ulong offset = task.pair_begin - p.pair_base + xgb_rank_pair_start(rank, task.count) + j - rank - 1;
       uint2 value = pairs[offset];
+      if (p.positions) xgb_rank_add_bias(bias_pair[offset].x, li, lj);
       sum = uint2(xgb_rank_fadd(sum.x, value.x), xgb_rank_fadd(sum.y, value.y));
     }
   }
+  if (p.positions) bias_row[record.y] = ulong2(li.bits, lj.bits);
   // GradientPair::operator* accepts float, even when callers pass a double.
   uint w = p.weighted ? weights[group] : 0x3f800000u, norm = norms[group];
   sum = uint2(xgb_rank_fmul(sum.x, norm), xgb_rank_fmul(sum.y, norm));
@@ -3501,15 +3535,57 @@ kernel void xgb_ranking_mean_gather(device const uint2* records [[buffer(0)]],
                                     constant RankingGradientParams& p [[buffer(6)]],
                                     device const uint* heads [[buffer(7)]],
                                     device const uint* links [[buffer(8)]],
+                                    device const ulong2* bias_pair [[buffer(9)]],
+                                    device ulong2* bias_row [[buffer(10)]],
                                     uint tid [[thread_position_in_grid]]) {
   ulong index = ulong(p.row_begin) + tid;
   uint2 record = records[index], sum(0);
+  xgb_survival::D li = xgb_survival::zero, lj = xgb_survival::zero;
   for (uint node = heads[index]; node != 0xffffffffu; node = links[node]) {
     uint2 value = pairs[node / 2];
+    if (p.positions) xgb_rank_add_bias(bias_pair[node / 2][node & 1], li, lj);
     sum = uint2(xgb_rank_fadd(sum.x, value.x ^ ((node & 1) ? 0x80000000u : 0)), xgb_rank_fadd(sum.y, value.y));
   }
+  if (p.positions) bias_row[record.y] = ulong2(li.bits, lj.bits);
   uint w = p.weighted ? weights[record.x] : 0x3f800000u, norm = norms[record.x];
   sum = uint2(xgb_rank_fmul(sum.x, norm), xgb_rank_fmul(sum.y, norm));
   sum = uint2(xgb_rank_fmul(sum.x, w), xgb_rank_fmul(sum.y, w));
   output[record.y] = uint2(xgb_rank_fmul(sum.x, p.weight_norm), xgb_rank_fmul(sum.y, p.weight_norm));
+}
+
+
+struct RankingBiasParams { uint groups, positions; ulong regularizer; };
+// Preserve CPU query order; independent original-list positions run in parallel.
+kernel void xgb_ranking_bias_sum(device const ulong2* rows [[buffer(0)]],
+                                  device const uint* groups [[buffer(1)]],
+                                  device ulong2* sums [[buffer(2)]],
+                                  constant RankingBiasParams& p [[buffer(3)]],
+                                  uint position [[thread_position_in_grid]]) {
+  using namespace xgb_survival;
+  D li = zero, lj = zero;
+  for (uint group = 0; group < p.groups; ++group) {
+    uint begin = groups[group], count = groups[group + 1] - begin;
+    if (position < count) {
+      ulong2 value = rows[ulong(begin) + position];
+      li = li + D{value.x}; lj = lj + D{value.y};
+    }
+  }
+  sums[position] = ulong2(li.bits, lj.bits);
+}
+inline xgb_survival::D xgb_rank_pow(xgb_survival::D x, xgb_survival::D exponent) {
+  using namespace xgb_survival;
+  if (xgb_deq(exponent, zero) || xgb_deq(x, one)) return one;
+  if (xgb_deq(exponent, one)) return x;
+  if (xgb_deq(x, zero)) return zero;  // regularizer is nonnegative
+  return Exp(Log(x) * exponent);
+}
+kernel void xgb_ranking_bias_update(device const ulong2* sums [[buffer(0)]],
+                                     device ulong* positive [[buffer(1)]],
+                                     device ulong* negative [[buffer(2)]],
+                                     constant RankingBiasParams& p [[buffer(3)]],
+                                     uint position [[thread_position_in_grid]]) {
+  using namespace xgb_survival;
+  D li0{sums[0].x}, lj0{sums[0].y}, epsilon{0x3c9cd2b297d889bcul}, regularizer{p.regularizer};
+  if ((li0 > epsilon || xgb_deq(li0, epsilon))) positive[position] = xgb_rank_pow(D{sums[position].x} / li0, regularizer).bits;
+  if ((lj0 > epsilon || xgb_deq(lj0, epsilon))) negative[position] = xgb_rank_pow(D{sums[position].y} / lj0, regularizer).bits;
 }

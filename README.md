@@ -66,7 +66,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
-| Ranking training | Stable grouped sorting, NDCG cache/label checks and biased top-k and mean-sampled pairwise/NDCG/MAP pair construction, gradients and normalization on Metal; unbiased gradients remain CPU |
+| Ranking training | Stable grouped sorting, NDCG cache/label checks and top-k and mean-sampled pairwise/NDCG/MAP pairs, gradients and normalization, including unbiased loss corrections and position-bias updates, on Metal |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision; GPU label validation and NDCG cache initialization |
@@ -1043,3 +1043,40 @@ is `0.000506`, RMS difference is `7.09e-6`, and every round's NDCG@10 agrees wit
 [run without evaluation](validation/benchmark-ranking-mean-pairwise-v2-m3.json)
 retains the passing 100,000-row case and the same million-row failure. Gradient
 and ranking-score equivalence do not guarantee identical long-run predictions.
+
+
+### Unbiased ranking losses and position bias
+
+Unbiased pairwise/NDCG/MAP now calculate loss corrections, per-pair bias costs,
+ordered per-row bias statistics, cross-query sums and regularized bias updates
+on Metal. Both top-k and mean sampling are supported. Only the small updated
+bias vectors return to the objective's host-owned state for serialization;
+large CPU bias-statistic arrays are no longer allocated for MPS. The new
+`ranking_bias_dispatches` counter verifies completed GPU bias updates. Their GPU
+duration is included in the fused ranking-gradient command.
+
+Validation passes **583 Python tests**, all native suites under Metal API
+Validation and CPU-only checks, with one skipped Python test. A new native suite
+compares **2,592 successive objective calls / 852,768 rows / 118,368 serialized
+bias values** across objectives, sampling methods, normalization switches and
+bias regularizers. Maximum scaled gradient error is `5.73e-6`, bias error
+`2.51e-7`. Four additional calls on **524,288 rows each** exercise two top-k or
+three mean storage batches, including a second iteration using the updated bias.
+Their maximum scaled gradient error is `3.19e-7`. Integration tests check that
+bias state changes and agrees with CPU for short and 4,097-row queries.
+
+The [NDCG](validation/benchmark-ranking-unbiased-ndcg-v1-m3.json) and
+[MAP](validation/benchmark-ranking-unbiased-map-v1-m3.json) million-row benchmarks
+pass strict prediction checks (maximum difference `2.39e-7`). With the same
+mean-sampling configuration and NDCG@10 evaluation as above, NDCG takes **2.105 s
+CPU / 3.648 s MPS (0.58×)** and MAP **2.286 s / 3.765 s (0.61×)**. These are slower
+than CPU; the reports also retain slower 100,000-row cases.
+
+**The [million-row unbiased mean-pairwise benchmark](validation/benchmark-ranking-unbiased-pairwise-v1-m3.json)
+fails strict prediction equivalence:** maximum difference `0.421501`, RMS
+`0.047376`, affecting 999,723 predictions under the configured tolerance.
+Its NDCG@10 histories differ by at most `8.11e-5`; final CPU/MPS scores are
+0.994216/0.994297. The 100,000-row case passes with maximum difference `4.48e-6`.
+This failed result remains published and is not treated as a validated speedup.
+Long-run mean-pairwise numerical agreement remains open work. Grouped ROC/PR-AUC
+is still the remaining ranking-metric CPU path.

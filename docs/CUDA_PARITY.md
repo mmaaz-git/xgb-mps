@@ -21,7 +21,7 @@ listed below. This is not yet a complete GPU backend.
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means and Newton stump fitting use Metal; label validation and other objective-specific initialization remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means/stump fitting and initial quantile estimation use Metal; other initialization work remains CPU |
-| Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; biased top-k/mean pair construction, gradients, MAP prefixes and query normalization execute on Metal. Unbiased gradients and bias updates remain CPU |
+| Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; biased top-k/mean pair construction, gradients, MAP prefixes and query normalization execute on Metal. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients and prediction/base-score transforms; GPU identifies small censored probabilities for original CPU gradient recomputation, exposed through correction counters/time. Full GPU coverage remains incomplete |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; other initialization work and leaf fitting remain CPU |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; CPU input views stage dense chunks and recode categories |
@@ -113,7 +113,7 @@ Empty-query and top-k-zero native tests preserve CPU NaN/fallback behavior; the
 existing public metric finalization still reports invalid scores.
 
 The fused metric command reads back only score and weight totals. NDCG cache creation
-also executes on Metal; unbiased ranking gradients and grouped AUC remain unfinished;
+also executes on Metal; grouped AUC remains unfinished;
 GPU metric dispatch does not imply those operations have been ported.
 
 
@@ -140,7 +140,7 @@ preserves subnormal inputs/results that native Metal arithmetic can flush.
 Parallel query normalization and MAP prefixes can change low-order rounding;
 CPU equivalence is tested with FP32 tolerances, not a universal bitwise guarantee.
 Candidate-pair buffers are batched, and output gradients return to existing
-host-owned storage. Unbiased loss/bias updates and fully resident training state are still open work.
+host-owned storage. Fully resident training state remains open work.
 
 
 Mean sampling matches Apple libc++ engine/distribution sequences and stable label
@@ -153,3 +153,13 @@ can amplify small differences in mean-pairwise training. A million-row, 20-round
 benchmark fails the strict per-prediction check on 0.1544% of rows (maximum
 0.000506, RMS 7.09e-6), while NDCG@10 histories agree within 4e-15. This limitation
 is retained in the published failed report; strict checks were not weakened.
+
+
+Unbiased loss corrections and bias updates now execute on GPU. Per-row cost
+accumulation and cross-query sums retain CPU order; logarithms/powers use software
+binary64. Small bias vectors return to host for serialization. Native multi-step
+and multi-batch tests validate gradients and state. A large unbiased mean-pairwise
+training case still fails strict prediction equivalence (maximum 0.421501, RMS
+0.047376), although NDCG@10 histories agree within 8.11e-5. Its failed report is
+published; unbiased NDCG/MAP cases pass strict prediction checks. This is an
+explicit numerical limitation, not an unported CPU-gradient fallback.
