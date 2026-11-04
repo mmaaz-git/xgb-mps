@@ -144,7 +144,7 @@ def query(a, bins):
     return out
 
 
-def cuts(data, bins, hessian=None, page_rows=None, csr=None):
+def cuts(data, bins, hessian=None, page_rows=None, csr=None, adapter=False):
     csr = data.get_data() if csr is None else csr
     types = data.feature_types or ["q"] * data.num_col()
     weights = data.get_weight()
@@ -159,12 +159,22 @@ def cuts(data, bins, hessian=None, page_rows=None, csr=None):
     base = 0
     for nrows in page_rows:
         page = csr[base:base + nrows]
-        for begin in range(0, page.nnz, 1 << 26):
-            end = min(page.nnz, begin + (1 << 26))
-            first = np.searchsorted(page.indptr, begin, side="right") - 1
-            last = np.searchsorted(page.indptr, end, side="left")
-            rows = max(1, int(last - first))
+        # Adapter windows count raw matrix slots, even when those slots are missing.
+        slots = np.repeat(np.arange(nrows, dtype=np.uint64), np.diff(page.indptr)) * data.num_col() + page.indices if adapter else None
+        extent = nrows * data.num_col() if adapter else page.nnz
+        for slot_begin in range(0, extent, 1 << 26):
+            slot_end = min(extent, slot_begin + (1 << 26))
+            if adapter:
+                rows = max(1, (slot_end - slot_begin + data.num_col() - 1) // data.num_col())
+                begin, end = np.searchsorted(slots, [slot_begin, slot_end])
+            else:
+                begin, end = slot_begin, slot_end
+                first = np.searchsorted(page.indptr, begin, side="right") - 1
+                last = np.searchsorted(page.indptr, end, side="left")
+                rows = max(1, int(last - first))
             seen += rows
+            if begin == end:
+                continue
             ids, values = page.indices[begin:end], page.data[begin:end]
             order = np.lexsort((values, ids))
             ids, values = ids[order], values[order]

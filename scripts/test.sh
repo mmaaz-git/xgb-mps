@@ -104,6 +104,14 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_adaptive_api_test
 PYTHONPATH="$PWD/xgboost/python-package" MTL_DEBUG_LAYER=1 .venv/bin/python tests/run_adaptive_collective.py
+echo "Checking CUDA adapter windows, resident sketch integration and direct GPU bin assignment"
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_adapter_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_adapter_api_test
+MTL_DEBUG_LAYER=1 results/metal_adapter_api_test
 echo "Checking GPU raw prediction input, typed strides, masks, bins and recoding"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

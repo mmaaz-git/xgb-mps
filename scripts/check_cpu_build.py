@@ -31,3 +31,35 @@ try:
 finally:
     check(lib.XGBoosterFree(booster))
 print("CPU-only build verified: Metal reports unavailable and device=mps raises a clear error.")
+
+# The new construction selector must be usable for CPU and fail clearly for MPS.
+proxy = ctypes.c_void_p()
+check(lib.XGProxyDMatrixCreate(ctypes.byref(proxy)))
+values = (ctypes.c_float * 2)(1, 2)
+interface = json.dumps({"version": 3, "typestr": "<f4", "shape": [1, 2],
+                        "data": [ctypes.addressof(values), False], "strides": None}).encode()
+state = [False]
+@ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+def reset(_):
+    state[0] = False
+@ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)
+def next_batch(_):
+    if state[0]:
+        return 0
+    state[0] = True
+    return int(lib.XGProxyDMatrixSetDataDense(proxy, interface) == 0)
+try:
+    for device in ["cpu", "mps"]:
+        output = ctypes.c_void_p()
+        config = json.dumps({"device": device, "max_bin": 8, "nthread": 2,
+                             "missing": float("nan")}).encode()
+        status = lib.XGQuantileDMatrixCreateFromCallback(
+            None, proxy, None, reset, next_batch, config, ctypes.byref(output))
+        if device == "cpu":
+            check(status)
+            check(lib.XGDMatrixFree(output))
+        else:
+            assert status != 0 and b"USE_METAL=ON" in lib.XGBGetLastError()
+finally:
+    check(lib.XGDMatrixFree(proxy))
+print("CPU-only quantile construction accepts CPU and rejects MPS explicitly.")

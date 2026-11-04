@@ -23,11 +23,18 @@
 #include "xgboost/data.h"           // for FeatureType, DMatrix
 #include "xgboost/logging.h"
 
+#if defined(XGBOOST_USE_METAL)
+#include "../collective/communicator-inl.h"
+#include "../common/metal_adapter.h"
+#include "../common/metal_cuda_sketch.h"
+#include "../common/metal_sketch.h"
+#endif
+
 namespace xgboost::data {
 IterativeDMatrix::IterativeDMatrix(DataIterHandle iter_handle, DMatrixHandle proxy,
                                    std::shared_ptr<DMatrix> ref, DataIterResetCallback* reset,
                                    XGDMatrixCallbackNext* next, float missing, int nthread,
-                                   bst_bin_t max_bin)
+                                   bst_bin_t max_bin, std::string const& device)
     : proxy_{proxy} {
   // The external iterator, fetch the first batch
   auto iter = DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>{iter_handle, reset, next};
@@ -38,11 +45,16 @@ IterativeDMatrix::IterativeDMatrix(DataIterHandle iter_handle, DMatrixHandle pro
   auto pctx = MakeProxy(proxy_)->Ctx();
 
   Context ctx;
-  ctx.Init(Args{{"nthread", std::to_string(nthread)}, {"device", pctx->DeviceName()}});
+  ctx.Init(Args{{"nthread", std::to_string(nthread)},
+                {"device", device.empty() ? pctx->DeviceName() : device}});
+  CHECK(ctx.IsMPS() ? !pctx->IsCUDA() : ctx.Device() == pctx->Device())
+      << "Construction device must match the input device, except MPS accepts host arrays.";
   // hardcoded parameter.
   BatchParam p{max_bin, tree::TrainParam::DftSparseThreshold()};
 
-  if (ctx.IsCUDA()) {
+  if (ctx.IsMPS()) {
+    this->InitFromMPS(&ctx, p, std::move(iter), missing, ref);
+  } else if (ctx.IsCUDA()) {
     this->InitFromCUDA(&ctx, p, std::move(iter), missing, ref);
   } else {
     this->InitFromCPU(&ctx, p, std::move(iter), missing, ref);
@@ -56,6 +68,141 @@ IterativeDMatrix::IterativeDMatrix(DataIterHandle iter_handle, DMatrixHandle pro
   LOG(INFO) << "Finished constructing the `IterativeDMatrix`: (" << this->Info().num_row_ << ", "
             << this->Info().num_col_ << ", " << this->info_.num_nonzero_ << ").";
 }
+
+#if defined(XGBOOST_USE_METAL)
+namespace {
+// The CUDA adapter frontend uses raw flattened 2^26-slot windows, including
+// missing values and partial boundary rows. Preserve those pruning boundaries.
+template <class Fn>
+void MetalAdapterWindows(Context const* ctx, DMatrixProxy const* proxy, float missing, Fn&& fn) {
+  cpu_impl::DispatchAny<false>(proxy, [&](auto const& adapter) {
+    using A = typename std::decay_t<decltype(adapter)>::element_type;
+    if constexpr (std::is_same_v<A, ArrayAdapter> || std::is_same_v<A, ColumnarAdapter>) {
+      std::vector<std::int32_t> map;
+      enc::MappingView mapping;
+      if constexpr (std::is_same_v<A, ColumnarAdapter>) {
+        if (adapter->HasRefCategorical()) {
+          CatContainer cats{adapter->RefCats(), true};
+          cats.Sort(ctx);
+          auto encoded = ::xgboost::cpu_impl::MakeCatAccessor(ctx, adapter->Cats(), &cats);
+          mapping = std::get<0>(encoded).enc;
+          map = std::move(std::get<1>(encoded));
+        }
+      }
+      auto cols = adapter->NumColumns(), rows = adapter->NumRows();
+      CHECK_GT(cols, 0);
+      CHECK_LE(rows, std::numeric_limits<bst_idx_t>::max() / cols);
+      bst_idx_t total = rows * cols;
+      constexpr bst_idx_t kWindow = 1ULL << 26;
+      for (bst_idx_t begin = 0; begin < total; begin += kWindow) {
+        auto input = common::metal::PrepareAdapter(*adapter, missing, begin,
+                                                   std::min(kWindow, total - begin), mapping);
+        fn(*input);
+      }
+    } else {
+      LOG(FATAL) << "Metal QuantileDMatrix construction currently accepts dense or columnar input.";
+    }
+  });
+}
+}  // namespace
+void IterativeDMatrix::InitFromMPS(
+    Context const* ctx, BatchParam const& p,
+    DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>&& iter, float missing,
+    std::shared_ptr<DMatrix> ref) {
+  CHECK_EQ(collective::GetWorldSize(), 1) << "Distributed Metal sketching is not implemented.";
+  auto proxy = MakeProxy(proxy_);
+  ExternalDataInfo ext;
+  std::vector<FeatureType> types;
+  std::unique_ptr<common::metal::CudaSketch> sketch;
+  do {
+    auto cols = BatchColumns(proxy);
+    auto rows = BatchSamples(proxy);
+    CHECK_GE(cols, 1);
+    auto cats = cpu_impl::BatchCats(proxy);
+    if (!ext.n_batches) {
+      ext.n_features = cols;
+      ext.cats = std::make_shared<CatContainer>(cats, BatchCatsIsRef(proxy));
+      types = ref ? ref->Info().feature_types.ConstHostVector()
+                  : proxy->Info().feature_types.ConstHostVector();
+      CHECK(types.empty() || types.size() == cols);
+      if (!ref) sketch = common::metal::MakeCudaSketch(cols, p.max_bin, types, {});
+    } else {
+      CHECK_EQ(cols, ext.n_features) << "Inconsistent number of columns.";
+      CHECK_EQ(cats.n_total_cats, ext.cats->NumCatsTotal()) << error::InconsistentCategories();
+    }
+    if (sketch) {
+      auto weights = proxy->Info().weights_.ConstHostSpan();
+      std::vector<float> expanded;
+      if (!weights.empty() && proxy->Info().IsRanking()) {
+        expanded = common::metal::MakeSketchWeights(rows, {}, weights, proxy->Info().group_ptr_);
+        weights = expanded;
+      }
+      CHECK(weights.empty() || weights.size() == rows);
+      sketch->SetWeights(weights);
+    }
+    bst_idx_t nnz = 0;
+    MetalAdapterWindows(ctx, proxy, missing, [&](auto const& input) {
+      nnz += input.NonMissing();
+      ext.row_stride = std::max(ext.row_stride, input.RowStride());
+      if (sketch) sketch->Push(input);
+    });
+    ext.batch_nnz.push_back(nnz);
+    ext.nnz += nnz;
+    ext.accumulated_rows += rows;
+    ext.base_rowids.push_back(ext.accumulated_rows);
+    ++ext.n_batches;
+  } while (iter.Next());
+  iter.Reset();
+  ext.SetInfo(ctx, true, &info_);
+  common::HistogramCuts cuts{0};
+  if (ref)
+    GetCutsFromRef(ctx, ref, ext.n_features, p, &cuts);
+  else
+    cuts = common::metal::MakeCudaCuts(sketch->Read(), ext.n_features, p.max_bin, types);
+  sketch.reset();
+  ghist_ = std::make_shared<GHistIndexMatrix>(info_, std::move(cuts), p.max_bin);
+  ghist_->ResizeIndex(ctx, ext.nnz, info_.IsDense());
+  if (info_.IsDense()) ghist_->index.SetBinOffset(ghist_->cut.Ptrs());
+  bst_idx_t row_base = 0, entry_offset = 0, batch = 0;
+  while (iter.Next()) {
+    CHECK_LT(batch, ext.n_batches) << "Different number of batches returned between 2 iterations";
+    auto rows = BatchSamples(proxy);
+    CHECK_EQ(rows, ext.base_rowids[batch + 1] - ext.base_rowids[batch]);
+    CHECK_EQ(BatchColumns(proxy), ext.n_features);
+    auto first = entry_offset;
+    MetalAdapterWindows(ctx, proxy, missing, [&](auto const& input) {
+      input.WriteIndex(types, ghist_.get(), row_base, entry_offset);
+      entry_offset += input.NonMissing();
+    });
+    CHECK_EQ(entry_offset - first, ext.batch_nnz[batch])
+        << "Non-missing counts changed between iterations";
+    proxy->Info().num_row_ = rows;
+    proxy->Info().num_col_ = ext.n_features;
+    proxy->Info().num_nonzero_ = ext.batch_nnz[batch];
+    if (ext.n_batches != 1) info_.Extend(std::move(proxy->Info()), false, true);
+    row_base += rows;
+    ++batch;
+  }
+  CHECK_EQ(batch, ext.n_batches) << "Different number of batches returned between 2 iterations";
+  CHECK_EQ(row_base, ext.accumulated_rows);
+  CHECK_EQ(entry_offset, ext.nnz);
+  if (ext.n_batches == 1) {
+    info_ = std::move(proxy->Info());
+    ext.SetInfo(ctx, false, &info_);
+  }
+  info_.feature_types.HostVector() = types;
+  // Host column representation is required by CPU interoperability in this fork,
+  // as in CUDA's conversion from ELLPACK to a host gradient-index page.
+  ghist_->InitColumns(ctx, p.sparse_thresh);
+  iter.Reset();
+}
+#else
+void IterativeDMatrix::InitFromMPS(Context const*, BatchParam const&,
+                                   DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>&&,
+                                   float, std::shared_ptr<DMatrix>) {
+  LOG(FATAL) << "Metal QuantileDMatrix requires a build with USE_METAL=ON.";
+}
+#endif
 
 void IterativeDMatrix::InitFromCPU(
     Context const* ctx, BatchParam const& p,

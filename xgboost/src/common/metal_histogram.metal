@@ -7412,3 +7412,59 @@ kernel void xgb_prepare_input(
     output[base + f] = xgb_input_recode(v, f, segments, mapping, p);
   }
 }
+
+// CUDA adapter ingestion: the logical window counts raw slots, including missing
+// ones. Category recoding precedes IsValidFunctor for the encoded training batch.
+inline uint xgb_adapter_value(device const uchar* data, device const InputArray* arrays,
+                              device const uint* segments, device const int* mapping,
+                              constant InputParams& p, uint row, uint f) {
+  uint value = p.kind == 1 ? xgb_input_float(data, arrays[0], row, f)
+                           : xgb_input_float(data, arrays[f], row);
+  return xgb_input_recode(value, f, segments, mapping, p);
+}
+kernel void xgb_adapter_count(
+    device const uchar* data [[buffer(0)]], device const InputArray* arrays [[buffer(1)]],
+    device const uint* segments [[buffer(2)]], device const int* mapping [[buffer(3)]],
+    device ulong* counts [[buffer(4)]], device uint2* unused [[buffer(5)]],
+    device atomic_uint* status [[buffer(6)]], constant InputParams& p [[buffer(7)]],
+    uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.rows) return;
+  if (!row) counts[0] = 0;
+  uint full = 0, selected = 0;
+  for (uint f = 0; f < p.features; ++f) {
+    uint v = xgb_adapter_value(data, arrays, segments, mapping, p, row, f);
+    if (xgb_input_missing(v, p.missing)) continue;
+    ++full;
+    ulong slot = ulong(row) * p.features + f;
+    if (slot >= p.first_entry && slot - p.first_entry < p.entries) {
+      ++selected;
+      if ((v & 0x7fffffffu) == 0x7f800000u) atomic_store_explicit(status, 1u, memory_order_relaxed);
+    }
+  }
+  counts[row + 1] = selected;
+  atomic_fetch_max_explicit(status + 1, full, memory_order_relaxed);
+}
+kernel void xgb_adapter_scatter(
+    device const uchar* data [[buffer(0)]], device const InputArray* arrays [[buffer(1)]],
+    device const uint* segments [[buffer(2)]], device const int* mapping [[buffer(3)]],
+    device const ulong* row_ptr [[buffer(4)]], device uint2* entries [[buffer(5)]],
+    device atomic_uint* unused [[buffer(6)]], constant InputParams& p [[buffer(7)]],
+    uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.rows) return;
+  ulong dest = row_ptr[row];
+  for (uint f = 0; f < p.features; ++f) {
+    ulong slot = ulong(row) * p.features + f;
+    if (slot < p.first_entry || slot - p.first_entry >= p.entries) continue;
+    uint v = xgb_adapter_value(data, arrays, segments, mapping, p, row, f);
+    if (!xgb_input_missing(v, p.missing)) entries[dest++] = uint2(f, v);
+  }
+}
+struct AdapterOffsetParams {
+  ulong count, offset;
+};
+kernel void xgb_adapter_offsets(device const ulong* input [[buffer(0)]],
+                                device ulong* output [[buffer(1)]],
+                                constant AdapterOffsetParams& p [[buffer(2)]],
+                                uint i [[thread_position_in_grid]]) {
+  if (ulong(i) < p.count) output[i] = input[i] + p.offset;
+}

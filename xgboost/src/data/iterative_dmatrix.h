@@ -41,6 +41,9 @@ class IterativeDMatrix : public QuantileDMatrix {
   void InitFromCUDA(Context const *ctx, BatchParam const &p,
                     DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext> &&iter,
                     float missing, std::shared_ptr<DMatrix> ref);
+  void InitFromMPS(Context const* ctx, BatchParam const& p,
+                   DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>&& iter,
+                   float missing, std::shared_ptr<DMatrix> ref);
   void InitFromCPU(Context const *ctx, BatchParam const &p,
                    DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext> &&iter,
                    float missing, std::shared_ptr<DMatrix> ref);
@@ -51,9 +54,9 @@ class IterativeDMatrix : public QuantileDMatrix {
 
  public:
   explicit IterativeDMatrix(DataIterHandle iter_handle, DMatrixHandle proxy,
-                            std::shared_ptr<DMatrix> ref, DataIterResetCallback *reset,
-                            XGDMatrixCallbackNext *next, float missing, int nthread,
-                            bst_bin_t max_bin);
+                            std::shared_ptr<DMatrix> ref, DataIterResetCallback* reset,
+                            XGDMatrixCallbackNext* next, float missing, int nthread,
+                            bst_bin_t max_bin, std::string const& device = "");
 
   ~IterativeDMatrix() override = default;
 

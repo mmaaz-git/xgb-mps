@@ -521,6 +521,9 @@ XGB_DLL int XGDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHandle proxy
  * @param next     Callback function yielding the next batch of data.
  * @param config   JSON encoded parameters for DMatrix construction.  Accepted fields are:
  *   - missing:      Which value to represent missing value
+ *   - device (optional, Metal fork): Construction device. "mps" enables GPU adapter
+ *       decoding, sketching and bin assignment for host dense/columnar arrays.
+ *       Omitted by default, preserving input-device selection.
  *   - nthread (optional): Number of threads used for initializing DMatrix.
  *   - max_bin (optional): Maximum number of bins for building histogram. Must be consistent with
  *                         the corresponding booster training parameter.

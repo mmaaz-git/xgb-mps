@@ -942,8 +942,9 @@ template <typename DataIterHandle, typename DMatrixHandle, typename DataIterRese
           typename XGDMatrixCallbackNext>
 DMatrix* DMatrix::Create(DataIterHandle iter, DMatrixHandle proxy, std::shared_ptr<DMatrix> ref,
                          DataIterResetCallback* reset, XGDMatrixCallbackNext* next, float missing,
-                         int nthread, bst_bin_t max_bin) {
-  return new data::IterativeDMatrix(iter, proxy, ref, reset, next, missing, nthread, max_bin);
+                         int nthread, bst_bin_t max_bin, std::string const& device) {
+  return new data::IterativeDMatrix(iter, proxy, ref, reset, next, missing, nthread, max_bin,
+                                    device);
 }
 
 template <typename DataIterHandle, typename DMatrixHandle, typename DataIterResetCallback,
@@ -961,12 +962,11 @@ DMatrix* DMatrix::Create(DataIterHandle iter, DMatrixHandle proxy, std::shared_p
   return new data::ExtMemQuantileDMatrix{iter, proxy, ref, reset, next, max_bin, config};
 }
 
-template DMatrix* DMatrix::Create<DataIterHandle, DMatrixHandle, DataIterResetCallback,
-                                  XGDMatrixCallbackNext>(DataIterHandle iter, DMatrixHandle proxy,
-                                                         std::shared_ptr<DMatrix> ref,
-                                                         DataIterResetCallback* reset,
-                                                         XGDMatrixCallbackNext* next, float missing,
-                                                         int nthread, int max_bin);
+template DMatrix*
+DMatrix::Create<DataIterHandle, DMatrixHandle, DataIterResetCallback, XGDMatrixCallbackNext>(
+    DataIterHandle iter, DMatrixHandle proxy, std::shared_ptr<DMatrix> ref,
+    DataIterResetCallback* reset, XGDMatrixCallbackNext* next, float missing, int nthread,
+    int max_bin, std::string const& device);
 
 template DMatrix* DMatrix::Create<DataIterHandle, DMatrixHandle, DataIterResetCallback,
                                   XGDMatrixCallbackNext>(DataIterHandle iter, DMatrixHandle proxy,

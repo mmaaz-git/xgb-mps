@@ -640,6 +640,7 @@ class DMatrix {
    * @param missing Value that should be treated as missing.
    * @param nthread number of threads used for initialization.
    * @param max_bin Maximum number of bins.
+   * @param device Optional construction device override (Metal accepts host adapters).
    *
    * @return A created quantile based DMatrix.
    */
@@ -647,7 +648,7 @@ class DMatrix {
             typename XGDMatrixCallbackNext>
   static DMatrix* Create(DataIterHandle iter, DMatrixHandle proxy, std::shared_ptr<DMatrix> ref,
                          DataIterResetCallback* reset, XGDMatrixCallbackNext* next, float missing,
-                         std::int32_t nthread, bst_bin_t max_bin);
+                         std::int32_t nthread, bst_bin_t max_bin, std::string const& device = "");
 
   /**
    * @brief Create an external memory DMatrix with callbacks.

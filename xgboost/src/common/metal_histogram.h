@@ -94,6 +94,8 @@ struct Statistics {
   std::uint64_t category_sort_dispatches, category_recode_dispatches, category_gpu_time_ns;
   std::uint64_t input_prepare_dispatches, input_recode_dispatches, input_prepare_gpu_time_ns,
       input_debug_readback_bytes;
+  std::uint64_t adapter_prepare_dispatches, adapter_index_dispatches, adapter_gpu_time_ns,
+      adapter_debug_readback_bytes;
 };
 
 class Histogram {

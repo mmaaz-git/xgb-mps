@@ -227,6 +227,13 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.input_prepare_gpu_time_ns)};
   info["input_debug_readback_bytes"] =
       Integer{static_cast<std::int64_t>(stats.input_debug_readback_bytes)};
+  info["adapter_prepare_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.adapter_prepare_dispatches)};
+  info["adapter_index_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.adapter_index_dispatches)};
+  info["adapter_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.adapter_gpu_time_ns)};
+  info["adapter_debug_readback_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.adapter_debug_readback_bytes)};
   info["mean_dispatches"] = Integer{static_cast<std::int64_t>(stats.mean_dispatches)};
   info["mean_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.mean_gpu_time_ns)};
   info["binning_dispatches"] = Integer{static_cast<std::int64_t>(stats.binning_dispatches)};
@@ -436,6 +443,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["input_recode_dispatches"] = Integer{0};
   info["input_prepare_gpu_time_ns"] = Integer{0};
   info["input_debug_readback_bytes"] = Integer{0};
+  info["adapter_prepare_dispatches"] = Integer{0};
+  info["adapter_index_dispatches"] = Integer{0};
+  info["adapter_gpu_time_ns"] = Integer{0};
+  info["adapter_debug_readback_bytes"] = Integer{0};
   info["mean_dispatches"] = Integer{0};
   info["mean_gpu_time_ns"] = Integer{0};
   info["binning_dispatches"] = Integer{0};
@@ -787,14 +798,15 @@ XGB_DLL int XGQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHand
   WarnDeprecatedMaxQuantileBlocks(jconfig);
   auto missing = GetMissing(jconfig);
   auto n_threads = OptionalArg<Integer, int64_t>(jconfig, "nthread", 0);
+  auto device = OptionalArg<String>(jconfig, "device", std::string{});
   auto max_bin = OptionalArg<Integer, int64_t>(jconfig, "max_bin", 256);
 
   xgboost_CHECK_C_ARG_PTR(next);
   xgboost_CHECK_C_ARG_PTR(reset);
   xgboost_CHECK_C_ARG_PTR(out);
 
-  *out = new std::shared_ptr<xgboost::DMatrix>{
-      xgboost::DMatrix::Create(iter, proxy, p_ref, reset, next, missing, n_threads, max_bin)};
+  *out = new std::shared_ptr<xgboost::DMatrix>{xgboost::DMatrix::Create(
+      iter, proxy, p_ref, reset, next, missing, n_threads, max_bin, device)};
   API_END();
 }
 

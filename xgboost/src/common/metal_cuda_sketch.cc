@@ -41,13 +41,17 @@ HistogramCuts CudaSketchOnDMatrix(Context const*, DMatrix* data, bst_bin_t max_b
   }
   // CUDA SketchContainer::MakeCuts also materializes the final cuts on the host.
   auto summary = sketch->Read();
-  HistogramCuts cuts{static_cast<bst_feature_t>(info.num_col_)};
+  return MakeCudaCuts(summary, info.num_col_, max_bin, types);
+}
+HistogramCuts MakeCudaCuts(CudaSketchSummary const& summary, bst_feature_t columns,
+                           bst_bin_t max_bin, Span<FeatureType const> types) {
+  HistogramCuts cuts{static_cast<bst_feature_t>(columns)};
   auto& ptr = cuts.cut_ptrs_.HostVector();
   auto& values = cuts.cut_values_.HostVector();
   float max_cat = -1;
   bool has_cat = false;
   WQSummaryContainer column;
-  for (bst_feature_t f = 0; f < info.num_col_; ++f) {
+  for (bst_feature_t f = 0; f < columns; ++f) {
     auto begin = summary.ptr[f], end = summary.ptr[f + 1];
     if (IsCat(types, f)) {
       has_cat = true;

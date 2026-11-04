@@ -17,6 +17,7 @@
 #include "../collective/aggregator.h"
 #include "../data/adapter.h"
 #include "../data/gradient_index.h"
+#include "metal_adapter.h"
 #include "metal_auc.h"
 #include "metal_category.h"
 #include "metal_constraints.h"
@@ -117,6 +118,8 @@ std::atomic<std::uint64_t> category_sort_dispatches{0}, category_recode_dispatch
     category_gpu_time_ns{0};
 std::atomic<std::uint64_t> input_prepare_dispatches{0}, input_recode_dispatches{0},
     input_prepare_gpu_time_ns{0}, input_debug_readback_bytes{0};
+std::atomic<std::uint64_t> adapter_prepare_dispatches{0}, adapter_index_dispatches{0},
+    adapter_gpu_time_ns{0}, adapter_debug_readback_bytes{0};
 std::atomic<std::uint64_t> radix_sort_dispatches{0}, quantile_dispatches{0},
     quantile_gpu_time_ns{0};
 std::atomic<std::uint64_t> index_uploads{0}, index_uploaded_bytes{0},
@@ -250,6 +253,8 @@ class Runtime {
   id<MTLComputePipelineState> category_iota_pipeline, category_merge_pipeline,
       category_extract_pipeline, category_validate_pipeline, category_recode_pipeline;
   id<MTLComputePipelineState> input_prepare_pipeline;
+  id<MTLComputePipelineState> adapter_count_pipeline, adapter_scatter_pipeline,
+      adapter_offsets_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
@@ -334,6 +339,9 @@ class Runtime {
       category_validate_pipeline = make_pipeline(@"xgb_category_validate");
       category_recode_pipeline = make_pipeline(@"xgb_category_recode");
       input_prepare_pipeline = make_pipeline(@"xgb_prepare_input");
+      adapter_count_pipeline = make_pipeline(@"xgb_adapter_count");
+      adapter_scatter_pipeline = make_pipeline(@"xgb_adapter_scatter");
+      adapter_offsets_pipeline = make_pipeline(@"xgb_adapter_offsets");
       residual_reduce_pipeline = make_pipeline(@"xgb_residual_scale_reduce");
       residual_finish_pipeline = make_pipeline(@"xgb_residual_scale_finish");
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
@@ -1795,7 +1803,11 @@ Statistics GetStatistics() {
           input_prepare_dispatches.load(std::memory_order_relaxed),
           input_recode_dispatches.load(std::memory_order_relaxed),
           input_prepare_gpu_time_ns.load(std::memory_order_relaxed),
-          input_debug_readback_bytes.load(std::memory_order_relaxed)};
+          input_debug_readback_bytes.load(std::memory_order_relaxed),
+          adapter_prepare_dispatches.load(std::memory_order_relaxed),
+          adapter_index_dispatches.load(std::memory_order_relaxed),
+          adapter_gpu_time_ns.load(std::memory_order_relaxed),
+          adapter_debug_readback_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -4604,27 +4616,28 @@ void Quantiles(linalg::MatrixView<float const> values, Span<float const> weights
   }
 }
 
-void BinEntries(Span<Entry const> entries, Span<FeatureType const> feature_types,
-                GHistIndexMatrix* output) {
+namespace {
+void BinEntriesBuffer(id<MTLBuffer> input, std::size_t count, Span<FeatureType const> feature_types,
+                      GHistIndexMatrix* output, std::size_t offset) {
   CHECK(output);
-  CHECK_EQ(entries.size(), output->index.Size());
-  if (entries.empty()) return;
+  CHECK_LE(offset, output->index.Size());
+  CHECK_LE(count, output->index.Size() - offset);
+  if (!count) return;
   static_assert(sizeof(Entry) == 8 && offsetof(Entry, fvalue) == 4);
-  CHECK_LE(entries.size(), std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(count, std::numeric_limits<std::uint32_t>::max());
   auto const& cuts = output->cut;
   CHECK(!cuts.Ptrs().empty());
   auto features = cuts.Ptrs().size() - 1;
   CHECK(feature_types.empty() || feature_types.size() == features);
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, entries.data(), entries.size_bytes());
     auto ptrs = Upload(rt, cuts.Ptrs().data(), cuts.Ptrs().size() * sizeof(std::uint32_t));
     auto values = Upload(rt, cuts.Values().data(), cuts.Values().size() * sizeof(float));
     std::vector<std::uint8_t> is_cat(features, 0);
     for (std::size_t f = 0; f < feature_types.size(); ++f)
       is_cat[f] = feature_types[f] == FeatureType::kCategorical;
     auto categories = Upload(rt, is_cat.data(), is_cat.size());
-    auto bytes = entries.size() * output->index.GetBinTypeSize();
+    auto bytes = count * output->index.GetBinTypeSize();
     auto bins = Allocate(rt, bytes);
     auto counts = Allocate(rt, output->hit_count.size() * sizeof(std::uint32_t));
     auto status = Allocate(rt, sizeof(std::uint32_t));
@@ -4638,7 +4651,7 @@ void BinEntries(Span<Entry const> entries, Span<FeatureType const> feature_types
     struct {
       std::uint64_t count;
       std::uint32_t features, width, dense, padding;
-    } p{entries.size(), static_cast<std::uint32_t>(features),
+    } p{count, static_cast<std::uint32_t>(features),
         static_cast<std::uint32_t>(output->index.GetBinTypeSize()),
         static_cast<std::uint32_t>(output->IsDense()), 0};
     static_assert(sizeof(p) == 24);
@@ -4653,8 +4666,7 @@ void BinEntries(Span<Entry const> entries, Span<FeatureType const> feature_types
     [e setBuffer:counts offset:0 atIndex:5];
     [e setBuffer:status offset:0 atIndex:6];
     [e setBytes:&p length:sizeof(p) atIndex:7];
-    [e dispatchThreads:MTLSizeMake(entries.size(), 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     [command commit];
     [command waitUntilCompleted];
@@ -4662,7 +4674,8 @@ void BinEntries(Span<Entry const> entries, Span<FeatureType const> feature_types
     auto flags = *static_cast<std::uint32_t const*>(status.contents);
     CHECK(!(flags & 1)) << error::InfInData();
     CHECK_EQ(flags, 0) << "Metal bin assignment found a feature without cut points.";
-    std::memcpy(output->index.data<std::uint8_t>(), bins.contents, bytes);
+    std::memcpy(output->index.data<std::uint8_t>() + offset * output->index.GetBinTypeSize(),
+                bins.contents, bytes);
     auto counts_data = static_cast<std::uint32_t const*>(counts.contents);
     for (std::size_t i = 0; i < output->hit_count.size(); ++i)
       output->hit_count[i] += counts_data[i];
@@ -4671,6 +4684,16 @@ void BinEntries(Span<Entry const> entries, Span<FeatureType const> feature_types
     if (elapsed > 0)
       binning_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                     std::memory_order_relaxed);
+  }
+}
+}  // namespace
+void BinEntries(Span<Entry const> entries, Span<FeatureType const> types,
+                GHistIndexMatrix* output) {
+  CHECK_EQ(entries.size(), output->index.Size());
+  if (entries.empty()) return;
+  @autoreleasepool {
+    BinEntriesBuffer(Upload(GetRuntime(), entries.data(), entries.size_bytes()), entries.size(),
+                     types, output, 0);
   }
 }
 
@@ -5926,6 +5949,8 @@ struct PackedInput {
     }
     return out;
   }
+  std::unique_ptr<AdapterInput> FinishAdapter(enc::MappingView map, bst_idx_t base_row,
+                                              bst_idx_t sketch_rows);
   std::unique_ptr<InputBatch> Finish(enc::MappingView map, Span<std::uint32_t const> cuts = {},
                                      Span<float const> cut_values = {},
                                      Span<FeatureType const> types = {}) {
@@ -6079,6 +6104,155 @@ std::unique_ptr<InputBatch> PrepareInput(data::CSRArrayAdapter const& adapter, f
   p.arrays.push_back(p.Window(adapter.Indices(), first, last - first));
   p.arrays.push_back(p.Window(adapter.Values(), first, last - first));
   return p.Finish(map);
+}
+
+namespace {
+class MetalAdapterInput final : public AdapterInput {
+ public:
+  id<MTLBuffer> entries, row_ptr;
+  bst_idx_t rows, base_row, nnz, stride, sketch_rows;
+  bool partial_first, has_inf;
+  bst_idx_t Rows() const override { return rows; }
+  bst_idx_t BaseRow() const override { return base_row; }
+  bst_idx_t NonMissing() const override { return nnz; }
+  bst_idx_t RowStride() const override { return stride; }
+  bst_idx_t SketchRows() const override { return sketch_rows; }
+  void Readback(SparsePage* output) const override {
+    output->base_rowid = base_row;
+    auto& ptr = output->offset.HostVector();
+    ptr.resize(rows + 1);
+    auto& data = output->data.HostVector();
+    data.resize(nnz);
+    std::memcpy(ptr.data(), row_ptr.contents, ptr.size() * sizeof(bst_idx_t));
+    if (nnz) std::memcpy(data.data(), entries.contents, nnz * sizeof(Entry));
+    adapter_debug_readback_bytes.fetch_add(ptr.size() * 8 + nnz * 8, std::memory_order_relaxed);
+  }
+  void WriteIndex(Span<FeatureType const> types, GHistIndexMatrix* output, bst_idx_t row_base,
+                  bst_idx_t entry_offset) const override {
+    CHECK(!has_inf) << error::InfInData();
+    CHECK_LE(row_base + base_row + rows + 1, output->row_ptr.size());
+    CHECK_LE(entry_offset + nnz, output->index.Size());
+    BinEntriesBuffer(entries, nnz, types, output, entry_offset);
+    auto& rt = GetRuntime();
+    @autoreleasepool {
+      auto ptr = Allocate(rt, (rows + 1) * 8);
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      struct {
+        std::uint64_t rows, offset;
+      } p{rows + 1, entry_offset};
+      [e setComputePipelineState:rt.adapter_offsets_pipeline];
+      [e setBuffer:row_ptr offset:0 atIndex:0];
+      [e setBuffer:ptr offset:0 atIndex:1];
+      [e setBytes:&p length:sizeof(p) atIndex:2];
+      [e dispatchThreads:MTLSizeMake(rows + 1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &adapter_index_dispatches, &adapter_gpu_time_ns);
+      auto skip = std::size_t(partial_first);
+      std::memcpy(output->row_ptr.data() + row_base + base_row + skip,
+                  static_cast<std::uint64_t const*>(ptr.contents) + skip, (rows + 1 - skip) * 8);
+    }
+  }
+};
+std::unique_ptr<AdapterInput> PackedInput::FinishAdapter(enc::MappingView map, bst_idx_t base_row,
+                                                         bst_idx_t sketch_rows) {
+  auto& rt = GetRuntime();
+  auto result = std::make_unique<MetalAdapterInput>();
+  result->rows = params.rows;
+  result->base_row = base_row;
+  result->nnz = 0;
+  result->stride = 0;
+  result->sketch_rows = sketch_rows;
+  result->partial_first = params.first_entry != 0;
+  result->has_inf = false;
+  if (params.mapped) CHECK_EQ(map.offsets.size(), std::size_t(params.features) + 1);
+  @autoreleasepool {
+    if (!params.rows) {
+      std::uint64_t zero = 0;
+      result->row_ptr = Upload(rt, &zero, 8);
+      result->entries = Allocate(rt, 0);
+      return result;
+    }
+    auto raw = Upload(rt, bytes.data(), bytes.size());
+    auto descriptors = Upload(rt, arrays.data(), arrays.size() * sizeof(InputArray));
+    auto segments = Upload(rt, map.offsets.data(), map.offsets.size_bytes());
+    auto mapping = Upload(rt, map.mapping.data(), map.mapping.size_bytes());
+    auto counts = Allocate(rt, (params.rows + 1) * 8);
+    std::uint32_t zeros[2]{};
+    auto status = Upload(rt, zeros, sizeof(zeros));
+    auto dispatch = [&](id<MTLCommandBuffer> command, id<MTLComputePipelineState> pipeline,
+                        id<MTLBuffer> row_ptr, id<MTLBuffer> entries) {
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:pipeline];
+      [e setBuffer:raw offset:0 atIndex:0];
+      [e setBuffer:descriptors offset:0 atIndex:1];
+      [e setBuffer:segments offset:0 atIndex:2];
+      [e setBuffer:mapping offset:0 atIndex:3];
+      [e setBuffer:row_ptr offset:0 atIndex:4];
+      [e setBuffer:entries offset:0 atIndex:5];
+      [e setBuffer:status offset:0 atIndex:6];
+      [e setBytes:&params length:sizeof(params) atIndex:7];
+      [e dispatchThreads:MTLSizeMake(params.rows, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    };
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    dispatch(command, rt.adapter_count_pipeline, counts, counts);
+    result->row_ptr = EncodePrefixU64(rt, command, counts, params.rows + 1);
+    CompleteOperation(command, &adapter_prepare_dispatches, &adapter_gpu_time_ns);
+    auto flags = static_cast<std::uint32_t const*>(status.contents);
+    result->has_inf = flags[0] != 0;
+    result->stride = flags[1];
+    result->nnz = static_cast<std::uint64_t const*>(result->row_ptr.contents)[params.rows];
+    CHECK_LE(result->nnz, params.entries);
+    result->entries = Allocate(rt, result->nnz * 8);
+    if (result->nnz) {
+      command = [rt.queue commandBuffer];
+      CHECK(command);
+      dispatch(command, rt.adapter_scatter_pipeline, result->row_ptr, result->entries);
+      CompleteOperation(command, &adapter_prepare_dispatches, &adapter_gpu_time_ns);
+    }
+    return result;
+  }
+}
+template <class Adapter>
+std::unique_ptr<AdapterInput> PrepareAdapterImpl(Adapter const& adapter, float missing,
+                                                 bst_idx_t begin, bst_idx_t count,
+                                                 enc::MappingView map) {
+  auto cols = adapter.NumColumns(), total_rows = adapter.NumRows();
+  CHECK_GT(cols, 0);
+  CHECK_LE(cols, std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(total_rows, std::numeric_limits<std::size_t>::max() / cols);
+  InputBounds(total_rows * cols, begin, count);
+  CHECK_LE(count, 1ULL << 26);
+  auto base = begin / cols, first = begin % cols,
+       rows = count ? (first + count + cols - 1) / cols : 0;
+  PackedInput p{rows, static_cast<std::uint32_t>(cols),
+                std::is_same_v<Adapter, data::ArrayAdapter> ? 1u : 2u, map};
+  p.params.first_entry = first;
+  p.params.entries = count;
+  std::memcpy(&p.params.missing, &missing, 4);
+  if constexpr (std::is_same_v<Adapter, data::ArrayAdapter>) {
+    p.arrays.push_back(p.Window(adapter.Array(), base, rows, cols));
+  } else {
+    for (auto const& column : adapter.Columns()) p.arrays.push_back(p.Window(column, base, rows));
+  }
+  return p.FinishAdapter(map, base, count ? (count + cols - 1) / cols : 0);
+}
+}  // namespace
+std::unique_ptr<AdapterInput> PrepareAdapter(data::ArrayAdapter const& adapter, float missing,
+                                             bst_idx_t begin, bst_idx_t count,
+                                             enc::MappingView mapping) {
+  return PrepareAdapterImpl(adapter, missing, begin, count, mapping);
+}
+std::unique_ptr<AdapterInput> PrepareAdapter(data::ColumnarAdapter const& adapter, float missing,
+                                             bst_idx_t begin, bst_idx_t count,
+                                             enc::MappingView mapping) {
+  return PrepareAdapterImpl(adapter, missing, begin, count, mapping);
 }
 
 namespace {
@@ -7187,50 +7361,65 @@ class MetalCudaSketch final : public CudaSketch {
     std::vector<std::uint64_t> ptr(std::size_t{columns} + 1, 0);
     resident_ = {Allocate(rt_, 0), Upload(rt_, ptr.data(), ptr.size() * sizeof(std::uint64_t)), 0};
   }
+  void SetWeights(Span<float const> weights) override {
+    weight_count_ = weights.size();
+    weights_ = Upload(rt_, weights.data(), weights.size_bytes());
+  }
+  void Push(AdapterInput const& input) override {
+    auto const* gpu = dynamic_cast<MetalAdapterInput const*>(&input);
+    CHECK(gpu);
+    PushBuffers(gpu->entries, gpu->row_ptr, gpu->nnz, 0, gpu->base_row, gpu->rows,
+                gpu->sketch_rows);
+  }
   void Push(Span<::xgboost::Entry const> entries, Span<bst_idx_t const> row_ptr, std::size_t begin,
             bst_idx_t base_rowid, bst_idx_t rows_in_window) override {
-    if (entries.empty()) return;
-    CHECK_GT(columns_, 0);
-    CHECK_LE(entries.size(), 1ULL << 26);  // The CUDA frontend's entry window.
+    if (entries.empty() && !rows_in_window) return;
     CHECK_GE(row_ptr.size(), 2);
     CHECK_LE(begin, row_ptr.back());
     CHECK_LE(entries.size(), row_ptr.back() - begin);
     CHECK_LE(row_ptr.front(), begin);
-    CHECK_GT(rows_in_window, 0);
-    if (weight_count_) CHECK_LE(base_rowid + row_ptr.size() - 1, weight_count_);
+    @autoreleasepool {
+      PushBuffers(Upload(rt_, entries.data(), entries.size_bytes()),
+                  Upload(rt_, row_ptr.data(), row_ptr.size_bytes()), entries.size(), begin,
+                  base_rowid, row_ptr.size() - 1, rows_in_window);
+    }
+  }
+  void PushBuffers(id<MTLBuffer> source, id<MTLBuffer> rows, std::size_t count, std::size_t begin,
+                   bst_idx_t base_rowid, bst_idx_t row_count, bst_idx_t rows_in_window) {
+    CHECK_GT(columns_, 0);
+    CHECK_LE(count, 1ULL << 26);
+    if (weight_count_) CHECK_LE(base_rowid + row_count, weight_count_);
     CHECK_LE(rows_in_window, std::numeric_limits<bst_idx_t>::max() - rows_seen_);
     rows_seen_ += rows_in_window;
+    // CUDA updates rows_seen before the empty-summary return.
+    if (!count) return;
     @autoreleasepool {
-      auto p = Params(entries.size());
+      auto p = Params(count);
       p.begin = begin;
       p.base_row = base_rowid;
-      p.budget = row_ptr.size() - 1;
-      auto source = Upload(rt_, entries.data(), entries.size_bytes());
-      auto rows = Upload(rt_, row_ptr.data(), row_ptr.size_bytes());
-      auto records = Allocate(rt_, entries.size() * 2 * sizeof(std::uint32_t));
+      p.budget = row_count;
+      auto records = Allocate(rt_, count * 2 * sizeof(std::uint32_t));
       auto command = [rt_.queue commandBuffer];
       CHECK(command);
-      CSDispatch(command, rt_.cs_sort_keys_pipeline, entries.size(), {source, source, records}, &p);
-      SortShape shape{entries.size(), 0, 0, 1,
-                      static_cast<std::uint32_t>((entries.size() + 255) / 256)};
+      CSDispatch(command, rt_.cs_sort_keys_pipeline, count, {source, source, records}, &p);
+      SortShape shape{count, 0, 0, 1, static_cast<std::uint32_t>((count + 255) / 256)};
       records = EncodeRadixRecords(rt_, command, records, shape);
-      auto by_feature = Allocate(rt_, entries.size() * 2 * sizeof(std::uint32_t));
+      auto by_feature = Allocate(rt_, count * 2 * sizeof(std::uint32_t));
       p.mode = 1;
-      CSDispatch(command, rt_.cs_sort_keys_pipeline, entries.size(), {source, records, by_feature},
-                 &p);
+      CSDispatch(command, rt_.cs_sort_keys_pipeline, count, {source, records, by_feature}, &p);
       records = EncodeRadixRecords(rt_, command, by_feature, shape);
-      CSDeviceSummary raw{Allocate(rt_, entries.size() * sizeof(WQSummary<>::Entry)),
+      CSDeviceSummary raw{Allocate(rt_, count * sizeof(WQSummary<>::Entry)),
                           Allocate(rt_, (std::size_t{columns_} + 1) * sizeof(std::uint64_t)),
-                          entries.size()};
-      auto weights = Allocate(rt_, entries.size() * sizeof(float));
-      auto ids = Allocate(rt_, entries.size() * sizeof(std::uint32_t));
+                          count};
+      auto weights = Allocate(rt_, count * sizeof(float));
+      auto ids = Allocate(rt_, count * sizeof(std::uint32_t));
       CSDispatch(command, rt_.cs_bounds_pipeline, std::size_t{columns_} + 1, {records, raw.ptr},
                  &p);
-      CSDispatch(command, rt_.cs_gather_pipeline, entries.size(),
+      CSDispatch(command, rt_.cs_gather_pipeline, count,
                  {source, records, rows, weights_, raw.entries, weights, ids}, &p);
       if (weight_count_) {
-        auto scanned = CSEncodePrefix(rt_, command, weights, ids, entries.size());
-        CSDispatch(command, rt_.cs_attach_pipeline, entries.size(), {raw.entries, scanned});
+        auto scanned = CSEncodePrefix(rt_, command, weights, ids, count);
+        CSDispatch(command, rt_.cs_attach_pipeline, count, {raw.entries, scanned});
       }
       CSComplete(command);
       if (has_cat_) raw = Unique(raw, true);
@@ -7246,7 +7435,7 @@ class MetalCudaSketch final : public CudaSketch {
       resident_ = Prune(resident_,
                         SketchSummaryBudget(max_bin_, std::max<bst_idx_t>(1, rows_seen_)), false);
       cuda_sketch_batches.fetch_add(1, std::memory_order_relaxed);
-      cuda_sketch_input_entries.fetch_add(entries.size(), std::memory_order_relaxed);
+      cuda_sketch_input_entries.fetch_add(count, std::memory_order_relaxed);
     }
   }
   CudaSketchSummary Read() const override {

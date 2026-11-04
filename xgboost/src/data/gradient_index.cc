@@ -172,6 +172,11 @@ INSTANTIATION_PUSH(data::EncColumnarAdapterBatch)
 
 #undef INSTANTIATION_PUSH
 
+void GHistIndexMatrix::InitColumns(Context const* ctx, double sparse_thresh) {
+  this->ResizeColumns(sparse_thresh);
+  this->columns_->InitFromGHist(ctx, *this);
+}
+
 void GHistIndexMatrix::ResizeColumns(double sparse_thresh) {
   CHECK(!std::isnan(sparse_thresh));
   this->columns_ = std::make_unique<common::ColumnMatrix>(*this, sparse_thresh);

@@ -114,8 +114,9 @@ struct Sketch {
   Sketch(std::size_t n, std::size_t bins, std::vector<bool> categorical)
       : columns(n), categorical(std::move(categorical)), bins(bins) {}
   void Push(std::vector<Raw> raw, std::size_t rows, bool weighted) {
-    if (raw.empty()) return;
+    // quantile.cu::SketchContainer::Push updates rows_seen before its empty return.
     seen += rows;
+    if (raw.empty()) return;
     std::stable_sort(raw.begin(), raw.end(), [](auto a, auto b) {
       return a.feature < b.feature || (a.feature == b.feature && a.value < b.value);
     });

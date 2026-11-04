@@ -1521,6 +1521,13 @@ class QuantileDMatrix(DMatrix, _RefMixIn):
         as a reference means that the same quantisation applied to the training data is
         applied to the validation/test data
 
+    device :
+        Optional construction device. This fork accepts ``"mps"`` to decode host
+        dense/columnar arrays, sketch cuts and assign bins on Metal. The default
+        follows the input device, as upstream. This is independent of the booster
+        device. Native Metal tensor handles and sparse device adapters are not yet
+        supported by this entry point.
+
     max_quantile_batches :
         Deprecated. This parameter no longer has any effect and will be removed in a
         future release.
@@ -1560,7 +1567,9 @@ class QuantileDMatrix(DMatrix, _RefMixIn):
         enable_categorical: bool = True,
         max_quantile_batches: Optional[int] = None,
         data_split_mode: int = 0,
+        device: Optional[str] = None,
     ) -> None:
+        self._construction_device = device
         self.max_bin = max_bin
         self.missing = missing if missing is not None else np.nan
         self.nthread = nthread if nthread is not None else -1
@@ -1647,6 +1656,7 @@ class QuantileDMatrix(DMatrix, _RefMixIn):
             missing=self.missing,
             max_bin=self.max_bin,
             max_quantile_blocks=max_quantile_blocks,
+            device=self._construction_device,
         )
         ret = _LIB.XGQuantileDMatrixCreateFromCallback(
             None,
