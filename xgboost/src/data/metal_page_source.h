@@ -24,9 +24,7 @@ struct MetalCacheFormat {
   bool prefetch_copy;
   bool Read(GHistIndexMatrix* output, MetalCacheReader* reader) const {
     auto& cache = *reader->cache;
-    cache.pages.at(reader->index)
-        ->Restore(&cache.ctx, cache.cuts, cache.max_bin, cache.sparse_thresh, prefetch_copy,
-                  output);
+    cache.pages.at(reader->index)->View(cache.cuts, cache.max_bin, prefetch_copy, output);
     return true;
   }
 };
@@ -54,7 +52,15 @@ class MetalCacheStreamPolicy {
 class MetalPageSource : public SparsePageSourceImpl<GHistIndexMatrix, MetalCacheStreamPolicy> {
   using Super = SparsePageSourceImpl<GHistIndexMatrix, MetalCacheStreamPolicy>;
   std::vector<bst_idx_t> batch_ptr_{0};
-  void Fetch() final { CHECK(this->ReadCache()); }
+  bst_idx_t nnz_{0};
+  // Only the iterator thread reads this flag. Prefetch workers always create
+  // device-only views, including futures retained across CPU/MPS resets.
+  bool need_host_{false};
+  void Fetch() final {
+    CHECK(this->ReadCache());
+    if (need_host_)
+      common::metal::MaterializeHost(&metal_cache_->ctx, metal_cache_->sparse_thresh, page_.get());
+  }
 
  public:
   MetalPageSource(Context const* ctx,
@@ -72,11 +78,15 @@ class MetalPageSource : public SparsePageSourceImpl<GHistIndexMatrix, MetalCache
       this->Fetch();
     return *this;
   }
-  void Reset(BatchParam const& param) final {
+  void Reset(BatchParam const& param) final { this->Reset(nullptr, param); }
+  void Reset(Context const* ctx, BatchParam const& param) {
+    TryLockGuard guard{this->single_threaded_};
+    need_host_ = !ctx || !ctx->IsMPS();
     auto p = param;
     p.n_prefetch_batches = 2;  // CUDA's one active + one prefetched page.
-    Super::Reset(p);
+    this->ResetCache(p);
   }
   std::vector<bst_idx_t> const& BatchPtr() const { return batch_ptr_; }
+  bst_idx_t NonMissing() const { return nnz_; }
 };
 }  // namespace xgboost::data

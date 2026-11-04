@@ -230,6 +230,7 @@ void GHistIndexMatrix::ResizeIndex(Context const *ctx, const size_t n_index, con
 }
 
 common::ColumnMatrix const &GHistIndexMatrix::Transpose() const {
+  this->RequireHost();
   CHECK(columns_);
   return *columns_;
 }
@@ -294,6 +295,7 @@ bool GHistIndexMatrix::ReadColumnPage(common::AlignedResourceReadStream *fi) {
 }
 
 std::size_t GHistIndexMatrix::WriteColumnPage(common::AlignedFileWriteStream *fo) const {
+  this->RequireHost();
   return this->columns_->Write(fo);
 }
 }  // namespace xgboost

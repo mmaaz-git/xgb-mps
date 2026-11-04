@@ -30,7 +30,10 @@ void GetCutsFromRef(Context const* ctx, std::shared_ptr<DMatrix> ref, bst_featur
   p.forbid_regen = true;
   // Fetch cuts from GIDX
   auto csr = [&] {
-    for (auto const& page : ref->GetBatches<GHistIndexMatrix>(ctx, p)) {
+    // A reference needs only cut metadata. Keep an existing MPS matrix on its
+    // compressed path even when the new matrix is being constructed for CPU.
+    auto cut_ctx = ref->Ctx()->IsMPS() && ref->PageExists<GHistIndexMatrix>() ? ref->Ctx() : ctx;
+    for (auto const& page : ref->GetBatches<GHistIndexMatrix>(cut_ctx, p)) {
       *p_cuts = page.cut;
       break;
     }
@@ -209,6 +212,10 @@ MetalPageSource::MetalPageSource(
   }
   CHECK_EQ(batch, ext.n_batches) << "Different number of batches returned between iterations";
   metal_cache_->pages.back()->Commit(plan.host_ratio);
+  // Validate the actual compressed symbols, without building host bin/column
+  // mirrors. Only one non-missing total per completed cache page is read back.
+  for (auto const& page : metal_cache_->pages) nnz_ += page->NonMissing();
+  CHECK_EQ(nnz_, ext.nnz);
   for (auto bytes : plan.bytes) cache_info_->Push(bytes);
   cache_info_->Commit();
   metal_cache_->offsets = cache_info_->offset;

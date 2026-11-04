@@ -87,6 +87,13 @@ inline void ApproxFeatureImportance(Context const* ctx, DMatrix* p_fmat,
     return;
   }
 #endif  // defined(XGBOOST_USE_CUDA)
+  // CUDA does not implement this operation. Preserve the MPS CPU fallback, but
+  // request CPU batches so compressed device-only pages acquire host mirrors.
+  if (ctx->IsMPS()) {
+    auto cpu = ctx->MakeCPU();
+    cpu_impl::ApproxFeatureImportance(&cpu, p_fmat, out_contribs, model, tree_end, tree_weights);
+    return;
+  }
   cpu_impl::ApproxFeatureImportance(ctx, p_fmat, out_contribs, model, tree_end, tree_weights);
 }
 
@@ -107,6 +114,12 @@ inline void ShapInteractionValues(Context const* ctx, DMatrix* p_fmat,
     return;
   }
 #endif
+  if (ctx->IsMPS() && approximate) {
+    auto cpu = ctx->MakeCPU();
+    cpu_impl::ShapInteractionValues(&cpu, p_fmat, out_contribs, model, tree_end, tree_weights,
+                                    true);
+    return;
+  }
   cpu_impl::ShapInteractionValues(ctx, p_fmat, out_contribs, model, tree_end, tree_weights,
                                   approximate);
 }

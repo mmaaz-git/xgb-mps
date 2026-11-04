@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -14,6 +15,7 @@
 #include "../xgboost/src/common/compressed_iterator.h"
 #include "../xgboost/src/common/metal_ellpack.h"
 #include "../xgboost/src/common/metal_histogram.h"
+#include "../xgboost/src/common/metal_input.h"
 #include "../xgboost/src/data/gradient_index.h"
 #include "../xgboost/src/data/proxy_dmatrix.h"
 
@@ -89,6 +91,11 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   Check(after.adapter_debug_readback_bytes == before.adapter_debug_readback_bytes,
         "No raw readback");
   if (on_host) {
+    Check(after.ellpack_host_materializations ==
+                  before.ellpack_host_materializations &&
+              after.ellpack_host_readback_bytes ==
+                  before.ellpack_host_readback_bytes,
+          "Construction creates no host mirror");
     Check(
         after.ellpack_adapter_values - before.ellpack_adapter_values == matrix->Info().num_nonzero_,
         "Every valid value binned directly into the compressed GPU page");
@@ -138,9 +145,38 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   input.closed = true;
   auto calls = input.calls;
   before = metal::GetStatistics();
+  Context gpu;
+  gpu.Init({{"device", "mps"}, {"nthread", "2"}});
+  std::shared_ptr<GHistIndexMatrix const> retained;
   for (unsigned pass = 0; pass < 3; ++pass) {
     BatchParam parameter;
     parameter.prefetch_copy = pass % 2;
+    if (on_host) {
+      auto start = metal::GetStatistics();
+      auto batches = matrix->GetBatches<GHistIndexMatrix>(&gpu, parameter);
+      std::size_t batch = 0;
+      for (auto it = batches.begin(); it != batches.end(); ++it) {
+        auto const &page = *it;
+        Check(!page.HostReadable() && page.row_ptr.empty() &&
+                  page.data.empty() && page.hit_count.empty() &&
+                  page.index.Size() == 0,
+              "MPS traversal exposes only compressed device storage");
+        Check(page.Size() == expected_sizes[batch] &&
+                  page.base_rowid == expected_ptr[batch],
+              "Device-only page geometry");
+        if (page.Size())
+          retained = it.Page();
+        ++batch;
+      }
+      auto end = metal::GetStatistics();
+      Check(end.ellpack_host_materializations ==
+                    start.ellpack_host_materializations &&
+                end.ellpack_host_readback_bytes ==
+                    start.ellpack_host_readback_bytes &&
+                end.ellpack_restore_dispatches ==
+                    start.ellpack_restore_dispatches,
+            "Switching to MPS does not consume host-materialized prefetches");
+    }
     // Interrupt a cache traversal to check that resetting discards pending reads safely.
     for (auto const& page : matrix->GetBatches<GHistIndexMatrix>(&ctx, parameter)) {
       Check(page.base_rowid == 0, "Reset begins at first page");
@@ -150,6 +186,7 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
     std::vector<std::size_t> counts(oracle->hit_count.size(), 0);
     for (auto const& page : matrix->GetBatches<GHistIndexMatrix>(&ctx, parameter)) {
       ++pages;
+      Check(page.HostReadable(), "CPU traversal materializes host storage");
       Check(page.base_rowid == base && page.Size() == expected_sizes[batch++], "Page geometry");
       Check(page.index.GetBinTypeSize() == oracle->index.GetBinTypeSize(),
             "Compressed index width");
@@ -200,8 +237,30 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
             after.adapter_index_dispatches == before.adapter_index_dispatches &&
             after.cuda_sketch_batches == before.cuda_sketch_batches,
         "No cache reingestion/resketch");
-  cpu.reset();
   matrix.reset();
+  if (retained) {
+    Check(!retained->HostReadable(),
+          "CPU traversal did not mutate a retained GPU view");
+    auto n = std::min<bst_idx_t>(23, retained->Size());
+    auto input_page =
+        metal::PrepareInput(*retained, input.types, 0, n, cols, {});
+    std::vector<float> actual(n * cols);
+    input_page->Readback(actual);
+    for (std::size_t r = 0; r < n; ++r) {
+      for (unsigned f = 0; f < cols; ++f) {
+        auto bin = oracle->GetGindex(retained->base_rowid + r, f);
+        auto expected = bin < 0          ? std::nanf("")
+                        : cats && f == 2 ? oracle->cut.Values()[bin]
+                        : bin == oracle->cut.Ptrs()[f]
+                            ? -std::numeric_limits<float>::infinity()
+                            : oracle->cut.Values()[bin - 1];
+        Check((std::isnan(expected) && std::isnan(actual[r * cols + f])) ||
+                  actual[r * cols + f] == expected,
+              "Retained GPU view survives cache/DMatrix destruction");
+      }
+    }
+  }
+  cpu.reset();
   Check(std::filesystem::is_empty(dir), "Cache removed at matrix destruction");
   ++cases;
   std::printf("case=%zu bins=%d layout=%u categories=%d weighted=%d PASS\n", cases, bins, layout,

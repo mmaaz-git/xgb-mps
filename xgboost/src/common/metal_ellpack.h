@@ -38,12 +38,19 @@ class CompressedPage {
   virtual void EndAdapter() = 0;
   virtual void Copy(CompressedPage const& input, bst_idx_t row_offset) = 0;
   virtual void Commit(double host_ratio) = 0;
+  // Count actual compressed symbols on GPU; only the scalar result returns to host.
+  virtual bst_idx_t NonMissing() const = 0;
+  // Acquire a GPU view without unpacking rows, bins, hits or host columns.
+  virtual void View(HistogramCuts const& cuts, bst_bin_t max_bin, bool prefetch_copy,
+                    GHistIndexMatrix* output) const = 0;
   virtual void Restore(Context const* ctx, HistogramCuts const& cuts, bst_bin_t max_bin,
                        double sparse_thresh, bool prefetch_copy,
                        GHistIndexMatrix* output) const = 0;
   // Diagnostic only. Production restoration reads compressed bytes on GPU.
   virtual std::vector<std::uint8_t> Readback() const = 0;
 };
+// Explicit CPU access boundary. Idempotent; retains the compressed GPU view.
+void MaterializeHost(Context const* ctx, double sparse_thresh, GHistIndexMatrix* page);
 std::shared_ptr<CompressedPage> MakeCompressedPage(EllpackInfo info, bst_idx_t rows,
                                                    bst_idx_t base_row, std::size_t bytes = 0);
 

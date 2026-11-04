@@ -99,7 +99,6 @@ class GHistIndexMatrixView : public DataToFeatVec<GHistIndexMatrixView<EncAccess
 
   std::vector<std::uint32_t> const& ptrs_;
   std::vector<float> const& values_;
-  common::ColumnMatrix const& columns_;
 
  public:
   bst_idx_t const base_rowid;
@@ -112,10 +111,10 @@ class GHistIndexMatrixView : public DataToFeatVec<GHistIndexMatrixView<EncAccess
         ft_{ft},
         ptrs_{page.cut.Ptrs()},
         values_{page.cut.Values()},
-        columns_{page.Transpose()},
         base_rowid{page.base_rowid} {}
 
   [[nodiscard]] bst_idx_t DoFill(bst_idx_t ridx, float* out) const {
+    page_.RequireHost();
     auto gridx = ridx + this->base_rowid;
     auto n_features = page_.Features();
 
@@ -143,10 +142,11 @@ class GHistIndexMatrixView : public DataToFeatVec<GHistIndexMatrixView<EncAccess
       });
       n_non_missings += n_features;
     } else {
+      auto const& columns = page_.Transpose();
       for (bst_feature_t fidx = 0; fidx < n_features; ++fidx) {
         float fvalue = std::numeric_limits<float>::quiet_NaN();
         bool is_cat = common::IsCat(ft_, fidx);
-        if (columns_.GetColumnType(fidx) == common::kSparseColumn) {
+        if (columns.GetColumnType(fidx) == common::kSparseColumn) {
           // Special handling for extremely sparse data. Just binary search.
           auto bin_idx = page_.GetGindex(gridx, fidx);
           if (bin_idx != -1) {

@@ -410,9 +410,10 @@ class SparsePageSourceImpl : public BatchIteratorImpl<S>, public FormatStreamPol
     this->count_ = 0;
   }
 
-  virtual void Reset(BatchParam const& param) {
-    TryLockGuard guard{single_threaded_};
-
+ protected:
+  // Caller holds single_threaded_. Derived sources can change reader policy
+  // under the same lock before fetching the first page.
+  void ResetCache(BatchParam const& param) {
     auto at_end = false;
     std::swap(this->at_end_, at_end);
 
@@ -426,6 +427,12 @@ class SparsePageSourceImpl : public BatchIteratorImpl<S>, public FormatStreamPol
       this->ring_ = std::make_unique<Ring>();
     }
     this->Fetch();  // Get the 0^th page, prefetch the next page.
+  }
+
+ public:
+  virtual void Reset(BatchParam const& param) {
+    TryLockGuard guard{single_threaded_};
+    this->ResetCache(param);
   }
 
   [[nodiscard]] auto FetchCount() const { return this->fetch_cnt_; }

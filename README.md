@@ -14,7 +14,23 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **compressed GPU consumers for external host caches**. Histogram
+Latest step: **host mirrors on demand for external compressed caches**. MPS
+training, prediction and exact SHAP now use pages with no host row pointers,
+bin arrays, hit counts or column data. CPU callers explicitly materialize a
+mirror; metadata-only cut access does not. Prefetch always produces GPU views,
+so repeated CPU/MPS switches do not spill host restoration into GPU traversal.
+
+Native validation passes **278 consumer cases / 72,017,790 exact fields** and
+**192 cache cases / 10,845,265 exact fields**, including retained GPU views after
+cache destruction. Focused public regression passes **148 tests**, with **27 new
+cases** covering device switches, CPU training, dropout, multiclass and vector
+leaves. Approximate SHAP retains its explicit CPU fallback (CUDA does not implement
+it). Ordinary/in-memory compressed ownership remains open; no new speedup is claimed.
+Full regression passes **2,195 Python tests**, all rebuilt native suites and the
+CPU-only build/API checks.
+[Lazy-host validation](validation/cuda-lazy-host-m3.txt).
+
+The preceding step added **compressed GPU consumers for external host caches**. Histogram
 building (global and shared memory), row partitioning, and prediction/SHAP input
 preparation now read ELLPACK symbols directly. Their pages retain compressed
 buffers instead of restored GPU indices and dense transposes.
@@ -22,9 +38,9 @@ buffers instead of restored GPU indices and dense transposes.
 Native checks pass **139 cases / 28,485,537 exact fields**, including **278
 histograms, 1,946 partitions and 417 input chunks** with the host bins, row pointers
 and cut values overwritten. Twelve new public cases check margins, leaf IDs,
-SHAP contributions/interactions and model reload. Host mirrors are still created
-for CPU interoperability; making those lazy remains unfinished.
-Full regression passes **2,168 Python tests**, all rebuilt native suites and the
+SHAP contributions/interactions and model reload. Host mirrors were still eager at
+that checkpoint; the latest step above makes them optional.
+Full regression at that checkpoint passed **2,168 Python tests**, all rebuilt native suites and the
 CPU-only build/API checks.
 [Compressed-consumer validation](validation/cuda-compressed-consumers-m3.txt).
 
@@ -59,9 +75,9 @@ checks. [Compressed-cache validation](validation/cuda-ellpack-cache-m3.txt).
 
 Apple shared and private buffers both use unified memory; this is a storage/access
 policy, not additional VRAM capacity. Direct construction above removes that
-checkpoint's intermediate host bins. Restoring cached pages still creates host
-mirrors; the new consumers above retain compressed GPU views. CUDA's optional
-Snappy cache compression, lazy host mirrors, native Apple GPU tensor handles and
+checkpoint's intermediate host bins. The later consumer/ownership steps above
+retain compressed GPU views and create host mirrors only for CPU access. CUDA's
+optional Snappy cache compression, ordinary/in-memory compressed ownership, native Apple GPU tensor handles and
 general device ownership remain unfinished. No new performance measurement was made.
 
 The preceding disk-backed construction step supports `DataIter(on_host=False)`:
@@ -153,8 +169,8 @@ The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
-The major remaining areas are optional cache compression, lazy host mirrors and
-ordinary/in-memory compressed storage, native device-array ingestion,
+The major remaining areas are optional cache compression, ordinary/in-memory
+compressed storage and host ownership, native device-array ingestion,
 remaining initialization/state and metadata operations,
 CUDA algorithm alignment, Apple GPU array interoperability and distributed collectives. Sensitive AFT tails and some
 long-run ranking and Covertype comparisons have numerical differences.
@@ -277,10 +293,10 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly; GPU-owned interaction masks and monotonic bounds, including initialization/growth; unions and feature filtering on GPU; candidate staging and tree metadata remain host |
 | Vector model storage | Bit-preserving GPU copies for parent/child weights and category words, with GPU FP32 learning-rate scaling of new child weights; allocation/growth and metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
-| Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; explicit MPS quantile adapters also bin on GPU; final gradient-index/column mirrors remain host |
+| Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; explicit MPS quantile adapters also bin on GPU; external compressed caches create host mirrors only for CPU access; ordinary/in-memory host mirrors remain |
 | Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Explicit MPS in-memory and external quantile adapters feed resident sketches; native device arrays and distributed sketches remain open |
 | Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Model dictionary copies, persistent storage and row-level map application remain host |
-| Quantized data cache | Ordinary pages retain typed GPU bins and dense transpose. External host cache uses direct adapter-to-ELLPACK construction, concatenation, shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly. Host mirrors remain eager; optional Snappy compression and ordinary/in-memory compressed storage remain open |
+| Quantized data cache | Ordinary pages retain typed GPU bins and dense transpose. External host cache uses direct adapter-to-ELLPACK construction, concatenation, shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly. Prefetch retains device-only views; CPU access explicitly materializes host mirrors. Optional Snappy compression and ordinary/in-memory compressed storage remain open |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
 | Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; scalar/vector split statistics retain integers |
@@ -296,7 +312,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU |
 | Prediction transforms | CUDA-source sigmoid, exponential, hinge, cumulative expectile and quantile insertion sorting with preserved subnormals; multiclass softmax uses sequential binary64 sums of FP32 terms, and argmax preserves source NaN/subnormal comparisons |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights; GPU raw-input decoding and category-map application |
-| SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input conversion and row-level category mapping on GPU; raw packing/transfers remain host |
+| SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input conversion and row-level category mapping on GPU; raw packing/transfers remain host; approximate SHAP uses an explicit CPU fallback, as CUDA does not implement it |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
 | Ranking training | GPU query maxima/counts/integer prefixes and immutable cache reuse; stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, raw bounds, independent sign/cost truncation, parallel MAP prefixes, normalization and combined weights on Metal; unbiased bias updates use a deterministic global cost-factor policy |
 | ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; collective transport remains host |
@@ -851,7 +867,9 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Add GPU ELLPACK pages, adaptive shared/private external caching and page concatenation.
 - [x] Construct external host-cache ELLPACK pages directly from resident GPU adapter windows.
 - [x] Read compressed external-cache pages directly in histograms, partitions and prediction/SHAP input preparation.
-- [ ] Make host mirrors lazy and extend compressed ownership to ordinary/in-memory matrices.
+- [x] Create external-cache host mirrors only for CPU access; preserve compressed views across prefetch/device switches.
+- [ ] Extend compressed storage and host ownership to ordinary/in-memory matrices.
+- [ ] Port compressed disk caches and internal ELLPACK save/load.
 - [ ] Port optional Snappy cache compression.
 - [ ] Complete native device arrays and remaining metadata/state operations.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.

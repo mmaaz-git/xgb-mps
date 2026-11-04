@@ -72,6 +72,7 @@ namespace xgboost::data {
 
 [[nodiscard]] std::size_t GHistIndexRawFormat::Write(GHistIndexMatrix const& page,
                                                      common::AlignedFileWriteStream* fo) {
+  page.RequireHost();
   std::size_t bytes = 0;
   // indptr
   bytes += common::WriteVec(fo, page.row_ptr);

@@ -25,7 +25,8 @@ void Same(float actual, float expected) {
   Check((std::isnan(actual) && std::isnan(expected)) || !std::memcmp(&actual, &expected, 4),
         "CUDA reconstructed input value");
 }
-void Case(unsigned maximum, unsigned mode, double ratio, bool copy, std::size_t n = 37) {
+void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
+          std::size_t n = 37, bool lazy = false) {
   constexpr unsigned cols = 7;
   constexpr std::size_t base = 73;
   Context ctx;
@@ -65,9 +66,41 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy, std::size_t 
   auto packed = metal::MakeCompressedPage(layout, n, base);
   packed->Pack(oracle);
   packed->Commit(ratio);
+  Check(packed->NonMissing() == oracle.index.Size(),
+        "Actual compressed non-missing total");
   GHistIndexMatrix page;
   auto before = metal::GetStatistics();
-  packed->Restore(&ctx, cuts, maximum, .2, copy, &page);
+  if (lazy) {
+    packed->View(cuts, maximum, copy, &page);
+    Check(!page.HostReadable() && page.row_ptr.empty() && page.data.empty() &&
+              page.index.Size() == 0 && page.hit_count.empty(),
+          "Device-only view allocates no host rows, bins or hits");
+    Check(page.Size() == n && page.base_rowid == base &&
+              page.Features() == cols,
+          "Device-only shape is independent of host row pointers");
+    auto stats = metal::GetStatistics();
+    Check(stats.ellpack_restore_dispatches ==
+                  before.ellpack_restore_dispatches &&
+              stats.ellpack_host_readback_bytes ==
+                  before.ellpack_host_readback_bytes,
+          "View does not unpack or read back host mirrors");
+    if (maximum == 2 && mode == 0 && ratio == 0 && !copy && n == 37) {
+      auto rejected = [&](auto fn) {
+        bool caught = false;
+        try {
+          fn();
+        } catch (dmlc::Error const &) {
+          caught = true;
+        }
+        Check(caught, "Device-only host access is rejected");
+      };
+      rejected([&] { (void)page.Transpose(); });
+      rejected([&] { (void)page.RowIdx(base); });
+      rejected([&] { page.InvalidateMetal(); });
+    }
+  } else {
+    packed->Restore(&ctx, cuts, maximum, .2, copy, &page);
+  }
   packed.reset();  // Consumers must retain both split buffers independently of the cache.
   Check(metal::GetStatistics().index_gpu_time_ns == before.index_gpu_time_ns,
         "Compressed page does not create a dense GPU transpose");
@@ -184,21 +217,60 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy, std::size_t 
             after.ellpack_restore_dispatches == before.ellpack_restore_dispatches &&
             after.ellpack_debug_readback_bytes == before.ellpack_debug_readback_bytes,
         "Consumers do not re-upload, restore or read back compressed storage");
+  if (lazy) {
+    Check(!page.HostReadable(), "GPU consumers leave host mirrors absent");
+    page.cut =
+        cuts; // Restore intentionally poisoned cut values for CPU access.
+    auto view = page.metal_page;
+    metal::MaterializeHost(&ctx, .2, &page);
+    Check(page.HostReadable() && page.metal_page == view,
+          "Host mirror retains GPU ownership");
+    Check(page.Size() == n && page.index.Size() == oracle.index.Size(),
+          "Host mirror shape");
+    for (std::size_t r = 0; r <= n; ++r)
+      Check(page.row_ptr[r] == oracle.row_ptr[r],
+            "Lazily restored row pointer");
+    for (std::size_t k = 0; k < page.index.Size(); ++k)
+      Check(page.index[k] == oracle.index[k], "Lazily restored exact bin");
+    for (std::size_t k = 0; k < page.hit_count.size(); ++k)
+      Check(page.hit_count[k] == oracle.hit_count[k],
+            "Lazily restored exact hit count");
+    auto expected_bytes = (n + 1) * 8 +
+                          page.index.Size() * page.index.GetBinTypeSize() +
+                          cuts.TotalBins() * 4;
+    auto host = metal::GetStatistics();
+    Check(host.ellpack_host_materializations ==
+                  after.ellpack_host_materializations + 1 &&
+              host.ellpack_host_readback_bytes ==
+                  after.ellpack_host_readback_bytes + expected_bytes,
+          "One explicit host materialization with exact byte accounting");
+    metal::MaterializeHost(&ctx, .2, &page);
+    Check(metal::GetStatistics().ellpack_restore_dispatches ==
+                  host.ellpack_restore_dispatches &&
+              metal::GetStatistics().ellpack_host_materializations ==
+                  host.ellpack_host_materializations,
+          "Host materialization is idempotent");
+  }
   ++cases;
 }
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   try {
-    for (unsigned maximum : {2u, 17u, 257u, 65537u}) {
+    for (bool lazy : {false, true}) {
+      for (unsigned maximum : {2u, 17u, 257u, 65537u}) {
+        for (unsigned mode = 0; mode < 4; ++mode)
+          for (double ratio : {0., .000001, .5, 1.})
+            for (bool copy : {false, true})
+              Case(maximum, mode, ratio, copy, 37, lazy);
+        std::printf("Checked %zu cases / %zu fields\n", cases, fields);
+      }
       for (unsigned mode = 0; mode < 4; ++mode)
-        for (double ratio : {0., .000001, .5, 1.})
-          for (bool copy : {false, true}) Case(maximum, mode, ratio, copy);
-      std::printf("Checked %zu cases / %zu fields\n", cases, fields);
+        Case(17, mode, .23, false, 0, lazy);
+      for (unsigned maximum : {2u, 17u})
+        for (double ratio : {0., .5, 1.})
+          Case(maximum, 0, ratio, false, 16513, lazy);
+      Case(17, 2, .5, true, 5000, lazy); // Non-serial partition prefix.
     }
-    for (unsigned mode = 0; mode < 4; ++mode) Case(17, mode, .23, false, 0);
-    for (unsigned maximum : {2u, 17u})
-      for (double ratio : {0., .5, 1.}) Case(maximum, 0, ratio, false, 16513);
-    Case(17, 2, .5, true, 5000);  // Non-serial partition prefix.
     std::printf(
         "PASS %zu cases / %zu exact fields / %zu histograms / %zu partitions / %zu input chunks\n",
         cases, fields, histograms, partitions, inputs);

@@ -51,7 +51,10 @@ def test_host_cache_training(metal, tmp_path, layout, minimum, ratio):
     assert after["ellpack_pack_dispatches"] > before["ellpack_pack_dispatches"]
     if layout != "missing":
         assert after["ellpack_copy_dispatches"] > before["ellpack_copy_dispatches"]
-    assert after["ellpack_restore_dispatches"] > before["ellpack_restore_dispatches"]
+    assert after["ellpack_view_pages"] > before["ellpack_view_pages"]
+    assert after["ellpack_count_dispatches"] > before["ellpack_count_dispatches"]
+    for key in ["ellpack_restore_dispatches", "ellpack_host_materializations", "ellpack_host_readback_bytes"]:
+        assert after[key] == before[key], key
     assert after["ellpack_debug_readback_bytes"] == before["ellpack_debug_readback_bytes"]
     if ratio == 0 or minimum is None:
         # The default groups this small dataset into one all-device cache page.

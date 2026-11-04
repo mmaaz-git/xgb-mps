@@ -127,6 +127,8 @@ std::atomic<std::uint64_t> ellpack_adapter_dispatches{0}, ellpack_adapter_values
     ellpack_pack_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_histogram_dispatches{0}, ellpack_partition_dispatches{0},
     ellpack_input_dispatches{0};
+std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
+    ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
 std::atomic<std::uint64_t> adapter_prepare_dispatches{0}, adapter_index_dispatches{0},
     adapter_gpu_time_ns{0}, adapter_debug_readback_bytes{0};
 std::atomic<std::uint64_t> radix_sort_dispatches{0}, quantile_dispatches{0},
@@ -667,6 +669,7 @@ class Page final : public QuantizedPage {
     cuts = Upload(rt, values.Values().data(), values.Values().size() * 4);
   }
   Page(Runtime const& rt, GHistIndexMatrix const& gidx) {
+    gidx.RequireHost();
     auto bytes = gidx.index.Size() * gidx.index.GetBinTypeSize();
     auto source = Upload(rt, gidx.index.data<std::uint8_t>(), bytes);
     index = source;
@@ -1884,7 +1887,11 @@ Statistics GetStatistics() {
           ellpack_pack_input_bytes.load(std::memory_order_relaxed),
           ellpack_histogram_dispatches.load(std::memory_order_relaxed),
           ellpack_partition_dispatches.load(std::memory_order_relaxed),
-          ellpack_input_dispatches.load(std::memory_order_relaxed)};
+          ellpack_input_dispatches.load(std::memory_order_relaxed),
+          ellpack_view_pages.load(std::memory_order_relaxed),
+          ellpack_count_dispatches.load(std::memory_order_relaxed),
+          ellpack_host_materializations.load(std::memory_order_relaxed),
+          ellpack_host_readback_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6124,6 +6131,7 @@ std::unique_ptr<InputBatch> PrepareInput(GHistIndexMatrix const& page,
       return p.Finish(map, {}, {}, types, device.get());
     }
   }
+  page.RequireHost();
   auto first = page.row_ptr[begin], last = page.row_ptr[begin + rows];
   CHECK_LE(first, last);
   CHECK_LE(last, page.index.Size());
@@ -6365,6 +6373,25 @@ id<MTLBuffer> EllpackPrivate(Runtime const& rt, std::size_t bytes) {
   CHECK(buffer) << "Metal private cache allocation failed.";
   return buffer;
 }
+// The row prefix stays on GPU. Callers may read its final scalar for validation
+// or copy it only at the explicit host-materialization boundary.
+id<MTLBuffer> EllpackRowPtr(Runtime& rt, EllpackParams const& p, id<MTLBuffer> head,
+                           id<MTLBuffer> tail, std::atomic<std::uint64_t>* counter) {
+  auto counts = Allocate(rt, (p.rows + 1) * 8);
+  auto command = [rt.queue commandBuffer];
+  auto e = [command computeCommandEncoder];
+  [e setComputePipelineState:rt.ellpack_count_pipeline];
+  [e setBuffer:head offset:0 atIndex:0];
+  [e setBuffer:tail offset:0 atIndex:1];
+  [e setBuffer:counts offset:0 atIndex:2];
+  [e setBytes:&p length:sizeof(p) atIndex:3];
+  [e dispatchThreads:MTLSizeMake(std::max<std::uint64_t>(1, p.rows), 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  auto rows = EncodePrefixU64(rt, command, counts, p.rows + 1);
+  CompleteOperation(command, counter, &ellpack_gpu_time_ns);
+  return rows;
+}
 class MetalCompressedPage final : public CompressedPage {
   EllpackInfo info_;
   bst_idx_t rows_, base_, written_{0};
@@ -6411,6 +6438,7 @@ class MetalCompressedPage final : public CompressedPage {
   std::size_t DeviceBytes() const override { return bytes_ - host_bytes_; }
   void Pack(GHistIndexMatrix const& input) override {
     @autoreleasepool {
+      input.RequireHost();
       CHECK(!committed_);
       CHECK(!adapter_active_);
       CHECK_EQ(written_, 0);
@@ -6609,9 +6637,12 @@ class MetalCompressedPage final : public CompressedPage {
       ellpack_cached_device_bytes.fetch_add(bytes_ - host_bytes_, std::memory_order_relaxed);
     }
   }
-  void Restore(Context const* ctx, HistogramCuts const& cuts, bst_bin_t max_bin,
-               double sparse_thresh, bool prefetch_copy, GHistIndexMatrix* output) const override {
+  void View(HistogramCuts const& cuts, bst_bin_t max_bin, bool prefetch_copy,
+            GHistIndexMatrix* output) const override {
     @autoreleasepool {
+      CHECK(output->row_ptr.empty());
+      CHECK(!output->metal_page);
+      CHECK_EQ(cuts.NumFeatures(), info_.features);
       CHECK(!adapter_active_);
       CHECK_EQ(written_, rows_);
       // Per-bin hits cannot exceed the row count. Resource limits are tighter on
@@ -6636,58 +6667,27 @@ class MetalCompressedPage final : public CompressedPage {
         head = tail = full;
         p.split = 0;
       }
-      auto counts = Allocate(rt, (rows_ + 1) * 8);
-      auto command = [rt.queue commandBuffer];
-      auto e = [command computeCommandEncoder];
-      [e setComputePipelineState:rt.ellpack_count_pipeline];
-      [e setBuffer:head offset:0 atIndex:0];
-      [e setBuffer:tail offset:0 atIndex:1];
-      [e setBuffer:counts offset:0 atIndex:2];
-      [e setBytes:&p length:sizeof(p) atIndex:3];
-      [e dispatchThreads:MTLSizeMake(std::max<bst_idx_t>(1, rows_), 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-      [e endEncoding];
-      auto row_ptr = EncodePrefixU64(rt, command, counts, rows_ + 1);
-      CompleteOperation(command, &ellpack_restore_dispatches, &ellpack_gpu_time_ns);
-      auto nnz = static_cast<std::uint64_t const*>(row_ptr.contents)[rows_];
       output->cut = cuts;
       output->base_rowid = base_;
       output->max_numeric_bins_per_feat = max_bin;
       output->SetDense(info_.dense);
-      output->row_ptr = common::MakeFixedVecWithMalloc(rows_ + 1, std::size_t{0});
-      std::memcpy(output->row_ptr.data(), row_ptr.contents, (rows_ + 1) * 8);
-      output->hit_count = common::MakeFixedVecWithMalloc(cuts.TotalBins(), std::size_t{0});
-      output->ResizeIndex(ctx, nnz, info_.dense);
-      if (info_.dense) output->index.SetBinOffset(output->cut.Ptrs());
-      p.width = output->index.GetBinTypeSize();
-      auto index = Allocate(rt, nnz * p.width);
-      auto ptrs = Upload(rt, cuts.Ptrs().data(), cuts.Ptrs().size() * 4);
-      auto hits = Allocate(rt, cuts.TotalBins() * 4);
-      command = [rt.queue commandBuffer];
-      auto blit = [command blitCommandEncoder];
-      [blit fillBuffer:hits range:NSMakeRange(0, hits.length) value:0];
-      [blit endEncoding];
-      e = [command computeCommandEncoder];
-      [e setComputePipelineState:rt.ellpack_unpack_pipeline];
-      [e setBuffer:head offset:0 atIndex:0];
-      [e setBuffer:tail offset:0 atIndex:1];
-      [e setBuffer:row_ptr offset:0 atIndex:2];
-      [e setBuffer:ptrs offset:0 atIndex:3];
-      [e setBuffer:index offset:0 atIndex:4];
-      [e setBuffer:hits offset:0 atIndex:5];
-      [e setBytes:&p length:sizeof(p) atIndex:6];
-      [e dispatchThreads:MTLSizeMake(std::max<bst_idx_t>(1, rows_), 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-      [e endEncoding];
-      CompleteOperation(command, &ellpack_restore_dispatches, &ellpack_gpu_time_ns);
-      if (nnz) std::memcpy(output->index.data<std::uint8_t>(), index.contents, nnz * p.width);
-      for (std::size_t i = 0; i < output->hit_count.size(); ++i)
-        output->hit_count[i] = static_cast<std::uint32_t const*>(hits.contents)[i];
-      output->InitColumns(ctx, sparse_thresh);
-      // Retain only the compressed GPU view. Host mirrors support CPU interoperability;
-      // Metal consumers read symbols directly and need no restored GPU index/transpose.
+      output->SetMetalRows(rows_);
       output->metal_page = std::make_shared<Page>(rt, cuts, info_, head, tail, p.split);
+      ellpack_view_pages.fetch_add(1, std::memory_order_relaxed);
     }
+  }
+  bst_idx_t NonMissing() const override {
+    @autoreleasepool {
+      CHECK(!adapter_active_);
+      CHECK_EQ(written_, rows_);
+      auto rows = EllpackRowPtr(GetRuntime(), Params(), Head(), Tail(), &ellpack_count_dispatches);
+      return static_cast<std::uint64_t const*>(rows.contents)[rows_];
+    }
+  }
+  void Restore(Context const* ctx, HistogramCuts const& cuts, bst_bin_t max_bin,
+               double sparse_thresh, bool prefetch_copy, GHistIndexMatrix* output) const override {
+    this->View(cuts, max_bin, prefetch_copy, output);
+    MaterializeHost(ctx, sparse_thresh, output);
   }
   std::vector<std::uint8_t> Readback() const override {
     @autoreleasepool {
@@ -6713,6 +6713,56 @@ class MetalCompressedPage final : public CompressedPage {
   }
 };
 }  // namespace
+void MaterializeHost(Context const* ctx, double sparse_thresh, GHistIndexMatrix* output) {
+  if (output->HostReadable()) return;
+  @autoreleasepool {
+    auto cached = std::atomic_load(&output->metal_page);
+    auto page = std::dynamic_pointer_cast<Page>(cached);
+    CHECK(page && page->IsCompressed());
+    auto& rt = GetRuntime();
+    auto rows = output->Size();
+    auto const& cuts = output->cut;
+    auto const& c = page->compressed;
+    EllpackParams p{rows, c.split, 0, c.features, c.stride, c.symbols, c.bits, c.dense, 4};
+    auto row_ptr = EllpackRowPtr(rt, p, page->index, page->tail, &ellpack_restore_dispatches);
+    auto nnz = static_cast<std::uint64_t const*>(row_ptr.contents)[rows];
+    output->row_ptr = common::MakeFixedVecWithMalloc(rows + 1, std::size_t{0});
+    std::memcpy(output->row_ptr.data(), row_ptr.contents, (rows + 1) * 8);
+    output->hit_count = common::MakeFixedVecWithMalloc(cuts.TotalBins(), std::size_t{0});
+    output->ResizeIndex(ctx, nnz, output->IsDense());
+    if (output->IsDense()) output->index.SetBinOffset(output->cut.Ptrs());
+    p.width = output->index.GetBinTypeSize();
+    auto index = Allocate(rt, nnz * p.width);
+    auto hits = Allocate(rt, cuts.TotalBins() * 4);
+    auto command = [rt.queue commandBuffer];
+    auto blit = [command blitCommandEncoder];
+    [blit fillBuffer:hits range:NSMakeRange(0, hits.length) value:0];
+    [blit endEncoding];
+    auto e = [command computeCommandEncoder];
+    [e setComputePipelineState:rt.ellpack_unpack_pipeline];
+    [e setBuffer:page->index offset:0 atIndex:0];
+    [e setBuffer:page->tail offset:0 atIndex:1];
+    [e setBuffer:row_ptr offset:0 atIndex:2];
+    [e setBuffer:page->offsets offset:0 atIndex:3];
+    [e setBuffer:index offset:0 atIndex:4];
+    [e setBuffer:hits offset:0 atIndex:5];
+    [e setBytes:&p length:sizeof(p) atIndex:6];
+    [e dispatchThreads:MTLSizeMake(std::max<bst_idx_t>(1, rows), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &ellpack_restore_dispatches, &ellpack_gpu_time_ns);
+    if (nnz) std::memcpy(output->index.data<std::uint8_t>(), index.contents, nnz * p.width);
+    for (std::size_t i = 0; i < output->hit_count.size(); ++i)
+      output->hit_count[i] = static_cast<std::uint32_t const*>(hits.contents)[i];
+    output->InitColumns(ctx, sparse_thresh);
+    // ResizeIndex invalidates a stale device cache. These bins came from this
+    // exact compressed view, so retain it rather than re-uploading host data.
+    std::atomic_store(&output->metal_page, std::move(cached));
+    ellpack_host_materializations.fetch_add(1, std::memory_order_relaxed);
+    ellpack_host_readback_bytes.fetch_add((rows + 1) * 8 + nnz * p.width + cuts.TotalBins() * 4,
+                                         std::memory_order_relaxed);
+  }
+}
 EllpackInfo MakeEllpackInfo(HistogramCuts const& cuts, bst_idx_t row_stride, bool dense) {
   @autoreleasepool {
     CHECK_LE(row_stride, cuts.NumFeatures());

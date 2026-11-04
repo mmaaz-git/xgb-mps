@@ -253,6 +253,13 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.ellpack_partition_dispatches)};
   info["ellpack_input_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.ellpack_input_dispatches)};
+  info["ellpack_view_pages"] = Integer{static_cast<std::int64_t>(stats.ellpack_view_pages)};
+  info["ellpack_count_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_count_dispatches)};
+  info["ellpack_host_materializations"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_host_materializations)};
+  info["ellpack_host_readback_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_host_readback_bytes)};
   info["adapter_prepare_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.adapter_prepare_dispatches)};
   info["adapter_index_dispatches"] =
@@ -483,6 +490,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ellpack_histogram_dispatches"] = Integer{0};
   info["ellpack_partition_dispatches"] = Integer{0};
   info["ellpack_input_dispatches"] = Integer{0};
+  info["ellpack_view_pages"] = Integer{0};
+  info["ellpack_count_dispatches"] = Integer{0};
+  info["ellpack_host_materializations"] = Integer{0};
+  info["ellpack_host_readback_bytes"] = Integer{0};
   info["adapter_prepare_dispatches"] = Integer{0};
   info["adapter_index_dispatches"] = Integer{0};
   info["adapter_gpu_time_ns"] = Integer{0};
@@ -1461,7 +1472,8 @@ XGB_DLL int XGDMatrixGetQuantileCut(DMatrixHandle const handle, char const *conf
   auto &indptr = p_m->GetThreadLocal().ret_vec_u64;
 
   if (p_m->PageExists<GHistIndexMatrix>()) {
-    auto ctx = p_m->Ctx()->IsCPU() ? *p_m->Ctx() : p_m->Ctx()->MakeCPU();
+    // Cuts are host metadata even when the MPS page has no host bin mirror.
+    auto ctx = p_m->Ctx()->IsCPU() || p_m->Ctx()->IsMPS() ? *p_m->Ctx() : p_m->Ctx()->MakeCPU();
     GetCutImpl<GHistIndexMatrix>(&ctx, p_m, &indptr, &data);
   } else {
     auto ctx = p_m->Ctx()->IsCUDA() ? *p_m->Ctx() : p_m->Ctx()->MakeCUDA(0);

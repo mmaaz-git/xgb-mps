@@ -11,6 +11,7 @@
 #include <cstdint>    // for uint32_t
 #include <limits>     // for numeric_limits
 #include <memory>     // for make_unique
+#include <optional>
 #include <vector>     // for vector
 
 #include "../common/categorical.h"
@@ -45,10 +46,20 @@ float GetFvalueImpl(std::vector<std::uint32_t> const& ptrs, std::vector<float> c
  */
 class GHistIndexMatrix {
 #if defined(XGBOOST_USE_METAL)
+  std::optional<bst_idx_t> metal_rows_;
+
  public:
   mutable std::shared_ptr<common::metal::QuantizedPage> metal_page;
+  // MPS batches may expose only shape/cuts and a compressed device view. Request
+  // a CPU batch (or explicitly materialize it) before using public host arrays.
+  void SetMetalRows(bst_idx_t rows) {
+    CHECK(row_ptr.empty());
+    metal_rows_ = rows;
+  }
   void InvalidateMetal() {
+    this->RequireHost();
     std::atomic_store(&metal_page, std::shared_ptr<common::metal::QuantizedPage>{});
+    metal_rows_.reset();
   }
 
  private:
@@ -158,6 +169,17 @@ class GHistIndexMatrix {
   void ResizeColumns(double sparse_thresh);
 
  public:
+  [[nodiscard]] bool HostReadable() const {
+#if defined(XGBOOST_USE_METAL)
+    return !metal_rows_.has_value() || !row_ptr.empty();
+#else
+    return true;
+#endif
+  }
+  void RequireHost() const {
+    CHECK(this->HostReadable()) << "Compressed Metal page has no host mirror. Request CPU "
+                                   "batches or materialize the page before host access.";
+  }
   /** @brief row pointer to rows by element position */
   common::RefResourceView<std::size_t> row_ptr;
   /** @brief data storage for index. */
@@ -249,6 +271,7 @@ class GHistIndexMatrix {
   void InitColumns(Context const* ctx, double sparse_thresh);
 
   void GetFeatureCounts(size_t* counts) const {
+    this->RequireHost();
     auto nfeature = cut.Ptrs().size() - 1;
     for (unsigned fid = 0; fid < nfeature; ++fid) {
       auto ibegin = cut.Ptrs()[fid];
@@ -266,10 +289,16 @@ class GHistIndexMatrix {
    * @brief Get the local row index from the global row index.
    */
   [[nodiscard]] bst_idx_t RowIdx(bst_idx_t gridx) const {
+    this->RequireHost();
     return row_ptr[gridx - this->base_rowid];
   }
 
-  [[nodiscard]] bst_idx_t Size() const { return row_ptr.empty() ? 0 : row_ptr.size() - 1; }
+  [[nodiscard]] bst_idx_t Size() const {
+#if defined(XGBOOST_USE_METAL)
+    if (metal_rows_) return *metal_rows_;
+#endif
+    return row_ptr.empty() ? 0 : row_ptr.size() - 1;
+  }
   [[nodiscard]] bst_feature_t Features() const { return cut.NumFeatures(); }
 
   [[nodiscard]] bool ReadColumnPage(common::AlignedResourceReadStream* fi);
@@ -283,6 +312,7 @@ class GHistIndexMatrix {
   [[nodiscard]] float GetFvalue(std::vector<std::uint32_t> const& ptrs,
                                 std::vector<float> const& values, bst_idx_t ridx,
                                 bst_feature_t fidx, bool is_cat) const {
+    this->RequireHost();
     if (is_cat) {
       auto gidx = GetGindex(ridx, fidx);
       if (gidx == -1) {
@@ -316,6 +346,7 @@ class GHistIndexMatrix {
  */
 template <typename Fn>
 void AssignColumnBinIndex(GHistIndexMatrix const& page, Fn&& assign) {
+  page.RequireHost();
   auto const batch_size = page.Size();
   auto const& ptrs = page.cut.Ptrs();
   std::size_t k{0};

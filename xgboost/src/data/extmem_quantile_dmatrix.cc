@@ -121,14 +121,15 @@ void ExtMemQuantileDMatrix::InitFromMPS(
         ctx, missing, &info_, cache_info_.at(id), p, cuts, iter, proxy, ext.base_rowids,
         ext.batch_nnz);
   }
-  bst_idx_t batches = 0, rows = 0, nnz = 0;
+  bst_idx_t batches = 0, rows = 0;
+  bst_idx_t nnz = metal_page_source_ ? metal_page_source_->NonMissing() : 0;
   for (auto const& page : GetGradientIndexImpl()) {
     CHECK_LT(batches, n_batches_);
     CHECK_EQ(page.base_rowid, batch_ptr_[batches]);
     CHECK_EQ(page.Size(), batch_ptr_[batches + 1] - batch_ptr_[batches]);
     CHECK_EQ(page.Features(), ext.n_features);
     rows += page.Size();
-    nnz += page.row_ptr[page.Size()];
+    if (!metal_page_source_) nnz += page.row_ptr[page.Size()];
     ++batches;
   }
   CHECK_EQ(batches, n_batches_);
@@ -197,7 +198,7 @@ void ExtMemQuantileDMatrix::InitFromCPU(
   return BatchSet{BatchIterator<GHistIndexMatrix>{this->ghist_index_source_}};
 }
 
-BatchSet<GHistIndexMatrix> ExtMemQuantileDMatrix::GetGradientIndex(Context const *,
+BatchSet<GHistIndexMatrix> ExtMemQuantileDMatrix::GetGradientIndex(Context const *ctx,
                                                                    BatchParam const &param) {
   if (param.Initialized()) {
     detail::CheckParam(this->batch_, param);
@@ -208,7 +209,7 @@ BatchSet<GHistIndexMatrix> ExtMemQuantileDMatrix::GetGradientIndex(Context const
       << "The `ExtMemQuantileDMatrix` is initialized using GPU data, cannot be used for CPU.";
 #if defined(XGBOOST_USE_METAL)
   if (metal_page_source_)
-    metal_page_source_->Reset(param);
+    metal_page_source_->Reset(ctx, param);
   else
 #endif
     this->ghist_index_source_->Reset(param);
