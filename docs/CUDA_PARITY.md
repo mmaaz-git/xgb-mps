@@ -81,8 +81,8 @@ interaction constraints, vector leaves and external-memory pages. Gradient-based
 sampling, remaining training-state updates and more efficient external-memory
 staging remain required.
 
-Remaining ranking objectives, sensitive AFT gradient corrections, SHAP, specialized
-metrics, quantile construction, linear training and collectives are separate coverage requirements.
+Grouped ranking ROC/PR-AUC, sensitive AFT gradient corrections, SHAP, quantile
+construction, linear training and collectives are separate coverage requirements.
 The observed prediction speedups do not establish any of those as complete.
 
 ## Survival precision limitation
