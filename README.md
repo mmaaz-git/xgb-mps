@@ -1331,3 +1331,33 @@ million-row queries and six invalid-label checks. All **633 Python tests (one
 skipped)** and native suites pass with Metal API Validation; the separate CPU-only
 build also passes its compatibility checks. Performance measurements follow
 separately; full CUDA parity remains incomplete.
+
+Grouped PR performance on this M3 (eight CPU threads, three alternating pairs):
+
+| Rows | Rows per query | CPU metric | MPS metric | CPU / MPS |
+| ---: | ---: | ---: | ---: | ---: |
+| 100,000 | 128 | 1.314 ms | 2.376 ms | 0.55× |
+| 100,000 | 1,024 | 1.751 ms | 2.408 ms | 0.73× |
+| 1,000,000 | 128 | 11.953 ms | 18.251 ms | 0.65× |
+| 1,000,000 | 1,024 | 14.673 ms | 14.992 ms | 0.98× |
+
+The [metric report](validation/benchmark-ranking-pr-metric-v1-m3.json) times public
+evaluation of fixed base margins with warm prediction caches; matrix construction,
+training and runtime compilation are excluded. The [complete training report](validation/benchmark-ranking-pr-training-v1-m3.json)
+uses one million rows, 32 features, binary relevance, 1,024-row queries, pairwise
+top-k ranking with 32 pairs per sample, depth 6 and 20 rounds, evaluating PR each
+round. Including fresh DMatrix construction and quantization, median time is
+**2.152 s CPU / 2.976 s MPS (0.72×)**. CPU wins these PR workloads; the earlier ROC
+speedup does not extend to PR. All existing prediction and metric-history checks
+pass, as do dispatch and wall/monotonic-clock checks. Raw repeats and memory
+snapshots are retained; these results do not establish an isolated hardware limit.
+
+```sh
+.venv/bin/python scripts/benchmark_ranking_auc.py --metric aucpr \
+  --rows 100000 1000000 --query-sizes 128 1024 --threads 8 --repeats 3 \
+  --output results/my-ranking-pr.json
+.venv/bin/python scripts/benchmark.py --rows 1000000 --features 32 \
+  --objective rank:pairwise --query-size 1024 --rank-pairs 32 --rank-method topk \
+  --eval-metric aucpr --rounds 20 --threads 8 --repeats 3 \
+  --output results/my-ranking-pr-training.json
+```
