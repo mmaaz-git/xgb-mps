@@ -338,6 +338,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.cuda_integer_split_dispatches)};
   info["split_finalize_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.split_finalize_dispatches)};
+  info["split_bounds_init_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.split_bounds_init_dispatches)};
   info["split_bounds_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.split_bounds_dispatches)};
   info["split_category_dispatches"] =
@@ -482,6 +484,7 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["cuda_integer_split_dispatches"] = Integer{0};
   info["cuda_integer_multi_split_dispatches"] = Integer{0};
   info["split_finalize_dispatches"] = Integer{0};
+  info["split_bounds_init_dispatches"] = Integer{0};
   info["split_bounds_dispatches"] = Integer{0};
   info["split_category_dispatches"] = Integer{0};
   info["split_category_nodes"] = Integer{0};

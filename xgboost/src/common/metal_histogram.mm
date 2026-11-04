@@ -59,7 +59,8 @@ std::atomic<std::uint64_t> label_validation_dispatches{0}, label_validation_gpu_
 std::atomic<std::uint64_t> leaf_integer_sum_dispatches{0};
 std::atomic<std::uint64_t> cuda_integer_split_dispatches{0};
 std::atomic<std::uint64_t> cuda_integer_multi_split_dispatches{0};
-std::atomic<std::uint64_t> split_finalize_dispatches{0}, split_bounds_dispatches{0};
+std::atomic<std::uint64_t> split_finalize_dispatches{0}, split_bounds_dispatches{0},
+    split_bounds_init_dispatches{0};
 std::atomic<std::uint64_t> split_category_dispatches{0}, split_category_nodes{0};
 std::atomic<std::uint64_t> interaction_reset_dispatches{0}, interaction_split_dispatches{0},
     interaction_query_dispatches{0}, interaction_buffer_growths{0}, interaction_gpu_time_ns{0};
@@ -149,7 +150,8 @@ class Runtime {
   id<MTLComputePipelineState> pipeline;
   id<MTLComputePipelineState> split_pipeline, multi_split_pipeline, quantized_split_pipeline;
   id<MTLComputePipelineState> quantized_multi_split_pipeline;
-  id<MTLComputePipelineState> split_finalize_pipeline, split_bounds_pipeline;
+  id<MTLComputePipelineState> split_finalize_pipeline, split_bounds_pipeline,
+      split_bounds_init_pipeline;
   id<MTLComputePipelineState> model_scale_pipeline;
   id<MTLComputePipelineState> split_category_pipeline;
   id<MTLComputePipelineState> interaction_restore_pipeline, interaction_split_pipeline,
@@ -258,6 +260,7 @@ class Runtime {
       quantized_multi_split_pipeline = make_pipeline(@"xgb_evaluate_quantized_multi_splits");
       split_finalize_pipeline = make_pipeline(@"xgb_finalize_split_nodes");
       split_bounds_pipeline = make_pipeline(@"xgb_update_split_bounds");
+      split_bounds_init_pipeline = make_pipeline(@"xgb_init_split_bounds");
       model_scale_pipeline = make_pipeline(@"xgb_scale_model_weights");
       split_category_pipeline = make_pipeline(@"xgb_build_split_categories");
       interaction_restore_pipeline = make_pipeline(@"xgb_interaction_restore");
@@ -1682,7 +1685,8 @@ Statistics GetStatistics() {
           interaction_split_dispatches.load(std::memory_order_relaxed),
           interaction_query_dispatches.load(std::memory_order_relaxed),
           interaction_buffer_growths.load(std::memory_order_relaxed),
-          interaction_gpu_time_ns.load(std::memory_order_relaxed)};
+          interaction_gpu_time_ns.load(std::memory_order_relaxed),
+          split_bounds_init_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -5655,10 +5659,10 @@ void BuildSplitCategories(Span<float const> cuts, Span<SplitCategoryTask const> 
   }
 }
 
-void UpdateSplitBounds(Span<float> lower, Span<float> upper, std::uint32_t parent,
-                       std::uint32_t left, std::uint32_t right, std::int32_t monotone,
-                       Span<float const> left_weight, Span<float const> right_weight,
-                       bool vector_leaf) {
+namespace {
+void ValidateSplitBounds(Span<float const> lower, Span<float const> upper, std::uint32_t parent,
+                         std::uint32_t left, std::uint32_t right, Span<float const> left_weight,
+                         Span<float const> right_weight, bool vector_leaf) {
   CHECK_EQ(lower.size(), upper.size());
   CHECK_EQ(left_weight.size(), right_weight.size());
   CHECK(!left_weight.empty());
@@ -5669,39 +5673,121 @@ void UpdateSplitBounds(Span<float> lower, Span<float> upper, std::uint32_t paren
   CHECK_NE(left, right);
   CHECK_LE((std::uint64_t(std::max({parent, left, right})) + 1) * left_weight.size(), lower.size());
   CHECK(!MemoryRangesOverlap(lower.data(), lower.size_bytes(), upper.data(), upper.size_bytes()));
+}
+void UpdateBoundsBuffers(Runtime& rt, BorrowedMemory const& lo, BorrowedMemory const& hi,
+                         std::uint32_t parent, std::uint32_t left, std::uint32_t right,
+                         std::int32_t monotone, Span<float const> left_weight,
+                         Span<float const> right_weight, bool vector_leaf) {
+  // Snapshot weights before any writes, including inputs aliased to bound storage.
+  auto lw = Upload(rt, left_weight.data(), left_weight.size_bytes());
+  auto rw = Upload(rt, right_weight.data(), right_weight.size_bytes());
+  struct {
+    std::uint32_t parent, left, right, targets;
+    std::int32_t monotone;
+    std::uint32_t multi;
+  } p{parent, left, right, static_cast<std::uint32_t>(left_weight.size()), monotone, vector_leaf};
+  static_assert(sizeof(p) == 24);
+  std::uint32_t zero = 0;
+  auto error = Upload(rt, &zero, sizeof(zero));
+  auto command = [rt.queue commandBuffer];
+  CHECK(command);
+  auto e = [command computeCommandEncoder];
+  CHECK(e);
+  [e setComputePipelineState:rt.split_bounds_pipeline];
+  [e setBuffer:lo.buffer offset:lo.offset atIndex:0];
+  [e setBuffer:hi.buffer offset:hi.offset atIndex:1];
+  [e setBuffer:lw offset:0 atIndex:2];
+  [e setBuffer:rw offset:0 atIndex:3];
+  [e setBytes:&p length:sizeof(p) atIndex:4];
+  [e setBuffer:error offset:0 atIndex:5];
+  [e dispatchThreads:MTLSizeMake(p.targets, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  CompleteOperation(command, &split_bounds_dispatches, &split_gpu_time_ns);
+  CHECK_EQ(*static_cast<std::uint32_t const*>(error.contents), 0) << "Constraint midpoint is NaN";
+}
+class MetalSplitBoundsStorage final : public SplitBoundsStorage {
+  Runtime& rt_;
+  id<MTLBuffer> lower_{nil}, upper_{nil};
+  std::size_t size_{0};
+
+ public:
+  explicit MetalSplitBoundsStorage(std::size_t count) : rt_{GetRuntime()} { Grow(count); }
+  void Grow(std::size_t count) override {
+    if (count <= size_) return;
+    CHECK_LE(count, std::numeric_limits<std::uint32_t>::max());
+    @autoreleasepool {
+      auto lower = Allocate(rt_, count * sizeof(float));
+      auto upper = Allocate(rt_, count * sizeof(float));
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      if (size_) {
+        auto blit = [command blitCommandEncoder];
+        CHECK(blit);
+        [blit copyFromBuffer:lower_
+                 sourceOffset:0
+                     toBuffer:lower
+            destinationOffset:0
+                         size:size_ * sizeof(float)];
+        [blit copyFromBuffer:upper_
+                 sourceOffset:0
+                     toBuffer:upper
+            destinationOffset:0
+                         size:size_ * sizeof(float)];
+        [blit endEncoding];
+      }
+      struct {
+        std::uint64_t begin, end;
+      } range{size_, count};
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.split_bounds_init_pipeline];
+      [e setBuffer:lower offset:0 atIndex:0];
+      [e setBuffer:upper offset:0 atIndex:1];
+      [e setBytes:&range length:sizeof(range) atIndex:2];
+      [e dispatchThreads:MTLSizeMake(count - size_, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &split_bounds_init_dispatches, &split_gpu_time_ns);
+      lower_ = lower;
+      upper_ = upper;
+      size_ = count;
+    }
+  }
+  Span<float const> Lower() const override {
+    return {static_cast<float const*>(lower_.contents), size_};
+  }
+  Span<float const> Upper() const override {
+    return {static_cast<float const*>(upper_.contents), size_};
+  }
+  void Update(std::uint32_t parent, std::uint32_t left, std::uint32_t right, std::int32_t monotone,
+              Span<float const> left_weight, Span<float const> right_weight,
+              bool vector_leaf) override {
+    ValidateSplitBounds(Lower(), Upper(), parent, left, right, left_weight, right_weight,
+                        vector_leaf);
+    @autoreleasepool {
+      UpdateBoundsBuffers(rt_, {lower_, 0}, {upper_, 0}, parent, left, right, monotone, left_weight,
+                          right_weight, vector_leaf);
+    }
+  }
+};
+}  // namespace
+std::unique_ptr<SplitBoundsStorage> MakeSplitBoundsStorage(std::size_t count) {
+  return std::make_unique<MetalSplitBoundsStorage>(count);
+}
+void UpdateSplitBounds(Span<float> lower, Span<float> upper, std::uint32_t parent,
+                       std::uint32_t left, std::uint32_t right, std::int32_t monotone,
+                       Span<float const> left_weight, Span<float const> right_weight,
+                       bool vector_leaf) {
+  ValidateSplitBounds(lower, upper, parent, left, right, left_weight, right_weight, vector_leaf);
   @autoreleasepool {
     auto& rt = GetRuntime();
-    // Snapshot weight inputs before binding writable bounds, including aliases.
-    auto lw = Upload(rt, left_weight.data(), left_weight.size_bytes());
-    auto rw = Upload(rt, right_weight.data(), right_weight.size_bytes());
     auto lo = TryBorrowMemory(rt.device, lower.data(), lower.size_bytes(), alignof(float));
     auto hi = TryBorrowMemory(rt.device, upper.data(), upper.size_bytes(), alignof(float));
     bool copy_lo = !lo.buffer, copy_hi = !hi.buffer;
     if (copy_lo) lo = {Upload(rt, lower.data(), lower.size_bytes()), 0};
     if (copy_hi) hi = {Upload(rt, upper.data(), upper.size_bytes()), 0};
-    struct {
-      std::uint32_t parent, left, right, targets;
-      std::int32_t monotone;
-      std::uint32_t multi;
-    } p{parent, left, right, static_cast<std::uint32_t>(left_weight.size()), monotone, vector_leaf};
-    static_assert(sizeof(p) == 24);
-    std::uint32_t zero = 0;
-    auto error = Upload(rt, &zero, sizeof(zero));
-    auto command = [rt.queue commandBuffer];
-    CHECK(command);
-    auto e = [command computeCommandEncoder];
-    CHECK(e);
-    [e setComputePipelineState:rt.split_bounds_pipeline];
-    [e setBuffer:lo.buffer offset:lo.offset atIndex:0];
-    [e setBuffer:hi.buffer offset:hi.offset atIndex:1];
-    [e setBuffer:lw offset:0 atIndex:2];
-    [e setBuffer:rw offset:0 atIndex:3];
-    [e setBytes:&p length:sizeof(p) atIndex:4];
-    [e setBuffer:error offset:0 atIndex:5];
-    [e dispatchThreads:MTLSizeMake(p.targets, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-    [e endEncoding];
-    CompleteOperation(command, &split_bounds_dispatches, &split_gpu_time_ns);
-    CHECK_EQ(*static_cast<std::uint32_t const*>(error.contents), 0) << "Constraint midpoint is NaN";
+    UpdateBoundsBuffers(rt, lo, hi, parent, left, right, monotone, left_weight, right_weight,
+                        vector_leaf);
     if (copy_lo) std::memcpy(lower.data(), lo.buffer.contents, lower.size_bytes());
     if (copy_hi) std::memcpy(upper.data(), hi.buffer.contents, upper.size_bytes());
   }

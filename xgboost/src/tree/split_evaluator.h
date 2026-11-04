@@ -79,10 +79,19 @@ class TreeEvaluator {
   bst_target_t n_targets_;
   bool has_constraint_;
   bool use_metal_;
+#if defined(XGBOOST_USE_METAL)
+  std::unique_ptr<common::metal::SplitBoundsStorage> metal_bounds_;
+#endif
 
   void EnsureBounds(bst_node_t max_nidx, bst_target_t n_targets) {
     auto n_nodes = static_cast<std::size_t>(max_nidx) * 2 + 1;
     auto n = n_nodes * n_targets;
+#if defined(XGBOOST_USE_METAL)
+    if (use_metal_) {
+      metal_bounds_->Grow(n);
+      return;
+    }
+#endif
     if (lower_bounds_.Size() < n) {
       lower_bounds_.Resize(n, -std::numeric_limits<float>::max());
     }
@@ -114,8 +123,15 @@ class TreeEvaluator {
 
     if (has_constraint_) {
       // Initialised to some small size, can grow if needed
-      lower_bounds_.Resize(256 * n_targets, -std::numeric_limits<float>::max());
-      upper_bounds_.Resize(256 * n_targets, std::numeric_limits<float>::max());
+#if defined(XGBOOST_USE_METAL)
+      if (use_metal_) {
+        metal_bounds_ = common::metal::MakeSplitBoundsStorage(std::size_t{256} * n_targets);
+      } else
+#endif
+      {
+        lower_bounds_.Resize(256 * n_targets, -std::numeric_limits<float>::max());
+        upper_bounds_.Resize(256 * n_targets, std::numeric_limits<float>::max());
+      }
     }
 
     if (device_.IsCUDA()) {
@@ -360,6 +376,12 @@ class TreeEvaluator {
                                     n_targets_};
     } else {
       auto constraints = monotone_.ConstHostPointer();
+#if defined(XGBOOST_USE_METAL)
+      if (metal_bounds_) {
+        return SplitEvaluator<ParamT>{constraints, metal_bounds_->Lower().data(),
+                                      metal_bounds_->Upper().data(), has_constraint_, n_targets_};
+      }
+#endif
       return SplitEvaluator<ParamT>{constraints, lower_bounds_.ConstHostPointer(),
                                     upper_bounds_.ConstHostPointer(), has_constraint_, n_targets_};
     }
@@ -376,9 +398,8 @@ class TreeEvaluator {
     this->EnsureBounds(max_nidx, 1u);
 #if defined(XGBOOST_USE_METAL)
     if (use_metal_) {
-      common::metal::UpdateSplitBounds(lower_bounds_.HostSpan(), upper_bounds_.HostSpan(), nodeid,
-                                       leftid, rightid, monotone_.ConstHostSpan()[f],
-                                       {&left_weight, 1}, {&right_weight, 1}, false);
+      metal_bounds_->Update(nodeid, leftid, rightid, monotone_.ConstHostSpan()[f],
+                            {&left_weight, 1}, {&right_weight, 1}, false);
       return;
     }
 #endif
@@ -425,10 +446,9 @@ class TreeEvaluator {
     if (use_metal_) {
       CHECK(left_weight.CContiguous());
       CHECK(right_weight.CContiguous());
-      common::metal::UpdateSplitBounds(lower_bounds_.HostSpan(), upper_bounds_.HostSpan(), nodeid,
-                                       leftid, rightid, monotone_.ConstHostSpan()[f],
-                                       left_weight.Values().subspan(0, left_weight.Size()),
-                                       right_weight.Values().subspan(0, right_weight.Size()), true);
+      metal_bounds_->Update(nodeid, leftid, rightid, monotone_.ConstHostSpan()[f],
+                            left_weight.Values().subspan(0, left_weight.Size()),
+                            right_weight.Values().subspan(0, right_weight.Size()), true);
       return;
     }
 #endif

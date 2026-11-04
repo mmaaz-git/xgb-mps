@@ -14,13 +14,12 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **CUDA feature-interaction constraints**. Scalar and vector
-training now reset, grow, update and filter GPU-owned masks on Metal, including
-CUDA's cumulative unions for overlapping groups. Native validation passes **834
-checks**; 30 new training cases cover the CPU/CUDA behavior difference and reuse.
-Final validation passes **1,575 Python tests**, every rebuilt native suite and the
-CPU-only build/API check.
-[Validation](validation/interaction-constraints-m3.txt) · [Scope](docs/CUDA_PARITY.md#cuda-feature-interaction-constraints).
+Latest validated step: **GPU-owned monotonic bounds**, following the interaction-
+constraint port. Scalar and vector training now initialize bounds, preserve them
+during growth and update them directly in Metal buffers. Native validation passes
+**24 storage cases / 76 updates / 3,847,176 exact values**. Final validation passes
+**1,581 Python tests**, every rebuilt native suite and the CPU-only build/API check.
+[Validation](validation/bound-state-m3.txt) · [Scope](docs/CUDA_PARITY.md#gpu-owned-monotonic-bounds).
 Actual NVIDIA execution equivalence remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
@@ -104,7 +103,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; both sampling methods/roots share integer state; weighted sketches still need CUDA alignment |
 | Gradient state | Shared per-tree integer gradients/scales for both sampling methods, all roots and histograms; GPU target/layout copies and bit-preserving Hessian extraction |
 | Histograms | Dense/sparse indices, external pages, scaled integer sums and shared-memory accumulation; resident integer cache retains page additions/subtractions; scalar/vector split scans read integers directly, with a binary64 view for host consumers |
-| Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly; interaction masks, unions and feature filtering execute on GPU; tree metadata remains host |
+| Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly; GPU-owned interaction masks and monotonic bounds, including initialization/growth; unions and feature filtering on GPU; candidate staging and tree metadata remain host |
 | Vector model storage | Bit-preserving GPU copies for parent/child weights and category words, with GPU FP32 learning-rate scaling of new child weights; allocation/growth and metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; adapter-built QuantileDMatrix bins remain CPU |
@@ -2100,5 +2099,32 @@ suite and the CPU-only build/API check. [Validation](validation/interaction-cons
 
 Host parsing and CSR metadata construction match CUDA's setup. Feature lists still
 return to host candidate preparation; this is not fully device-resident training.
-Monotonic-bound allocation/initialization and the other ledger gaps remain. No
-performance benchmark or NVIDIA execution comparison accompanies this step.
+Monotonic-bound allocation/initialization was the next gap, addressed below. Other
+ledger gaps remain. No performance benchmark or NVIDIA execution comparison
+accompanies this step.
+
+
+### GPU-owned monotonic bounds
+
+Monotonic constraints now retain lower/upper bounds in Metal-owned buffers. GPU
+initialization fills the new entries with CUDA's finite `-FLT_MAX`/`FLT_MAX` values;
+growth copies old bounds on the GPU and initializes only the new tail. The existing
+scalar/vector bound-update kernel writes directly to those buffers, eliminating
+bound staging and copy-back for this path. Host candidate preparation reads a
+completed shared-memory view.
+
+The source is CUDA `HostDeviceVector::Resize` and `DeviceUVector::resize`, as called
+by `TreeEvaluator`. Feature-constraint parsing/padding stays on the host, as in
+CUDA. This change adds GPU allocation/initialization coverage; it does not change
+bound-update arithmetic or claim fully device-resident training.
+
+Focused checks pass **24 native storage cases / 76 updates / 3,847,176 exact values**
+and **19 public cases**, including six new deep-tree cases that exceed the initial
+allocation. Tests cover retained values, finite tail defaults, subnormals, aliased
+weights, unchanged views without growth, errors, scalar/vector layouts and both
+growth policies. Final validation passes **1,581 Python tests (one skipped)**, every
+rebuilt native suite and the CPU-only build/API check. [Validation](validation/bound-state-m3.txt).
+
+Candidate staging, generic metadata/model ownership, sketch/CUDA algorithm gaps,
+AFT corrections, interoperability and distributed collectives remain. No benchmark
+or NVIDIA execution comparison was run.

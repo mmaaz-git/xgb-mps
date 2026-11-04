@@ -29,6 +29,8 @@ def test_gpu_split_finalization_and_bounds(metal, strategy, constrained, growth)
     assert min(counts) > 0
     assert after["split_finalize_dispatches"] - before["split_finalize_dispatches"] > len(trees(model))
     assert after["split_bounds_dispatches"] - before["split_bounds_dispatches"] == (counts[0] if constrained else 0)
+    assert after["split_bounds_init_dispatches"] - before["split_bounds_init_dispatches"] == (
+        len(trees(model)) if constrained else 0)
     cpu = xgb.Booster(params={"device": "cpu"}, model_file=model.save_raw())
     np.testing.assert_array_equal(model.predict(d), cpu.predict(d))
 
@@ -66,3 +68,32 @@ def test_finalize_many_features(metal, strategy):
     audit = audit_scalar if strategy == "one_output_per_tree" else audit_vector
     assert min(audit(model, d, x, recorded, p)) > 0
     assert all(tree["split_indices"][0] == x.shape[1]-1 for tree in trees(model))
+
+
+@pytest.mark.parametrize("strategy,method", [("one_output_per_tree", "hist"),
+                                            ("one_output_per_tree", "approx"),
+                                            ("multi_output_tree", "hist")])
+@pytest.mark.parametrize("growth", ["depthwise", "lossguide"])
+def test_monotonic_bounds_survive_gpu_growth(metal, strategy, method, growth):
+    # A monotone 256-leaf tree outgrows the initial 256-node bound allocation.
+    x = np.arange(256, dtype=np.float32).reshape(-1, 1)
+    y = x[:, 0] / 256
+    if strategy == "multi_output_tree":
+        y = np.column_stack([y, .5*y]).astype(np.float32)
+    d = xgb.DMatrix(x, label=y)
+    p = dict(device="mps", tree_method=method, multi_strategy=strategy, nthread=2,
+             max_depth=8, max_bin=256, max_cached_hist_node=1, grow_policy=growth,
+             base_score=0, reg_lambda=0, learning_rate=.5, min_child_weight=0,
+             monotone_constraints="(1)")
+    recorded = RecordedSquaredError()
+    before = xgb.metal_info()
+    model = xgb.train(p, d, 2, obj=recorded)
+    after = xgb.metal_info()
+    audit = audit_scalar if strategy == "one_output_per_tree" else audit_vector
+    counts = audit(model, d, x, recorded, p)
+    assert all(len(tree["left_children"]) > 256 for tree in trees(model))
+    assert after["split_bounds_init_dispatches"] - before["split_bounds_init_dispatches"] > len(trees(model))
+    assert after["split_bounds_dispatches"] - before["split_bounds_dispatches"] == counts[0]
+    cpu = xgb.Booster(params={"device": "cpu"}, model_file=model.save_raw())
+    np.testing.assert_array_equal(model.predict(d), cpu.predict(d))
+    assert np.all(np.diff(model.predict(d), axis=0) >= 0)

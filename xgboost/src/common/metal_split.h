@@ -71,6 +71,21 @@ struct MultiSplitTask {
 struct SplitBounds {
   float lower, upper;
 };
+// GPU-owned monotonic bounds. Grow preserves existing values and initializes
+// only the new tail to +/-FLT_MAX, as CUDA HostDeviceVector::Resize does.
+// Shared read views are valid until the next growth or destruction; operations
+// complete before returning, including updates visible through existing views.
+class SplitBoundsStorage {
+ public:
+  virtual ~SplitBoundsStorage() = default;
+  virtual void Grow(std::size_t count) = 0;
+  virtual Span<float const> Lower() const = 0;
+  virtual Span<float const> Upper() const = 0;
+  virtual void Update(std::uint32_t parent, std::uint32_t left, std::uint32_t right,
+                      std::int32_t monotone, Span<float const> left_weight,
+                      Span<float const> right_weight, bool vector_leaf) = 0;
+};
+std::unique_ptr<SplitBoundsStorage> MakeSplitBoundsStorage(std::size_t count);
 // Vector CUDA evaluation selects each 32-bin chunk in binary64, narrows the
 // winner to FP32, then compares chunk winners. Root gain is subtracted only
 // after the winning feature has been chosen. one_pass is a CUDA test hook:

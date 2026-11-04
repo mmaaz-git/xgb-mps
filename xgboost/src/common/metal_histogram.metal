@@ -6234,6 +6234,17 @@ kernel void xgb_finalize_split_nodes(
   }
 }
 
+// CUDA DeviceUVector::resize preserves the prefix and fills the new tail with
+// +/-maximum finite float. Integer stores preserve the constants exactly.
+kernel void xgb_init_split_bounds(device uint* lower [[buffer(0)]],
+                                  device uint* upper [[buffer(1)]],
+                                  constant ulong2& range [[buffer(2)]],
+                                  uint i [[thread_position_in_grid]]) {
+  ulong index = range.x + i;
+  if (index >= range.y) return;
+  lower[index] = 0xff7fffffu;
+  upper[index] = 0x7f7fffffu;
+}
 struct SplitBoundsUpdate {
   uint parent, left, right, targets;
   int monotone;

@@ -70,7 +70,7 @@ must be reported rather than hidden by widening test tolerances.
 | Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Both sampling methods and all roots share quantized state; weighted sketches still differ from CUDA; preprocessing remains hybrid |
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Original per-tree scales feed both integer sampling methods, all roots and histograms; reduced value leaves now use original scales and integer sums; scalar/vector split statistics retain integers |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned integer cache; external-page accumulation and subtraction retain exact quantized sums, with a binary64 view for host orchestration. GPU growth copies both buffers, empty first pages overwrite reused ranges, and feature gathering remains GPU. Scalar/vector split gathering now reads integer buffers; host cache policy/metadata remain |
-| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly from resident sorted indices; GPU-owned interaction masks, group unions and ascending feature filtering; staging and tree metadata remain host |
+| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly from resident sorted indices; GPU-owned interaction masks and monotonic bounds, group unions, ascending feature filtering, bound initialization/growth; candidate staging and tree metadata remain host |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; column initialization/selection/order run on Metal but still need CUDA RNG alignment |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
@@ -1260,6 +1260,57 @@ CPU-loaded predictions are checked. Final validation passes **1,575 Python tests
 (one skipped)**, every rebuilt native suite and the CPU-only build/API check.
 [Validation record](../validation/interaction-constraints-m3.txt).
 
-Monotonic-bound allocation/initialization, generic metadata, sketch and other
-algorithm gaps, persistent GPU ownership and external NVIDIA validation remain.
+Monotonic-bound allocation/initialization was the next gap, covered below. Generic
+metadata, sketch and other algorithm gaps, persistent GPU ownership and external
+NVIDIA validation remain.
 No benchmark or NVIDIA hardware comparison was run.
+
+
+## GPU-owned monotonic bounds
+
+CUDA `TreeEvaluator` in `tree/split_evaluator.h` initializes 256 nodes per target
+with finite bounds, then grows to `(2 * max_child + 1) * targets`. Its device
+`HostDeviceVector::Resize` uses `DeviceUVector::resize`: allocate, device-copy the
+retained prefix and `thrust::fill` only the new tail. This was host vector work
+in the prior MPS branch, even though subsequent bound updates already used Metal.
+
+`SplitBoundsStorage` now owns persistent Metal buffers. A blit copies the retained
+values on growth, and `xgb_init_split_bounds` writes the exact finite FP32 bound
+bits into the new tail. Existing scalar/vector `xgb_update_split_bounds` executes
+directly on those buffers. Its arithmetic and validation are shared with the
+existing host-span API through a common encoder; production bound updates no
+longer borrow/stage host bounds or copy them back. Weight inputs are still staged
+and snapshotted before updates, including aliases.
+
+Shared read views become visible after synchronous completion and remain valid
+until growth or destruction. The histogram evaluator reacquires views after
+`AddSplit`, as it did after host-vector growth. CPU/CUDA branches keep their
+existing storage. Unconstrained/all-zero constraints allocate no bound buffers.
+Feature-constraint parsing and padding stay host operations, matching CUDA setup.
+The API grows without shrinking, validates extents before GPU work and limits
+logical counts to 32-bit shader dispatch indices and the device allocation limit.
+
+`split_bounds_init_dispatches` counts completed initialization/growth commands,
+one for the pair of buffers. Timing joins `split_gpu_time_ns`; bound-update
+commands retain `split_bounds_dispatches`. Empty/no-growth operations do not
+dispatch. CPU-only builds expose zero. The statistics ABI and evaluator storage
+changed, so every native executable is rebuilt for the full validation.
+
+Focused native checks pass **24 cases / 76 updates / 3,847,176 exact values**.
+Production storage checks include zero/unchanged growth, retained shared views,
+size boundaries through 65,537 values, finite initial/tail bits, aliasing and
+invalid-input recovery. Production `TreeEvaluator` comparisons use the shared
+CPU/CUDA bound formulas, with 1/2/33/129 targets, scalar/vector midpoint rules,
+subnormals, signs and no-op constraints. Node IDs 127/128, 255/256 and 1023/1024
+force repeated growth and verify every retained and new bound.
+Nineteen public cases include six new deep scalar `hist`/`approx` and vector
+`hist` cases under both growth policies. Trees exceed 256 nodes, reuse histogram
+cache capacity one and undergo complete CUDA-source tree audits, exact dispatch
+checks, monotonicity checks and CPU-loaded prediction comparisons.
+Final validation passes **1,581 Python tests (one skipped)**, every rebuilt native
+suite and the CPU-only build/API check. [Validation record](../validation/bound-state-m3.txt).
+
+Host candidate preparation still reads/stages bounds; full device ownership of
+the training pipeline, generic state/model operations, sketch/CUDA algorithm
+alignment, AFT corrections, interoperability, collectives and actual NVIDIA
+validation remain. No benchmark or NVIDIA execution comparison was run.
