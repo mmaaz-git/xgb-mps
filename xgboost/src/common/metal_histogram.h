@@ -99,6 +99,7 @@ struct Statistics {
   std::uint64_t ellpack_pack_dispatches, ellpack_copy_dispatches, ellpack_restore_dispatches,
       ellpack_cache_dispatches, ellpack_gpu_time_ns, ellpack_debug_readback_bytes,
       ellpack_cached_host_bytes, ellpack_cached_device_bytes;
+  std::uint64_t ellpack_adapter_dispatches, ellpack_adapter_values, ellpack_pack_input_bytes;
 };
 
 class Histogram {

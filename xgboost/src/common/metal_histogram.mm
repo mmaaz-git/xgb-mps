@@ -123,6 +123,8 @@ std::atomic<std::uint64_t> input_prepare_dispatches{0}, input_recode_dispatches{
 std::atomic<std::uint64_t> ellpack_pack_dispatches{0}, ellpack_copy_dispatches{0},
     ellpack_restore_dispatches{0}, ellpack_cache_dispatches{0}, ellpack_gpu_time_ns{0},
     ellpack_debug_readback_bytes{0}, ellpack_cached_host_bytes{0}, ellpack_cached_device_bytes{0};
+std::atomic<std::uint64_t> ellpack_adapter_dispatches{0}, ellpack_adapter_values{0},
+    ellpack_pack_input_bytes{0};
 std::atomic<std::uint64_t> adapter_prepare_dispatches{0}, adapter_index_dispatches{0},
     adapter_gpu_time_ns{0}, adapter_debug_readback_bytes{0};
 std::atomic<std::uint64_t> radix_sort_dispatches{0}, quantile_dispatches{0},
@@ -260,6 +262,7 @@ class Runtime {
   id<MTLComputePipelineState> input_prepare_pipeline;
   id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
       ellpack_copy_pipeline, ellpack_count_pipeline, ellpack_unpack_pipeline;
+  id<MTLComputePipelineState> ellpack_adapter_pipeline, ellpack_null_pipeline;
   id<MTLComputePipelineState> adapter_count_pipeline, adapter_scatter_pipeline,
       adapter_offsets_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
@@ -351,6 +354,8 @@ class Runtime {
       ellpack_copy_pipeline = make_pipeline(@"xgb_ellpack_copy");
       ellpack_count_pipeline = make_pipeline(@"xgb_ellpack_count");
       ellpack_unpack_pipeline = make_pipeline(@"xgb_ellpack_unpack");
+      ellpack_adapter_pipeline = make_pipeline(@"xgb_ellpack_adapter");
+      ellpack_null_pipeline = make_pipeline(@"xgb_ellpack_null");
       adapter_count_pipeline = make_pipeline(@"xgb_adapter_count");
       adapter_scatter_pipeline = make_pipeline(@"xgb_adapter_scatter");
       adapter_offsets_pipeline = make_pipeline(@"xgb_adapter_offsets");
@@ -1833,7 +1838,10 @@ Statistics GetStatistics() {
           ellpack_gpu_time_ns.load(std::memory_order_relaxed),
           ellpack_debug_readback_bytes.load(std::memory_order_relaxed),
           ellpack_cached_host_bytes.load(std::memory_order_relaxed),
-          ellpack_cached_device_bytes.load(std::memory_order_relaxed)};
+          ellpack_cached_device_bytes.load(std::memory_order_relaxed),
+          ellpack_adapter_dispatches.load(std::memory_order_relaxed),
+          ellpack_adapter_values.load(std::memory_order_relaxed),
+          ellpack_pack_input_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6137,6 +6145,8 @@ class MetalAdapterInput final : public AdapterInput {
  public:
   id<MTLBuffer> entries, row_ptr;
   bst_idx_t rows, base_row, nnz, stride, sketch_rows;
+  bst_idx_t raw_begin, raw_slots;
+  std::uint32_t features;
   bool partial_first, has_inf;
   bst_idx_t Rows() const override { return rows; }
   bst_idx_t BaseRow() const override { return base_row; }
@@ -6191,6 +6201,9 @@ std::unique_ptr<AdapterInput> PackedInput::FinishAdapter(enc::MappingView map, b
   result->nnz = 0;
   result->stride = 0;
   result->sketch_rows = sketch_rows;
+  result->features = params.features;
+  result->raw_begin = base_row * params.features + params.first_entry;
+  result->raw_slots = params.entries;
   result->partial_first = params.first_entry != 0;
   result->has_inf = false;
   if (params.mapped) CHECK_EQ(map.offsets.size(), std::size_t(params.features) + 1);
@@ -6301,6 +6314,9 @@ class MetalCompressedPage final : public CompressedPage {
   std::size_t bytes_, host_bytes_{0};
   bool committed_{false};
   id<MTLBuffer> buffer_, head_, tail_;
+  bool adapter_active_{false};
+  bst_idx_t adapter_slots_{0};
+  id<MTLBuffer> adapter_counts_, adapter_ptrs_, adapter_cuts_, adapter_types_;
   EllpackParams Params() const {
     return {rows_,
             committed_ ? host_bytes_ : 0,
@@ -6339,6 +6355,7 @@ class MetalCompressedPage final : public CompressedPage {
   void Pack(GHistIndexMatrix const& input) override {
     @autoreleasepool {
       CHECK(!committed_);
+      CHECK(!adapter_active_);
       CHECK_EQ(written_, 0);
       CHECK_EQ(input.Size(), rows_);
       CHECK_EQ(input.Features(), info_.features);
@@ -6362,16 +6379,114 @@ class MetalCompressedPage final : public CompressedPage {
             threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
         [e endEncoding];
         CompleteOperation(command, &ellpack_pack_dispatches, &ellpack_gpu_time_ns);
+        ellpack_pack_input_bytes.fetch_add(input.index.Size() * p.width + input.row_ptr.size() * 8,
+                                           std::memory_order_relaxed);
       }
       written_ = rows_;
+    }
+  }
+  void BeginAdapter(HistogramCuts const& cuts, Span<FeatureType const> types) override {
+    @autoreleasepool {
+      CHECK(!committed_ && !adapter_active_);
+      CHECK_EQ(written_, 0);
+      CHECK_EQ(adapter_slots_, 0);
+      CHECK_EQ(cuts.NumFeatures(), info_.features);
+      CHECK(types.empty() || types.size() == info_.features);
+      auto& rt = GetRuntime();
+      adapter_ptrs_ = Upload(rt, cuts.Ptrs().data(), cuts.Ptrs().size() * 4);
+      adapter_cuts_ = Upload(rt, cuts.Values().data(), cuts.Values().size() * 4);
+      std::vector<std::uint8_t> categorical(info_.features, 0);
+      for (std::size_t f = 0; f < types.size(); ++f)
+        categorical[f] = types[f] == FeatureType::kCategorical;
+      adapter_types_ = Upload(rt, categorical.data(), categorical.size());
+      // Sparse row cursors remain private across partial-row adapter windows.
+      auto sparse = !info_.dense && info_.row_stride && info_.row_stride != info_.features;
+      adapter_counts_ = EllpackPrivate(rt, sparse ? rows_ * 8 : 0);
+      auto command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      [blit fillBuffer:adapter_counts_ range:NSMakeRange(0, adapter_counts_.length) value:0];
+      [blit endEncoding];
+      CompleteOperation(command, &ellpack_cache_dispatches, &ellpack_gpu_time_ns);
+      adapter_active_ = true;
+    }
+  }
+  void PushAdapter(AdapterInput const& source) override {
+    @autoreleasepool {
+      CHECK(adapter_active_ && !committed_);
+      auto& input = dynamic_cast<MetalAdapterInput const&>(source);
+      CHECK(!input.has_inf) << error::InfInData();
+      CHECK_EQ(input.features, info_.features);
+      CHECK_EQ(input.raw_begin, adapter_slots_)
+          << "Adapter windows must be contiguous and ordered.";
+      InputBounds(rows_ * info_.features, input.raw_begin, input.raw_slots);
+      CHECK_LE(input.stride, info_.row_stride)
+          << "Non-missing row width changed between iterations.";
+      if (input.rows) {
+        auto& rt = GetRuntime();
+        auto p = Params();
+        p.rows = input.rows;
+        p.row_offset = input.base_row;
+        struct {
+          EllpackParams shape;
+          std::uint64_t first, slots;
+        } params{p, input.raw_begin % info_.features, input.raw_slots};
+        static_assert(sizeof(params) == 64);
+        std::uint32_t zero = 0;
+        auto status = Upload(rt, &zero, 4);
+        auto command = [rt.queue commandBuffer];
+        auto e = [command computeCommandEncoder];
+        [e setComputePipelineState:rt.ellpack_adapter_pipeline];
+        [e setBuffer:input.entries offset:0 atIndex:0];
+        [e setBuffer:input.row_ptr offset:0 atIndex:1];
+        [e setBuffer:adapter_ptrs_ offset:0 atIndex:2];
+        [e setBuffer:adapter_cuts_ offset:0 atIndex:3];
+        [e setBuffer:adapter_types_ offset:0 atIndex:4];
+        [e setBuffer:adapter_counts_ offset:0 atIndex:5];
+        [e setBuffer:buffer_ offset:0 atIndex:6];
+        [e setBuffer:status offset:0 atIndex:7];
+        [e setBytes:&params length:sizeof(params) atIndex:8];
+        [e dispatchThreads:MTLSizeMake(input.rows, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+        CompleteOperation(command, &ellpack_adapter_dispatches, &ellpack_gpu_time_ns);
+        CHECK_EQ(*static_cast<std::uint32_t const*>(status.contents), 0)
+            << "Metal compressed bin assignment found a feature without cut points or an invalid row width.";
+        ellpack_adapter_values.fetch_add(input.nnz, std::memory_order_relaxed);
+      }
+      adapter_slots_ += input.raw_slots;
+    }
+  }
+  void EndAdapter() override {
+    @autoreleasepool {
+      CHECK(adapter_active_ && !committed_);
+      CHECK_EQ(adapter_slots_, rows_ * info_.features) << "Incomplete adapter input.";
+      if (!info_.dense && info_.row_stride != info_.features && rows_ && info_.row_stride) {
+        auto& rt = GetRuntime();
+        auto p = Params();
+        auto command = [rt.queue commandBuffer];
+        auto e = [command computeCommandEncoder];
+        [e setComputePipelineState:rt.ellpack_null_pipeline];
+        [e setBuffer:adapter_counts_ offset:0 atIndex:0];
+        [e setBuffer:buffer_ offset:0 atIndex:1];
+        [e setBytes:&p length:sizeof(p) atIndex:2];
+        [e dispatchThreads:MTLSizeMake(info_.row_stride, rows_, 1)
+            threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+        [e endEncoding];
+        CompleteOperation(command, &ellpack_adapter_dispatches, &ellpack_gpu_time_ns);
+      }
+      written_ = rows_;
+      adapter_active_ = false;
+      adapter_counts_ = adapter_ptrs_ = adapter_cuts_ = adapter_types_ = nil;
     }
   }
   void Copy(CompressedPage const& source, bst_idx_t row_offset) override {
     @autoreleasepool {
       CHECK_NE(this, &source);
       CHECK(!committed_);
+      CHECK(!adapter_active_);
       CHECK_EQ(written_, row_offset);
       auto& input = dynamic_cast<MetalCompressedPage const&>(source);
+      CHECK(!input.adapter_active_);
       CHECK_EQ(input.written_, input.rows_);
       CHECK_EQ(info_.features, input.info_.features);
       CHECK_EQ(info_.row_stride, input.info_.row_stride);
@@ -6401,6 +6516,7 @@ class MetalCompressedPage final : public CompressedPage {
   void Commit(double host_ratio) override {
     @autoreleasepool {
       CHECK(!committed_);
+      CHECK(!adapter_active_);
       CHECK_EQ(written_, rows_);
       CHECK_GE(host_ratio, 0.0);
       CHECK_LE(host_ratio, 1.0);
@@ -6439,6 +6555,7 @@ class MetalCompressedPage final : public CompressedPage {
   void Restore(Context const* ctx, HistogramCuts const& cuts, bst_bin_t max_bin,
                double sparse_thresh, bool prefetch_copy, GHistIndexMatrix* output) const override {
     @autoreleasepool {
+      CHECK(!adapter_active_);
       CHECK_EQ(written_, rows_);
       // Per-bin hits cannot exceed the row count. Resource limits are tighter on
       // supported Apple GPUs, but make the 32-bit counter contract explicit.

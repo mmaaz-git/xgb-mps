@@ -1704,6 +1704,19 @@ struct BinningParams {
   ulong count;
   uint features, width, dense, padding;
 };
+inline uint xgb_search_bin(uint value, uint begin, uint end, bool cat, device const uint* cuts) {
+  if (cat) value = as_type<uint>(float(int(as_type<float>(value))));
+  uint lo = begin, hi = end;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    bool advance = cat ? xgb_float_less(cuts[mid], value) : !xgb_float_less(value, cuts[mid]);
+    if (advance)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return min(lo, end - 1);
+}
 kernel void xgb_bin_entries(
     device const uint2* entries [[buffer(0)]], device const uint* offsets [[buffer(1)]],
     device const uint* cuts [[buffer(2)]], device const uchar* categorical [[buffer(3)]],
@@ -1723,17 +1736,7 @@ kernel void xgb_bin_entries(
   }
   uint begin = offsets[feature], end = offsets[feature + 1];
   bool cat = categorical[feature] != 0;
-  if (cat) value = as_type<uint>(float(int(as_type<float>(value))));
-  uint lo = begin, hi = end;
-  while (lo < hi) {
-    uint mid = lo + (hi - lo) / 2;
-    bool advance = cat ? xgb_float_less(cuts[mid], value) : !xgb_float_less(value, cuts[mid]);
-    if (advance)
-      lo = mid + 1;
-    else
-      hi = mid;
-  }
-  uint global = min(lo, end - 1);
+  uint global = xgb_search_bin(value, begin, end, cat, cuts);
   uint bin = p.dense ? global - begin : global;
   if (p.width == 1)
     output[tid] = uchar(bin);
@@ -7579,4 +7582,66 @@ kernel void xgb_ellpack_unpack(
     atomic_fetch_add_explicit(hits + global, 1u, memory_order_relaxed);
     ++offset;
   }
+}
+
+struct EllpackAdapterParams {
+  EllpackParams shape;
+  ulong first, slots;
+};
+kernel void xgb_ellpack_adapter(
+    device const uint2* entries [[buffer(0)]], device const ulong* rows [[buffer(1)]],
+    device const uint* ptrs [[buffer(2)]], device const uint* cuts [[buffer(3)]],
+    device const uchar* categorical [[buffer(4)]], device ulong* counts [[buffer(5)]],
+    device atomic_uint* output [[buffer(6)]], device atomic_uint* status [[buffer(7)]],
+    constant EllpackAdapterParams& params [[buffer(8)]], uint tid [[thread_position_in_grid]]) {
+  constant auto& p = params.shape;
+  ulong r = tid;
+  if (r >= p.rows) return;
+  if (!p.stride) return;  // Host shape check requires all rows to be missing.
+  ulong global_row = p.row_offset + r, begin = rows[r], end = rows[r + 1];
+  bool local_bins = p.dense || p.stride == p.features;
+  if (local_bins) {
+    ulong j = begin;
+    for (uint f = 0; f < p.features; ++f) {
+      ulong slot = r * p.features + f;
+      if (slot < params.first || slot - params.first >= params.slots) continue;
+      uint symbol = p.dense ? p.symbols : p.symbols - 1;
+      if (j < end && entries[j].x == f) {
+        uint value = entries[j++].y;
+        if (ptrs[f] == ptrs[f + 1]) {
+          atomic_fetch_or_explicit(status, 2u, memory_order_relaxed);
+          continue;
+        }
+        symbol = xgb_search_bin(value, ptrs[f], ptrs[f + 1], categorical[f] != 0, cuts) - ptrs[f];
+      } else if (p.dense) {
+        atomic_fetch_or_explicit(status, 4u, memory_order_relaxed);
+        continue;
+      }
+      xgb_ellpack_write(output, global_row * p.stride + f, p.bits, symbol);
+    }
+  } else {
+    ulong offset = counts[global_row];
+    if (offset > p.stride || end - begin > p.stride - offset) {
+      atomic_fetch_or_explicit(status, 4u, memory_order_relaxed);
+      return;
+    }
+    for (ulong j = begin; j < end; ++j) {
+      uint2 entry = entries[j];
+      uint f = entry.x;
+      if (f >= p.features || ptrs[f] == ptrs[f + 1]) {
+        atomic_fetch_or_explicit(status, 2u, memory_order_relaxed);
+        continue;
+      }
+      uint symbol = xgb_search_bin(entry.y, ptrs[f], ptrs[f + 1], categorical[f] != 0, cuts);
+      xgb_ellpack_write(output, global_row * p.stride + offset++, p.bits, symbol);
+    }
+    counts[global_row] = offset;
+  }
+}
+kernel void xgb_ellpack_null(device const ulong* counts [[buffer(0)]],
+                             device atomic_uint* output [[buffer(1)]],
+                             constant EllpackParams& p [[buffer(2)]],
+                             uint2 tid [[thread_position_in_grid]]) {
+  if (ulong(tid.y) < p.rows && tid.x < p.stride && tid.x >= counts[tid.y])
+    xgb_ellpack_write(output, ulong(tid.y) * p.stride + tid.x, p.bits, p.symbols - 1);
 }

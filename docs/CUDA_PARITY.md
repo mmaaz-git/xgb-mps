@@ -97,7 +97,7 @@ must be reported rather than hidden by widening test tolerances.
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add GPU dense/columnar ingestion, resident sketches and bins; native device arrays and distributed sketch collectives remain open |
-| Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds CUDA-format GPU ELLPACK packing, concatenation and restoration, adaptive shared/private storage and two-page prefetch. Restored bins remain GPU-resident for training; host gradient-index/column mirrors support interoperability. Disk mode retains one page per input batch. Direct adapter-to-compressed construction, direct compressed consumers and optional Snappy cache compression remain open |
+| Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation and restoration, adaptive shared/private storage and two-page prefetch. Restored bins remain GPU-resident for training; host gradient-index/column mirrors support interoperability. Disk mode retains one page per input batch. Direct compressed consumers, ordinary/in-memory compressed storage and optional Snappy cache compression remain open |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Prediction/SHAP row-level mapping and raw-input preparation now run on GPU; explicit MPS QuantileDMatrix training adapters also recode on GPU; dictionary storage/copies and general metadata remain host |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
@@ -363,12 +363,12 @@ the training page, including its GPU dense transpose; training does not upload
 the host bin mirror again. Constructor and interrupted-iteration checks cover
 both cache modes. CPU-only builds reject MPS construction explicitly.
 
-This does not complete compressed matrix ownership. Construction still uploads
-temporary host quantized bins produced by the existing GPU adapter binning path.
-Restoration materializes host gradient-index/column mirrors, and training consumes
-the restored GPU indices instead of reading compressed symbols directly.
-Direct adapter-to-compressed construction and direct compressed consumers remain
-open, along with CUDA's optional Snappy/nvcomp compression/decompression, native
+This does not complete compressed matrix ownership. The subsequent direct
+construction step below removes temporary host quantized bins from this path.
+Restoration still materializes host gradient-index/column mirrors, and training
+consumes the restored GPU indices instead of reading compressed symbols directly.
+Direct compressed consumers remain open, along with ordinary/in-memory compressed
+storage, CUDA's optional Snappy/nvcomp compression/decompression, native
 Metal array/half interfaces, metadata ownership and GPU collectives. Shared/private
 cache bytes do not measure whole-process memory savings. No speedup is claimed.
 
@@ -396,6 +396,59 @@ compressed-byte readback. GPU time excludes host staging, metadata and column
 mirrors; dense transpose retains its existing counter. Native callers must rebuild
 for the extended Statistics layout; the full validation does so. CPU-only values
 remain zero. NVIDIA execution and cross-Apple validation remain unperformed.
+
+## Direct adapter-to-compressed construction
+
+External host-cache construction now passes each resident `AdapterInput` directly
+to its compressed page. It no longer creates a temporary host gradient-index or
+column mirror and does not upload host bins for packing. Disk construction and
+ordinary/in-memory matrices retain their existing representations.
+
+CUDA authority is `ellpack_page.cu::WriteCompressedEllpackFunctor`,
+`CopyDataToEllpack`, `WriteNullValues` and the adapter page constructor. Numeric
+upper bounds, categorical integer conversion/lower bounds and final-bin clamps
+use the same GPU search helper as existing bin assignment. Dense and relatively
+dense pages write feature-local symbols at their original feature positions,
+including explicit missing symbols for the latter. Sparse pages write global
+symbols in compacted feature order. Per-row GPU-private cursors accumulate across
+partial-row windows; a final GPU pass fills trailing nulls, as CUDA does.
+
+The existing raw window size remains 2^26 slots, including missing values. Windows
+must be contiguous and ordered; completion checks their full range. Row width,
+feature count, missing counts, row counts and batch counts are validated; infinity
+and features without cut points fail clearly. Incomplete construction cannot be
+committed, restored or copied. GPU metadata/error readback remains small; raw
+values, intermediate quantized bins and row cursors do not return to host during
+this construction. Cut arrays and feature-type descriptors still upload once per
+input page. Host input packing, metadata aggregation and synchronous dispatch remain.
+
+The native test independently searches cuts from scalar raw values and feeds the
+upstream scalar bit writer. It passes 73 cases / 2,933 windows / 81,666 exact bytes /
+7,455,890 fields and 12 expected errors. It covers one-slot windows, sparse rows
+split repeatedly, all-missing and empty inputs, dense/relative/sparse layouts,
+float/double input, categorical fractional codes, subnormals, signed zero, 8/16/32-bit
+restored indices, recursive row-prefix sizes and the empty-cut domain. Restored
+global bins, row pointers and hit counts are exact. Public tests retain all prior
+cache/reference/category cases and add ten numeric input types with reversed
+strides, a real sparse 2^26-slot seam, infinity sentinels and changed maximum row
+width with unchanged total nnz. Focused construction regression passes 210 tests.
+
+Three appended counters distinguish direct work from staging:
+`ellpack_adapter_dispatches` counts direct writes and sparse null completion;
+`ellpack_adapter_values` counts successfully binned non-missing values;
+`ellpack_pack_input_bytes` counts host index/row-pointer bytes uploaded by the older
+`Pack(GHistIndexMatrix)` conversion. The host cache requires the last counter,
+`adapter_index_dispatches`, `binning_dispatches` and diagnostic readback counters
+to remain unchanged during construction. The former GPU binning counter applies
+to the host-index path; fused compressed binning uses the new counter. All native
+callers rebuild for the appended Statistics fields; CPU-only values remain zero.
+
+Restoration still creates host mirrors and uncompressed GPU indices. Direct
+compressed consumers and broader ownership remain separate unfinished work.
+No new benchmark, NVIDIA execution comparison or cross-Apple validation was run.
+Full regression passes **2,156 Python tests, one skip**, every rebuilt native suite
+and the CPU-only build/API checks (2026-11-04, 17:34:35–17:40:21 UTC).
+[Validation record](../validation/cuda-direct-ellpack-m3.txt).
 
 ## Prediction input preparation and row-level recoding
 

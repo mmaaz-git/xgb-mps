@@ -12,6 +12,7 @@
 namespace xgboost {
 class GHistIndexMatrix;
 namespace common::metal {
+class AdapterInput;
 struct EllpackInfo {
   std::uint32_t features, row_stride, symbols, bits;
   bool dense;
@@ -31,6 +32,10 @@ class CompressedPage {
   virtual std::size_t HostBytes() const = 0;
   virtual std::size_t DeviceBytes() const = 0;
   virtual void Pack(GHistIndexMatrix const& input) = 0;
+  // Ordered raw adapter windows write bins directly into the compressed buffer.
+  virtual void BeginAdapter(HistogramCuts const& cuts, Span<FeatureType const> types) = 0;
+  virtual void PushAdapter(AdapterInput const& input) = 0;
+  virtual void EndAdapter() = 0;
   virtual void Copy(CompressedPage const& input, bst_idx_t row_offset) = 0;
   virtual void Commit(double host_ratio) = 0;
   virtual void Restore(Context const* ctx, HistogramCuts const& cuts, bst_bin_t max_bin,

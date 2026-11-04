@@ -180,14 +180,22 @@ MetalPageSource::MetalPageSource(
   bst_idx_t offset = 0;
   while (iter->Next()) {
     CHECK_LT(batch, ext.n_batches) << "Different number of batches returned between iterations";
-    auto raw =
-        metal_impl::MakeIndexBatch(ctx, proxy, config.missing, p, cuts, *info, batch_rows[batch],
-                                   ext.base_rowids[batch], ext.batch_nnz[batch]);
-    info->Extend(proxy->Info(), false, true);
+    CHECK_EQ(BatchSamples(proxy), batch_rows[batch]);
+    CHECK_EQ(BatchColumns(proxy), ext.n_features);
     auto packed =
         common::metal::MakeCompressedPage(layout, batch_rows[batch], ext.base_rowids[batch]);
-    packed->Pack(*raw);
-    raw.reset();
+    packed->BeginAdapter(cuts, info->feature_types.ConstHostSpan());
+    bst_idx_t nnz = 0;
+    metal_impl::AdapterWindows(ctx, proxy, config.missing, [&](auto const& input) {
+      packed->PushAdapter(input);
+      nnz += input.NonMissing();
+    });
+    CHECK_EQ(nnz, ext.batch_nnz[batch]) << "Non-missing counts changed between iterations";
+    packed->EndAdapter();
+    proxy->Info().num_row_ = batch_rows[batch];
+    proxy->Info().num_col_ = ext.n_features;
+    proxy->Info().num_nonzero_ = nnz;
+    info->Extend(proxy->Info(), false, true);
     auto target = plan.mapping[batch];
     if (target == metal_cache_->pages.size()) {
       if (!metal_cache_->pages.empty()) metal_cache_->pages.back()->Commit(plan.host_ratio);

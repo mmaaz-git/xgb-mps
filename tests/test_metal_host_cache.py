@@ -44,6 +44,9 @@ def test_host_cache_training(metal, tmp_path, layout, minimum, ratio):
     before = xgb.metal_info()
     q = xgb.ExtMemQuantileDMatrix(it, device="mps", max_bin=17, nthread=2, cache_host_ratio=ratio)
     after = xgb.metal_info()
+    assert after["ellpack_adapter_dispatches"] > before["ellpack_adapter_dispatches"]
+    for key in ["adapter_index_dispatches", "binning_dispatches", "ellpack_pack_input_bytes"]:
+        assert after[key] == before[key], key
     assert not list(tmp_path.iterdir())
     assert after["ellpack_pack_dispatches"] > before["ellpack_pack_dispatches"]
     if layout != "missing":
@@ -62,6 +65,7 @@ def test_host_cache_training(metal, tmp_path, layout, minimum, ratio):
     np.testing.assert_array_equal(q.get_weight(), weights)
     raw = xgb.DMatrix(x, nthread=2)
     assert q.num_nonmissing() == raw.num_nonmissing()
+    assert after["ellpack_adapter_values"] - before["ellpack_adapter_values"] == raw.num_nonmissing()
     assert_cuts(q, 17, csr=raw.get_data(), page_rows=np.diff(split).tolist(), adapter=True)
     cpu = xgb.QuantileDMatrix(x, y, weight=weights, ref=q, max_bin=17, nthread=2)
     it.closed = True

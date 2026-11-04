@@ -88,6 +88,15 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   Check(after.adapter_prepare_dispatches > before.adapter_prepare_dispatches, "GPU construction");
   Check(after.adapter_debug_readback_bytes == before.adapter_debug_readback_bytes,
         "No raw readback");
+  if (on_host) {
+    Check(
+        after.ellpack_adapter_values - before.ellpack_adapter_values == matrix->Info().num_nonzero_,
+        "Every valid value binned directly into the compressed GPU page");
+    Check(after.adapter_index_dispatches == before.adapter_index_dispatches &&
+              after.binning_dispatches == before.binning_dispatches &&
+              after.ellpack_pack_input_bytes == before.ellpack_pack_input_bytes,
+          "Host cache construction has no intermediate host bins");
+  }
   // CPU quantization with the exact same reference cuts is an independent bin oracle.
   std::shared_ptr<DMatrix> cpu{DMatrix::Create(handle, proxy_handle, matrix, Input::Reset,
                                                Input::Next, -99.0f, 2, bins, std::string{"cpu"})};
