@@ -1415,3 +1415,23 @@ exactly in the tested cases.
 The [fused-path validation](validation/column-sampling-fused-m3.txt) passes all
 **673 Python tests (one skipped)** and native suites with Metal API Validation,
 plus the unchanged CPU-only build checks.
+
+The first fusion experiment reduced million-row MPS time from **4.001 s to
+3.767 s**, with CPU at 3.363 s, but regressed weighted wide training from
+**7.800 s to 8.458 s**, with CPU at 7.411 s. Sampling GPU time changed from
+59.1 to 55.1 ms for uniform sampling and from 353.4 to 437.4 ms for weighted
+sampling. Reports retain both [the modest improvement](validation/benchmark-column-million-v2-m3.json)
+and [the regression](validation/benchmark-column-wide-v2-m3.json); predictions
+still match CPU exactly. CPU timings also vary between runs, so these are not
+isolated measurements of the full-training effect of fusion.
+
+The production dispatch now restricts fusion to **uniform** sampling. Weighted
+sampling retains the earlier staged GPU implementation. The specialized uniform
+kernel also keeps its MT19937 seed recurrence in a register and avoids unused
+scratch buffers and the flag-clearing encoder. The current path therefore differs
+from the first fusion experiment above; final timings follow separately.
+
+[Specialized-path validation](validation/column-sampling-uniform-m3.txt) passes
+all 530 native column cases and all 673 Python tests (one skipped), plus CPU-only
+compatibility checks. Other native implementations are unchanged from the preceding
+full validation.

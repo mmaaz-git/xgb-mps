@@ -1,0 +1,32 @@
+Apple M3, 2026-11-03. Metal API Validation enabled.
+Specialized uniform fusion; weighted sampling uses the staged GPU path.
+Validation: production column API/hierarchy tests and full Python suite.
+Other native suites were unchanged from the preceding full validation.
+
+Wed Nov  4 04:16:34 UTC 2026
+Wed Nov  4 04:16:37 UTC 2026
+2026-11-03 20:16:39.374 metal_column_sampling_api[47286:43173892] Metal API Validation Enabled
+Checked 30 column cases / 33 selected IDs / 30 exact random draws
+Checked 60 column cases / 79 selected IDs / 99 exact random draws
+Checked 90 column cases / 464 selected IDs / 762 exact random draws
+Checked 120 column cases / 904 selected IDs / 1638 exact random draws
+Checked 150 column cases / 3723 selected IDs / 6426 exact random draws
+Checked 180 column cases / 7147 selected IDs / 13347 exact random draws
+Checked 210 column cases / 13993 selected IDs / 26874 exact random draws
+Checked 240 column cases / 22326 selected IDs / 41856 exact random draws
+Checked 270 column cases / 42042 selected IDs / 80061 exact random draws
+Checked 300 column cases / 69355 selected IDs / 129213 exact random draws
+Checked 330 column cases / 110325 selected IDs / 209088 exact random draws
+Checked 360 column cases / 164944 selected IDs / 307386 exact random draws
+Checked 390 column cases / 547254 selected IDs / 970965 exact random draws
+Checked 420 column cases / 820260 selected IDs / 1571108 exact random draws
+Checked 450 column cases / 835770 selected IDs / 1586573 exact random draws
+Checked 480 column cases / 851280 selected IDs / 1602038 exact random draws
+PASS 530 column cases / 3275463 selected IDs / 4610295 exact random draws; maximum weighted-key difference 0 FP32 ULP; hierarchy, RNG, guards and bounds pass
+Column validation finished: 0
+Wed Nov  4 04:16:41 UTC 2026
+Uniform fusion validation finished: 0
+Wed Nov  4 04:17:00 UTC 2026
+
+Python: 673 passed, 1 skipped.
+CPU-only build verified: Metal reports unavailable and device=mps raises a clear error.

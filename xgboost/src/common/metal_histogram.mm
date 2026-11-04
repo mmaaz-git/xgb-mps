@@ -2634,16 +2634,16 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
   if (selected.empty()) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
+    bool fused = weights.empty() && features.size() <= 2048 &&
+                 rt.device.maxThreadgroupMemoryLength >= 2048 * 8 + 624 * 4;
     auto input = Upload(rt, features.data(), features.size_bytes());
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
-    bool fused =
-        features.size() <= 2048 && rt.device.maxThreadgroupMemoryLength >= 2048 * 8 + 624 * 4;
-    auto indices = fused ? nil : Allocate(rt, features.size_bytes());
-    auto random = Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
-    auto scores = Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
-    auto invalid = Allocate(rt, sizeof(std::uint32_t));
-    auto records = fused ? nil : Allocate(rt, selected.size() * 2 * sizeof(std::uint32_t));
     auto output = Allocate(rt, selected.size_bytes());
+    auto weight = fused ? nil : Upload(rt, weights.data(), weights.size_bytes());
+    auto indices = fused ? nil : Allocate(rt, features.size_bytes());
+    auto random = fused ? nil : Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
+    auto scores = fused ? nil : Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
+    auto invalid = fused ? nil : Allocate(rt, sizeof(std::uint32_t));
+    auto records = fused ? nil : Allocate(rt, selected.size() * 2 * sizeof(std::uint32_t));
     struct {
       std::uint32_t rows, selected, seed, weighted;
       std::uint64_t weights;
@@ -2652,16 +2652,19 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
     static_assert(sizeof(p) == 24);
     auto command = [rt.queue commandBuffer];
     CHECK(command);
-    auto clear = [command blitCommandEncoder];
-    CHECK(clear);
-    [clear fillBuffer:invalid range:NSMakeRange(0, invalid.length) value:0];
-    [clear endEncoding];
+    if (!fused) {
+      auto clear = [command blitCommandEncoder];
+      CHECK(clear);
+      [clear fillBuffer:invalid range:NSMakeRange(0, invalid.length) value:0];
+      [clear endEncoding];
+    }
     auto finish = [&] {
       [command commit];
       [command waitUntilCompleted];
       CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-      CHECK_EQ(*static_cast<std::uint32_t const*>(invalid.contents), 0)
-          << "Feature index exceeds weights";
+      if (!fused)
+        CHECK_EQ(*static_cast<std::uint32_t const*>(invalid.contents), 0)
+            << "Feature index exceeds weights";
       std::memcpy(selected.data(), output.contents, selected.size_bytes());
       if (!uniforms.empty()) std::memcpy(uniforms.data(), random.contents, uniforms.size_bytes());
       if (!keys.empty()) std::memcpy(keys.data(), scores.contents, keys.size_bytes());
@@ -2678,12 +2681,8 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
       CHECK(e);
       [e setComputePipelineState:rt.column_sample_small_pipeline];
       [e setBuffer:input offset:0 atIndex:0];
-      [e setBuffer:weight offset:0 atIndex:1];
-      [e setBuffer:random offset:0 atIndex:2];
-      [e setBuffer:scores offset:0 atIndex:3];
-      [e setBuffer:invalid offset:0 atIndex:4];
-      [e setBuffer:output offset:0 atIndex:5];
-      [e setBytes:&p length:sizeof(p) atIndex:6];
+      [e setBuffer:output offset:0 atIndex:1];
+      [e setBytes:&p length:sizeof(p) atIndex:2];
       [e setThreadgroupMemoryLength:width * 8 atIndex:0];
       [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];

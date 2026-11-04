@@ -239,9 +239,9 @@ uniform-integer draws. Uniform selection uses forward Fisher-Yates and stops
 when its selected prefix is fixed; unused local-generator draws cannot affect
 later samples. Weighted sampling gathers feature weights, applies the CPU's
 `1e-6` floor, computes `log(u)/weight`, stably orders priorities and sorts selected
-integer IDs. Candidate sets of at most 2,048 columns use a fused kernel with cooperative
-sorting, subject to available threadgroup memory. Larger sets use separate GPU
-stages, with integer radix sorting for large selections. Both paths preserve IDs
+integer IDs. Unweighted candidate sets of at most 2,048 columns use a fused kernel with
+cooperative sorting, subject to available threadgroup memory. Weighted and larger
+sets use separate GPU stages, with integer radix sorting for large selections. Both paths preserve IDs
 above the exact-integer range of FP32.
 
 Weighted score ties are sensitive to libm rounding. A sampling-specific table

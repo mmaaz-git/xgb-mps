@@ -4448,78 +4448,43 @@ kernel void xgb_column_output(device const uint2* selected [[buffer(0)]],
   output[row] = selected[row].x;
 }
 
-// Fuse the common small-column case: one command/kernel owns random generation,
-// score ordering, selection and final ID sorting. No intermediate device buffers
-// are needed for permutations or sorting passes.
-kernel void xgb_column_sample_small(
-    device const uint* features [[buffer(0)]], device const float* weights [[buffer(1)]],
-    device float* uniforms [[buffer(2)]], device float* keys [[buffer(3)]],
-    device atomic_uint* invalid [[buffer(4)]], device uint* output [[buffer(5)]],
-    constant ColumnSampleParams& p [[buffer(6)]], threadgroup uint2* work [[threadgroup(0)]],
-    uint tid [[thread_index_in_threadgroup]]) {
-  using namespace xgb_survival;
+// Fuse small uniform samples. Keeping weighted log/sort work in separate
+// kernels avoids the measured slowdown of a combined kernel.
+kernel void xgb_column_sample_small(device const uint* features [[buffer(0)]],
+                                    device uint* output [[buffer(1)]],
+                                    constant ColumnSampleParams& p [[buffer(2)]],
+                                    threadgroup uint2* work [[threadgroup(0)]],
+                                    uint tid [[thread_index_in_threadgroup]]) {
   uint width = 2, selected_width = 2;
   while (width < p.rows) width <<= 1;
   while (selected_width < p.selected) selected_width <<= 1;
   threadgroup uint state[624];
-  for (uint i = tid; i < width; i += 256) work[i] = uint2(i, i);
+  for (uint i = tid; i < width; i += 256)
+    work[i] = i < p.rows ? uint2(features[i], i) : uint2(0xffffffffu);
   if (!tid) {
-    state[0] = p.seed;
-    for (uint i = 1; i < 624; ++i)
-      state[i] = 1812433253u * (state[i - 1] ^ (state[i - 1] >> 30)) + i;
+    uint previous = p.seed;
+    state[0] = previous;
+    for (uint i = 1; i < 624; ++i) {
+      previous = 1812433253u * (previous ^ (previous >> 30)) + i;
+      state[i] = previous;
+    }
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
   if (!tid) {
     uint position = 0;
-    if (p.weighted) {
-      for (uint i = 0; i < p.rows; ++i)
-        uniforms[i] = float(xgb_column_mt(state, position)) * 0x1p-32f;
-    } else {
-      for (uint i = 0; i < min(p.selected, p.rows - 1); ++i) {
-        uint range = p.rows - i, bits = 32 - clz(range - 1);
-        uint mask = 0xffffffffu >> (32 - bits), draw;
-        do {
-          draw = xgb_column_mt(state, position) & mask;
-        } while (draw >= range);
-        uint2 value = work[i];
-        work[i] = work[i + draw];
-        work[i + draw] = value;
-      }
+    for (uint i = 0; i < min(p.selected, p.rows - 1); ++i) {
+      uint range = p.rows - i, bits = 32 - clz(range - 1);
+      uint mask = 0xffffffffu >> (32 - bits), draw;
+      do {
+        draw = xgb_column_mt(state, position) & mask;
+      } while (draw >= range);
+      uint2 value = work[i];
+      work[i] = work[i + draw];
+      work[i + draw] = value;
     }
   }
-  threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);
-  if (p.weighted) {
-    for (uint i = tid; i < width; i += 256) {
-      uint2 record(0xffffffffu);
-      if (i < p.rows) {
-        uint feature = features[i];
-        float key = 0;
-        if (feature >= p.weights) {
-          atomic_store_explicit(invalid, 1u, memory_order_relaxed);
-        } else {
-          float weight = weights[feature];
-          if (xgb_float_less(as_type<uint>(weight), as_type<uint>(1e-6f))) weight = 1e-6f;
-          key = xgb_dto_float(From(xgb_column_logf(uniforms[i])) / From(weight));
-        }
-        keys[i] = key;
-        uint bits = as_type<uint>(key), magnitude = bits & 0x7fffffffu;
-        uint ascending =
-            magnitude == 0 ? 0x80000000u : (bits & 0x80000000u ? ~bits : bits ^ 0x80000000u);
-        record = uint2(~ascending, i);
-      }
-      work[i] = record;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    xgb_column_sort_records(work, width, tid);
-  }
-  for (uint i = tid; i < selected_width; i += 256) {
-    uint2 record(0xffffffffu);
-    if (i < p.selected) {
-      uint index = p.weighted ? work[i].y : work[i].x;
-      record = uint2(features[index], i);
-    }
-    work[i] = record;
-  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint i = p.selected + tid; i < selected_width; i += 256) work[i] = uint2(0xffffffffu);
   threadgroup_barrier(mem_flags::mem_threadgroup);
   xgb_column_sort_records(work, selected_width, tid);
   for (uint i = tid; i < p.selected; i += 256) output[i] = work[i].x;
