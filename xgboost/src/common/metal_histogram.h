@@ -64,6 +64,8 @@ struct Statistics {
   std::uint64_t label_validation_dispatches, label_validation_gpu_time_ns;
   std::uint64_t base_score_dispatches, base_score_gpu_time_ns;
   std::uint64_t shap_dispatches, shap_interaction_dispatches, shap_gpu_time_ns;
+  std::uint64_t leaf_sum_init_dispatches, leaf_sum_dispatches, leaf_weight_dispatches,
+      leaf_fitting_gpu_time_ns;
 };
 
 class Histogram {

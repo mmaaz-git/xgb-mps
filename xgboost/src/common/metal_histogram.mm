@@ -17,6 +17,7 @@
 #include "metal_data.h"
 #include "metal_histogram.h"
 #include "metal_memory.h"
+#include "metal_leaf.h"
 #include "metal_ops.h"
 #include "metal_predictor.h"
 #include "metal_quantile.h"
@@ -46,6 +47,8 @@ std::atomic<std::uint64_t> sketch_finalize_dispatches{0}, sketch_finalize_column
 std::atomic<std::uint64_t> expectile_init_dispatches{0}, prediction_init_dispatches{0},
     initialization_gpu_time_ns{0};
 std::atomic<std::uint64_t> label_validation_dispatches{0}, label_validation_gpu_time_ns{0};
+std::atomic<std::uint64_t> leaf_sum_init_dispatches{0}, leaf_sum_dispatches{0},
+    leaf_weight_dispatches{0}, leaf_fitting_gpu_time_ns{0};
 std::atomic<std::uint64_t> shap_dispatches{0}, shap_interaction_dispatches{0}, shap_gpu_time_ns{0};
 std::atomic<std::uint64_t> base_score_dispatches{0}, base_score_gpu_time_ns{0};
 std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches{0},
@@ -141,6 +144,7 @@ class Runtime {
   id<MTLComputePipelineState> expectile_init_pipeline, broadcast_targets_pipeline;
   id<MTLComputePipelineState> label_validation_pipeline;
   id<MTLComputePipelineState> base_score_pipeline, shap_pipeline;
+  id<MTLComputePipelineState> leaf_sum_pipeline, leaf_sum_finish_pipeline, leaf_weight_pipeline;
   id<MTLComputePipelineState> column_iota_pipeline, column_rng_pipeline, column_keys_pipeline,
       column_select_pipeline, column_sort_small_pipeline, column_output_pipeline,
       column_sample_small_pipeline;
@@ -220,6 +224,9 @@ class Runtime {
       label_validation_pipeline = make_pipeline(@"xgb_validate_labels");
       base_score_pipeline = make_pipeline(@"xgb_base_score");
       shap_pipeline = make_pipeline(@"xgb_shap");
+      leaf_sum_pipeline = make_pipeline(@"xgb_leaf_sum");
+      leaf_sum_finish_pipeline = make_pipeline(@"xgb_leaf_sum_finish");
+      leaf_weight_pipeline = make_pipeline(@"xgb_leaf_weight");
       column_iota_pipeline = make_pipeline(@"xgb_column_iota");
       column_rng_pipeline = make_pipeline(@"xgb_column_rng");
       column_keys_pipeline = make_pipeline(@"xgb_column_keys");
@@ -463,6 +470,70 @@ void CompleteTraining(id<MTLCommandBuffer> command) {
     partition_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                     std::memory_order_relaxed);
 }
+void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>* counter,
+                       std::atomic<std::uint64_t>* duration);
+class MetalLeafSums final : public LeafSums {
+ public:
+  id<MTLBuffer> buffer;
+  std::size_t leaves, targets;
+  MetalLeafSums(std::size_t n_leaves, std::size_t n_targets)
+      : leaves{n_leaves}, targets{n_targets} {
+    CHECK_GT(targets, 0);
+    CHECK_LE(targets, 65535);
+    CHECK_LE(leaves, std::numeric_limits<std::uint32_t>::max());
+    auto& rt = GetRuntime();
+    CHECK_LE(leaves, rt.device.maxBufferLength / sizeof(GradientPairPrecise) / targets);
+    @autoreleasepool {
+      buffer = Allocate(rt, leaves * targets * sizeof(GradientPairPrecise));
+      if (!leaves) return;
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      auto e = [command blitCommandEncoder];
+      CHECK(e);
+      [e fillBuffer:buffer
+              range:NSMakeRange(0, leaves * targets * sizeof(GradientPairPrecise))
+              value:0];
+      [e endEncoding];
+      CompleteOperation(command, &leaf_sum_init_dispatches, &leaf_fitting_gpu_time_ns);
+    }
+  }
+  Span<GradientPairPrecise const> Data() const override {
+    return {static_cast<GradientPairPrecise const*>(buffer.contents), leaves * targets};
+  }
+  void Weights(SplitParameters const& parameters, Span<SplitBounds const> bounds, float eta,
+               Span<float> output) const override {
+    CHECK_EQ(output.size(), leaves * targets);
+    CHECK(bounds.empty() || bounds.size() == output.size());
+    CHECK_LE(output.size(), std::numeric_limits<std::uint32_t>::max());
+    if (output.empty()) return;
+    @autoreleasepool {
+      auto& rt = GetRuntime();
+      auto limits = Upload(rt, bounds.data(), bounds.size_bytes());
+      auto result = Allocate(rt, output.size_bytes());
+      struct {
+        SplitParameters regularization;
+        float eta;
+        std::uint32_t bounded;
+      } p{parameters, eta, static_cast<std::uint32_t>(!bounds.empty())};
+      static_assert(sizeof(p) == 24);
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.leaf_weight_pipeline];
+      [e setBuffer:buffer offset:0 atIndex:0];
+      [e setBuffer:limits offset:0 atIndex:1];
+      [e setBuffer:result offset:0 atIndex:2];
+      [e setBytes:&p length:sizeof(p) atIndex:3];
+      [e dispatchThreads:MTLSizeMake(output.size(), 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &leaf_weight_dispatches, &leaf_fitting_gpu_time_ns);
+      std::memcpy(output.data(), result.contents, output.size_bytes());
+    }
+  }
+};
+
 class MetalRows final : public DeviceRows {
   Runtime& rt_{GetRuntime()};
   id<MTLBuffer> rows_, saved_rows_, ranks_;
@@ -622,6 +693,95 @@ class MetalRows final : public DeviceRows {
       return result;
     }
   }
+  void AddLeafGradients(Span<LeafSumSegment const> leaves,
+                        linalg::MatrixView<GradientPair const> gradients,
+                        LeafSums* output) override {
+    CHECK(output);
+    auto sums = static_cast<MetalLeafSums*>(output);
+    CHECK_EQ(gradients.Shape(1), sums->targets);
+    CHECK_LE(base_, gradients.Shape(0));
+    CHECK_LE(size_, gradients.Shape(0) - base_);
+    auto values = gradients.Values();
+    if (gradients.Size()) {
+      CHECK_GT(values.size(), 0);
+      std::size_t last = 0;
+      for (std::size_t d = 0; d < 2; ++d) {
+        if (gradients.Stride(d)) {
+          CHECK_LE(gradients.Shape(d) - 1, (values.size() - 1 - last) / gradients.Stride(d));
+          last += (gradients.Shape(d) - 1) * gradients.Stride(d);
+        }
+      }
+    }
+    struct Block {
+      std::uint64_t begin, end;
+    };
+    struct Segment {
+      std::uint64_t begin, end;
+      std::uint32_t output, padding;
+    };
+    std::vector<Block> blocks;
+    std::vector<Segment> segments;
+    std::vector<bool> seen(sums->leaves, false);
+    for (auto const& leaf : leaves) {
+      CHECK_LE(leaf.begin, leaf.end);
+      CHECK_LE(leaf.end, size_);
+      CHECK_LT(leaf.output_leaf, sums->leaves);
+      CHECK(!seen[leaf.output_leaf]) << "Duplicate output leaf within a page.";
+      seen[leaf.output_leaf] = true;
+      auto begin = blocks.size();
+      for (auto offset = leaf.begin; offset < leaf.end; offset += 4096) {
+        blocks.push_back({offset, std::min<std::uint64_t>(leaf.end, offset + 4096)});
+      }
+      if (blocks.size() != begin) segments.push_back({begin, blocks.size(), leaf.output_leaf, 0});
+    }
+    if (blocks.empty()) return;
+    CHECK_LE(blocks.size(), std::numeric_limits<std::uint32_t>::max());
+    CHECK_LE(segments.size(), std::numeric_limits<std::uint32_t>::max());
+    CHECK_LE(blocks.size(),
+             rt_.device.maxBufferLength / sizeof(GradientPairPrecise) / sums->targets);
+    @autoreleasepool {
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      this->EnsureReady(command);
+      auto g = TryBorrowMemory(rt_.device, values.data(), values.size_bytes(), 8);
+      if (!g.buffer || MemoryRangesOverlap(values.data(), values.size_bytes(), sums->Data().data(),
+                                           sums->Data().size_bytes())) {
+        g = {Upload(rt_, values.data(), values.size_bytes()), 0};
+      }
+      auto tasks = Upload(rt_, blocks.data(), blocks.size() * sizeof(Block));
+      auto ranges = Upload(rt_, segments.data(), segments.size() * sizeof(Segment));
+      auto partial = Allocate(rt_, blocks.size() * sums->targets * sizeof(GradientPairPrecise));
+      struct {
+        std::uint64_t stride0, stride1;
+        std::uint32_t targets, padding;
+      } p{gradients.Stride(0), gradients.Stride(1), static_cast<std::uint32_t>(sums->targets), 0};
+      static_assert(sizeof(p) == 24 && sizeof(Block) == 16 && sizeof(Segment) == 24);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.leaf_sum_pipeline];
+      [e setBuffer:rows_ offset:0 atIndex:0];
+      [e setBuffer:g.buffer offset:g.offset atIndex:1];
+      [e setBuffer:tasks offset:0 atIndex:2];
+      [e setBuffer:partial offset:0 atIndex:3];
+      [e setBytes:&p length:sizeof(p) atIndex:4];
+      [e dispatchThreadgroups:MTLSizeMake(blocks.size(), sums->targets, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.leaf_sum_finish_pipeline];
+      [e setBuffer:partial offset:0 atIndex:0];
+      [e setBuffer:ranges offset:0 atIndex:1];
+      [e setBuffer:sums->buffer offset:0 atIndex:2];
+      [e setBytes:&p length:sizeof(p) atIndex:3];
+      [e dispatchThreadgroups:MTLSizeMake(segments.size(), sums->targets, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &leaf_sum_dispatches, &leaf_fitting_gpu_time_ns);
+      this->MarkReady();
+    }
+  }
+
   void LeafPositions(std::vector<LeafRange> leaves,
                      linalg::MatrixView<GradientPair const> gradients,
                      Span<bst_node_t> output) override {
@@ -1067,7 +1227,11 @@ Statistics GetStatistics() {
           base_score_gpu_time_ns.load(std::memory_order_relaxed),
           shap_dispatches.load(std::memory_order_relaxed),
           shap_interaction_dispatches.load(std::memory_order_relaxed),
-          shap_gpu_time_ns.load(std::memory_order_relaxed)};
+          shap_gpu_time_ns.load(std::memory_order_relaxed),
+          leaf_sum_init_dispatches.load(std::memory_order_relaxed),
+          leaf_sum_dispatches.load(std::memory_order_relaxed),
+          leaf_weight_dispatches.load(std::memory_order_relaxed),
+          leaf_fitting_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1082,6 +1246,10 @@ void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>*
     duration->fetch_add(static_cast<std::uint64_t>(elapsed * 1e9), std::memory_order_relaxed);
 }
 }  // namespace
+std::unique_ptr<LeafSums> MakeLeafSums(std::size_t leaves, std::size_t targets) {
+  return std::make_unique<MetalLeafSums>(leaves, targets);
+}
+
 Objective ObjectiveFromName(char const* name) {
   if (!strcmp(name, "reg:squarederror")) return Objective::kSquare;
   if (!strcmp(name, "reg:logistic") || !strcmp(name, "binary:logistic") ||

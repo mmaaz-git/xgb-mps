@@ -12,7 +12,7 @@ still a mixture of GPU operations and CPU work. Passing tests cover implemented
 paths, not every CUDA operation.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
-remaining objective initialization and reduced-gradient leaf fitting, linear boosting,
+remaining objective initialization and training-state operations, linear boosting,
 GPU `approx` training, categorical/metadata operations, Apple GPU array
 interoperability and distributed collectives. AFT still has CPU corrections;
 some long-run ranking and Covertype comparisons have numerical differences.
@@ -23,8 +23,8 @@ experiments are deferred while these coverage gaps are addressed.
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, SHAP contributions/interactions, prediction-cache
 updates, common metrics,
-row partitioning, scalar/vector split evaluation, root-gradient sums and stump
-fitting, means, stable column/grouped sorting, ROC/PR-AUC, ranking metrics,
+row partitioning, scalar/vector split evaluation, root-gradient sums, stump
+fitting, reduced-gradient leaf refitting, means, stable column/grouped sorting, ROC/PR-AUC, ranking metrics,
 gradient-based row sampling, uniform/weighted column sampling and quantile/median
 estimation on Metal. Numeric sketch finalization also runs on Metal; sketch ingestion,
 queue sorting and several specialized features still run on the CPU. Histogram conversion,
@@ -87,7 +87,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
 | Gradient-based sampling | GPU norms, stable sorting, CPU-ordered FP32 prefixes, threshold selection, random draws and gradient rescaling; includes strided multi-target replay and zero budgets; host chooses the per-tree seed |
 | Gradient quantization | GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales stay on GPU |
-| Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights; other leaf fitting still uses CPU |
+| Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights |
+| Reduced-gradient leaf fitting | GPU segmented binary64 sums over resident row IDs, accumulation across external pages, regularized/clipped final weights; existing host tree receives the completed leaf values |
 | Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
 | Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; other objective-specific initialization work remains CPU |
 | Objective initialization | GPU expectile initial gradients/Hessians and absolute-error target-mean broadcast; small final base-score adjustments remain host, as in CUDA |
@@ -143,6 +144,11 @@ require no dispatch.
 `shap_dispatches` and `shap_interaction_dispatches` count completed contribution
 and interaction batches; `shap_gpu_time_ns` covers both. These are separate from
 ordinary prediction counters and exclude host preparation and staging.
+`leaf_sum_init_dispatches`, `leaf_sum_dispatches` and `leaf_weight_dispatches`
+report GPU clearing, per-page leaf reductions and final weight calculation.
+`leaf_fitting_gpu_time_ns` covers those stages separately from root sums, histogram
+work and row partitioning; source sharing/staging and final host tree updates are
+excluded.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
@@ -158,7 +164,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **865 passed, 1 skipped**. The skip requires a machine without an
+- Python: **931 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
@@ -247,6 +253,12 @@ On Apple M3, 2026-11-03:
   bit patterns, all exponent pairs, pruning denominators and subnormal rounding
   ties; NaNs are checked by classification. This replaces software binary64
   division in sketch pruning without changing its rounding contract.
+- Reduced-gradient leaf fitting: **304 native cases / 24,327,036 source gradient
+  pairs**, 46,852 exact sum fields and 156,240 bitwise CPU weight comparisons
+  (NaNs checked by classification). Covers strided/broadcast inputs, paged sums,
+  empty leaves, subnormals, large/nonfinite values, L1/L2 penalties, clipping,
+  bounds and guards. **66 public tests** cover training and saved-model
+  continuation across dense, missing, sparse and external-page inputs.
 - SHAP: **576 native cases / 424,350,144 output values**, including zero entries,
   compared with independent one-feature Shapley values; maximum absolute error
   `2.39e-7`. Checks include guards, overlapping storage, empty inputs and batch
@@ -1639,3 +1651,21 @@ coverage and correctness remain the priority.
 The next concrete training gap is final leaf refitting when custom objectives
 provide separate split and value gradients: leaf-gradient accumulation and
 regularized leaf-weight calculation still use the CPU.
+
+
+### Reduced-gradient leaf fitting coverage update
+
+Final vector-leaf fitting now runs on Metal when an objective supplies separate
+split and value gradients. The GPU sums gradients using resident row partitions,
+keeps those sums across external-memory pages and computes regularized/clipped
+weights. The host receives only the final leaf values for the model update.
+Earlier generic gradient copies and allocations still need coverage work.
+
+[Validation](validation/leaf-fitting-m3.txt): **931 Python tests pass (one
+skipped)**, all native suites pass with Metal API Validation, and the independent
+CPU-only build passes. New coverage includes 66 integration tests and 304 native
+cases covering 24,327,036 source gradient pairs. The tested sum fields and finite
+weight results match CPU exactly; exceptional values are checked separately.
+Sampling, zero/empty leaves, strided inputs, external pages, L1/L2 penalties,
+clipping and saved-model continuation are covered. No performance benchmark was
+added. Linear coordinate descent remains a major missing CUDA operation.

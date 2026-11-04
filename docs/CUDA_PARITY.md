@@ -29,7 +29,7 @@ measurements, including regressions, remain available.
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation use Metal; other initialization work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; biased top-k/mean pair construction, gradients, MAP prefixes and query normalization execute on Metal. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients and prediction/base-score transforms; GPU identifies small censored probabilities for original CPU gradient recomputation, exposed through correction counters/time. Full GPU coverage remains incomplete |
-| Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting with separate value gradients remains CPU (`MultiTargetHistBuilder::ExpandTreeLeaf`); other initialization/state work still requires porting/audit |
+| Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting with separate value gradients now uses GPU segmented sums over resident row IDs, cross-page accumulation and regularized/clipped weights; final tree updates stay host as in CUDA. Other initialization/state work still requires porting/audit |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; CPU input views stage dense chunks and recode categories |
 | Prediction cache from leaf IDs | `predictor/predictor.cu` | Metal; supports strided target slices and negated sampling positions |
 | SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA; dense input staging/category recoding remain host |
@@ -415,3 +415,48 @@ CPU additive contributions within the stated tolerance.
 `shap_gpu_time_ns` reports their combined GPU duration separately from ordinary
 prediction timing. These measurements exclude host model/input preparation,
 staging and result copying.
+
+
+## Reduced-gradient final leaf fitting
+
+Custom tree objectives can supply separate gradients for split selection and
+final leaf values. Metal now computes the final leaf-gradient sums and weights
+in `MultiTargetHistBuilder::ExpandTreeLeaf`. It uses the row indices already
+resident in each Metal partitioner; it no longer copies those indices back for
+CPU summation. Host code supplies segment metadata and allocates buffers. The GPU
+clears the sums, reduces indexed gradients in blocks, accumulates completed leaf
+sums across external-memory pages, and computes the final weights. Gradients use
+guarded shared host views when eligible and staged input otherwise.
+
+Sums use software binary64, following the CPU precision contract. CUDA uses its
+quantized-gradient representation for this operation; this implementation does
+not claim identical intermediate CUDA sums. The weight calculation preserves
+CPU L1/L2 regularization, maximum-step clipping, FP32 conversion, bound application
+and subsequent learning-rate multiplication. Nonpositive Hessians produce zero
+before bounds are applied. `min_child_weight` controls split validity and is not
+an additional cutoff in the upstream final-weight formula. The internal weight
+API handles per-leaf/per-target bounds, although public reduced-gradient training
+rejects monotonic constraints in both upstream CPU and CUDA implementations.
+
+The final leaf values return to the host tree, matching CUDA's model update.
+Generic gradient allocation/layout copies earlier in the training path remain
+host work. This closes final leaf refitting, not every training-state operation.
+The API currently checks a maximum of 65,535 targets, 32-bit leaf/task indices and
+the Metal device's buffer-size limits.
+
+Native validation covers 304 cases and 24,327,036 source gradient pairs across
+row-major, column-major, padded and broadcast views. Independently accumulated
+sums match 46,852 checked fields exactly; 156,240 weight results match the CPU
+formula by bits, with NaNs compared by classification. Tests cover million-row
+inputs, page offsets, permuted output slots, empty leaves, tiny/large/nonfinite
+inputs, negative Hessians, regularization, bounds, guards and malformed metadata.
+Public validation adds 66 cases across four input layouts, both sampling methods,
+zero/full sampling, regularization/clipping, root-only trees, saved-model
+continuation and the upstream monotonic-constraint rejection. Training outputs
+use the existing `rtol=atol=2e-5` CPU comparison.
+
+`leaf_sum_init_dispatches`, `leaf_sum_dispatches` and `leaf_weight_dispatches`
+count completed clearing, per-page reduction and weight commands.
+`leaf_fitting_gpu_time_ns` measures their combined GPU duration separately from
+root-gradient sums and row partitioning. Empty reductions do not dispatch. No
+performance gain is claimed in this coverage-focused update.

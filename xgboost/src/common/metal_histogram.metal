@@ -5033,3 +5033,71 @@ kernel void xgb_shap(device const float* data [[buffer(0)]],
     phi[r * columns + r] = value;
   }
 }
+
+struct LeafSumParams { ulong stride0, stride1; uint targets, padding; };
+struct LeafSumBlock { ulong begin, end; };
+struct LeafSumSegment { ulong begin, end; uint output, padding; };
+kernel void xgb_leaf_sum(device const ulong* rows [[buffer(0)]],
+                         device const uint2* gradients [[buffer(1)]],
+                         device const LeafSumBlock* blocks [[buffer(2)]],
+                         device ulong2* partial [[buffer(3)]],
+                         constant LeafSumParams& p [[buffer(4)]],
+                         uint2 group [[threadgroup_position_in_grid]],
+                         uint tid [[thread_index_in_threadgroup]],
+                         uint lane [[thread_index_in_simdgroup]],
+                         uint simd [[simdgroup_index_in_threadgroup]]) {
+  LeafSumBlock block = blocks[group.x];
+  XGBDouble g{0}, h{0};
+  for (ulong i = block.begin + tid; i < block.end; i += 256) {
+    uint2 pair = gradients[rows[i] * p.stride0 + ulong(group.y) * p.stride1];
+    g = xgb_dadd(g, xgb_dfrom_float(as_type<float>(pair.x)));
+    h = xgb_dadd(h, xgb_dfrom_float(as_type<float>(pair.y)));
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(g, h, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[ulong(group.x) * p.targets + group.y] = total;
+}
+kernel void xgb_leaf_sum_finish(device const ulong2* partial [[buffer(0)]],
+                                device const LeafSumSegment* segments [[buffer(1)]],
+                                device ulong2* output [[buffer(2)]],
+                                constant LeafSumParams& p [[buffer(3)]],
+                                uint2 group [[threadgroup_position_in_grid]],
+                                uint tid [[thread_index_in_threadgroup]],
+                                uint lane [[thread_index_in_simdgroup]],
+                                uint simd [[simdgroup_index_in_threadgroup]]) {
+  LeafSumSegment segment = segments[group.x];
+  XGBDouble g{0}, h{0};
+  for (ulong i = segment.begin + tid; i < segment.end; i += 256) {
+    ulong2 pair = partial[i * p.targets + group.y];
+    g = xgb_dadd(g, {pair.x});
+    h = xgb_dadd(h, {pair.y});
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(g, h, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) {
+    ulong at = ulong(segment.output) * p.targets + group.y;
+    ulong2 previous = output[at];
+    output[at] = ulong2(xgb_dadd({previous.x}, {total.x}).bits,
+                        xgb_dadd({previous.y}, {total.y}).bits);
+  }
+}
+struct LeafWeightParams { SplitParameters regularization; float eta; uint bounded; };
+kernel void xgb_leaf_weight(device const ulong2* sums [[buffer(0)]],
+                            device const float2* bounds [[buffer(1)]],
+                            device float* output [[buffer(2)]],
+                            constant LeafWeightParams& p [[buffer(3)]],
+                            uint index [[thread_position_in_grid]]) {
+  DoublePair sum = xgb_pair_read(sums[index]);
+  // CalcWeight propagates NaN Hessians; finite nonpositive Hessians yield zero.
+  float value = (sum.h.bits & ~kDoubleSign) > kDoubleInf
+                  ? NAN : xgb_dto_float(xgb_weight_precise(sum, p.regularization));
+  // ApplyBounds is separate from CalcWeight, including zero-Hessian leaves.
+  if (p.bounded) {
+    float2 limit = bounds[index];
+    if (xgb_float_less(as_type<uint>(value), as_type<uint>(limit.x))) value = limit.x;
+    else if (xgb_float_less(as_type<uint>(limit.y), as_type<uint>(value))) value = limit.y;
+  }
+  output[index] = xgb_fmul_preserve(value, p.eta);
+}

@@ -45,6 +45,7 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_reduction.h"
+#include "../common/metal_leaf.h"
 #endif
 
 namespace xgboost::tree {
@@ -344,6 +345,41 @@ class MultiTargetHistBuilder {
     if (hist_param_->debug_synchronize) {
       CheckPartitionerLeaves(this->partitioner_, tree, leaves_idx);
     }
+
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      CHECK(!collective::IsDistributed()) << "Distributed Metal leaf fitting is not implemented.";
+      auto sums = common::metal::MakeLeafSums(n_leaves, n_targets);
+      for (auto const& part : partitioner_) {
+        auto const& rows = part.Partitions();
+        CHECK(rows.metal_rows);
+        std::vector<common::metal::LeafSumSegment> segments;
+        for (std::size_t i = 0; i < n_leaves; ++i) {
+          auto const& node = part[leaves_idx[i]];
+          auto begin = node.Size() ? node.begin() - rows.Data()->data() : 0;
+          segments.push_back({static_cast<std::uint64_t>(begin), begin + node.Size(),
+                              static_cast<std::uint32_t>(i), 0});
+        }
+        rows.metal_rows->AddLeafGradients(segments, value_gpair, sums.get());
+      }
+      auto evaluator = this->evaluator_->Evaluator();
+      std::vector<common::metal::SplitBounds> bounds;
+      if (evaluator.has_constraint) {
+        for (auto node : leaves_idx) {
+          for (bst_target_t t = 0; t < n_targets; ++t) {
+            auto index = std::size_t(node) * evaluator.n_targets + t;
+            bounds.push_back({evaluator.lower[index], evaluator.upper[index]});
+          }
+        }
+      }
+      common::metal::SplitParameters parameters{param_->reg_lambda, param_->reg_alpha,
+                                                param_->max_delta_step, param_->min_child_weight};
+      std::vector<float> weights(n_leaves * n_targets);
+      sums->Weights(parameters, bounds, param_->learning_rate, weights);
+      p_tree->SetLeaves(leaves_idx, weights);
+      return;
+    }
+#endif
 
     // Calculate gradient sum for each leaf using thread-local storage
     // Shape: [n_threads, n_leaves, n_targets]
