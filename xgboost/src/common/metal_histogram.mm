@@ -120,6 +120,8 @@ std::atomic<std::uint64_t> shared_dispatches{0};
 std::atomic<std::uint64_t> gpu_time_ns{0};
 std::atomic<std::uint64_t> quantization_dispatches{0}, gradient_bound_dispatches{0};
 std::atomic<std::uint64_t> metric_dispatches{0}, metric_gpu_time_ns{0};
+std::atomic<std::uint64_t> metric_reduction_passes{0}, metric_final_readback_bytes{0},
+    metric_label_dispatches{0};
 std::atomic<std::uint64_t> prediction_dispatches{0}, prediction_gpu_time_ns{0},
     leaf_update_dispatches{0};
 std::atomic<std::uint64_t> objective_dispatches{0}, transform_dispatches{0},
@@ -168,7 +170,7 @@ class Runtime {
   id<MTLComputePipelineState> store_integer_hist_pipeline, subtract_integer_hist_pipeline,
       sum_integer_hist_pipeline;
   id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
-  id<MTLComputePipelineState> quantile_metric_pipeline, binning_pipeline;
+  id<MTLComputePipelineState> quantile_metric_pipeline, binning_pipeline, metric_sum_pipeline;
   id<MTLComputePipelineState> mean_weight_pipeline, mean_pipeline, mean_result_pipeline;
   id<MTLComputePipelineState> sort_init_pipeline, radix_rank_pipeline, radix_scatter_pipeline,
       prefix_u32_pipeline, prefix_add_pipeline, quantile_cdf_pipeline, quantile_select_pipeline;
@@ -275,6 +277,7 @@ class Runtime {
       prediction_pipeline = make_pipeline(@"xgb_predict");
       leaf_pipeline = make_pipeline(@"xgb_add_leaf");
       metric_pipeline = make_pipeline(@"xgb_metric");
+      metric_sum_pipeline = make_pipeline(@"xgb_metric_sum");
       row_iota_pipeline = make_pipeline(@"xgb_row_iota");
       partition_classify_pipeline = make_pipeline(@"xgb_partition_classify");
       partition_prefix_pipeline = make_pipeline(@"xgb_partition_prefix");
@@ -1616,6 +1619,9 @@ Statistics GetStatistics() {
           leaf_update_dispatches.load(std::memory_order_relaxed),
           metric_dispatches.load(std::memory_order_relaxed),
           metric_gpu_time_ns.load(std::memory_order_relaxed),
+          metric_reduction_passes.load(std::memory_order_relaxed),
+          metric_final_readback_bytes.load(std::memory_order_relaxed),
+          metric_label_dispatches.load(std::memory_order_relaxed),
           index_uploads.load(std::memory_order_relaxed),
           index_uploaded_bytes.load(std::memory_order_relaxed),
           resident_histogram_dispatches.load(std::memory_order_relaxed),
@@ -4884,6 +4890,43 @@ void GradientSample(linalg::MatrixView<GradientPair const> split_gradients,
   }
 }
 
+namespace {
+struct MetricReduction {
+  id<MTLBuffer> result;
+  std::uint64_t passes;
+};
+MetricReduction EncodeMetricReduction(Runtime& rt, id<MTLCommandBuffer> command,
+                                      id<MTLBuffer> partial, std::uint64_t count) {
+  CHECK_GT(count, 0);
+  CHECK_EQ(rt.metric_sum_pipeline.threadExecutionWidth, 32);
+  std::uint64_t passes = 0;
+  while (count > 1) {
+    auto next_count = (count + 255) / 256;
+    auto next = Allocate(rt, next_count * 2 * sizeof(double));
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.metric_sum_pipeline];
+    [e setBuffer:partial offset:0 atIndex:0];
+    [e setBuffer:next offset:0 atIndex:1];
+    [e setBytes:&count length:sizeof(count) atIndex:2];
+    [e dispatchThreadgroups:MTLSizeMake(next_count, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    partial = next;
+    count = next_count;
+    ++passes;
+  }
+  return {partial, passes};
+}
+std::array<double, 2> ReadMetricReduction(MetricReduction const& reduction) {
+  std::array<double, 2> result;
+  std::memcpy(result.data(), reduction.result.contents, sizeof(result));
+  metric_reduction_passes.fetch_add(reduction.passes, std::memory_order_relaxed);
+  metric_final_readback_bytes.fetch_add(sizeof(result), std::memory_order_relaxed);
+  return result;
+}
+}  // namespace
+
 std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predictions,
                                          Span<float const> labels, Span<float const> weights,
                                          Span<float const> alpha, std::uint32_t targets) {
@@ -4922,6 +4965,7 @@ std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predi
     [e setBytes:&p length:sizeof(p) atIndex:5];
     [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
+    auto reduced = EncodeMetricReduction(rt, command, partial, blocks);
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
@@ -4930,13 +4974,7 @@ std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predi
     if (elapsed > 0)
       metric_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                    std::memory_order_relaxed);
-    auto values = static_cast<double const*>(partial.contents);
-    std::array<double, 2> result{0, 0};
-    for (std::size_t i = 0; i < blocks; ++i) {
-      result[0] += values[2 * i];
-      result[1] += values[2 * i + 1];
-    }
-    return result;
+    return ReadMetricReduction(reduced);
   }
 }
 
@@ -5051,22 +5089,17 @@ std::array<double, 2> SurvivalMetricSums(std::uint32_t distribution, float scale
   @autoreleasepool {
     auto op =
         EncodeSurvival(true, distribution, scale, accuracy, predictions, lower, upper, weights);
+    auto reduced = EncodeMetricReduction(GetRuntime(), op.command, op.result, op.blocks);
     [op.command commit];
     [op.command waitUntilCompleted];
     CHECK(op.command.status == MTLCommandBufferStatusCompleted) << ErrorText(op.command.error);
-    auto values = static_cast<double const*>(op.result.contents);
-    std::array<double, 2> result{0, 0};
-    for (std::size_t i = 0; i < op.blocks; ++i) {
-      result[0] += values[2 * i];
-      result[1] += values[2 * i + 1];
-    }
     metric_dispatches.fetch_add(1, std::memory_order_relaxed);
     survival_metric_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = op.command.GPUEndTime - op.command.GPUStartTime;
     if (elapsed > 0)
       metric_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                    std::memory_order_relaxed);
-    return result;
+    return ReadMetricReduction(reduced);
   }
 }
 void SurvivalTransform(bool to_margin, Span<float> values) {
@@ -5690,11 +5723,11 @@ std::array<double, 2> MetricSums(char const* name, Span<float const> predictions
   CHECK_EQ(predictions.size(), multi ? labels.size() * targets : labels.size());
   CHECK(weights.empty() || weights.size() == rows);
   CHECK_LE(labels.size(), std::numeric_limits<std::uint32_t>::max());
-  if (multi)
-    for (auto y : labels) {
-      CHECK(std::isfinite(y) && y >= 0 && y < targets)
-          << "MultiClassEvaluation: label must be in [0, num_class).";
-    }
+  if (multi) {
+    CHECK_LE(targets, std::numeric_limits<std::int32_t>::max());
+  } else {
+    CHECK_EQ(labels.size() % targets, 0);
+  }
   @autoreleasepool {
     auto& rt = GetRuntime();
     auto queue = rt.queue;
@@ -5707,7 +5740,9 @@ std::array<double, 2> MetricSums(char const* name, Span<float const> predictions
     auto label = Upload(rt, labels.data(), labels.size_bytes());
     auto weight = Upload(rt, weights.data(), weights.size_bytes());
     auto groups = (labels.size() + 255) / 256;
-    auto partial = Allocate(rt, groups * 4 * sizeof(float));
+    auto partial = Allocate(rt, groups * 2 * sizeof(double));
+    std::uint32_t zero = 0;
+    auto invalid = Upload(rt, &zero, sizeof(zero));
     struct {
       std::uint64_t n;
       std::uint32_t targets, kind, weighted, padding;
@@ -5719,26 +5754,23 @@ std::array<double, 2> MetricSums(char const* name, Span<float const> predictions
     [encoder setBuffer:weight offset:0 atIndex:2];
     [encoder setBuffer:partial offset:0 atIndex:3];
     [encoder setBytes:&p length:sizeof(p) atIndex:4];
+    [encoder setBuffer:invalid offset:0 atIndex:5];
     [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
+    auto reduced = EncodeMetricReduction(rt, command, partial, groups);
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    if (multi) metric_label_dispatches.fetch_add(1, std::memory_order_relaxed);
+    CHECK_EQ(*static_cast<std::uint32_t const*>(invalid.contents), 0)
+        << "MultiClassEvaluation: label must be in [0, num_class) after integer conversion.";
     metric_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     if (elapsed > 0)
       metric_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                    std::memory_order_relaxed);
-    auto values = static_cast<float const*>(partial.contents);
-    std::array<double, 2> sum{0.0, 0.0};
-    for (std::size_t i = 0; i < groups; ++i)
-      for (std::size_t k = 0; k < 2; ++k) {
-        double scale = values[i * 4 + 2 + k];
-        if (!(scale > 0.0) || std::isinf(scale)) scale = 1.0;
-        sum[k] += static_cast<double>(values[i * 4 + k]) * scale;
-      }
-    return sum;
+    return ReadMetricReduction(reduced);
   }
 }
 

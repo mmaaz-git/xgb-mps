@@ -27,11 +27,14 @@ def test_quantile_metrics_on_metal(metal, objective, metric, param, levels, weig
         weights = (rng.uniform(0.1, 2, len(x)) * weight_scale).astype(np.float32)
         weights[::11] = 0
     d = xgb.DMatrix(x, label=y, weight=weights)
-    before = xgb.metal_info()["metric_dispatches"]
+    before = xgb.metal_info()
     expected = float(cpu.eval(d).rsplit(":", 1)[1])
-    assert xgb.metal_info()["metric_dispatches"] == before
+    assert xgb.metal_info()["metric_dispatches"] == before["metric_dispatches"]
     actual = float(gpu.eval(d).rsplit(":", 1)[1])
-    assert xgb.metal_info()["metric_dispatches"] == before + 1
+    after = xgb.metal_info()
+    assert after["metric_dispatches"] == before["metric_dispatches"] + 1
+    assert after["metric_reduction_passes"] > before["metric_reduction_passes"]
+    assert after["metric_final_readback_bytes"] == before["metric_final_readback_bytes"] + 16
     np.testing.assert_allclose(actual, expected, rtol=3e-6, atol=1e-7)
     pred = gpu.predict(d).reshape(len(x), levels)
     diff = pred - y[:, None]

@@ -201,6 +201,8 @@ class PseudoErrorLoss : public MetricNoCache {
       auto sums = common::metal::MetricSums(
           "mphe", preds.ConstHostSpan(), info.labels.Data()->ConstHostSpan(),
           info.weights_.ConstHostSpan(), info.labels.Shape(1), slope);
+      auto rc = collective::GlobalSum(ctx_, linalg::MakeVec(sums.data(), sums.size()));
+      collective::SafeColl(rc);
       return EvalRowMAPE::GetFinal(sums[0], sums[1]);
     }
 #endif
@@ -372,6 +374,8 @@ struct EvalEWiseBase : public MetricNoCache {
       auto sums = common::metal::MetricSums(
           this->Name(), preds.ConstHostSpan(), info.labels.Data()->ConstHostSpan(),
           info.weights_.ConstHostSpan(), info.labels.Shape(1), parameter);
+      auto rc = collective::GlobalSum(ctx_, linalg::MakeVec(sums.data(), sums.size()));
+      collective::SafeColl(rc);
       return Policy::GetFinal(sums[0], sums[1]);
     }
 #endif
@@ -470,6 +474,8 @@ class QuantileError : public MetricNoCache {
       auto sums = common::metal::QuantileMetricSums(
           false, preds.ConstHostSpan(), info.labels.HostView().Values(),
           info.weights_.ConstHostSpan(), alpha_.ConstHostSpan(), info.labels.Shape(1));
+      auto rc = collective::GlobalSum(ctx_, linalg::MakeVec(sums.data(), sums.size()));
+      collective::SafeColl(rc);
       CHECK_GT(sums[1], 0);
       return sums[0] / sums[1];
     }
@@ -567,6 +573,8 @@ class ExpectileError : public MetricNoCache {
       auto sums = common::metal::QuantileMetricSums(
           true, preds.ConstHostSpan(), info.labels.HostView().Values(),
           info.weights_.ConstHostSpan(), alpha_.ConstHostSpan(), info.labels.Shape(1));
+      auto rc = collective::GlobalSum(ctx_, linalg::MakeVec(sums.data(), sums.size()));
+      collective::SafeColl(rc);
       CHECK_GT(sums[1], 0);
       return sums[0] / sums[1];
     }

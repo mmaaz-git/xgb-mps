@@ -31,9 +31,12 @@ def test_scalar_metrics(metal, metric, targets, weighted):
     cpu = xgb.train(params | {"device": "cpu"}, d, 0)
     gpu = xgb.train(params | {"device": "mps"}, d, 0)
     expected = score(cpu, d)
-    before = xgb.metal_info()["metric_dispatches"]
+    before = xgb.metal_info()
     actual = score(gpu, d)
-    assert xgb.metal_info()["metric_dispatches"] == before + 1
+    after = xgb.metal_info()
+    assert after["metric_dispatches"] == before["metric_dispatches"] + 1
+    assert after["metric_reduction_passes"] > before["metric_reduction_passes"]
+    assert after["metric_final_readback_bytes"] == before["metric_final_readback_bytes"] + 16
     np.testing.assert_allclose(actual, expected, rtol=5e-6, atol=3e-6)
 
 @pytest.mark.parametrize("metric", ["mlogloss", "merror"])
@@ -49,9 +52,12 @@ def test_multiclass_metrics(metal, metric, classes):
              base_score=0.5, nthread=2)
     expected = score(xgb.train(p | {"device": "cpu"}, d, 0), d)
     gpu = xgb.train(p | {"device": "mps"}, d, 0)
-    before = xgb.metal_info()["metric_dispatches"]
+    before = xgb.metal_info()
     actual = score(gpu, d)
-    assert xgb.metal_info()["metric_dispatches"] == before + 1
+    after = xgb.metal_info()
+    assert after["metric_dispatches"] == before["metric_dispatches"] + 1
+    assert after["metric_reduction_passes"] > before["metric_reduction_passes"]
+    assert after["metric_final_readback_bytes"] == before["metric_final_readback_bytes"] + 16
     np.testing.assert_allclose(actual, expected, rtol=5e-6, atol=3e-6)
 
 @pytest.mark.parametrize("metric", METRICS)
@@ -81,3 +87,32 @@ def test_poisson_log_gamma_boundaries(metal, label):
     cpu = xgb.train(p | {"device": "cpu"}, d, 0)
     gpu = xgb.train(p | {"device": "mps"}, d, 0)
     np.testing.assert_allclose(score(gpu, d), score(cpu, d), rtol=5e-6, atol=3e-6)
+
+
+@pytest.mark.parametrize("metric", ["mlogloss", "merror"])
+def test_multiclass_metric_casts_labels_before_validation(metal, metric):
+    # CUDA's metric casts to int first, unlike the objective's label predicate.
+    labels = np.array([-.75, .75, 1.75, 2.75], dtype=np.float32)
+    margins = np.array([[3, 2, 1], [1, 3, 2], [2, 1, 3], [1, 2, 3]], dtype=np.float32)
+    d = xgb.DMatrix(np.ones((4, 1)), label=labels, base_margin=margins)
+    params = dict(objective="multi:softprob", num_class=3, eval_metric=metric,
+                  base_score=.5, nthread=2)
+    cpu = xgb.train(params | {"device": "cpu"}, d, 0)
+    gpu = xgb.train(params | {"device": "mps"}, d, 0)
+    expected = score(cpu, d)
+    before = xgb.metal_info()["metric_label_dispatches"]
+    actual = score(gpu, d)
+    assert xgb.metal_info()["metric_label_dispatches"] == before + 1
+    np.testing.assert_allclose(actual, expected, rtol=5e-6, atol=3e-6)
+
+
+@pytest.mark.parametrize("metric", ["mlogloss", "merror"])
+@pytest.mark.parametrize("label", [-1., 3., 2147483648.])
+def test_multiclass_metric_label_error_runs_on_gpu(metal, metric, label):
+    d = xgb.DMatrix(np.ones((1, 1)), label=[label], base_margin=np.ones((1, 3)))
+    model = xgb.train(dict(device="mps", objective="multi:softprob", num_class=3,
+                           eval_metric=metric, base_score=.5, nthread=2), d, 0)
+    before = xgb.metal_info()["metric_label_dispatches"]
+    with pytest.raises(xgb.core.XGBoostError, match="MultiClassEvaluation"):
+        score(model, d)
+    assert xgb.metal_info()["metric_label_dispatches"] == before + 1

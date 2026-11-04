@@ -1,0 +1,159 @@
+CUDA-derived metric terms and complete GPU reductions, Apple M3
+==============================================================
+Date: 2026-11-04
+Source authority:
+  metric/elementwise_metric.cu::Reduce, EvalRow*, PseudoErrorLoss,
+    QuantileError and ExpectileError.
+  metric/multiclass_metric.cu::DeviceReduceMetrics, EvalMultiLogLoss,
+    EvalMatchError / common/math.h::FindMaxIndex.
+  metric/survival_metric.cu::DeviceReduceMetrics.
+NVIDIA execution: not performed. No new performance benchmark was run.
+
+Implementation
+--------------
+Generic metric row loss and loss*weight round in FP32, then convert to binary64
+PackedReduceResult fields, as CUDA does. CUDA source expressions are retained,
+including gamma-nloglik's reciprocal/log expression instead of y/p+log(p),
+std::max/NaN behavior, Tweedie exp/log order and pseudo-Huber operation order.
+FP32 add/multiply helpers preserve subnormals; divisions use rounded software
+binary64. No NVCC contraction behavior or actual libdevice output is asserted.
+
+Scalar/multiclass, quantile/expectile and survival paths now finish sums using
+recursive 256-input binary64 pair reductions entirely on GPU. The old generic
+scaled-FP32 block sums and CPU scale restoration are removed, as are the host
+partial-sum loops in quantile/expectile and survival metrics. Existing exact
+integer reduction acceleration is used only when exponent-span checks prove
+every subset sum exactly representable in binary64. Other blocks use software
+binary64. CUB's hardware/toolkit-dependent association is not replicated.
+
+The final reduction returns exactly 16 bytes (residue, weight) for each successful
+nonempty call. The generic metric path also reads a separate 4-byte validation
+flag. Final ratios remain host as in CUDA. Omitted GlobalSum call sites in the
+MPS scalar, pseudo-Huber, quantile and expectile branches are restored. This is
+shared collective integration, not new distributed Apple GPU transport.
+New statistics: metric_reduction_passes, metric_final_readback_bytes and
+metric_label_dispatches; CPU-only metal_info reports zeros. Previously missing
+CPU-only zero keys for ranking_plan_* are supplied too. Internal Statistics ABI
+changed; full validation rebuilds all native test executables.
+
+Multiclass validation runs on GPU, after truncating labels to signed int as CUDA
+does. Valid negative fractions above -1 therefore map to zero. Nonfinite or
+out-of-int32 casts have no defined CUDA-source contract; they are explicitly
+rejected. Atomic error bits replace CUDA's racing writes of an offending label;
+error text reports the domain, not an arbitrary winning thread's label value.
+Multiclass logloss follows prediction>epsilon (false for NaN); merror retains
+first-index ties and ordered comparisons, including subnormal scores.
+
+Math helpers
+------------
+The existing software binary64 Log/Exp are rounded to FP32. Log1p compensates
+the low term of 1+x, including subnormal x. Sqrt refines a native seed in
+binary64, scales positive subnormal seeds, preserves signed zero, and explicitly
+rejects negative subnormals rather than letting native sqrt flush them to -0.
+Gamma uses a Taylor series near 1 and 2, recurrence plus Stirling elsewhere, and
+binary64 sine/reflection for negative nonintegers. Coefficients are ordinary
+Euler/zeta, Bernoulli/Stirling and reciprocal-factorial mathematical constants;
+no external implementation was copied. Gamma has exact +0 at one and two, +Inf at nonpositive integer poles and either infinity, and NaN for NaN.
+
+Checked primary CUDA documentation:
+  https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html
+  https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/mathematical-functions.html
+The latter gives function-specific libdevice accuracy (including larger lgammaf
+error in a negative interval). Our sampled checks do not prove a universal ULP
+bound or bitwise equivalence with NVIDIA's different approximations.
+
+New validation
+--------------
+tests/cuda_metric_reference.h uses explicit FP32 stores/operation boundaries,
+host binary64 log/log1p/exp/sqrt/lgamma rounded to FP32, and independent scalar
+source expressions. tests/metal_metric_api.mm compiles the production shader
+with small diagnostics calling its actual row helpers, then separately checks
+production MetricSums/QuantileMetricSums/SurvivalMetricSums and counters.
+
+  100,057 math inputs / 500,285 fields: all match the binary64-libm FP32 oracle
+  exactly (NaNs by classification), maximum observed ULP 0 for all five helpers.
+  Test limits are 1 ULP for log/log1p/exp, 0 sqrt, 6 lgamma. Includes full-bit
+  random floats, subnormals, infinities, signed zero, NaNs, poles, neighbors of
+  transition points and dense exp-domain samples. These limits are a test budget,
+  not a proof over every input and not NVIDIA execution comparison.
+
+  349 production cases / 15,628,618 FP32 row-result fields, all exact versus
+  the host source-formula oracle. Covers all 13 generic scalar/multiclass kinds,
+  quantile and expectile, three target/seven-level layouts, integer-cast labels,
+  signed cancellation, tiny/zero/large weights, full-bit random row values,
+  NaNs/infinities, FP32 overflow, source clamps, and subnormal residuals/alphas.
+  Includes 1/257/4,097/65,537-row inputs and an additional 262,145-row case.
+
+  Production reductions compare actual GPU row terms with independent
+  compensated sums. Finite error budget: 32*epsilon<double>*sum(abs(terms)).
+  Maximum observed error/bound: 0.0373374008. Nonfinite outputs check
+  classification and sign of infinity. Counter checks verify recursive GPU
+  levels and exactly 16 bytes of readback, independent of row count.
+
+  Included survival checks: 24 analytic 65,537-row raw-sum cases, three
+  distributions, accuracy/likelihood, weights 0/1e-40/1/1e37. Weight sums exact;
+  likelihood sums within 2e-14 relative. Two final GPU reduction levels and
+  16-byte readback required. AFT gradients/CPU correction policy are unchanged.
+
+  Twelve invalid-class direct calls verify GPU validation even when rejected.
+  Empty calls return zero without dispatch. Eight new public Python cases cover
+  fractional class labels and invalid labels. Existing scalar/multiclass and
+  quantile tests now assert GPU final reduction and readback counters, retaining
+  every existing numerical tolerance.
+
+Iteration record
+----------------
+  Build v1 succeeded but reported a dangling-else CHECK macro warning; explicit
+  braces fixed it before the first focused test run.
+  Focused v1: 125 shader compilation failures / 2 passes. Namespace-local FP32
+  overloads hid binary64 operators; explicit using-declarations fixed lookup.
+  Focused v2 PASS: 127 existing metric/quantile/survival Python tests, 2.48s.
+  Native v1 caught native sqrt flushing negative subnormals to signed zero;
+  explicit bit classification fixed the production helper.
+  Native v2 passed all math and scalar row cases but exposed the host reference
+  compiler's sNaN conditional lowering in multiclass logloss. Volatile boolean
+  retains the actual source comparison. A minimal Clang/ARM reproduction and
+  assembly in results/cuda-metric-snan-reference.* confirm fmaxnm lowering:
+    input ffb74af0 -> original 7ff74af0 (NaN), explicit 42135d8e (-log(epsilon)).
+  Native v3 PASS, 13:52:32-13:52:35 UTC; 343 production cases before the six
+  NaN-bound cases added below, with all math/row fields above. No tolerance widened.
+
+First full regression PASS, 13:54:04-13:58:37 UTC:
+  All rebuilt native suites, 1,787 Python passed / 1 skipped / 370 warnings
+  (93.60s), and CPU-only build/API/device check.
+A final source audit then found the existing AFT metric lower-bound guard used
+!(lower>0) instead of lower<=0, changing NaN-bound behavior. Loss now uses ordered
+comparisons and non-NaN equality, matching the source's fmax regularization.
+Six additional analytic cases cover NaN lower/upper bounds and fully open bounds
+with a NaN prediction, all three distributions and zero/unit weights.
+Final full regression PASS, 13:59:56-14:04:22 UTC (FULL_EXIT=0):
+  Final Metal build, every rebuilt native suite and reference updater passed.
+  Metric suite: 349 production cases / 15,628,618 exact row-result fields;
+  500,285 math fields at observed 0 ULP; maximum reduction-bound ratio 0.0373374008.
+  Python: 1,787 passed / 1 skipped / 371 warnings, 93.62s.
+  CPU-only configure/build/API/device check passed: Metal unavailable and
+  device=mps raises the expected clear error.
+  No production or test changes followed this run; only documentation changed.
+
+Local logs
+----------
+  results/cuda-metric-build-v1.log
+  results/cuda-metric-focused-v1.log
+  results/cuda-metric-focused-v2.log
+  results/cuda-metric-native-v1.log
+  results/cuda-metric-native-v2.log
+  results/cuda-metric-native-v3.log
+  results/cuda-metric-full-driver-v2.log
+  results/build-cuda-metric-final-v2.log
+  results/test-cuda-metric-full-v2.log
+  results/configure-cpu-cuda-metric-v2.log
+  results/build-cpu-cuda-metric-v2.log
+  results/check-cpu-cuda-metric-v2.log
+
+Remaining limits
+----------------
+AFT's sensitive censored gradient corrections still execute on CPU. Generic
+objective/state operations, adapter/device-array sketches, metadata/category
+recoding, Apple array interoperability, distributed GPU collectives and broader
+persistent asynchronous ownership remain unfinished. No full CUDA parity,
+performance improvement or NVIDIA/cross-Apple validation is claimed.

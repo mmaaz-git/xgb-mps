@@ -463,135 +463,6 @@ kernel void xgb_add_leaf(device const int* ids [[buffer(0)]],
   }
 }
 
-struct MetricParams {
-  ulong n;
-  uint targets, kind, weighted, padding;
-  float parameter, reserved;
-};
-inline float xgb_log_gamma_positive(float x) {
-  // Recurrence to the Stirling region; input is y+1 for nonnegative count labels.
-  if (isnan(x)) return x;
-  if (isinf(x)) return INFINITY;
-  if (x <= 0.0f) return NAN;
-  float correction = 0.0f;
-  while (x < 8.0f) {
-    correction -= log(x);
-    x += 1.0f;
-  }
-  float inv = 1.0f / x, inv2 = inv * inv;
-  float series =
-      inv * (1.0f / 12.0f + inv2 * (-1.0f / 360.0f + inv2 * (1.0f / 1260.0f - inv2 / 1680.0f)));
-  return (x - 0.5f) * log(x) - x + 0.9189385332046727f + series + correction;
-}
-inline float xgb_log_gamma(float x) {
-  if (isnan(x)) return x;
-  if (isinf(x) || x == 0.0f) return INFINITY;
-  if (x < 0.0f) {
-    if (floor(x) == x) return INFINITY;
-    return log(M_PI_F) - log(abs(sinpi(x))) - xgb_log_gamma_positive(1.0f - x);
-  }
-  return xgb_log_gamma_positive(x);
-}
-kernel void xgb_metric(device const float* predictions [[buffer(0)]],
-                       device const float* labels [[buffer(1)]],
-                       device const float* weights [[buffer(2)]],
-                       device float4* partial [[buffer(3)]], constant MetricParams& p [[buffer(4)]],
-                       uint tid [[thread_position_in_grid]],
-                       uint lane [[thread_index_in_threadgroup]],
-                       uint group [[threadgroup_position_in_grid]],
-                       uint width [[threads_per_threadgroup]]) {
-  threadgroup float2 scratch[256];
-  threadgroup float2 magnitude;
-  float2 result = 0.0f;
-  if (ulong(tid) < p.n) {
-    bool multi = p.kind >= 11;
-    ulong row = multi ? tid : tid / p.targets;
-    float y = labels[tid], pred = predictions[tid], weight = p.weighted ? weights[row] : 1.0f;
-    float loss = 0.0f;
-    switch (p.kind) {
-      case 0:
-        loss = (y - pred) * (y - pred);
-        break;
-      case 1: {
-        float d = xgb_log1p(y) - xgb_log1p(pred);
-        loss = d * d;
-        break;
-      }
-      case 2:
-        loss = abs(y - pred);
-        break;
-      case 3:
-        loss = abs((y - pred) / y);
-        break;
-      case 4:
-        loss = (y == 0.0f ? 0.0f : -y * log(max(pred, 1e-16f))) +
-               (y == 1.0f ? 0.0f : -(1.0f - y) * log(max(1.0f - pred, 1e-16f)));
-        break;
-      case 5:
-        loss = pred > p.parameter ? 1.0f - y : y;
-        break;
-      case 6:
-        pred = max(pred, 1e-16f);
-        loss = xgb_log_gamma(y + 1.0f) + pred - log(pred) * y;
-        break;
-      case 7:
-        pred += 1e-6f;
-        y += 1e-6f;
-        loss = log(pred / y) + y / pred - 1.0f;
-        break;
-      case 8:
-        pred = max(pred, 1e-6f);
-        loss = y / pred + log(pred);
-        break;
-      case 9: {
-        float a = 1.0f - p.parameter, b = 2.0f - p.parameter;
-        loss = -y * exp(a * log(pred)) / a + exp(b * log(pred)) / b;
-        break;
-      }
-      case 10: {
-        float d = (y - pred) / p.parameter;
-        loss = p.parameter * p.parameter * (sqrt(1.0f + d * d) - 1.0f);
-        break;
-      }
-      case 11:
-        loss = -log(max(predictions[row * p.targets + uint(y)], 1e-16f));
-        break;
-      case 12: {
-        uint best = 0;
-        for (uint k = 1; k < p.targets; ++k)
-          if (predictions[row * p.targets + k] > predictions[row * p.targets + best]) best = k;
-        loss = best == uint(y) ? 0.0f : 1.0f;
-        break;
-      }
-    }
-    result = float2(loss * weight, weight);
-  }
-  // Scale each block before summing: a float block sum could overflow even
-  // when upstream's double-precision reduction is finite. The host restores
-  // the scale in FP64 and reduces the small array of block results.
-  scratch[lane] = abs(result);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  for (uint step = width / 2; step; step /= 2) {
-    if (lane < step) scratch[lane] = fmax(scratch[lane], scratch[lane + step]);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-  }
-  if (lane == 0) magnitude = scratch[0];
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  for (uint k = 0; k < 2; ++k) {
-    if (isinf(magnitude[k]))
-      result[k] = isinf(result[k]) || isnan(result[k]) ? result[k] : 0.0f;
-    else if (magnitude[k] > 0.0f)
-      result[k] /= magnitude[k];
-  }
-  scratch[lane] = result;
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  for (uint step = width / 2; step; step /= 2) {
-    if (lane < step) scratch[lane] += scratch[lane + step];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-  }
-  if (lane == 0) partial[group] = float4(scratch[0], magnitude);
-}
-
 struct RowInitParams {
   ulong rows, base;
 };
@@ -1807,6 +1678,21 @@ inline ulong2 xgb_reduce_double_pair(XGBDouble a, XGBDouble b, threadgroup int4*
   return result;
 }
 
+// Complete metric reductions on GPU, recursively in bounded 256-value groups.
+kernel void xgb_metric_sum(device const ulong2* input [[buffer(0)]],
+                           device ulong2* output [[buffer(1)]], constant ulong& count [[buffer(2)]],
+                           uint group [[threadgroup_position_in_grid]],
+                           uint tid [[thread_index_in_threadgroup]],
+                           uint lane [[thread_index_in_simdgroup]],
+                           uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong index = ulong(group) * 256 + tid;
+  ulong2 value = index < count ? input[index] : ulong2(0);
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair({value.x}, {value.y}, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) output[group] = total;
+}
+
 struct GradientSumParams {
   ulong rows, stride0, stride1;
   uint targets, blocks;
@@ -2004,42 +1890,6 @@ inline float xgb_fsub_preserve(float a, float b) {
     return xgb_dto_float(xgb_dsub(xgb_dfrom_float(a), xgb_dfrom_float(b)));
   return value;
 }
-struct QuantileMetricParams {
-  ulong count;
-  uint targets, levels, weighted, expectile;
-};
-kernel void xgb_quantile_metric(
-    device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
-    device const float* weights [[buffer(2)]], device const float* alpha [[buffer(3)]],
-    device ulong2* partial [[buffer(4)]], constant QuantileMetricParams& p [[buffer(5)]],
-    uint tid [[thread_position_in_grid]], uint group [[threadgroup_position_in_grid]],
-    uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
-  XGBDouble loss{0}, weight{0};
-  if (ulong(tid) < p.count) {
-    uint row = tid / (p.targets * p.levels), level = (tid / p.targets) % p.levels,
-         target = tid % p.targets;
-    float prediction = predictions[tid], label = labels[ulong(row) * p.targets + target];
-    float a = alpha[level], w = p.weighted ? weights[row] : 1.0f, value;
-    if (p.expectile) {
-      float diff = xgb_fsub_preserve(prediction, label);
-      float scale = xgb_dlt(xgb_dfrom_float(diff), {0}) ? a : 1.0f - a;
-      value = xgb_fmul_preserve(xgb_fmul_preserve(xgb_fmul_preserve(scale, diff), diff), w);
-    } else {
-      float diff = xgb_fsub_preserve(label, prediction);
-      float sign = xgb_dlt(xgb_dfrom_float(diff), {0}) ? 0.0f : 1.0f;
-      float left = xgb_fmul_preserve(xgb_fmul_preserve(a, sign), diff);
-      float right = xgb_fmul_preserve(xgb_fmul_preserve(1.0f - a, 1.0f - sign), diff);
-      value = xgb_fmul_preserve(xgb_fsub_preserve(left, right), w);
-    }
-    loss = xgb_dfrom_float(value);
-    weight = xgb_dfrom_float(w);
-  }
-  threadgroup int4 bounds[8];
-  threadgroup ulong2 sums[8];
-  ulong2 total = xgb_reduce_double_pair(loss, weight, bounds, sums, lane, simd);
-  if (simd == 0 && lane == 0) partial[group] = total;
-}
-
 struct SamplingParams {
   ulong rows, stride0, stride1, seed;
   uint targets, threads;
@@ -2693,12 +2543,15 @@ inline AFTResult Evaluate(uint kind, D lower, D upper, D prediction, D sigma) {
 inline D Loss(uint kind, D lower, D upper, D prediction, D sigma) {
   // Keep loss evaluation separate so metrics need no PDF derivatives.
   D likelihood;
-  if (xgb_deq(lower, upper)) {
+  if (!IsNaN(lower) && !IsNaN(upper) && xgb_deq(lower, upper)) {
     D z = (Log(lower) - prediction) / sigma;
     likelihood = Probability(kind, z).pdf / (sigma * lower);
   } else {
     D u = IsInf(upper) ? one : Probability(kind, (Log(upper) - prediction) / sigma).cdf;
-    D l = lower > zero ? Probability(kind, (Log(lower) - prediction) / sigma).cdf : zero;
+    // Source tests lower <= 0, not !(lower > 0): NaN must reach the CDF and
+    // hence the final fmax(likelihood, epsilon) regularization.
+    D l = lower < zero || xgb_dzero(lower)
+              ? zero : Probability(kind, (Log(lower) - prediction) / sigma).cdf;
     likelihood = u - l;
   }
   if (IsNaN(likelihood) || likelihood < epsilon) likelihood = epsilon;  // CPU fmax
@@ -3352,6 +3205,268 @@ inline uint xgb_rank_sigmoid(uint input) {
   uint denom = xgb_rank_fadd(xgb_rank_fadd(e, 0x3f800000u), as_type<uint>(1e-16f));
   return as_type<uint>(xgb_dto_float(one / From(as_type<float>(denom))));
 }
+// Metric row expressions preserve CUDA's explicit FP32 boundaries. Software
+// binary64 transcendentals are rounded to FP32; this is a numerical reference
+// contract, not an assertion of NVIDIA libdevice or NVCC FMA bit equivalence.
+namespace xgb_metric_math {
+using xgb_survival::D;
+using xgb_survival::operator+;
+using xgb_survival::operator-;
+using xgb_survival::operator*;
+using xgb_survival::operator/;
+using xgb_survival::operator<;
+using xgb_survival::operator>;
+using xgb_survival::Log;
+struct F {
+  uint bits;
+};
+inline F From(float x) { return {as_type<uint>(x)}; }
+inline D Wide(F x) { return xgb_dfrom_float(as_type<float>(x.bits)); }
+inline F Narrow(D x) { return From(xgb_dto_float(x)); }
+inline F operator+(F a, F b) { return {xgb_rank_fadd(a.bits, b.bits)}; }
+inline F operator-(F a) { return {a.bits ^ 0x80000000u}; }
+inline F operator-(F a, F b) { return a + (-b); }
+inline F operator*(F a, F b) { return {xgb_rank_fmul(a.bits, b.bits)}; }
+inline F operator/(F a, F b) { return Narrow(xgb_ddiv(Wide(a), Wide(b))); }
+inline bool operator<(F a, F b) { return xgb_float_less(a.bits, b.bits); }
+inline bool operator>(F a, F b) { return b < a; }
+inline bool IsNaN(F a) { return (a.bits & 0x7fffffffu) > 0x7f800000u; }
+inline bool operator==(F a, F b) {
+  return !IsNaN(a) && !IsNaN(b) && (a.bits == b.bits || ((a.bits | b.bits) & 0x7fffffffu) == 0);
+}
+inline F Abs(F a) { return {a.bits & 0x7fffffffu}; }
+inline F Max(F a, F b) { return a < b ? b : a; }  // std::max, including first-NaN
+inline F Log(F x) { return Narrow(xgb_survival::Log(Wide(x))); }
+inline F Exp(F x) { return Narrow(xgb_survival::Exp(Wide(x))); }
+inline F Log1p(F x) {
+  using namespace xgb_survival;
+  if ((x.bits & 0x7fffffffu) == 0) return x;
+  D v = Wide(x), u = one + v;
+  if (!(u > zero) || IsInf(u) || xgb_survival::IsNaN(u)) return Narrow(Log(u));
+  // Recover the low term lost in 1+x, including subnormal FP32 x.
+  return Narrow(Log(u) + (v - (u - one)) / u);
+}
+inline F Sqrt(F x) {
+  using namespace xgb_survival;
+  uint magnitude = x.bits & 0x7fffffffu;
+  if (!magnitude || magnitude > 0x7f800000u) return x;
+  if (x.bits >> 31) return F{0x7fc00000u};
+  if (magnitude == 0x7f800000u) return x;
+  D v = Wide(x), root;
+  if (magnitude < 0x800000u)
+    root = xgb_survival::From(sqrt(xgb_dto_float(v * D{0x43f0000000000000ul}))) *
+           D{0x3df0000000000000ul};
+  else
+    root = xgb_survival::From(sqrt(as_type<float>(x.bits)));
+  root = (root + v / root) * half_value;
+  root = (root + v / root) * half_value;
+  return Narrow(root);
+}
+constant ulong gamma_one[] = {0xbfe2788cfc6fb619ul, 0x3fea51a6625307d3ul, 0xbfd9a4d55beab2d7ul,
+                              0x3fd151322ac7d848ul, 0xbfca8b9c17aa6149ul, 0x3fc5b40cb100c306ul,
+                              0xbfc2703a1dcea3aeul, 0x3fc010b36af86397ul, 0xbfbc806706d57db4ul,
+                              0x3fb9a01e385d5f8ful, 0xbfb748c33114c6d6ul, 0x3fb556ad63243bc4ul,
+                              0xbfb3b1d971fc5985ul, 0x3fb2496df8320c5ful, 0xbfb11133476e7fe0ul,
+                              0x3fb00010064cdeb2ul, 0xbfae1e2d311e8abdul, 0x3fac71ce3a20b419ul,
+                              0xbfaaf28a1b5688a0ul, 0x3fa9999b3352d5baul, 0xbfa86186db77bfbful};
+constant ulong sin_coeff[] = {0x3ff0000000000000ul, 0xbfc5555555555555ul, 0x3f81111111111111ul,
+                              0xbf2a01a01a01a01aul, 0x3ec71de3a556c734ul, 0xbe5ae64567f544e4ul,
+                              0x3de6124613a86d09ul, 0xbd6ae7f3e733b81ful, 0x3ce952c77030ad4aul,
+                              0xbc62f49b46814157ul, 0x3bd71b8ef6dcf572ul};
+constant ulong stirling[] = {0x3fb5555555555555ul, 0xbf66c16c16c16c17ul, 0x3f4a01a01a01a01aul,
+                             0xbf43813813813814ul, 0x3f4b951e2b18ff23ul, 0xbf5f6ab0d9993c7dul,
+                             0x3f7a41a41a41a41aul, 0xbf9e4286cb0f5398ul};
+inline D LogGammaPositive(D x) {
+  using namespace xgb_survival;
+  if (xgb_deq(x, one) || xgb_deq(x, two)) return zero;
+  D z = x - one;
+  if (x > D{0x3fe8000000000000ul} && x < D{0x3ff4000000000000ul})
+    return z * Polynomial(z, gamma_one, 21);
+  z = x - two;
+  if (x > D{0x3ffc000000000000ul} && x < D{0x4002000000000000ul})
+    return Log(one + z) + z * Polynomial(z, gamma_one, 21);
+  D correction = zero;
+  while (x < D{0x4030000000000000ul}) {
+    correction = correction - Log(x);
+    x = x + one;
+  }
+  D inv = one / x;
+  return (x - half_value) * Log(x) - x + D{0x3fed67f1c864beb5ul} +
+         inv * Polynomial(inv * inv, stirling, 8) + correction;
+}
+inline F LogGamma(F input) {
+  using namespace xgb_survival;
+  D x = Wide(input);
+  if (xgb_survival::IsNaN(x)) return input;
+  if (IsInf(x) || xgb_dzero(x)) return F{0x7f800000u};
+  if (x > zero) return Narrow(LogGammaPositive(x));
+  D positive = -x;
+  D integral = xgb_survival::From(floor(as_type<float>(input.bits ^ 0x80000000u)));
+  if (xgb_deq(positive, integral)) return F{0x7f800000u};
+  D fraction = positive - integral;
+  if (fraction > half_value) fraction = one - fraction;
+  D pi{0x400921fb54442d18ul}, angle = pi * fraction;
+  D sine = angle * Polynomial(angle * angle, sin_coeff, 11);
+  return Narrow(Log(pi) - Log(sine) - LogGammaPositive(one - x));
+}
+struct MetricParams {
+  ulong n;
+  uint targets, kind, weighted, padding;
+  float parameter, reserved;
+};
+inline F RowLoss(F y, F pred, uint kind, F parameter) {
+  F zero = From(0.f), one = From(1.f), two = From(2.f), loss = zero;
+  switch (kind) {
+    case 0: {
+      F d = y - pred;
+      loss = d * d;
+      break;
+    }
+    case 1: {
+      F d = Log1p(y) - Log1p(pred);
+      loss = d * d;
+      break;
+    }
+    case 2:
+      loss = Abs(y - pred);
+      break;
+    case 3:
+      loss = Abs((y - pred) / y);
+      break;
+    case 4: {
+      F pneg = one - pred, negative = one - y;
+      F first = y == zero ? zero : (-y) * Log(Max(pred, From(1e-16f)));
+      F second = negative == zero ? zero : (-negative) * Log(Max(pneg, From(1e-16f)));
+      loss = first + second;
+      break;
+    }
+    case 5:
+      loss = pred > parameter ? one - y : y;
+      break;
+    case 6:
+      if (pred < From(1e-16f)) pred = From(1e-16f);
+      loss = (LogGamma(y + one) + pred) - Log(pred) * y;
+      break;
+    case 7:
+      pred = pred + From(1e-6f);
+      y = y + From(1e-6f);
+      loss = (Log(pred / y) + y / pred) - one;
+      break;
+    case 8: {
+      pred = Max(pred, From(1e-6f));
+      F theta = (-one) / pred, b = -Log(-theta);
+      loss = -((y * theta - b) / one + zero);
+      break;
+    }
+    case 9: {
+      F a = y * Exp((one - parameter) * Log(pred)) / (one - parameter);
+      F b = Exp((two - parameter) * Log(pred)) / (two - parameter);
+      loss = -a + b;
+      break;
+    }
+    case 10: {
+      F d = (y - pred) / parameter;
+      loss = (parameter * parameter) * (Sqrt(one + d * d) - one);
+      break;
+    }
+  }
+  return loss;
+}
+inline uint2 MetricTerm(device const uint* predictions, device const uint* labels,
+                        device const uint* weights, constant MetricParams& p, uint index,
+                        thread bool& invalid) {
+  bool multi = p.kind >= 11;
+  ulong row = multi ? index : index / p.targets;
+  F y{labels[index]}, weight = p.weighted ? F{weights[row]} : From(1.f), loss{0};
+  if (multi) {
+    // CUDA casts to int before the range check: fractional labels truncate.
+    // Nonfinite/out-of-int32 casts are undefined in CUDA; reject them explicitly.
+    D label = Wide(y);
+    if (IsNaN(y) || xgb_dlt(label, xgb_survival::From(-2147483648.f)) ||
+        !xgb_dlt(label, xgb_survival::From(2147483648.f))) {
+      invalid = true;
+      return uint2(0, weight.bits);
+    }
+    int k = int(as_type<float>(y.bits));
+    if (k < 0 || uint(k) >= p.targets) {
+      invalid = true;
+      return uint2(0, weight.bits);
+    }
+    if (p.kind == 11) {
+      F value{predictions[row * p.targets + uint(k)]}, eps = From(1e-16f);
+      loss = -Log(value > eps ? value : eps);
+    } else {
+      uint best = 0;
+      for (uint c = 1; c < p.targets; ++c)
+        if (F{predictions[row * p.targets + c]} > F{predictions[row * p.targets + best]}) best = c;
+      loss = From(best != uint(k) ? 1.f : 0.f);
+    }
+  } else
+    loss = RowLoss(y, F{predictions[index]}, p.kind, From(p.parameter));
+  return uint2((loss * weight).bits, weight.bits);
+}
+inline uint2 QuantileTerm(F prediction, F label, F a, F w, bool expectile) {
+  F zero = From(0.f), one = From(1.f), value;
+  if (expectile) {
+    F diff = prediction - label;
+    F scale = !IsNaN(diff) && !(diff < zero) ? one - a : a;
+    value = ((scale * diff) * diff) * w;
+  } else {
+    F diff = label - prediction;
+    F sign = From(!IsNaN(diff) && !(diff < zero) ? 1.f : 0.f);
+    value = ((a * sign) * diff - ((one - a) * (one - sign)) * diff) * w;
+  }
+  return uint2(value.bits, w.bits);
+}
+}  // namespace xgb_metric_math
+kernel void xgb_metric(
+    device const uint* predictions [[buffer(0)]], device const uint* labels [[buffer(1)]],
+    device const uint* weights [[buffer(2)]], device ulong2* partial [[buffer(3)]],
+    constant xgb_metric_math::MetricParams& p [[buffer(4)]],
+    device atomic_uint* invalid [[buffer(5)]], uint row [[thread_position_in_grid]],
+    uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
+    uint simd [[simdgroup_index_in_threadgroup]]) {
+  uint2 value(0);
+  if (ulong(row) < p.n) {
+    bool bad = false;
+    value = xgb_metric_math::MetricTerm(predictions, labels, weights, p, row, bad);
+    if (bad) atomic_fetch_or_explicit(invalid, 1u, memory_order_relaxed);
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 result =
+      xgb_reduce_double_pair(xgb_dfrom_float(as_type<float>(value.x)),
+                             xgb_dfrom_float(as_type<float>(value.y)), bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[group] = result;
+}
+
+struct QuantileMetricParams {
+  ulong count;
+  uint targets, levels, weighted, expectile;
+};
+kernel void xgb_quantile_metric(
+    device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
+    device const float* weights [[buffer(2)]], device const float* alpha [[buffer(3)]],
+    device ulong2* partial [[buffer(4)]], constant QuantileMetricParams& p [[buffer(5)]],
+    uint tid [[thread_position_in_grid]], uint group [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
+  XGBDouble loss{0}, weight{0};
+  if (ulong(tid) < p.count) {
+    uint row = tid / (p.targets * p.levels), level = (tid / p.targets) % p.levels,
+         target = tid % p.targets;
+    using namespace xgb_metric_math;
+    auto value =
+        QuantileTerm(From(predictions[tid]), From(labels[ulong(row) * p.targets + target]),
+                     From(alpha[level]), From(p.weighted ? weights[row] : 1.f), p.expectile);
+    loss = xgb_dfrom_float(as_type<float>(value.x));
+    weight = xgb_dfrom_float(as_type<float>(value.y));
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(loss, weight, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[group] = total;
+}
+
 struct RankingPairTask {
   ulong pair_begin, tile_begin;
   uint begin, count, topk, padding;

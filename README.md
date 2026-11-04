@@ -14,19 +14,22 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **GPU ranking query metadata and persistent cache ownership**.
-Query-size maxima, pair counts and exact 64-bit pair/tile prefixes now run on
-Metal. The objective, sort and precision/NDCG/MAP paths reuse immutable GPU
-metadata owned by each ranking cache. Host code reads completed sizes to allocate
-storage and schedule bounded batches; it no longer generates those prefixes.
+Latest step: **CUDA-derived metric arithmetic and complete GPU reductions**.
+Scalar, multiclass, quantile/expectile and survival metrics now finish their
+binary64 accumulation on Metal and return a single 16-byte result pair.
+Generic metrics preserve CUDA's FP32 row/weight rounding instead of scaled FP32
+block sums. Multiclass label checks also run on GPU, after CUDA's integer cast.
 
-New source-formula tests pass **180 cases / 12,611,280 exact task fields**,
-including **131,415 prefixes that binary64 cannot represent exactly**. These use
-large logical query sizes without allocating the corresponding rows or pairs.
-Cache tests cover ownership, reuse, changing seeds and stale-input rejection.
-Full validation passes **1,779 Python tests**, every rebuilt native suite and
-the CPU-only build/device check. NVIDIA execution equivalence remains unverified.
-[Metadata validation](validation/cuda-ranking-metadata-m3.txt).
+New tests pass **349 production cases / 15,628,618 exact row-result fields**,
+plus **500,285 transcendental fields** matching the host binary64-libm reference
+rounded to FP32. Reduction association and NVIDIA libdevice execution remain
+separate validation limits. Full regression passes **1,787 Python tests**, every
+rebuilt native suite and the CPU-only build/device check.
+[Metric validation](validation/cuda-metric-reductions-m3.txt).
+
+The preceding metadata port added GPU query maxima/counts and exact 64-bit
+prefixes, with immutable buffers reused by ranking caches. Its tests check
+**12.6 million exact task fields**. [Metadata validation](validation/cuda-ranking-metadata-m3.txt).
 
 The preceding arithmetic port checks **2.44 million ordinary gradient pairs**
 bit for bit against the host CUDA-formula oracle, plus multi-round unbiased
@@ -41,7 +44,7 @@ category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
 The major remaining areas are adapter/device-array sketch ingestion and matrix preprocessing,
-remaining objective initialization, metric reductions and training-state operations, CUDA algorithm
+remaining objective initialization and training-state operations, CUDA algorithm
 alignment, categorical/metadata operations, Apple GPU array
 interoperability and distributed collectives. AFT still has CPU corrections;
 some long-run ranking and Covertype comparisons have numerical differences.
@@ -150,7 +153,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Column sampling | CUDA-source Philox weighted draws and Thrust Feistel unweighted shuffle; GPU compaction, stable priority ordering and integer feature sorting; 24 shuffle keys and cache metadata remain host as in CUDA, while feature arrays still stage through host |
 | Grouped ranking PR-AUC | CUDA-source FP32 cast boundaries, original-order positive totals, segmented binary64 prefixes, integral arithmetic and two-row validity; GPU sorting, validation and aggregation |
 | PR-AUC | Binary, multiclass and multilabel; CUDA-source term casts, separate recall/validity totals, source integral and invalid-output rules; GPU aggregation metadata and normalization; collective transport remains host |
-| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision with CUDA-source arithmetic/fallbacks; GPU label validation and NDCG cache initialization |
+| Metrics | Scalar/multiclass and quantile/expectile FP32 row terms, GPU label checks and complete binary64 GPU sums; survival likelihood/accuracy binary64 terms and sums; ranking/AUC source arithmetic as above. Final ratios and collective transport remain host |
 
 AFT gradient evaluation is still hybrid for numerically sensitive censored rows.
 The GPU flags interval probabilities at or below `1e-5`; the host recomputes those
@@ -158,9 +161,9 @@ rows with the original CPU formula. `survival_cpu_corrections` and
 `survival_cpu_time_ns` expose this work. Ordinary and uncensored rows stay on GPU;
 this is not complete AFT GPU coverage. AFT metrics and transforms execute on GPU.
 
-Input views and categorical recoding remain on the host. Many elementwise metric
-kernels produce scaled block sums, with the final small reduction in host FP64. Metal has no native
-FP64 arithmetic. Split selection uses software binary64 operations and exact
+Input views and categorical recoding remain on the host. Elementwise and survival
+metric sums now finish on GPU; final ratios and collective transport remain host,
+as in the corresponding CUDA call sites. Metal has no native FP64 arithmetic. Split selection uses software binary64 operations and exact
 integer scans to preserve histogram precision and CUDA candidate ordering. Tolerances and
 numerical edge cases are tested explicitly.
 
@@ -168,6 +171,10 @@ numerical edge cases are tested explicitly.
 It also reports GPU durations and histogram staging/wait/readback wall times. Wait
 time overlaps GPU duration; adding those numbers would double-count time. Counters
 are process-wide, so concurrent models contribute to the same totals.
+`metric_reduction_passes` counts completed final reduction levels;
+`metric_final_readback_bytes` is 16 bytes per nonempty successful scalar,
+multiclass, quantile/expectile or survival metric call. `metric_label_dispatches`
+counts GPU multiclass validation, including calls rejected for invalid labels.
 `gradient_sampling_dispatches` and `gradient_sampling_gpu_time_ns` report the
 gradient-based sampler separately; they are also included in the general sampling
 counters and must not be added to those totals. `cuda_gradient_sampling_dispatches`
@@ -349,6 +356,11 @@ On Apple M3, 2026-11-03:
   oracles for both methods, with unchanged tolerances. The previous unrounded
   mean reference has been replaced by the full arithmetic oracle below.
   [Validation](validation/cuda-ranking-pairs-m3.txt).
+- Elementwise/survival metric reductions: **349 production cases / 15,628,618
+  exact FP32 row-result fields**, plus **100,057 math inputs / 500,285 fields**.
+  Covers subnormals, NaNs/infinities, overflow, fractional multiclass labels,
+  signed cancellation, multiple targets/levels and recursive reduction boundaries.
+  Only the final binary64 pair returns to host. [Validation](validation/cuda-metric-reductions-m3.txt).
 - Ranking metadata: **180 native cases / 12,611,280 exact task fields**, including
   **131,415 integer prefixes not representable in binary64**. Covers empty queries,
   256-entry scan boundaries, recursive scans through 262,145 queries, maximum
@@ -622,6 +634,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [ ] Complete adapter/device-array sketches and remaining objective/state operations.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.
 - [x] Port query maxima/counts/prefixes and reuse GPU metadata through ranking caches.
+- [x] Port remaining elementwise/survival metric sums and CUDA FP32 row arithmetic; validate multiclass labels on GPU.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.

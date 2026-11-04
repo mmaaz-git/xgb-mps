@@ -389,6 +389,58 @@ Full regression passes **1,666 Python tests, one skip**, all rebuilt native suit
 and the CPU-only build/device check (2026-11-04, 11:35:37–11:39:51 UTC).
 [Validation record](../validation/cuda-classification-auc-m3.txt).
 
+## Elementwise and survival metric reductions
+
+`elementwise_metric.cu::Reduce` and `multiclass_metric.cu` form each weighted
+row result in FP32, then convert it and the weight to binary64 for reduction.
+Metal now follows those boundaries for RMSE/RMSLE/MAE/MAPE, logloss, threshold
+error, Poisson, both gamma metrics, Tweedie, pseudo-Huber and multiclass metrics.
+The former scaled FP32 block sums and host scale-restoration loop are removed.
+Quantile/expectile keep their source FP32 operation order, including both terms
+of the quantile expression and left-associated expectile products. Survival
+metrics retain source binary64 likelihood/accuracy and weight products. Ordered
+NaN-bound comparisons now match the source before likelihood regularization.
+
+All these paths finish with recursive 256-input GPU binary64 pair reductions.
+The existing integer reduction fast path is used only when its exponent-span
+check proves every subset sum exactly representable in binary64. Other blocks
+use software binary64 additions. Only the final 16-byte residue/weight pair
+returns to the host, alongside a separate 4-byte validation flag in the generic
+metric path. CUB association is not reproduced; tests separately compare
+row expressions and the reduction against compensated sums, with a `32*epsilon*
+sum(abs(terms))` budget for the checked finite cases. Final ratios remain host,
+as in CUDA. The previously omitted `GlobalSum` calls in scalar/pseudo-Huber/
+quantile/expectile MPS branches are restored. This restores the shared collective
+call sites; it does not implement distributed Apple GPU transport.
+
+The row helpers preserve FP32 subnormals and rounding between expressions.
+Logs, log1p and exponentials use the existing software binary64 functions before
+FP32 conversion. Log1p recovers the low term of `1+x`; sqrt refines a native seed
+in binary64 and handles negative subnormals explicitly. Gamma uses a Taylor
+series near 1 and 2, recurrence plus Stirling elsewhere, and a binary64 sine/reflection
+formula for negative nonintegers. Gamma's zero/pole/nonfinite behavior follows
+the [CUDA Math API](https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html).
+These are independently tested approximations, not a reconstruction of libdevice.
+The [CUDA accuracy table](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/mathematical-functions.html)
+also allows function-specific errors; no cross-device bitwise promise is made.
+
+Multiclass metric validation now runs on GPU and casts labels to signed integers
+before range checking, as CUDA does. Thus `-0.75` maps to class zero and `1.75` to
+class one; the objective's different label predicate is unchanged. Nonfinite or
+out-of-int32 input casts have no defined CUDA-source contract and are explicitly
+rejected. Atomic error flags replace CUDA's competing writes of an offending
+label. Multiclass logloss applies the source `prediction > epsilon` branch,
+including NaNs; merror preserves first-index ties and ordered comparisons.
+
+Validation checks **15,628,618 exact row-result fields**, **349 production
+cases**, and **500,285 math fields** matching host binary64 libm rounded to FP32.
+The largest finite reduction error is 0.03734 of the stated bound. Existing
+public metric/survival tolerances remain unchanged. Actual NVIDIA libdevice,
+NVCC contraction, CUB association and cross-Apple execution remain unverified.
+Full regression passes **1,787 Python tests, one skip**, all rebuilt native
+suites and the CPU-only build/device check (2026-11-04, 13:59:56–14:04:22 UTC).
+[Validation record](../validation/cuda-metric-reductions-m3.txt).
+
 ## Ranking gradient numerical behavior
 
 Mean pair construction now follows `objective/lambdarank_obj.cuh`'s

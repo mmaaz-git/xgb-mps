@@ -236,6 +236,12 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["prediction_dispatches"] = Integer{static_cast<std::int64_t>(stats.prediction_dispatches)};
   info["prediction_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.prediction_gpu_time_ns)};
   info["leaf_update_dispatches"] = Integer{static_cast<std::int64_t>(stats.leaf_update_dispatches)};
+  info["metric_reduction_passes"] =
+      Integer{static_cast<std::int64_t>(stats.metric_reduction_passes)};
+  info["metric_final_readback_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.metric_final_readback_bytes)};
+  info["metric_label_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.metric_label_dispatches)};
   info["metric_dispatches"] = Integer{static_cast<std::int64_t>(stats.metric_dispatches)};
   info["metric_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.metric_gpu_time_ns)};
   info["index_uploads"] = Integer{static_cast<std::int64_t>(stats.index_uploads)};
@@ -426,6 +432,12 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["prediction_dispatches"] = Integer{0};
   info["prediction_gpu_time_ns"] = Integer{0};
   info["leaf_update_dispatches"] = Integer{0};
+  info["metric_reduction_passes"] = Integer{0};
+  info["metric_final_readback_bytes"] = Integer{0};
+  info["metric_label_dispatches"] = Integer{0};
+  info["ranking_plan_dispatches"] = Integer{0};
+  info["ranking_plan_reuses"] = Integer{0};
+  info["ranking_plan_gpu_time_ns"] = Integer{0};
   info["metric_dispatches"] = Integer{0};
   info["metric_gpu_time_ns"] = Integer{0};
   info["index_uploads"] = Integer{0};
