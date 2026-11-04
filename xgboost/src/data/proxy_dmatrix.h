@@ -293,6 +293,8 @@ decltype(auto) DispatchAny(DMatrixProxy const* proxy, Fn&& fn, bool* type_error 
  */
 std::shared_ptr<DMatrix> CreateDMatrixFromProxy(Context const* ctx,
                                                 std::shared_ptr<DMatrixProxy> proxy, float missing);
+// Copy an owned native Metal proxy snapshot into an ordinary sparse page.
+void MetalPush(DMatrixProxy* proxy, float missing, SparsePage* page);
 
 namespace cuda_impl {
 [[nodiscard]] bst_idx_t BatchSamples(DMatrixProxy const*);

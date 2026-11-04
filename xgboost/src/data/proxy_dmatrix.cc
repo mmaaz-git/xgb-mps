@@ -16,6 +16,7 @@
 #include "xgboost/string_view.h"  // for StringView
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_tensor.h"
+#include "simple_dmatrix.h"
 #endif
 
 #if !defined(XGBOOST_USE_CUDA)
@@ -23,6 +24,15 @@
 #endif
 
 namespace xgboost::data {
+void MetalPush(DMatrixProxy *proxy, float missing, SparsePage *page) {
+#if defined(XGBOOST_USE_METAL)
+  auto tensor = std::any_cast<std::shared_ptr<common::metal::Tensor>>(proxy->Adapter());
+  common::metal::CopyTensorToSparsePage(*tensor, missing, page);
+#else
+  LOG(FATAL) << "Metal tensor input requires XGBoost built with USE_METAL=ON.";
+#endif
+}
+
 void DMatrixProxy::SetMetalArray(StringView data) {
 #if defined(XGBOOST_USE_METAL)
   auto tensor = common::metal::ImportTensor(data);
@@ -88,7 +98,14 @@ std::shared_ptr<DMatrix> CreateDMatrixFromProxy(Context const *ctx,
   bool type_error{false};
   std::shared_ptr<DMatrix> p_fmat{nullptr};
 
-  if (proxy->Ctx()->IsCUDA()) {
+  if (proxy->Ctx()->IsMPS()) {
+#if defined(XGBOOST_USE_METAL)
+    auto tensor = std::any_cast<std::shared_ptr<common::metal::Tensor>>(proxy->Adapter());
+    p_fmat = std::make_shared<SimpleDMatrix>(*tensor, missing, ctx->Threads());
+#else
+    LOG(FATAL) << "Metal tensor input requires XGBoost built with USE_METAL=ON.";
+#endif
+  } else if (proxy->Ctx()->IsCUDA()) {
 #if defined(XGBOOST_USE_CUDA)
     p_fmat = cuda_impl::CreateDMatrixFromProxy(ctx, proxy, missing);
 #else

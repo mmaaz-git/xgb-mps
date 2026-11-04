@@ -744,7 +744,7 @@ void GBTree::InplacePredict(std::shared_ptr<DMatrix> p_m, float missing,
                             bst_layer_t layer_end) const {
   auto [tree_begin, tree_end] = detail::LayerToTree(model_, layer_begin, layer_end);
   CHECK_LE(tree_end, model_.trees.size()) << "Invalid number of trees.";
-  if (p_m->Ctx()->Device() != this->ctx_->Device()) {
+  if (p_m->Ctx()->Device() != this->ctx_->Device() || (p_m->Ctx()->IsMPS() && !ctx_->IsMPS())) {
     error::MismatchedDevices(this->ctx_, p_m->Ctx());
     CHECK_EQ(out_preds->version, 0);
     auto proxy = std::dynamic_pointer_cast<data::DMatrixProxy>(p_m);

@@ -137,7 +137,7 @@ void Invalid(id<MTLDevice> device, id<MTLCommandQueue> queue) {
   reject(Descriptor(buffer, 100, 3, 0, 3, 1, 2, 32));
   reject(Descriptor(buffer, 3, 3, 1, 3, 1, 2, 32));
   reject(Descriptor(buffer, -1, 3, 0, 3, 1, 2, 32));
-  reject(Descriptor(buffer, 3, 0, 0, 3, 1, 2, 32));
+  reject(Descriptor(buffer, 3, -1, 0, 3, 1, 2, 32));
   reject(Descriptor(buffer, 3, 3, 0, 3, 1, 2, 8));
   reject(Descriptor(buffer, 3, 3, 0, 3, 1, 4, 16));
   reject(Descriptor(buffer, 3, 3, 0, 3, 1, 2, 128));

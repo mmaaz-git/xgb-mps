@@ -1,0 +1,122 @@
+Native ordinary Metal matrices and GPU sparse-page construction
+==============================================================
+Date: 2026-11-04
+Host: Apple M3 MacBook Air, 8 CPU cores / 10 GPU cores / 16 GB unified memory.
+Baseline: eafb095fcddcfdd7532b1ef9b84839ff226ad979 (native gradient imports).
+Python 3.13.5; PyTorch 2.15.0; MLX / MLX-Metal 0.32.4.
+One Homebrew OpenMP runtime selected through DYLD_LIBRARY_PATH before Python.
+
+Operation scope and authority
+-----------------------------
+Vendored data/simple_dmatrix.cu/.cuh: CopyToSparsePage, CountRowOffsets,
+CopyDataToDMatrix. External CUDA iterators use sparse_page_source.cu::DevicePush.
+Source defines typed float conversion, missing filtering, nonmissing infinity
+rejection, row counts/prefix offsets, ordered sparse entry packing and one host
+count read to size allocation. Existing Metal adapter kernels implement these
+operations; ordinary construction now consumes them.
+
+New XGDMatrixCreateFromMetal and Python DMatrix dispatch use native descriptors
+and owned GPU source snapshots. Ordinary external DataIter ingestion uses the
+same GPU sparse-page path. Two-dimensional zero-row/zero-column shapes retain
+their dimensions. This removes the old bridge's positive-column restriction.
+Scalar/vector feature inputs still reject; metadata/gradients have separate rules.
+
+Output CSR offsets and entries are GPU-blitted into guarded shared SparsePage
+allocations where eligible; a counted host payload-copy fallback handles other
+allocations. Nonmissing infinities reject before resizing/publishing the output.
+Missing infinity, signed zeros and subnormals follow the input predicates.
+Source buffers may be private, strided and released/overwritten after snapshot.
+No producer tensor payload is converted through NumPy or diagnostic Readback.
+
+Raw-CSR sketch and compressed ELLPACK consumers now bind safe shared spans at
+the actual buffer byte offset, otherwise use counted uploads. Borrowed views are
+synchronous and never cached. Source ownership covers the command and buffer
+lifetimes. Host get_data, save/load, slice and CPU training/prediction remain
+available; this does not add generic private-GPU SparsePage ownership. External
+raw row-page disk serialization and both existing compressed cache modes remain.
+
+CPU tree inplace prediction from native Metal inputs now takes the existing
+ordinary-matrix fallback, including base margins and iteration ranges. The MPS
+marker is checked separately from the generic CPU storage device ordinal. Normal
+MPS inplace prediction still uses the GPU tensor path directly.
+
+Counters: tensor_csr_dispatches, tensor_csr_values,
+tensor_csr_shared_output_bytes, tensor_csr_host_copy_bytes, tensor_csr_gpu_time_ns.
+These measure completed output publication and entry counts; adapter_* retains
+filter/count/prefix/scatter activity, and tensor_* retains source snapshots.
+csr_shared_input_bytes / csr_input_copy_bytes count raw-CSR sketch/compression
+span access, including repeated pointers across windows. ellpack_csr_input_bytes
+remains logical input extent rather than physical transfer bytes. All native
+statistics callers require rebuilding. CPU-only fields remain zero.
+
+Focused native validation
+-------------------------
+PASS 199 cases / 550,595 field checks / six rejected nonmissing infinities.
+Driver: results/run-native-ordinary-native-v2.sh.
+Log: results/native-ordinary-native-v2.log; Metal API validation enabled.
+NATIVE_EXIT=0 at 2026-11-04T21:01:57Z.
+- Independent CPU scalar casts and row loops construct exact CSR offsets,
+  indices and FP32 value bits; all signed/unsigned widths, float32/64, mixed
+  missing sentinels, shared/private sources, offsets and signed/broadcast strides.
+- Every half pattern: non-infinities in the full matrix, plus positive/negative
+  infinity checked separately for acceptance as missing and rejection otherwise.
+- GPU overwrite/release after snapshot; destination preserved on invalid input;
+  signed zero/subnormal/extreme/nonfinite patterns and empty row/column dimensions.
+- 272,422 entries, 2,213,760 shared output bytes, zero host output-copy bytes.
+- Writable/read-only mmap sparse inputs force shared/upload paths respectively:
+  264 shared and 264 copied bytes. Producer memory unmapped before resident sketch
+  readback; summary values independently match the sorted complete fixture.
+
+Focused Python validation
+-------------------------
+PASS 773 tests / seven warnings / 31.50 seconds.
+186 new ordinary-input tests + 93 feature regressions + 332 metadata tests +
+162 gradient-import tests. Driver results/run-native-ordinary-focused-v3.sh;
+log results/native-ordinary-focused-v3.log; FOCUSED_EXIT=0 at 21:01:52Z.
+- Real PyTorch/MLX, eight dtypes, four layouts, two missing policies; exact
+  host-CSR offsets/indices/value bits. DeviceOnly forbids NumPy payload conversion.
+- Legacy/versioned capsule consumption and source release; all empty shapes.
+- Byte-identical native/host models separately on CPU/MPS for supported hist,
+  approx, multiclass, categorical and vector fits. MPS DART/linear fixtures also match.
+- Changed max_bin regeneration, save/load metadata and raw data, duplicate row
+  slices, CPU inplace fallback with scalar/vector base margins and tree ranges.
+- External host/disk cache modes, empty first/middle/final pages, producer release,
+  no reingestion during cache reuse and complete cache cleanup.
+- Initial focused run: 152 passed, 26 failed. Fourteen failures exposed the CPU
+  fallback routing gap and prompted the production fix. The remaining failures
+  were test assumptions: eight unsupported external get_data calls, two existing
+  vector/approx restrictions, and two error-message matches. The corrected tests
+  explicitly verify upstream restrictions. Intermediate 271 tests passed before
+  adding DART/linear and fallback-margin/range coverage. No numeric tolerance was
+  widened, and no CUDA execution equivalence is claimed.
+
+Final full regression
+---------------------
+PASS 2026-11-04T21:02:23Z -> 21:09:34Z (7 minutes 11 seconds), FULL_EXIT=0.
+- Final Metal build completed; all 82 native check groups/reference updater
+  rebuilt and passed. New native import test ran under Metal API validation.
+- Python: 3,139 passed, one skipped, 393 warnings in 166.30 seconds.
+- CPU-only build/API/device/cache checks passed. XGDMatrixCreateFromMetal rejected
+  explicitly before touching native buffers and left the output handle unset;
+  all seven new statistics fields remained zero.
+- Changed production Python and touched/new Python tests pass ruff F/I and format
+  checks; git diff --check is clean.
+- No production or test changes after the final build/run; docs finalized later.
+Driver: results/run-native-ordinary-full-v1.sh.
+Session: tmux xgb-native-ordinary-full-v1 (completed).
+Driver log: results/native-ordinary-full-driver-v1.log.
+Stage logs under results/: build-native-ordinary-final-v1.log,
+test-native-ordinary-full-v1.log, configure-cpu-native-ordinary-v1.log,
+build-cpu-native-ordinary-v1.log, check-cpu-native-ordinary-v1.log.
+
+Remaining scope and correction from upstream audit
+-------------------------------------------------
+Native columnar input with masks/dictionaries, GPU outputs, general metadata/
+state manipulation and ownership, remaining CUDA arithmetic audits, GPU
+collectives and cross-hardware validation remain open.
+Native CSR/CSC device-array inputs are not a CUDA parity requirement: upstream
+python-package/xgboost/data.py::dispatch_data_backend explicitly rejects cupyx
+CSR/CSC, and data/proxy_dmatrix.cc::SetCsr requires on_host. A Metal-specific
+sparse binding would extend upstream capability. Host sparse input and internal
+GPU sparse operations remain in scope; this correction does not remove them.
+No new benchmark or NVIDIA/cross-Apple-device execution in this step.

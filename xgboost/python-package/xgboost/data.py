@@ -1309,11 +1309,6 @@ def dispatch_data_backend(
 ) -> DispatchedDataBackendReturnType:
     """Dispatch data for DMatrix."""
 
-    if is_metal(data):
-        raise TypeError(
-            "Native Metal features currently require QuantileDMatrix or ExtMemQuantileDMatrix."
-        )
-
     def check_cats(
         feature_types: Optional[Union[FeatureTypes, Categories]],
     ) -> TypeGuard[Optional[FeatureTypes]]:
@@ -1322,6 +1317,19 @@ def dispatch_data_backend(
                 "Reference category is only supported by DataFrame inputs."
             )
         return True
+
+    if is_metal(data):
+        assert check_cats(feature_types)
+        tensor = transform_metal(data)
+        handle = ctypes.c_void_p()
+        _check_call(
+            _LIB.XGDMatrixCreateFromMetal(
+                tensor.descriptor,
+                make_jcargs(missing=float(missing), nthread=int(threads)),
+                ctypes.byref(handle),
+            )
+        )
+        return handle, feature_names, feature_types
 
     if (
         not _is_cudf_ser(data)

@@ -118,6 +118,9 @@ struct Statistics {
   std::uint64_t gradient_import_dispatches, gradient_import_pairs,
       gradient_import_shared_output_bytes, gradient_import_host_copy_bytes,
       gradient_import_gpu_time_ns;
+  std::uint64_t tensor_csr_dispatches, tensor_csr_values, tensor_csr_shared_output_bytes,
+      tensor_csr_host_copy_bytes, tensor_csr_gpu_time_ns, csr_shared_input_bytes,
+      csr_input_copy_bytes;
 };
 
 class Histogram {

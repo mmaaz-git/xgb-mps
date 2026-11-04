@@ -16,6 +16,10 @@
 
 #include "gradient_index.h"
 
+namespace xgboost::common::metal {
+class Tensor;
+}
+
 namespace xgboost::data {
 // Used for single batch data.
 class SimpleDMatrix : public DMatrix {
@@ -25,6 +29,9 @@ class SimpleDMatrix : public DMatrix {
   explicit SimpleDMatrix(AdapterT* adapter, float missing, std::int32_t nthread);
 
   explicit SimpleDMatrix(dmlc::Stream* in_stream);
+#if defined(XGBOOST_USE_METAL)
+  explicit SimpleDMatrix(common::metal::Tensor const& tensor, float missing, std::int32_t nthread);
+#endif
   ~SimpleDMatrix() override = default;
 
   void SaveToLocalFile(const std::string& fname);

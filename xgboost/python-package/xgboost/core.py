@@ -1525,8 +1525,8 @@ class QuantileDMatrix(DMatrix, _RefMixIn):
         Optional construction device. This fork accepts ``"mps"`` to decode host
         dense/columnar arrays, sketch cuts and assign bins on Metal. The default
         follows the input device, as upstream. This is independent of the booster
-        device. Native Metal tensor handles and sparse device adapters are not yet
-        supported by this entry point.
+        device. Native Metal DLPack tensors are supported; native sparse device
+        adapters remain unimplemented.
 
     max_quantile_batches :
         Deprecated. This parameter no longer has any effect and will be removed in a

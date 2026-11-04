@@ -124,9 +124,7 @@ class MetalData:
                 else "Metal feature input must be two-dimensional."
             )
         shape = tuple(tensor.shape[i] for i in range(tensor.ndim))
-        if any(size < 0 for size in shape) or (
-            not allow_tensor_shape and shape[1] == 0
-        ):
+        if any(size < 0 for size in shape):
             raise ValueError("Invalid Metal tensor shape.")
         strides = (
             tuple(tensor.strides[i] for i in range(tensor.ndim))

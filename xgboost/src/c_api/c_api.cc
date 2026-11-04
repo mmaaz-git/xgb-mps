@@ -55,6 +55,7 @@
 #include "../common/metal_gradient.h"
 #include "../common/metal_histogram.h"
 #include "../common/metal_metadata.h"
+#include "../common/metal_tensor.h"
 #endif
 
 using namespace xgboost;  // NOLINT(*);
@@ -306,6 +307,15 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.gradient_import_host_copy_bytes)};
   info["gradient_import_gpu_time_ns"] =
       Integer{static_cast<std::int64_t>(stats.gradient_import_gpu_time_ns)};
+  info["tensor_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.tensor_csr_dispatches)};
+  info["tensor_csr_values"] = Integer{static_cast<std::int64_t>(stats.tensor_csr_values)};
+  info["tensor_csr_shared_output_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.tensor_csr_shared_output_bytes)};
+  info["tensor_csr_host_copy_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.tensor_csr_host_copy_bytes)};
+  info["tensor_csr_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.tensor_csr_gpu_time_ns)};
+  info["csr_shared_input_bytes"] = Integer{static_cast<std::int64_t>(stats.csr_shared_input_bytes)};
+  info["csr_input_copy_bytes"] = Integer{static_cast<std::int64_t>(stats.csr_input_copy_bytes)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -579,6 +589,13 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["gradient_import_shared_output_bytes"] = Integer{0};
   info["gradient_import_host_copy_bytes"] = Integer{0};
   info["gradient_import_gpu_time_ns"] = Integer{0};
+  info["tensor_csr_dispatches"] = Integer{0};
+  info["tensor_csr_values"] = Integer{0};
+  info["tensor_csr_shared_output_bytes"] = Integer{0};
+  info["tensor_csr_host_copy_bytes"] = Integer{0};
+  info["tensor_csr_gpu_time_ns"] = Integer{0};
+  info["csr_shared_input_bytes"] = Integer{0};
+  info["csr_input_copy_bytes"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};
@@ -1087,6 +1104,27 @@ XGB_DLL int XGDMatrixCreateFromCSR(char const *indptr, char const *indices, char
   xgboost_CHECK_C_ARG_PTR(out);
   ValidateCAPIDataSplitMode(data_split_mode);
   *out = new std::shared_ptr<DMatrix>(DMatrix::Create(&adapter, missing, n_threads));
+  API_END();
+}
+
+XGB_DLL int XGDMatrixCreateFromMetal(char const *data, char const *c_json_config,
+                                     DMatrixHandle *out) {
+  API_BEGIN();
+  xgboost_CHECK_C_ARG_PTR(data);
+  xgboost_CHECK_C_ARG_PTR(c_json_config);
+  xgboost_CHECK_C_ARG_PTR(out);
+#if defined(XGBOOST_USE_METAL)
+  auto config = Json::Load(StringView{c_json_config});
+  float missing = GetMissing(config);
+  auto n_threads = OptionalArg<Integer, std::int64_t>(config, "nthread", 0);
+  auto data_split_mode = OptionalArg<Integer, std::int64_t>(config, "data_split_mode", 0);
+  ValidateCAPIDataSplitMode(data_split_mode);
+  auto tensor = common::metal::ImportTensor(StringView{data});
+  auto matrix = std::make_shared<data::SimpleDMatrix>(*tensor, missing, n_threads);
+  *out = new std::shared_ptr<DMatrix>(std::move(matrix));
+#else
+  LOG(FATAL) << "Metal tensor input requires XGBoost built with USE_METAL=ON.";
+#endif
   API_END();
 }
 

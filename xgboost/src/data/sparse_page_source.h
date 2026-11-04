@@ -459,14 +459,18 @@ class SparsePageSource : public SparsePageSourceImpl<SparsePage> {
     if (!this->ReadCache()) {
       bool type_error{false};
       CHECK(proxy_);
-      cpu_impl::DispatchAny(
-          proxy_,
-          [&](auto const& adapter_batch) {
-            page_->Push(adapter_batch, this->missing_, this->nthreads_);
-          },
-          &type_error);
-      if (type_error) {
-        DevicePush(proxy_, missing_, page_.get());
+      if (proxy_->Ctx()->IsMPS()) {
+        MetalPush(proxy_, missing_, page_.get());
+      } else {
+        cpu_impl::DispatchAny(
+            proxy_,
+            [&](auto const& adapter_batch) {
+              page_->Push(adapter_batch, this->missing_, this->nthreads_);
+            },
+            &type_error);
+        if (type_error) {
+          DevicePush(proxy_, missing_, page_.get());
+        }
       }
 
       page_->SetBaseRowId(base_row_id_);

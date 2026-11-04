@@ -147,6 +147,9 @@ std::atomic<std::uint64_t> metadata_copy_dispatches{0}, metadata_convert_dispatc
 std::atomic<std::uint64_t> gradient_import_dispatches{0}, gradient_import_pairs{0},
     gradient_import_shared_output_bytes{0}, gradient_import_host_copy_bytes{0},
     gradient_import_gpu_time_ns{0};
+std::atomic<std::uint64_t> tensor_csr_dispatches{0}, tensor_csr_values{0},
+    tensor_csr_shared_output_bytes{0}, tensor_csr_host_copy_bytes{0}, tensor_csr_gpu_time_ns{0},
+    csr_shared_input_bytes{0}, csr_input_copy_bytes{0};
 std::atomic<std::uint64_t> ellpack_csr_dispatches{0}, ellpack_csr_values{0}, ellpack_csr_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
     ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
@@ -558,6 +561,19 @@ id<MTLBuffer> Upload(Runtime const& rt, void const* data, std::size_t bytes) {
   auto buffer = Allocate(rt, bytes);
   if (bytes != 0) std::memcpy(buffer.contents, data, bytes);
   return buffer;
+}
+
+// A synchronous view: callers keep their sparse-page allocations alive until
+// all dependent commands complete and the enclosing autorelease pool drains.
+BorrowedMemory BindCSRInput(Runtime const& rt, void const* data, std::size_t bytes) {
+  auto view = TryBorrowMemory(rt.device, data, bytes, 8);
+  if (view.buffer) {
+    csr_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  } else {
+    view = {Upload(rt, data, bytes), 0};
+    csr_input_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return view;
 }
 
 class MetalHistogramBuffer final : public HistogramBuffer {
@@ -1962,7 +1978,14 @@ Statistics GetStatistics() {
           gradient_import_pairs.load(std::memory_order_relaxed),
           gradient_import_shared_output_bytes.load(std::memory_order_relaxed),
           gradient_import_host_copy_bytes.load(std::memory_order_relaxed),
-          gradient_import_gpu_time_ns.load(std::memory_order_relaxed)};
+          gradient_import_gpu_time_ns.load(std::memory_order_relaxed),
+          tensor_csr_dispatches.load(std::memory_order_relaxed),
+          tensor_csr_values.load(std::memory_order_relaxed),
+          tensor_csr_shared_output_bytes.load(std::memory_order_relaxed),
+          tensor_csr_host_copy_bytes.load(std::memory_order_relaxed),
+          tensor_csr_gpu_time_ns.load(std::memory_order_relaxed),
+          csr_shared_input_bytes.load(std::memory_order_relaxed),
+          csr_input_copy_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6067,7 +6090,7 @@ class MetalTensor final : public Tensor {
       auto c = shape.size() < 2 ? std::int64_t{1} : get<Integer const>(shape[1]);
       CHECK_GE(r, 0);
       CHECK_LE(r, std::numeric_limits<std::uint32_t>::max());
-      CHECK_GE(c, allow_tensor_shape ? 0 : 1);
+      CHECK_GE(c, 0);
       CHECK_LE(c, std::numeric_limits<bst_feature_t>::max());
       rows = r;
       columns = c;
@@ -6512,6 +6535,50 @@ std::unique_ptr<AdapterInput> PrepareAdapterImpl(Adapter const& adapter, float m
 std::shared_ptr<Tensor> ImportTensor(StringView descriptor) {
   return std::make_shared<MetalTensor>(descriptor);
 }
+void CopyTensorToSparsePage(Tensor const& source, float missing, SparsePage* output) {
+  auto const& input = dynamic_cast<MetalTensor const&>(source);
+  PackedInput p{input.rows, input.columns, 1, {}};
+  p.native = input.buffer;
+  p.arrays.push_back(input.array);
+  p.params.entries = input.rows * input.columns;
+  std::memcpy(&p.params.missing, &missing, 4);
+  auto prepared = p.FinishAdapter({}, 0, input.rows);
+  auto const& packed = static_cast<MetalAdapterInput const&>(*prepared);
+  CHECK(!packed.has_inf) << error::InfInData();
+  // CUDA reads the last row offset to size the entry allocation. All entry
+  // conversion/filtering and prefix work above remains on GPU.
+  output->offset.Resize(input.rows + 1);
+  output->data.Resize(packed.nnz);
+  auto rows = output->offset.HostSpan();
+  auto entries = output->data.HostSpan();
+  static_assert(sizeof(Entry) == 8 && sizeof(bst_idx_t) == 8);
+  auto& rt = GetRuntime();
+  @autoreleasepool {
+    auto row_view = TryBorrowMemory(rt.device, rows.data(), rows.size_bytes(), 8);
+    auto data_view = TryBorrowMemory(rt.device, entries.data(), entries.size_bytes(), 8);
+    auto command = [rt.queue commandBuffer];
+    auto blit = [command blitCommandEncoder];
+    CHECK(blit);
+    if (row_view.buffer)
+      [blit copyFromBuffer:packed.row_ptr sourceOffset:0 toBuffer:row_view.buffer
+        destinationOffset:row_view.offset size:rows.size_bytes()];
+    if (data_view.buffer)
+      [blit copyFromBuffer:packed.entries sourceOffset:0 toBuffer:data_view.buffer
+        destinationOffset:data_view.offset size:entries.size_bytes()];
+    [blit endEncoding];
+    CompleteOperation(command, &tensor_csr_dispatches, &tensor_csr_gpu_time_ns);
+    if (!row_view.buffer) std::memcpy(rows.data(), packed.row_ptr.contents, rows.size_bytes());
+    if (!data_view.buffer && !entries.empty())
+      std::memcpy(entries.data(), packed.entries.contents, entries.size_bytes());
+    tensor_csr_shared_output_bytes.fetch_add((row_view.buffer ? rows.size_bytes() : 0) +
+                                             (data_view.buffer ? entries.size_bytes() : 0),
+                                             std::memory_order_relaxed);
+    tensor_csr_host_copy_bytes.fetch_add((row_view.buffer ? 0 : rows.size_bytes()) +
+                                         (data_view.buffer ? 0 : entries.size_bytes()),
+                                         std::memory_order_relaxed);
+    tensor_csr_values.fetch_add(packed.nnz, std::memory_order_relaxed);
+  }
+}
 void CopyNativeGradients(StringView grad, StringView hess, bst_idx_t rows,
                          linalg::Matrix<GradientPair>* output) {
   // Both snapshots validate devices, dtypes, extents and signed strides before
@@ -6717,8 +6784,8 @@ std::unique_ptr<AdapterInput> PrepareAdapter(Tensor const& source, float missing
   auto cols = input.columns;
   InputBounds(input.rows * cols, begin, count);
   CHECK_LE(count, 1ULL << 26);
-  auto base = begin / cols, first = begin % cols;
-  auto rows = count ? (first + count + cols - 1) / cols : 0;
+  auto base = cols ? begin / cols : 0, first = cols ? begin % cols : 0;
+  auto rows = cols ? (count ? (first + count + cols - 1) / cols : 0) : input.rows;
   PackedInput p{rows, cols, 1, mapping};
   p.native = input.buffer;
   p.arrays.push_back(input.Window(base));
@@ -7118,8 +7185,8 @@ class MetalCompressedPage final : public CompressedPage {
         CHECK_LE(begin, end);
         CHECK_LE(end, values.size());
         CHECK_LE(end - begin, count * info_.row_stride);
-        auto row_ptr = Upload(rt, offsets.data() + first, (count + 1) * 8);
-        auto entries = Upload(rt, values.empty() ? nullptr : values.data() + begin,
+        auto row_ptr = BindCSRInput(rt, offsets.data() + first, (count + 1) * 8);
+        auto entries = BindCSRInput(rt, values.empty() ? nullptr : values.data() + begin,
                                (end - begin) * sizeof(Entry));
         std::uint32_t zero = 0;
         auto status = Upload(rt, &zero, 4);
@@ -7130,8 +7197,8 @@ class MetalCompressedPage final : public CompressedPage {
         auto command = [rt.queue commandBuffer];
         auto e = [command computeCommandEncoder];
         [e setComputePipelineState:rt.ellpack_csr_pipeline];
-        [e setBuffer:row_ptr offset:0 atIndex:0];
-        [e setBuffer:entries offset:0 atIndex:1];
+        [e setBuffer:row_ptr.buffer offset:row_ptr.offset atIndex:0];
+        [e setBuffer:entries.buffer offset:entries.offset atIndex:1];
         [e setBuffer:ptrs offset:0 atIndex:2];
         [e setBuffer:cut_values offset:0 atIndex:3];
         [e setBuffer:categorical offset:0 atIndex:4];
@@ -8576,14 +8643,19 @@ struct CudaSketchParams {
 static_assert(sizeof(CudaSketchParams) == 48);
 void CSDispatch(id<MTLCommandBuffer> command, id<MTLComputePipelineState> pipeline,
                 std::size_t count, std::initializer_list<id<MTLBuffer>> buffers,
-                CudaSketchParams const* params = nullptr) {
+                CudaSketchParams const* params = nullptr,
+                std::initializer_list<std::size_t> offsets = {}) {
   if (!count) return;
   CHECK_LE(count, std::numeric_limits<std::uint32_t>::max());
   auto e = [command computeCommandEncoder];
   CHECK(e);
   [e setComputePipelineState:pipeline];
   std::size_t index = 0;
-  for (auto buffer : buffers) [e setBuffer:buffer offset:0 atIndex:index++];
+  CHECK(offsets.size() == 0 || offsets.size() == buffers.size());
+  for (auto buffer : buffers) {
+    [e setBuffer:buffer offset:offsets.size() ? offsets.begin()[index] : 0 atIndex:index];
+    ++index;
+  }
   if (params) [e setBytes:params length:sizeof(*params) atIndex:index];
   [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
   [e endEncoding];
@@ -8739,13 +8811,15 @@ class MetalCudaSketch final : public CudaSketch {
     CHECK_LE(entries.size(), row_ptr.back() - begin);
     CHECK_LE(row_ptr.front(), begin);
     @autoreleasepool {
-      PushBuffers(Upload(rt_, entries.data(), entries.size_bytes()),
-                  Upload(rt_, row_ptr.data(), row_ptr.size_bytes()), entries.size(), begin,
-                  base_rowid, row_ptr.size() - 1, rows_in_window);
+      auto source = BindCSRInput(rt_, entries.data(), entries.size_bytes());
+      auto rows = BindCSRInput(rt_, row_ptr.data(), row_ptr.size_bytes());
+      PushBuffers(source.buffer, rows.buffer, entries.size(), begin,
+                  base_rowid, row_ptr.size() - 1, rows_in_window, source.offset, rows.offset);
     }
   }
   void PushBuffers(id<MTLBuffer> source, id<MTLBuffer> rows, std::size_t count, std::size_t begin,
-                   bst_idx_t base_rowid, bst_idx_t row_count, bst_idx_t rows_in_window) {
+                   bst_idx_t base_rowid, bst_idx_t row_count, bst_idx_t rows_in_window,
+                   std::size_t source_offset = 0, std::size_t row_offset = 0) {
     CHECK_GT(columns_, 0);
     CHECK_LE(count, 1ULL << 26);
     if (weight_count_) CHECK_LE(base_rowid + row_count, weight_count_);
@@ -8761,12 +8835,14 @@ class MetalCudaSketch final : public CudaSketch {
       auto records = Allocate(rt_, count * 2 * sizeof(std::uint32_t));
       auto command = [rt_.queue commandBuffer];
       CHECK(command);
-      CSDispatch(command, rt_.cs_sort_keys_pipeline, count, {source, source, records}, &p);
+      CSDispatch(command, rt_.cs_sort_keys_pipeline, count, {source, source, records}, &p,
+                   {source_offset, source_offset, 0});
       SortShape shape{count, 0, 0, 1, static_cast<std::uint32_t>((count + 255) / 256)};
       records = EncodeRadixRecords(rt_, command, records, shape);
       auto by_feature = Allocate(rt_, count * 2 * sizeof(std::uint32_t));
       p.mode = 1;
-      CSDispatch(command, rt_.cs_sort_keys_pipeline, count, {source, records, by_feature}, &p);
+      CSDispatch(command, rt_.cs_sort_keys_pipeline, count, {source, records, by_feature}, &p,
+                   {source_offset, 0, 0});
       records = EncodeRadixRecords(rt_, command, by_feature, shape);
       CSDeviceSummary raw{Allocate(rt_, count * sizeof(WQSummary<>::Entry)),
                           Allocate(rt_, (std::size_t{columns_} + 1) * sizeof(std::uint64_t)),
@@ -8776,7 +8852,8 @@ class MetalCudaSketch final : public CudaSketch {
       CSDispatch(command, rt_.cs_bounds_pipeline, std::size_t{columns_} + 1, {records, raw.ptr},
                  &p);
       CSDispatch(command, rt_.cs_gather_pipeline, count,
-                 {source, records, rows, weights_, raw.entries, weights, ids}, &p);
+                 {source, records, rows, weights_, raw.entries, weights, ids}, &p,
+                 {source_offset, 0, row_offset, 0, 0, 0, 0});
       if (weight_count_) {
         auto scanned = CSEncodePrefix(rt_, command, weights, ids, count);
         CSDispatch(command, rt_.cs_attach_pipeline, count, {raw.entries, scanned});

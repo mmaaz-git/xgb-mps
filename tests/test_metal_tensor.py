@@ -282,8 +282,8 @@ def test_tensor_errors(metal, name):
         xgb.QuantileDMatrix(raw, device="cpu")
     with pytest.raises(ValueError, match="two-dimensional|2-dimensional"):
         xgb.QuantileDMatrix(raw[:, 0])
-    with pytest.raises(TypeError, match="require QuantileDMatrix"):
-        xgb.DMatrix(raw)
+    ordinary = xgb.DMatrix(raw, nthread=2)
+    assert ordinary.num_row() == 11 and ordinary.num_col() == 3
     q = xgb.QuantileDMatrix(raw, raw[:, 0], nthread=2)
     np.testing.assert_array_equal(q.get_label(), np.ones(11, dtype=np.float32))
     complex_data = producer(name, np.ones((11, 3), dtype=np.complex64))

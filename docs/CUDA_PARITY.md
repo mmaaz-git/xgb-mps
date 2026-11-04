@@ -48,9 +48,9 @@ work, not accepted substitutes for CUDA behavior:
   QuantileDMatrix and both ExtMemQuantileDMatrix cache modes use the GPU adapter
   frontend. Optional Snappy compute cache compression is now implemented under
   the existing native opt-in. Native Metal DLPack feature tensors now feed
-  in-memory/external quantile construction and inplace prediction. Native metadata
-  imports are implemented below; ordinary-matrix input and distributed sketch
-  collectives remain open. Scan association,
+  in-memory/external quantile construction, ordinary matrices and inplace
+  prediction. Native metadata and custom gradients are implemented below;
+  distributed sketch collectives remain open. Scan association,
   sorting ties and rank-repair scheduling are explicitly bounded validation limits.
 - Interaction constraints now follow CUDA's cumulative group unions and ascending
   nonroot queries, with explicit overlapping-group tests; the former CPU history
@@ -107,7 +107,7 @@ must be reported rather than hidden by widening test tolerances.
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
-| CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack feature tensors feed quantile constructors, iterators and inplace prediction through owned GPU snapshots; real PyTorch/MLX, strides, half and capsule lifetimes are tested. Native metadata imports use Metal conversion/validation/grouping; custom gradients use GPU typed pair packing for regular and split/value entry points. Ordinary DMatrix feature input, GPU outputs and portable producer stream handshakes remain open. NVIDIA-specific interfaces cannot consume Metal memory |
+| CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack feature tensors feed ordinary/quantile constructors, iterators and inplace prediction/CPU fallback through owned GPU snapshots; real PyTorch/MLX, strides, half and capsule lifetimes are tested. Native metadata imports use Metal conversion/validation/grouping; custom gradients use GPU typed pair packing for regular and split/value entry points. GPU sparse-page construction and shared raw-CSR consumers support ordinary tensors. Native columnar adapters, GPU outputs and portable producer stream handshakes remain open. NVIDIA-specific interfaces cannot consume Metal memory |
 | CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Shared-memory Metal runtime, guarded host-memory views for ordinary gradients, quantization and leaf assignment, model-local row workspaces, reused command queue and histogram buffers; persistent end-to-end device ownership and asynchronous scheduling missing |
 
 Paths in the table are relative to `xgboost/src` and denote starting points, not
@@ -263,8 +263,8 @@ Final quantized bins and row pointers return to existing host gradient-index
 storage. A host column mirror supports CPU interoperability, as CUDA's conversion
 to a host gradient-index page does. Raw packing/uploads, metadata aggregation,
 dictionaries and ownership remain host work, with synchronous commands. Native
-Metal tensor handles, raw float16, sparse device adapters and GPU collectives
-remain open. External disk and compressed host caches are covered below.
+Metal tensor handles and raw float16 are implemented in later sections below;
+GPU collectives remain open. External disk and compressed host caches are covered below.
 No speedup is claimed.
 
 65 native cases / 2,184 windows / 1,126,724 exact fields check resident summaries
@@ -2839,8 +2839,8 @@ and the test launcher configures the shared runtime. Arbitrary mixed-runtime
 packaging is not fixed by the Metal import code.
 
 Metadata imports are implemented in the next section. Remaining interoperability
-work includes native ordinary `DMatrix` input, GPU outputs and
-broader device ownership. Native sparse/columnar device adapters and a portable
+work includes GPU outputs and broader device ownership; ordinary tensor
+input is implemented in a later section below. Native columnar device adapters and a portable
 producer queue protocol also remain open. No new performance benchmark, NVIDIA
 comparison or other Apple-device validation was performed.
 
@@ -2911,8 +2911,8 @@ suite/reference updater and the CPU-only build/API checks (2026-11-04,
 20:26:46Z–20:33:48Z). No production or test changes followed that final build/run.
 
 No new benchmark, NVIDIA execution or other Apple-device comparison was run.
-Custom gradients are implemented in the next section. Native ordinary feature
-matrices, GPU output tensors, general
+Custom gradients and ordinary feature tensor inputs are implemented below.
+GPU output tensors, general
 metadata/state manipulation and ownership, remaining CUDA arithmetic audits and
 GPU collectives remain open.
 
@@ -2984,3 +2984,84 @@ passed, one skipped**, every rebuilt native suite/reference updater and CPU-only
 build/API checks passed on 2026-11-04, 20:44:51Z–20:52:00Z. No production or test
 changes followed that final build/run.
 [Validation record](../validation/cuda-metal-gradient-import-m3.txt).
+
+## Native ordinary matrices and sparse-page import
+
+CUDA authority: `data/simple_dmatrix.cu` and `simple_dmatrix.cuh`, especially
+`CopyToSparsePage`, `CountRowOffsets` and `CopyDataToDMatrix`; external iterator
+input uses `data/sparse_page_source.cu::DevicePush`. Metal reuses its existing
+adapter kernels to decode typed values, filter NaNs/the configured missing value,
+count entries, scan row offsets and pack ascending `(feature, value)` entries.
+Nonmissing infinities reject before the output page is resized/published;
+infinities configured as missing are accepted. Both signed zeros compare as
+missing when zero is configured, while stored finite FP32 bits remain exact.
+
+`XGDMatrixCreateFromMetal` accepts the same native tensor descriptor as the
+proxy API, with the dense constructor's configuration. Python `DMatrix`, ordinary
+`DataIter`, and CPU tree inplace-prediction fallback now use the native import.
+Two-dimensional zero-row/zero-column tensors preserve their shape; this also
+removes the older native feature bridge's artificial positive-column restriction.
+Proxy fallback is selected using the MPS marker as well as `DeviceOrd`, because
+this fork's general storage still uses the CPU device ordinal for Metal.
+
+Source tensors enter owned GPU snapshots. Sparse entries/offsets then copy by
+GPU blit into safely shareable `SparsePage` allocations; a counted host payload
+copy handles allocations that cannot be borrowed. Subsequent raw-CSR sketch and
+ELLPACK kernels bind eligible shared spans at their actual byte offsets. Read-only
+or otherwise ineligible VM regions use an explicit upload fallback. Borrowed
+views never enter persistent caches and are released within the source lifetime
+after synchronous commands complete. This avoids an extra CPU payload staging
+step for eligible ordinary inputs while retaining host `get_data`, save/load,
+slicing, CPU training and prediction. Generic allocation/ownership, CPU slicing
+and external serialization retain the existing architecture.
+
+External ordinary inputs preserve both existing cache modes and do not reread
+producers after cache construction. Raw ordinary row pages still use their
+existing disk serialization; compressed host/disk cache behavior is unchanged.
+Categorical values and explicit feature types are supported as before. Native
+columnar schemas/dictionaries remain a separate CUDA coverage gap. Direct native
+CSR/CSC device-array bindings would be an extension: the vendored upstream
+`python-package/xgboost/data.py::dispatch_data_backend` explicitly rejects
+`cupyx` CSR/CSC, and `data/proxy_dmatrix.cc::SetCsr` requires host input. They are
+not required for CUDA parity. Host sparse inputs and internal GPU sparse kernels
+remain fully within the porting goal.
+
+Five output counters (`tensor_csr_dispatches`, `tensor_csr_values`,
+`tensor_csr_shared_output_bytes`, `tensor_csr_host_copy_bytes`,
+`tensor_csr_gpu_time_ns`) report publication commands and packed entry counts.
+Filtering/counting/scanning/scattering retain the `adapter_*` counters, and input
+snapshots retain `tensor_*`. `csr_shared_input_bytes` / `csr_input_copy_bytes`
+measure raw CSR spans bound to sketch/compression consumers, including row
+pointers; totals can include the same span more than once. Existing
+`ellpack_csr_input_bytes` remains the logical input extent, not a physical-copy
+count. Native statistics callers must rebuild for the extended structure.
+
+Independent native validation passes **199 cases / 550,595 field checks / six
+rejected inputs**, covering private/shared sources, all integer widths,
+float32/64, every half pattern (infinities tested separately), offsets,
+negative/broadcast/transposed strides, signed zero/subnormal/missing rules,
+source overwrite/release and empty dimensions. CPU scalar casts and row loops
+construct the expected CSR. Observed **272,422 entries / 2,213,760 shared output
+bytes / zero host output-copy bytes**. A separate writable/read-only mapped
+input fixture verifies exactly **264 shared and 264 copied bytes**, then unmaps
+the source before reading the resident sketch summary.
+
+Focused Python regression passes **773 tests**: 186 new ordinary-input checks,
+93 feature tests, 332 metadata tests and 162 custom-gradient tests. Saved models
+are byte-identical for native/host inputs separately on CPU and MPS; the tests
+do not require different CPU/CUDA sketch algorithms to produce identical trees.
+Regeneration of cuts at different bin counts, categorical/vector fits, DART,
+linear coordinate descent, serialization, duplicate row slices, iterator source
+release/cache cleanup and CPU fallback margins/iteration ranges are covered.
+The first focused run exposed a real missing CPU fallback route, which was fixed.
+Tests also now assert two existing upstream restrictions explicitly: ordinary
+external matrices cannot export a single CSR page, and vector-leaf training
+requires `hist`. No numeric tolerances were widened. No new benchmark, NVIDIA
+execution or other Apple-device comparison.
+[Validation record](../validation/cuda-metal-ordinary-tensor-m3.txt).
+
+Final full regression passed on 2026-11-04, **21:02:23Z–21:09:34Z**:
+**3,139 Python tests passed, one skipped**, all 82 rebuilt native check groups
+and the CPU-only build/API/device/cache checks. The non-Metal constructor rejects
+explicitly and leaves its output handle unset. No production/test changes followed
+the final build/run; documentation was finalized afterward.

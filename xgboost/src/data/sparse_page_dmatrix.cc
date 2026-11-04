@@ -49,7 +49,7 @@ SparsePageDMatrix::SparsePageDMatrix(DataIterHandle iter_handle, DMatrixHandle p
   auto iter = DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>{iter_, reset_, next_};
 
   auto get_cats = [](DMatrixProxy const *proxy) {
-    if (proxy->Ctx()->IsCPU()) {
+    if (proxy->Ctx()->IsCPU() || proxy->Ctx()->IsMPS()) {
       return std::make_shared<CatContainer>(cpu_impl::BatchCats(proxy), BatchCatsIsRef(proxy));
     } else {
 #if defined(XGBOOST_USE_CUDA)

@@ -14,7 +14,27 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **native Metal custom-gradient imports**. `Booster.boost` and custom
+Latest step: **native Metal input for ordinary `DMatrix`**. PyTorch/MLX feature
+tensors and DLPack capsules now work in ordinary constructors and external-data
+iterators. Missing-value filtering, per-row counts, prefix scans and sparse entry
+packing run on GPU. Native inputs also work with CPU tree prediction fallback.
+
+Focused validation passes **773 Python tests**, including 186 new ordinary-input
+checks, and **199 native cases / 550,595 field checks / six rejected inputs**.
+Native versus host inputs produce byte-identical models separately on CPU and
+MPS for supported hist/approx and categorical/vector fixtures. MPS DART and
+linear fixtures also match.
+Save/load, slicing, changed bin counts, empty dimensions and external-cache reuse
+are covered. Full regression passes **3,139 Python tests, one skip**, and all
+82 rebuilt native check groups, with CPU-only build/API checks passing.
+[Ordinary tensor validation](validation/cuda-metal-ordinary-tensor-m3.txt).
+
+Sparse outputs use guarded shared-memory views with a counted copy fallback.
+Downstream raw-CSR sketches and compressed-page builders consume eligible shared
+allocations directly. This preserves the existing host APIs; generic allocation
+and state ownership still need work. No new benchmark.
+
+The preceding step added **native Metal custom-gradient imports**. `Booster.boost` and custom
 objective callbacks accept PyTorch/MLX GPU gradients and Hessians, including
 separate split-selection and leaf-value pairs. Metal follows CUDA's independent
 typed casts and pair packing, with no CPU conversion of input tensor values.
@@ -63,8 +83,8 @@ legacy/versioned capsule ownership and all 65,536 float16 bit patterns.
 Focused validation passes **93 Python tests** and **105 native cases / 145,567
 field checks / nine rejected descriptors**. Full regression passes **2,459 Python
 tests, one skip**, every rebuilt native suite and the CPU-only build/API checks.
-Native metadata imports are covered above. Ordinary `DMatrix` feature input and
-GPU output tensors remain open; prediction results still return NumPy.
+Native metadata and ordinary `DMatrix` inputs are covered above. GPU output
+tensors remain open; prediction results still return NumPy.
 PyTorch coexistence requires a single OpenMP runtime, configured below.
 No new benchmark. [Tensor validation](validation/cuda-metal-tensor-m3.txt).
 
@@ -319,7 +339,7 @@ The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
-The major remaining areas are native ordinary-matrix input, GPU output
+The major remaining areas are native columnar input and GPU output
 tensor interoperability, general metadata/state ownership and manipulation,
 remaining initialization/state operations,
 CUDA algorithm alignment and distributed collectives. Compressed disk caches,
@@ -327,6 +347,9 @@ internal ELLPACK save/load and optional Snappy compute compression are implement
 Sensitive AFT tails and some
 long-run ranking and Covertype comparisons have numerical differences.
 Persistent GPU ownership and less synchronization also remain unfinished.
+Native CSR/CSC device-array bindings are not a CUDA parity requirement: the
+vendored upstream Python interface explicitly rejects CuPy CSR and CSC inputs.
+The existing host-sparse and internal GPU sparse operations remain in scope.
 The [coverage ledger](docs/CUDA_PARITY.md) records the details. Performance
 experiments are deferred while these coverage gaps are addressed.
 
@@ -414,7 +437,8 @@ model = xgb.train({"device": "mps", "max_bin": 256}, train)
 prediction = model.inplace_predict(X_gpu)  # NumPy output
 ```
 
-MLX GPU arrays work through the same interface. The Python bridge completes
+MLX GPU arrays work through the same interface. `xgb.DMatrix(X_gpu, y_gpu)` and
+ordinary `DataIter` batches also accept native feature tensors. The Python bridge completes
 known PyTorch/MLX producer work before each import; generic Metal providers must
 supply ready buffers. Imports make owned GPU snapshots rather than retaining
 mutable feature storage. A DLPack capsule is consumed once; an iterator should
@@ -489,7 +513,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Host dense/columnar and native Metal quantile inputs feed resident sketches; distributed sketches remain open |
 | Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Model dictionary copies, persistent storage and row-level map application remain host |
 | Quantized data cache | Ordinary in-memory DMatrix pages use raw CSR-to-ELLPACK compression. Quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly; CPU access explicitly materializes host mirrors. Compressed disk storage, internal ELLPACK save/load and optional native Snappy compression are implemented |
-| Native Apple feature tensors | Metal DLPack inputs for in-memory/external quantile matrices and inplace prediction; strided GPU snapshots, half decoding and PyTorch/MLX synchronization. Ordinary DMatrix feature input and GPU outputs remain open |
+| Native Apple feature tensors | Metal DLPack inputs for ordinary and quantile matrices, external iterators and inplace prediction/CPU fallback; GPU sparse entry packing, strided snapshots, half decoding and PyTorch/MLX synchronization. GPU outputs and native columnar adapters remain open |
 | Native custom-gradient imports | CUDA typed casts and GPU pair packing for regular and split/value entry points; real PyTorch/MLX and legacy/versioned capsules. Safe shared destinations or counted copy fallback; generic allocation remains host-owned |
 | Native metadata imports | GPU typed copies/conversion and CUDA label/weight predicates; GPU query-ID RLE/prefix scans. Scalars, vectors, matrices, empty/strided data and half supported. Final group boundaries and group-size prefix sums remain host as in CUDA; general allocation/slicing/concatenation remain host |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |

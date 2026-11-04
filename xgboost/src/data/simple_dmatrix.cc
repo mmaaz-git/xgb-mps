@@ -27,9 +27,22 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_ellpack.h"
+#include "../common/metal_tensor.h"
 #endif
 
 namespace xgboost::data {
+#if defined(XGBOOST_USE_METAL)
+SimpleDMatrix::SimpleDMatrix(common::metal::Tensor const& tensor, float missing,
+                             std::int32_t nthread) {
+  fmat_ctx_.Init({{"nthread", std::to_string(nthread)}, {"device", "mps"}});
+  common::metal::CopyTensorToSparsePage(tensor, missing, sparse_page_.get());
+  info_.num_row_ = tensor.NumRows();
+  info_.num_col_ = tensor.NumColumns();
+  info_.num_nonzero_ = sparse_page_->data.Size();
+  info_.SynchronizeNumberOfColumns(&fmat_ctx_);
+}
+#endif
+
 MetaInfo& SimpleDMatrix::Info() { return info_; }
 
 const MetaInfo& SimpleDMatrix::Info() const { return info_; }

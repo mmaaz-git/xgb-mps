@@ -39,6 +39,10 @@ booster = ctypes.c_void_p()
 check(lib.XGProxyDMatrixCreate(ctypes.byref(proxy)))
 check(lib.XGBoosterCreate(None, ctypes.c_uint64(0), ctypes.byref(booster)))
 try:
+    result = ctypes.c_void_p()
+    assert lib.XGDMatrixCreateFromMetal(b"{}", b"{}", ctypes.byref(result)) != 0
+    assert b"USE_METAL=ON" in lib.XGBGetLastError()
+    assert not result.value
     assert lib.XGProxyDMatrixSetDataMetal(proxy, b"{}") != 0
     assert b"USE_METAL=ON" in lib.XGBGetLastError()
     assert lib.XGDMatrixSetInfoFromMetal(proxy, b"label", b"{}") != 0
