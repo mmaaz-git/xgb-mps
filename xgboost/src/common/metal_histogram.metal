@@ -3920,3 +3920,116 @@ kernel void xgb_gradient_sampling_apply(device float2* output [[buffer(0)]],
                         : float2(0);
   }
 }
+
+struct RankingROCParams {
+  ulong rows, prediction_stride, width;
+  uint groups, weighted;
+};
+
+// Canonical ascending prediction keys. NaNs never win or tie a pair on CPU;
+// place them last for merging and explicitly omit their comparison counts.
+kernel void xgb_ranking_roc_init(
+    device const uint2* labels_order [[buffer(0)]], device const uint* predictions [[buffer(1)]],
+    device const uint* groups [[buffer(2)]], device uint2* records [[buffer(3)]],
+    device uint* row_group [[buffer(4)]], device uint2* counts [[buffer(5)]],
+    constant RankingROCParams& p [[buffer(6)]], uint row [[thread_position_in_grid]]) {
+  uint low = 0, high = p.groups;
+  while (low + 1 < high) {
+    uint middle = low + (high - low) / 2;
+    if (groups[middle] <= row)
+      low = middle;
+    else
+      high = middle;
+  }
+  uint bits = predictions[ulong(labels_order[row].y) * p.prediction_stride];
+  uint magnitude = bits & 0x7fffffffu;
+  uint key = magnitude > 0x7f800000u ? 0xffffffffu
+             : !magnitude            ? 0x80000000u
+                                     : (bits & 0x80000000u ? ~bits : bits ^ 0x80000000u);
+  records[row] = uint2(key, row);
+  row_group[row] = low;
+  counts[row] = uint2(0);
+}
+
+inline ulong xgb_roc_bound(device const uint2* records, ulong begin, ulong end, uint key,
+                           bool upper) {
+  while (begin < end) {
+    ulong middle = begin + (end - begin) / 2;
+    uint other = records[middle].x;
+    if (other < key || (upper && other == key))
+      begin = middle + 1;
+    else
+      end = middle;
+  }
+  return begin;
+}
+
+// Count concordant pairs by merge levels instead of enumerating the quadratic
+// pair matrix. Each original label-order position receives at most n-1 counts.
+// Stable merge ranks keep equal predictions in their original label order.
+kernel void xgb_ranking_roc_merge(device const uint2* source [[buffer(0)]],
+                                  device uint2* target [[buffer(1)]],
+                                  device const uint* groups [[buffer(2)]],
+                                  device const uint* row_group [[buffer(3)]],
+                                  device uint2* counts [[buffer(4)]],
+                                  constant RankingROCParams& p [[buffer(5)]],
+                                  uint row [[thread_position_in_grid]]) {
+  uint group = row_group[row];
+  ulong begin = groups[group], end = groups[group + 1];
+  ulong segment = begin + ((ulong(row) - begin) / (2 * p.width)) * (2 * p.width);
+  ulong middle = min(segment + p.width, end), last = min(segment + 2 * p.width, end);
+  bool left = row < middle;
+  ulong other_begin = left ? middle : segment, other_end = left ? last : middle;
+  uint2 value = source[row];
+  ulong bound = xgb_roc_bound(source, other_begin, other_end, value.x, !left);
+  if (left && value.x != 0xffffffffu) {
+    uint ties = 0;
+    // Infinity minus the same infinity is NaN, which CPU scores as zero.
+    if (value.x != 0x007fffffu && value.x != 0xff800000u)
+      ties = uint(xgb_roc_bound(source, bound, other_end, value.x, true) - bound);
+    counts[value.y] += uint2(uint(bound - other_begin), ties);
+  }
+  ulong position = segment + (ulong(row) - (left ? segment : middle)) + (bound - other_begin);
+  target[position] = value;
+}
+
+kernel void xgb_ranking_roc_score(device const uint2* counts [[buffer(0)]],
+                                  device const uint* groups [[buffer(1)]],
+                                  device const float* weights [[buffer(2)]],
+                                  device ulong2* partial [[buffer(3)]],
+                                  constant RankingROCParams& p [[buffer(4)]],
+                                  uint group [[threadgroup_position_in_grid]],
+                                  uint tid [[thread_index_in_threadgroup]]) {
+  using namespace xgb_survival;
+  ulong begin = groups[group], end = groups[group + 1], n = end - begin;
+  float weight = p.weighted ? weights[group] : 1.0f;
+  float square = xgb_fmul_preserve(weight, weight);
+  uint magnitude = as_type<uint>(square) & 0x7fffffffu;
+  if (n < 3) {
+    if (!tid) partial[group] = ulong2(0);
+    return;
+  }
+  if (magnitude >= 0x7f800000u) {
+    if (!tid) partial[group] = ulong2(0x7ff8000000000000ul, one.bits);
+    return;
+  }
+  threadgroup ulong2 sums[256];
+  ulong2 sum(0);
+  for (ulong row = begin + tid; row < end; row += 256) sum += ulong2(counts[row]);
+  sums[tid] = sum;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint step = 128; step; step >>= 1) {
+    if (tid < step) sums[tid] += sums[tid + step];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (!tid) {
+    D area = zero;
+    if (magnitude) {
+      D wins{xgb_scaled_integer(sums[0].x, 0)}, ties{xgb_scaled_integer(sums[0].y, 0)};
+      D pairs{xgb_scaled_integer(n * (n - 1) / 2, 0)}, w = From(square);
+      D half_weight = From(xgb_fmul_preserve(0.5f, square));
+      area = (wins * w + ties * half_weight) / (pairs * w);
+    }
+    partial[group] = ulong2(area.bits, one.bits);
+  }
+}

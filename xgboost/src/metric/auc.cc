@@ -383,7 +383,18 @@ class EvalROCAUC : public EvalAUC<EvalROCAUC> {
     if (ctx_->IsCUDA()) {
       std::tie(auc, valid_groups) =
           cuda_impl::RankingAUC(ctx_, predts.ConstDeviceSpan(), info, &this->d_cache_);
-    } else {
+    }
+#if defined(XGBOOST_USE_METAL)
+    else if (ctx_->IsMPS()) {
+      auto result =
+          common::metal::RankingROCAUC(linalg::MakeVec(DeviceOrd::CPU(), predts.ConstHostSpan()),
+                                       info.labels.HostView().Slice(linalg::All(), 0),
+                                       info.group_ptr_, info.weights_.ConstHostSpan());
+      auc = result.area;
+      valid_groups = static_cast<std::uint32_t>(result.valid_groups);
+    }
+#endif
+    else {
       std::tie(auc, valid_groups) =
           RankingAUC<true>(ctx_, predts.ConstHostVector(), info, n_threads);
     }

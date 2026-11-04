@@ -33,7 +33,7 @@ listed below. This is not yet a complete GPU backend.
 | AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and binary64 block sums; small final host reduction |
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and tied-score trapezoids on Metal; per-output normalization and aggregation remain host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and stable continuous integration on Metal; final per-output degeneracy checks and aggregation remain host |
-| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC/PR-AUC remains CPU |
+| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR-AUC remains CPU |
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Quantile sketching/cut construction remain CPU; numeric/categorical bin assignment and hit counts for SparsePage-backed matrices use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
@@ -81,7 +81,7 @@ interaction constraints, vector leaves and external-memory pages. Column
 sampling, remaining training-state updates and more efficient external-memory
 staging remain required.
 
-Grouped ranking ROC/PR-AUC, sensitive AFT gradient corrections, SHAP, quantile
+Grouped ranking PR-AUC, sensitive AFT gradient corrections, SHAP, quantile
 construction, linear training and collectives are separate coverage requirements.
 The observed prediction speedups do not establish any of those as complete.
 
@@ -135,8 +135,26 @@ Empty-query and top-k-zero native tests preserve CPU NaN/fallback behavior; the
 existing public metric finalization still reports invalid scores.
 
 The fused metric command reads back only score and weight totals. NDCG cache creation
-also executes on Metal; grouped AUC remains unfinished;
+also executes on Metal; grouped PR-AUC remains unfinished;
 GPU metric dispatch does not imply those operations have been ported.
+
+Grouped ranking ROC now sorts labels stably on GPU and counts concordant/tied
+pairs during parallel merges of prediction keys. This preserves the CPU rule that
+equal-label pairs participate in input order. It avoids the CPU's quadratic pair
+enumeration: counts require `O(N log² m)` work for `N` rows and maximum query size
+`m`, followed by integer reductions and software-binary64 normalization. Query
+weights are squared in FP32, and half-weight products retain FP32 subnormal
+rounding. Queries shorter than three rows are excluded; zero-weight queries retain
+CPU's zero score and valid count. Overflowing squared weights raise an error.
+
+CPU comparison uses a `2e-12` absolute/relative tolerance in the tested cases;
+binary64 weighting/aggregation can differ from repeated CPU additions for very
+large, irregularly weighted queries. Bitwise equivalence is not a universal claim.
+Million-row analytic cases use unit weights and exact expected scores, exercising
+pair counts beyond 32 bits without running a trillion-comparison CPU oracle.
+Input arrays remain staged and host-owned. Only the aggregate score/valid count
+normally returns to the host; optional native-test diagnostics expose per-query
+results. The public metric retains distributed/final ratio handling on the host.
 
 
 NDCG cache initialization uses software-binary64 logarithms for discounts and

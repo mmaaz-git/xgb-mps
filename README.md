@@ -77,6 +77,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
 | Ranking training | Stable grouped sorting, NDCG cache/label checks and top-k and mean-sampled pairwise/NDCG/MAP pairs, gradients and normalization, including unbiased loss corrections and position-bias updates, on Metal |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
+| Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision; GPU label validation and NDCG cache initialization |
 
@@ -99,6 +100,8 @@ are process-wide, so concurrent models contribute to the same totals.
 `gradient_sampling_dispatches` and `gradient_sampling_gpu_time_ns` report the
 gradient-based sampler separately; they are also included in the general sampling
 counters and must not be added to those totals.
+`ranking_roc_auc_dispatches` and `ranking_roc_auc_gpu_time_ns` likewise describe a
+subset of ROC-AUC and generic metric work; their timings overlap those totals.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
@@ -114,7 +117,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **601 passed, 1 skipped**. The skip requires a machine without an
+- Python: **616 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
@@ -182,6 +185,12 @@ On Apple M3, 2026-11-03:
   signed-zero ties, subnormal scores/weights, extreme weight ranges, degenerate
   inputs, and recursive scans spanning three levels. Normalized comparisons use
   `2e-12` absolute/relative tolerances; general bitwise agreement is not promised.
+- Grouped ranking ROC-AUC: **272 production cases / 234,208,157 independently
+  enumerated pairs**, compared with both upstream CPU and an independent pair
+  reference. Three additional million-row analytic cases each represent
+  **500,002,500,003 pairs**, testing 64-bit counts without a quadratic CPU run.
+  Covers label/score ties, padded strides, zero/tiny/large weights, infinities/NaNs
+  in scores, short queries, weight-square overflow errors and output guards.
 - Native objectives: **20 cases / 131,968 gradient pairs** compared against
   independent CPU mathematical references.
 - Native adaptive objectives: **180 cases / 1,260 residual scales / 452,592 gradient
