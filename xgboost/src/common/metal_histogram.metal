@@ -386,6 +386,9 @@ kernel void xgb_transform(device const float* input [[buffer(0)]],
   }
 }
 
+inline float xgb_fadd_preserve(float a, float b);
+inline float xgb_fmul_preserve(float a, float b);
+
 struct PredictionNode {
   int left, right, missing;
   uint feature;
@@ -434,8 +437,10 @@ kernel void xgb_predict(
       continue;
     }
     uint leaf = nodes[nid].leaf_begin;
-    for (uint k = 0; k < tree.targets; ++k)
-      output[ulong(row) * p.groups + tree.group + k] += leaves[leaf + k] * tree.weight;
+    for (uint k = 0; k < tree.targets; ++k) {
+      ulong out = ulong(row) * p.groups + tree.group + k;
+      output[out] = xgb_fadd_preserve(output[out], xgb_fmul_preserve(leaves[leaf + k], tree.weight));
+    }
   }
 }
 
@@ -450,8 +455,10 @@ kernel void xgb_add_leaf(device const int* ids [[buffer(0)]],
   if (ulong(row) >= p.rows) return;
   int encoded = ids[row];
   uint leaf = uint(encoded >= 0 ? encoded : ~encoded);
-  for (uint k = 0; k < p.targets; ++k)
-    output[ulong(row) * p.stride + k] += weights[ulong(leaf) * p.targets + k];
+  for (uint k = 0; k < p.targets; ++k) {
+    ulong out = ulong(row) * p.stride + k;
+    output[out] = xgb_fadd_preserve(output[out], weights[ulong(leaf) * p.targets + k]);
+  }
 }
 
 struct MetricParams {
@@ -1665,6 +1672,23 @@ kernel void xgb_histogram_dequantize(device const ulong2* quantized [[buffer(0)]
   }
   output[out] = value;
 }
+// The integer cache is authoritative. Convert only the completed page sum for
+// existing split evaluators; never feed that rounded view into cache arithmetic.
+kernel void xgb_histogram_store_integer(device const ulong2* page [[buffer(0)]],
+                                         device ulong2* output [[buffer(1)]],
+                                         device const ulong* offsets [[buffer(2)]],
+                                         constant DequantizeParams& p [[buffer(3)]],
+                                         device const GradientScale& scale [[buffer(4)]],
+                                         device ulong2* integers [[buffer(5)]],
+                                         uint tid [[thread_position_in_grid]]) {
+  if (ulong(tid) >= p.count) return;
+  ulong out = offsets[tid / p.bins] + tid % p.bins;
+  ulong2 value = page[tid];
+  if (p.add) value += integers[out];
+  integers[out] = value;
+  output[out] = ulong2(xgb_scaled_integer(value.x, -scale.grad_exponent),
+                       xgb_scaled_integer(value.y, -scale.hess_exponent));
+}
 struct HistogramSubtraction {
   ulong parent, sibling, output, bins;
 };
@@ -1676,6 +1700,29 @@ kernel void xgb_histogram_subtract(device ulong2* histograms [[buffer(0)]],
   ulong2 parent = histograms[task.parent + tid.x], sibling = histograms[task.sibling + tid.x];
   histograms[task.output + tid.x] =
       ulong2(xgb_dsub({parent.x}, {sibling.x}).bits, xgb_dsub({parent.y}, {sibling.y}).bits);
+}
+kernel void xgb_histogram_subtract_integer(device ulong2* integers [[buffer(0)]],
+                                            device const HistogramSubtraction* tasks [[buffer(1)]],
+                                            device ulong2* output [[buffer(2)]],
+                                            device const GradientScale& scale [[buffer(3)]],
+                                            uint2 tid [[thread_position_in_grid]]) {
+  HistogramSubtraction task = tasks[tid.y];
+  if (ulong(tid.x) >= task.bins) return;
+  ulong2 value = integers[task.parent + tid.x] - integers[task.sibling + tid.x];
+  integers[task.output + tid.x] = value;
+  output[task.output + tid.x] = ulong2(xgb_scaled_integer(value.x, -scale.grad_exponent),
+                                      xgb_scaled_integer(value.y, -scale.hess_exponent));
+}
+// One feature's histogram contains each row at most once. The quantizer bounds
+// guarantee that its signed integer sum fits; ordering cannot affect the result.
+kernel void xgb_histogram_sum_integer(device const ulong2* integers [[buffer(0)]],
+                                       device ulong2* output [[buffer(1)]],
+                                       constant ulong2& range [[buffer(2)]],
+                                       device const GradientScale& scale [[buffer(3)]]) {
+  ulong2 value(0);
+  for (ulong bin = range.x; bin < range.x + range.y; ++bin) value += integers[bin];
+  output[0] = ulong2(xgb_scaled_integer(value.x, -scale.grad_exponent),
+                     xgb_scaled_integer(value.y, -scale.hess_exponent));
 }
 struct HistogramGather {
   ulong source;

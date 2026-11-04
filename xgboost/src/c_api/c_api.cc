@@ -324,6 +324,14 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.histogram_conversion_dispatches)};
   info["histogram_subtraction_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.histogram_subtraction_dispatches)};
+  info["histogram_integer_store_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.histogram_integer_store_dispatches)};
+  info["histogram_integer_accumulation_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.histogram_integer_accumulation_dispatches)};
+  info["histogram_integer_subtraction_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.histogram_integer_subtraction_dispatches)};
+  info["histogram_integer_sum_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.histogram_integer_sum_dispatches)};
   info["resident_split_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.resident_split_dispatches)};
 
@@ -427,6 +435,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["residual_scale_dispatches"] = Integer{0};
   info["histogram_conversion_dispatches"] = Integer{0};
   info["histogram_subtraction_dispatches"] = Integer{0};
+  info["histogram_integer_store_dispatches"] = Integer{0};
+  info["histogram_integer_accumulation_dispatches"] = Integer{0};
+  info["histogram_integer_subtraction_dispatches"] = Integer{0};
+  info["histogram_integer_sum_dispatches"] = Integer{0};
   info["resident_split_dispatches"] = Integer{0};
 
   info["split_gpu_time_ns"] = Integer{0};

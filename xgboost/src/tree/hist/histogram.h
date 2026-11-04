@@ -176,7 +176,8 @@ class HistogramBuilder {
       std::vector<common::GHistRow> output;
       for (auto node : nodes_to_build) {
         auto hist = hist_[node];
-        if (page_idx == 0) std::fill(hist.begin(), hist.end(), GradientPairPrecise{});
+        // Metal replaces both integer and materialized views on page zero,
+        // including empty row sets; later pages accumulate into integer storage.
         output.push_back(hist);
       }
       metal_->Build(page_idx, gidx, row_set_collection, nodes_to_build, gpair.Values(), output,

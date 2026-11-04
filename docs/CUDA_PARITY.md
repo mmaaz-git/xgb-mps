@@ -30,10 +30,11 @@ work, not accepted substitutes for CUDA behavior:
 
 - Quantized training state and tree reductions: histogram quantization now uses
   CUDA's sign-separated sum bounds, scale formula, truncation and positive-Hessian
-  minimum. Metal still quantizes after float row sampling and uses binary64
-  root/leaf sums and histogram-cache subtraction. CUDA quantizes first, samples
-  integer gradients and retains integer tree statistics; this integration remains
-  unfinished.
+  minimum. Histogram cache page additions/subtractions and dense scalar hist root
+  sums now retain integers. Metal still quantizes after float row sampling, and
+  sparse/vector/approx roots, leaf sums and split scans still need shared integer
+  state. CUDA quantizes first and samples integer gradients; this integration
+  remains unfinished.
 - Row/column/ranking sampling: CPU-compatible random streams and row thresholds
   need replacement or verification against the CUDA engines, seed consumption,
   quantized norms and scans. Equal seeds do not currently imply equal masks.
@@ -57,8 +58,8 @@ must be reported rather than hidden by widening test tolerances.
 | --- | --- | --- |
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
 | Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Sketch/sampler algorithms and quantized-state ordering still differ from CUDA; preprocessing remains hybrid |
-| Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Quantization still occurs after float sampling; root/leaf/cache integer-state integration remains unfinished |
-| Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata. Cache accumulation/subtraction currently uses binary64, while CUDA retains integer histogram statistics |
+| Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Quantization still occurs after float sampling; sparse/vector/approx root and leaf integer-state integration remains unfinished |
+| Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned integer cache; external-page accumulation and subtraction retain exact quantized sums, with a binary64 view materialized for existing split evaluators. GPU growth copies both buffers, empty first pages overwrite reused ranges, and feature gathering remains GPU. Host cache policy/metadata and binary64 split scans remain |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | Metal uniform and gradient-based row sampling/replay, including CPU-compatible draws, norms, sorted thresholds and rescaling; scalar/vector root-gradient sums and dense root histogram sums on Metal; column initialization, uniform/weighted selection and final feature ordering now use Metal |
@@ -704,7 +705,57 @@ intended CUDA behavior in these cases.
 This validates the quantizer formulas on Metal, not actual NVIDIA execution or
 the whole CUDA training pipeline. Backend reduction topology can change FP64
 bound sums near rounding boundaries. The remaining work is quantization before
-sampling, sampling quantized gradients, shared per-tree quantized state for root
-and leaf sums, and retaining integer histogram statistics across external pages
-and subtraction. Full Python regression validation passes without tolerance
+sampling, sampling quantized gradients, shared per-tree quantized state for sparse/vector/approx root
+and leaf sums, and integer split scans/child statistics. Histogram cache page
+addition/subtraction now retain integer statistics, as described below. Full Python regression validation passes without tolerance
 changes. See [validation](../validation/cuda-quantizer-m3.txt).
+
+
+## Integer histogram cache and cancellation
+
+Metal histogram caches now preserve quantized 64-bit gradient/Hessian pairs
+through page accumulation, growth, slot reuse and subtraction, matching the
+integer arithmetic in `tree/gpu_hist/histogram.cuh::SubtractionTrick`. A separate
+binary64 view is materialized for the existing split evaluator and host tree
+orchestration. Rounded values are never fed back into integer cache arithmetic.
+The buffers share a retained quantizer scale. This doubles persistent histogram
+storage from 16 to 32 bytes per bin while the binary64 view remains necessary.
+
+Page zero replaces both views, even when a node has no rows on that page. Later
+pages add integer pairs. This removes the earlier host clearing loop and prevents
+stale cache contents from surviving an empty first page. Growth copies both
+buffers on GPU; cache eviction/tree reset still use the existing host node maps,
+and the next page-zero build overwrites reused ranges. Subtraction preserves its
+source ranges and converts only the resulting integer difference. Dense scalar
+hist root sums also reduce one feature's integer bins before conversion.
+
+This distinction matters with cancellation: `(2^61+3) - (2^61+1)` must give 2;
+subtracting the binary64 views gives 0. Similarly, accumulating page sums before
+conversion retains small terms that would disappear beside a large page sum.
+The current split scans and child statistics still consume binary64 views, and
+sparse/vector/approx root sums and leaf fitting still require shared quantized
+state. Sampling still precedes quantization. These are remaining CUDA-alignment
+gaps, not covered by this cache change.
+
+Native shader tests check **75 page/subtraction cases, 5,013,975 stored/subtracted
+pairs and 225 integer root reductions**, including cancellation, signed carries,
+noncontiguous offsets, five scales, empty pages and guards. **48 production API
+cases** additionally exercise all index widths, dense/sparse layouts, buffer
+growth, tree/scale reuse, empty first pages, dispatch counters and exact root
+sums. Existing nonquantized binary64 storage operations retain their separate
+native regression tests.
+
+Eight new public hist-training cases check exact dyadic cancellation in memory
+and across two external pages, including subnormal leaf values. They verify
+cached, in-place and reloaded-model predictions. This exposed Metal FP32 additions
+flushing subnormal leaves to zero after the model had stored the correct value;
+ordinary traversal and training-cache updates now use the existing subnormal-
+preserving FP32 helpers. No prediction tolerance was widened.
+
+`histogram_integer_store_dispatches` counts completed integer cache writes and is
+a subset of histogram construction/conversion counts.
+`histogram_integer_accumulation_dispatches` counts its later-page additions;
+`histogram_integer_subtraction_dispatches` is a subset of histogram subtraction,
+and `histogram_integer_sum_dispatches` a subset of gradient sum operations. These
+are coverage counters, not independent timing categories. Generic nonquantized
+storage APIs continue using binary64. See [validation](../validation/integer-cache-m3.txt).

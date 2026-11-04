@@ -93,7 +93,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | --- | --- |
 | Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; underlying sketch/sampler and quantized-state ordering still need CUDA alignment |
 | Gradient state | GPU strided target/layout copies and bit-preserving Hessian extraction; aliases use staged snapshots |
-| Histograms | Dense/sparse compressed indices, external-memory pages, scaled integer sums, shared-memory dense kernel, GPU binary64 conversion/subtraction and a resident cache |
+| Histograms | Dense/sparse indices, external pages, scaled integer sums and shared-memory accumulation; resident integer cache retains page additions/subtractions, with a binary64 view for split evaluation |
 | Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps interaction masks |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; adapter-built QuantileDMatrix bins remain CPU |
@@ -102,7 +102,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
 | Gradient-based sampling | GPU norms, stable sorting, CPU-ordered FP32 prefixes, threshold selection, random draws and gradient rescaling; includes strided multi-target replay and zero budgets; host chooses the per-tree seed |
 | Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU. Sampling order and integer tree-state integration still need alignment |
-| Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights |
+| Root statistics / stump fitting | GPU scalar/vector gradient sums and unregularized stump weights; dense scalar hist roots sum integer histogram bins before conversion; other roots still need integer-state integration |
 | Reduced-gradient leaf fitting | GPU segmented binary64 sums over resident row IDs, accumulation across external pages, regularized/clipped final weights; existing host tree receives the completed leaf values |
 | Linear coordinate descent | GPU bias/feature gradient sums and residual updates; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
 | Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
@@ -174,6 +174,11 @@ excluded.
 `linear_gradient_dispatches` and `linear_residual_dispatches` count completed
 coordinate-descent reductions and updates; `linear_gpu_time_ns` measures those
 commands. Host feature selection, scalar model updates and staging are excluded.
+`histogram_integer_store_dispatches` counts integer cache writes, with later-page
+additions also counted by `histogram_integer_accumulation_dispatches`.
+`histogram_integer_subtraction_dispatches` and `histogram_integer_sum_dispatches`
+identify integer subtraction and root-bin reductions. These overlap their
+histogram/conversion/subtraction/gradient-sum operation totals.
 `gradient_copy_dispatches`, `hessian_extract_dispatches` and
 `gradient_state_gpu_time_ns` report generic gradient copies/Hessian extraction.
 `gradient_state_shared_input_bytes`, `gradient_state_shared_output_bytes` and
@@ -193,8 +198,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **1,206 full-suite regression tests plus 4 new quantizer integration
-  tests passed; 1 skipped**. The skip requires a machine without an
+- Python: **1,218 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Gradient layout copies/Hessian extraction: **276 native cases**, with
@@ -241,6 +245,11 @@ On Apple M3, 2026-11-03:
   subnormal floats, compared exactly against CUDA's truncation and positive-
   curvature preservation rules using independent double-precision references.
 - Native partition/transpose kernels: **320 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
+- Integer histogram cache: **75 page/subtraction cases**, **5,013,975 stored or
+  subtracted pairs**, **225 integer root sums**, and **48 production API cases**
+  covering growth, reuse, empty first pages, cancellation and guards. Eight new
+  training cases require exact predictions across in-memory/external pages,
+  including subnormal leaf values.
 - Native histogram storage: **168 cases**, with 55,272 converted/accumulated pairs,
   18,424 subtracted pairs and 82,908 gathered pairs checked against CPU references,
   including signed integer limits, page accumulation, strided outputs and guard regions.
@@ -1807,3 +1816,24 @@ All native suites and the CPU-only build/check pass, without tolerance changes. 
 NVIDIA execution comparison. Quantization still needs to move before sampling;
 integer gradient state must also feed sampling, root/leaf statistics and the
 histogram cache. No new performance benchmark was run.
+
+
+### Integer histogram cache alignment
+
+Histogram page accumulation and subtraction now preserve CUDA's quantized integer
+sums. A binary64 view remains for split evaluation; cache arithmetic uses the
+integer source. Growth preserves both buffers, and empty first pages clear reused
+slots on GPU. Dense scalar hist roots also sum integer bins before conversion.
+Persistent histogram storage is temporarily 32 bytes per bin for the two views.
+
+[Validation](validation/integer-cache-m3.txt) covers over five million stored or
+subtracted pairs, 48 production-cache cases, and eight new training cases that
+retain small terms through cancellation. The subnormal cases exposed and fixed
+prediction/cache additions flushing valid leaf values to zero. Cached, in-place
+and reloaded predictions now match the exact reference. The full validation run
+passes **1,218 Python tests (one skipped)**, every native suite and the CPU-only
+build/check. No tolerance was widened and no performance benchmark was run.
+
+Quantization still needs to precede sampling; sparse/vector/approx roots, leaf
+statistics and split scans still need shared integer state. Full CUDA parity and
+actual NVIDIA execution validation remain unfinished.

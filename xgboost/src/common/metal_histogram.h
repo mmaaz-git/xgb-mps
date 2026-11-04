@@ -72,6 +72,8 @@ struct Statistics {
   std::uint64_t gradient_copy_dispatches, hessian_extract_dispatches, gradient_state_gpu_time_ns,
       gradient_state_shared_input_bytes, gradient_state_shared_output_bytes,
       gradient_state_staging_bytes;
+  std::uint64_t histogram_integer_store_dispatches, histogram_integer_accumulation_dispatches,
+      histogram_integer_subtraction_dispatches, histogram_integer_sum_dispatches;
 };
 
 class Histogram {

@@ -19,6 +19,8 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
 void SumGradients(linalg::MatrixView<GradientPair const> gradients,
                   linalg::VectorView<GradientPairPrecise> output);
 void FitStump(linalg::MatrixView<GradientPair const> gradients, linalg::VectorView<float> output);
+// Sum one feature's bins. Quantized caches sum integers first, then convert;
+// their quantizer bounds require that each source row occurs at most once.
 GradientPairPrecise SumHistogram(HistogramBuffer const* storage, std::size_t offset,
                                  std::size_t bins);
 }  // namespace xgboost::common::metal

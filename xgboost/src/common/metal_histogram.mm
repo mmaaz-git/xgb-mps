@@ -64,6 +64,9 @@ std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches
     column_sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
+std::atomic<std::uint64_t> histogram_integer_store_dispatches{0},
+    histogram_integer_accumulation_dispatches{0}, histogram_integer_subtraction_dispatches{0},
+    histogram_integer_sum_dispatches{0};
 std::atomic<std::uint64_t> histogram_shared_gradient_bytes{0}, leaf_shared_gradient_bytes{0},
     leaf_shared_output_bytes{0};
 std::atomic<std::uint64_t> objective_shared_input_bytes{0}, objective_shared_output_bytes{0},
@@ -133,6 +136,8 @@ class Runtime {
   id<MTLComputePipelineState> split_pipeline, multi_split_pipeline;
   id<MTLComputePipelineState> dequantize_hist_pipeline, subtract_hist_pipeline,
       gather_hist_pipeline;
+  id<MTLComputePipelineState> store_integer_hist_pipeline, subtract_integer_hist_pipeline,
+      sum_integer_hist_pipeline;
   id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
   id<MTLComputePipelineState> quantile_metric_pipeline, binning_pipeline;
   id<MTLComputePipelineState> mean_weight_pipeline, mean_pipeline, mean_result_pipeline;
@@ -225,6 +230,9 @@ class Runtime {
       dequantize_hist_pipeline = make_pipeline(@"xgb_histogram_dequantize");
       subtract_hist_pipeline = make_pipeline(@"xgb_histogram_subtract");
       gather_hist_pipeline = make_pipeline(@"xgb_histogram_gather");
+      store_integer_hist_pipeline = make_pipeline(@"xgb_histogram_store_integer");
+      subtract_integer_hist_pipeline = make_pipeline(@"xgb_histogram_subtract_integer");
+      sum_integer_hist_pipeline = make_pipeline(@"xgb_histogram_sum_integer");
       residual_reduce_pipeline = make_pipeline(@"xgb_residual_scale_reduce");
       residual_finish_pipeline = make_pipeline(@"xgb_residual_scale_finish");
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
@@ -339,6 +347,14 @@ class MetalHistogramBuffer final : public HistogramBuffer {
 
  public:
   id<MTLBuffer> buffer;
+  // Integers remain authoritative after the first quantized build. `buffer` is
+  // its materialized binary64 view for host orchestration and split evaluation.
+  id<MTLBuffer> integers, scale;
+  void UseQuantization(id<MTLBuffer> quantization) {
+    CHECK(buffer);
+    if (!integers) integers = Allocate(GetRuntime(), buffer.length);
+    scale = quantization;
+  }
   void Resize(std::size_t size) override {
     if (size <= size_) return;
     auto& rt = GetRuntime();
@@ -347,6 +363,7 @@ class MetalHistogramBuffer final : public HistogramBuffer {
       auto capacity = std::min<std::size_t>(
           std::max(size, size_ * 2), rt.device.maxBufferLength / sizeof(GradientPairPrecise));
       auto next = Allocate(rt, capacity * sizeof(GradientPairPrecise));
+      auto next_integers = integers ? Allocate(rt, capacity * sizeof(QuantizedPair)) : nil;
       if (size_) {
         auto command = [rt.queue commandBuffer];
         CHECK(command);
@@ -357,12 +374,20 @@ class MetalHistogramBuffer final : public HistogramBuffer {
                        toBuffer:next
               destinationOffset:0
                            size:size_ * sizeof(GradientPairPrecise)];
+        if (integers) {
+          [encoder copyFromBuffer:integers
+                     sourceOffset:0
+                         toBuffer:next_integers
+                destinationOffset:0
+                             size:size_ * sizeof(QuantizedPair)];
+        }
         [encoder endEncoding];
         [command commit];
         [command waitUntilCompleted];
         CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
       }
       buffer = next;
+      integers = next_integers;
     }
     size_ = size;
   }
@@ -909,8 +934,10 @@ class MetalHistogram final : public Histogram {
     [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
     [encoder setBuffer:gradient_partial_ offset:0 atIndex:1];
     [encoder setBytes:&count length:sizeof(count) atIndex:2];
-    [encoder dispatchThreadgroups:MTLSizeMake(blocks, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    if (blocks) {
+      [encoder dispatchThreadgroups:MTLSizeMake(blocks, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    }
     [encoder endEncoding];
     struct {
       std::uint64_t rows, stride0, stride1;
@@ -940,7 +967,10 @@ class MetalHistogram final : public Histogram {
     [encoder setBuffer:gradients_ offset:0 atIndex:1];
     [encoder setBytes:&count length:sizeof(count) atIndex:2];
     [encoder setBuffer:gradient_scale_ offset:0 atIndex:3];
-    [encoder dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    if (count) {
+      [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    }
     [encoder endEncoding];
     return shared_bytes;
   }
@@ -972,7 +1002,7 @@ class MetalHistogram final : public Histogram {
       CHECK_LE(total_rows, std::numeric_limits<std::uint32_t>::max());
       auto bins = static_cast<std::size_t>(gidx.cut.TotalBins());
       for (auto out : output) CHECK_EQ(out.size(), bins);
-      if (total_rows == 0 || bins == 0) return;
+      if (nodes.empty() || bins == 0) return;
       CHECK_LE(nodes.size(), std::numeric_limits<std::size_t>::max() / bins / 16);
       auto bytes = nodes.size() * bins * sizeof(QuantizedPair);
       if (!histogram_buffer_ || histogram_buffer_.length < bytes)
@@ -1057,13 +1087,14 @@ class MetalHistogram final : public Histogram {
         [encoder setBuffer:block_buffer_ offset:0 atIndex:9];
         [encoder dispatchThreadgroups:MTLSizeMake(block_ptr.back(), params.n_features, 1)
                 threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
-      } else {
+      } else if (total_rows) {
         [encoder dispatchThreads:MTLSizeMake(total_rows, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
       }
       [encoder endEncoding];
       CHECK(storage);
       auto shared = static_cast<MetalHistogramBuffer*>(storage);
+      shared->UseQuantization(gradient_scale_);
       std::vector<std::uint64_t> output_offsets;
       for (auto out : output) output_offsets.push_back(out.data() - storage->Data().data());
       auto offset_buffer =
@@ -1075,12 +1106,13 @@ class MetalHistogram final : public Histogram {
       CHECK_LE(dequantize.count, std::numeric_limits<std::uint32_t>::max());
       encoder = [command computeCommandEncoder];
       CHECK(encoder);
-      [encoder setComputePipelineState:rt_.dequantize_hist_pipeline];
+      [encoder setComputePipelineState:rt_.store_integer_hist_pipeline];
       [encoder setBuffer:histogram offset:0 atIndex:0];
       [encoder setBuffer:shared->buffer offset:0 atIndex:1];
       [encoder setBuffer:offset_buffer offset:0 atIndex:2];
       [encoder setBytes:&dequantize length:sizeof(dequantize) atIndex:3];
       [encoder setBuffer:gradient_scale_ offset:0 atIndex:4];
+      [encoder setBuffer:shared->integers offset:0 atIndex:5];
       [encoder dispatchThreads:MTLSizeMake(dequantize.count, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [encoder endEncoding];
@@ -1104,6 +1136,9 @@ class MetalHistogram final : public Histogram {
         gradients_ready_ = true;
       }
       histogram_conversion_dispatches.fetch_add(1, std::memory_order_relaxed);
+      histogram_integer_store_dispatches.fetch_add(1, std::memory_order_relaxed);
+      if (page_idx)
+        histogram_integer_accumulation_dispatches.fetch_add(1, std::memory_order_relaxed);
       dispatches.fetch_add(1, std::memory_order_relaxed);
       processed_rows.fetch_add(total_rows, std::memory_order_relaxed);
       if (use_shared) shared_dispatches.fetch_add(1, std::memory_order_relaxed);
@@ -1127,7 +1162,9 @@ void SubtractHistograms(HistogramBuffer* storage, Span<HistogramSubtraction cons
   CHECK(storage);
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto buffer = static_cast<MetalHistogramBuffer*>(storage)->buffer;
+    auto shared = static_cast<MetalHistogramBuffer*>(storage);
+    bool quantized = shared->scale != nil;
+    auto buffer = quantized ? shared->integers : shared->buffer;
     std::uint64_t bins = 0;
     for (auto const& task : tasks) {
       bins = std::max(bins, task.bins);
@@ -1141,9 +1178,14 @@ void SubtractHistograms(HistogramBuffer* storage, Span<HistogramSubtraction cons
     CHECK(command);
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
-    [encoder setComputePipelineState:rt.subtract_hist_pipeline];
+    [encoder setComputePipelineState:quantized ? rt.subtract_integer_hist_pipeline
+                                               : rt.subtract_hist_pipeline];
     [encoder setBuffer:buffer offset:0 atIndex:0];
     [encoder setBuffer:input offset:0 atIndex:1];
+    if (quantized) {
+      [encoder setBuffer:shared->buffer offset:0 atIndex:2];
+      [encoder setBuffer:shared->scale offset:0 atIndex:3];
+    }
     [encoder dispatchThreads:MTLSizeMake(bins, tasks.size(), 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
@@ -1151,6 +1193,7 @@ void SubtractHistograms(HistogramBuffer* storage, Span<HistogramSubtraction cons
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
     histogram_subtraction_dispatches.fetch_add(1, std::memory_order_relaxed);
+    if (quantized) histogram_integer_subtraction_dispatches.fetch_add(1, std::memory_order_relaxed);
   }
 }
 std::unique_ptr<DeviceRows> MakeDeviceRows() { return std::make_unique<MetalRows>(); }
@@ -1273,7 +1316,11 @@ Statistics GetStatistics() {
           gradient_state_gpu_time_ns.load(std::memory_order_relaxed),
           gradient_state_shared_input_bytes.load(std::memory_order_relaxed),
           gradient_state_shared_output_bytes.load(std::memory_order_relaxed),
-          gradient_state_staging_bytes.load(std::memory_order_relaxed)};
+          gradient_state_staging_bytes.load(std::memory_order_relaxed),
+          histogram_integer_store_dispatches.load(std::memory_order_relaxed),
+          histogram_integer_accumulation_dispatches.load(std::memory_order_relaxed),
+          histogram_integer_subtraction_dispatches.load(std::memory_order_relaxed),
+          histogram_integer_sum_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1621,13 +1668,17 @@ GradientPairPrecise SumHistogram(HistogramBuffer const* storage, std::size_t off
     auto e = [command computeCommandEncoder];
     CHECK(e);
     std::uint64_t range[2]{offset, bins};
-    [e setComputePipelineState:rt.histogram_sum_pipeline];
-    [e setBuffer:shared->buffer offset:0 atIndex:0];
+    bool quantized = shared->scale != nil;
+    [e setComputePipelineState:quantized ? rt.sum_integer_hist_pipeline
+                                         : rt.histogram_sum_pipeline];
+    [e setBuffer:quantized ? shared->integers : shared->buffer offset:0 atIndex:0];
+    if (quantized) [e setBuffer:shared->scale offset:0 atIndex:3];
     [e setBuffer:output offset:0 atIndex:1];
     [e setBytes:range length:sizeof(range) atIndex:2];
     [e dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [e endEncoding];
     CompleteGradientSum(command);
+    if (quantized) histogram_integer_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
     return *static_cast<GradientPairPrecise const*>(output.contents);
   }
 }

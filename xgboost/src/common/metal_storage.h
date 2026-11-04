@@ -11,6 +11,9 @@
 namespace xgboost::common::metal {
 // Shared Metal allocation: GPU kernels own histogram arithmetic, while existing
 // host tree orchestration can inspect completed results without a staging copy.
+// Quantized builds retain integer sums; Data() is a materialized binary64 view.
+// Callers must not mutate that view once the buffer contains quantized histograms.
+// Resize preserves both views. Page-zero builds replace reused cache ranges.
 class HistogramBuffer {
  public:
   virtual ~HistogramBuffer() = default;

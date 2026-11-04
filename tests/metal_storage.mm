@@ -58,7 +58,10 @@ int main(int argc, char** argv) {
       auto dequantize = pipeline(@"xgb_histogram_dequantize"),
            subtract = pipeline(@"xgb_histogram_subtract"),
            gather = pipeline(@"xgb_histogram_gather"),
-           sum_histogram = pipeline(@"xgb_histogram_sum");
+           sum_histogram = pipeline(@"xgb_histogram_sum"),
+           store_integer = pipeline(@"xgb_histogram_store_integer"),
+           subtract_integer = pipeline(@"xgb_histogram_subtract_integer"),
+           sum_integer = pipeline(@"xgb_histogram_sum_integer");
       auto queue = [device newCommandQueue];
       auto upload = [&](void const* data, size_t bytes) {
         return [device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];
@@ -199,6 +202,129 @@ int main(int argc, char** argv) {
              "pairs, %zu gathered pairs on %s\n",
              cases, converted, subtracted, gathered, device.name.UTF8String);
       printf("PASS %zu exact root histogram reductions\n", root_sums);
+      size_t integer_cases = 0, integer_pairs = 0, integer_sums = 0;
+      for (uint32_t bins : {1, 33, 257, 1025, 65537}) {
+        for (int unit : {-200, -32, 0, 100, 200}) {
+          uint64_t offsets[3]{2 * bins + 11, 3, bins + 7};
+          std::vector<Raw> expected(5 * bins + 26, {0x1234567890abcdef, -7});
+          std::vector<Pair> view(expected.size(), {17.5, -23.25});
+          auto integers = upload(expected.data(), expected.size() * sizeof(Raw));
+          auto output = upload(view.data(), view.size() * sizeof(Pair));
+          auto offset = upload(offsets, sizeof(offsets));
+          int32_t scale[4]{-unit, unit, 1, 0};
+          auto scales = upload(scale, sizeof(scale));
+          std::vector<Raw> base(3 * bins);
+          for (auto& v : base)
+            v = {int64_t(rng() % (1ul << 32)) - (1l << 31),
+                 int64_t(rng() % (1ul << 32)) - (1l << 31)};
+          // Distinguish integer subtraction from subtracting already-rounded
+          // binary64 values: (2^61+3) - (2^61+1) must be TWO, not zero.
+          int64_t big = int64_t{1} << 61;
+          base[0] = {big + 3, big + 7};
+          base[bins] = {big + 1, big + 5};
+          base[2 * bins] = {-big + 5, -big + 9};
+          auto check = [&] {
+            Require(!std::memcmp(integers.contents, expected.data(), expected.size() * sizeof(Raw)),
+                    "Integer histogram arithmetic/guards differ");
+            Require(!std::memcmp(output.contents, view.data(), view.size() * sizeof(Pair)),
+                    "Materialized histogram view/guards differ");
+          };
+          auto convert = [&](Raw v) {
+            return Pair{std::ldexp(double(v.g), unit), std::ldexp(double(v.h), -unit)};
+          };
+          for (uint32_t page = 0; page < 3; ++page) {
+            auto raw = base;
+            if (page == 1) {
+              for (size_t i = 0; i < raw.size(); ++i)
+                raw[i] = {-base[i].g + int64_t(i % 3), -base[i].h + int64_t(i % 5)};
+            } else if (page == 2) {
+              std::fill(raw.begin(), raw.end(), Raw{0, 0});  // Empty page preserves prior sums.
+            }
+            auto input = upload(raw.data(), raw.size() * sizeof(Raw));
+            Dequantize p{raw.size(), bins, page != 0};
+            auto command = [queue commandBuffer];
+            auto e = [command computeCommandEncoder];
+            [e setComputePipelineState:store_integer];
+            [e setBuffer:input offset:0 atIndex:0];
+            [e setBuffer:output offset:0 atIndex:1];
+            [e setBuffer:offset offset:0 atIndex:2];
+            [e setBytes:&p length:sizeof(p) atIndex:3];
+            [e setBuffer:scales offset:0 atIndex:4];
+            [e setBuffer:integers offset:0 atIndex:5];
+            [e dispatchThreads:MTLSizeMake(raw.size(), 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+            [e endEncoding];
+            finish(command);
+            for (size_t i = 0; i < raw.size(); ++i) {
+              auto out = offsets[i / bins] + i % bins;
+              if (page == 0)
+                expected[out] = raw[i];
+              else {
+                expected[out].g += raw[i].g;
+                expected[out].h += raw[i].h;
+              }
+              view[out] = convert(expected[out]);
+            }
+            check();
+            integer_pairs += raw.size();
+            for (auto start : offsets) {
+              __int128 g = 0, h = 0;
+              for (size_t i = start; i < start + bins; ++i) {
+                g += expected[i].g;
+                h += expected[i].h;
+              }
+              Require(g >= INT64_MIN && g <= INT64_MAX && h >= INT64_MIN && h <= INT64_MAX,
+                      "Invalid integer-sum fixture");
+              auto reference = convert({int64_t(g), int64_t(h)});
+              uint64_t range[2]{start, bins};
+              auto sum = upload(&reference, sizeof(reference));
+              command = [queue commandBuffer];
+              e = [command computeCommandEncoder];
+              [e setComputePipelineState:sum_integer];
+              [e setBuffer:integers offset:0 atIndex:0];
+              [e setBuffer:sum offset:0 atIndex:1];
+              [e setBytes:range length:sizeof(range) atIndex:2];
+              [e setBuffer:scales offset:0 atIndex:3];
+              [e dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+              [e endEncoding];
+              finish(command);
+              Require(!std::memcmp(sum.contents, &reference, sizeof(reference)),
+                      "Integer histogram root sum differs");
+              ++integer_sums;
+            }
+            Subtract jobs[2]{{offsets[0], offsets[1], 3 * bins + 18, bins},
+                             {offsets[1], offsets[2], 4 * bins + 22, bins}};
+            auto tasks = upload(jobs, sizeof(jobs));
+            command = [queue commandBuffer];
+            e = [command computeCommandEncoder];
+            [e setComputePipelineState:subtract_integer];
+            [e setBuffer:integers offset:0 atIndex:0];
+            [e setBuffer:tasks offset:0 atIndex:1];
+            [e setBuffer:output offset:0 atIndex:2];
+            [e setBuffer:scales offset:0 atIndex:3];
+            [e dispatchThreads:MTLSizeMake(bins, 2, 1)
+                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+            [e endEncoding];
+            finish(command);
+            for (auto t : jobs) {
+              for (size_t i = 0; i < bins; ++i) {
+                auto a = expected[t.parent + i], b = expected[t.sibling + i];
+                expected[t.output + i] = {a.g - b.g, a.h - b.h};
+                view[t.output + i] = convert(expected[t.output + i]);
+              }
+            }
+            check();
+            integer_pairs += 2 * bins;
+            ++integer_cases;
+          }
+        }
+        printf("Checked integer cache through %u bins: %zu page/subtraction cases\n", bins,
+               integer_cases);
+        std::fflush(stdout);
+      }
+      printf("PASS %zu integer histogram page/subtraction cases / %zu stored/subtracted pairs / "
+             "%zu integer root reductions; exact integers, cancellation, views and guards\n",
+             integer_cases, integer_pairs, integer_sums);
       return 0;
     } catch (std::exception const& e) {
       fprintf(stderr, "FAIL: %s\n", e.what());
