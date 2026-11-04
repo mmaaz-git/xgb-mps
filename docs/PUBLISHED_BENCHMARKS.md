@@ -118,3 +118,57 @@ commands, versus 0.29 s in split evaluation. The first full Covertype run spends
 35.20 s in histogram commands and 8.80 s in split evaluation. GPU command times
 are diagnostic components, not separate training timings; wait time overlaps
 GPU execution and must not be added to it.
+
+## Full 1,000-round HIGGS replay
+
+With the low-bin change at `6e87d03`, the full published HIGGS workload completes
+in **190.852 s CPU / 193.740 s MPS (0.985×)**. This is **one paired run**, not a
+three-repeat estimate. DMatrix-plus-training is 192.970 / 195.336 s. Both models
+classify every test row identically, with **76.121% accuracy**. All 500,000 test
+margins pass the strict check; maximum difference is `3.34e-6`, RMS `3.04e-7`.
+Per-round error histories differ by at most `2e-6` (one test row), and final test
+log loss differs by `8.8e-12`.
+
+Peak process RSS is 3.77 GB CPU / 4.01 GB MPS. Wall/monotonic clock differences
+are below 0.002 s, so no sleep interval invalidated this run. Histograms account
+for 82.65 s of MPS GPU command time and partition operations 45.35 s; split
+evaluation accounts for 5.78 s. These are the next substantial GPU costs to
+investigate. The measured training ratio is effectively a tie, substantially
+below the historical P100 ratio. Hardware and software differences prevent
+attributing the whole gap to either the chip or the implementation.
+
+[Full raw report](../validation/published-higgs-1000-m3.json). Reproduce with:
+
+```sh
+.venv/bin/python scripts/benchmark_published.py --preset nvidia2017-higgs \
+  --threads 8 --repeats 1 --output results/published-higgs-1000-v1.json
+```
+
+## Exact binary-column histogram accumulation
+
+The new path sums one- and two-bin features in lane registers, reduces within
+SIMD groups, and uses global integer atomic additions. This avoids one set of
+contended threadgroup atomic updates per row. The sums are exact modulo 64 bits,
+as with the existing histogram arithmetic. Tests now cover 576 histogram cases,
+including partial SIMD groups, empty nodes, negative values, low-word carries,
+zero gradients, page offsets and all index widths. The complete native suite
+and 583 Python tests pass under Metal API Validation (one Python test skipped).
+
+A randomized, same-process comparison of the baseline and current shader uses
+one million rows, 32 features, five repeats and an independent integer reference
+for every result. At the root with 32 rows per lane, the measured kernel gains
+are **5.21× for one bin**, **3.59× for two bins**, and **0.99× for 256 bins**.
+On 32 balanced, fragmented nodes, the two-bin case at the production eight rows
+per lane is **0.96×**. These are histogram kernel measurements, not training
+speedups; slower layouts are retained in the
+[one-bin](../validation/histogram-lowbin-1-m3.json),
+[two-bin](../validation/histogram-lowbin-2-m3.json) and
+[256-bin](../validation/histogram-lowbin-256-m3.json) reports.
+
+```sh
+git show 989ee7a:xgboost/src/common/metal_histogram.metal > results/baseline.metal
+clang++ -O2 -std=c++17 -fobjc-arc scripts/metal_histogram_benchmark.mm \
+  -framework Metal -framework Foundation -o results/metal_histogram_compare
+results/metal_histogram_compare xgboost/src/common/metal_histogram.metal \
+  results/baseline.metal 2 > results/histogram-comparison.json
+```

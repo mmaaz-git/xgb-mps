@@ -1130,3 +1130,13 @@ on binary columns. Validation passes **576 native histogram cases**, all other
 native suites and **583 Python tests (one skipped)** under Metal API Validation.
 The end-to-end performance of this change is being measured against the published
 workloads; isolated kernel gains are not presented as training gains.
+
+
+The full published **HIGGS workload (10.5M training rows, 1,000 rounds)** now
+completes in **190.852 s CPU / 193.740 s MPS (0.985×)** in one paired run. Both
+models reach **76.121% test accuracy**, with identical predicted classes and all
+500,000 margins passing the strict check (maximum difference `3.34e-6`). This is
+approximately a tie on the M3. See the [raw report](validation/published-higgs-1000-m3.json)
+and [methodology](docs/PUBLISHED_BENCHMARKS.md) for setup time, memory, GPU timings
+and differences from the historical hardware/software. The published CUDA ratios
+serve to select workloads, not as promised speedups on an Apple chip.
