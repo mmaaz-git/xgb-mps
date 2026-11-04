@@ -339,7 +339,8 @@ void AssignColumnBinIndex(GHistIndexMatrix const& page, Fn&& assign) {
         }
       } else {
         // not compressed
-        auto const* row_index = index.data<BinT>() + page.row_ptr[page.base_rowid];
+        // k and row_ptr are local to this page, even when its global base is nonzero.
+        auto const* row_index = index.data<BinT>();
         for (std::size_t j = r_beg; j < r_end; ++j) {
           std::uint32_t bin_idx = row_index[k];
           // find the feature index for current bin.

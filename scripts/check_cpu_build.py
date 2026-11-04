@@ -1,6 +1,7 @@
 """Verify the optional Metal API and clear failure in a non-Metal build."""
 import ctypes
 import json
+import tempfile
 from pathlib import Path
 
 path = Path(__file__).resolve().parents[1] / "build-cpu/lib/libxgboost.dylib"
@@ -49,17 +50,22 @@ def next_batch(_):
     state[0] = True
     return int(lib.XGProxyDMatrixSetDataDense(proxy, interface) == 0)
 try:
-    for device in ["cpu", "mps"]:
-        output = ctypes.c_void_p()
-        config = json.dumps({"device": device, "max_bin": 8, "nthread": 2,
-                             "missing": float("nan")}).encode()
-        status = lib.XGQuantileDMatrixCreateFromCallback(
-            None, proxy, None, reset, next_batch, config, ctypes.byref(output))
-        if device == "cpu":
-            check(status)
-            check(lib.XGDMatrixFree(output))
-        else:
-            assert status != 0 and b"USE_METAL=ON" in lib.XGBGetLastError()
+    with tempfile.TemporaryDirectory(prefix="xgb-cpu-quantile-") as cache_dir:
+        for constructor in [lib.XGQuantileDMatrixCreateFromCallback,
+                            lib.XGExtMemQuantileDMatrixCreateFromCallback]:
+            for device in ["cpu", "mps"]:
+                output = ctypes.c_void_p()
+                config = json.dumps({"device": device, "max_bin": 8, "nthread": 2,
+                                     "missing": float("nan"), "on_host": False,
+                                     "cache_prefix": str(Path(cache_dir) / "pages")}).encode()
+                status = constructor(None, proxy, None, reset, next_batch, config,
+                                     ctypes.byref(output))
+                if device == "cpu":
+                    check(status)
+                    check(lib.XGDMatrixFree(output))
+                else:
+                    assert status != 0 and b"USE_METAL=ON" in lib.XGBGetLastError()
+        assert not list(Path(cache_dir).iterdir())
 finally:
     check(lib.XGDMatrixFree(proxy))
-print("CPU-only quantile construction accepts CPU and rejects MPS explicitly.")
+print("CPU-only in-memory/external quantile construction accepts CPU and rejects MPS explicitly.")

@@ -45,8 +45,9 @@ work, not accepted substitutes for CUDA behavior:
   arithmetic now follow the CUDA formulas with explicit deterministic edge policies below.
 - Quantile sketches: ordinary MPS matrices now use CUDA-derived raw sorting,
   FP32 scans and resident summaries, as detailed below. Explicit MPS
-  QuantileDMatrix construction now uses the GPU adapter frontend. Native device
-  arrays, external-memory adapters and distributed sketch collectives remain open. Scan association,
+  QuantileDMatrix and disk-backed ExtMemQuantileDMatrix construction use the GPU
+  adapter frontend. Native device arrays, adaptive external caches and distributed
+  sketch collectives remain open. Scan association,
   sorting ties and rank-repair scheduling are explicitly bounded validation limits.
 - Interaction constraints now follow CUDA's cumulative group unions and ascending
   nonroot queries, with explicit overlapping-group tests; the former CPU history
@@ -95,8 +96,8 @@ must be reported rather than hidden by widening test tolerances.
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; collective transport remains host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
-| Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS QuantileDMatrix adds GPU dense/columnar adapter ingestion, resident sketches and bins; native device-array/external-memory adapters and distributed sketch collectives remain open |
-| Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
+| Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and disk-backed quantile matrices add GPU dense/columnar ingestion, resident sketches and bins; native device arrays, adaptive caches and distributed sketch collectives remain open |
+| Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Explicit MPS external quantile construction now writes one disk page per input batch using GPU decoding/sketching/binning. Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime. Adaptive host/device caches and concatenation remain open |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Prediction/SHAP row-level mapping and raw-input preparation now run on GPU; explicit MPS QuantileDMatrix training adapters also recode on GPU; dictionary storage/copies and general metadata remain host |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
@@ -259,8 +260,8 @@ Final quantized bins and row pointers return to existing host gradient-index
 storage. A host column mirror supports CPU interoperability, as CUDA's conversion
 to a host gradient-index page does. Raw packing/uploads, metadata aggregation,
 dictionaries and ownership remain host work, with synchronous commands. Native
-Metal tensor handles, raw float16, sparse device adapters, external-memory
-adapter construction and GPU collectives remain open. No speedup is claimed.
+Metal tensor handles, raw float16, sparse device adapters, adaptive external-memory
+caches and GPU collectives remain open. Disk-backed external construction is covered below. No speedup is claimed.
 
 65 native cases / 2,184 windows / 1,126,724 exact fields check resident summaries
 against independent CUDA-source formulas after every push, plus raw values, row
@@ -279,6 +280,51 @@ separate counters. Production leaves raw diagnostic readback unchanged. CPU-only
 values are zero; device time excludes packing, transfers and host storage.
 NVIDIA execution and cross-Apple validation remain unperformed.
 [Validation](../validation/cuda-adapter-construction-m3.txt).
+
+## Metal disk-backed external quantile construction
+
+`ExtMemQuantileDMatrix(iterator, device="mps")`, with `DataIter(on_host=False)`,
+constructs quantiles from dense/columnar host batches using Metal. Default input
+placement is unchanged. CUDA authority is `quantile_dmatrix.cu::MakeSketches`,
+`extmem_quantile_dmatrix.cu::InitFromCUDA` and
+`ellpack_page_source.cu::ExtEllpackPageSourceImpl::Fetch`, especially the disk-cache
+branch that retains one page per input batch.
+
+In-memory and external construction share the same adapter windows, GPU shape
+counts, weighted resident sketches and reference cuts. The second external pass
+allocates one gradient-index page, assigns its bins and local row pointers on GPU,
+builds the host column mirror from those bins, and writes the existing disk format.
+No full-dataset gradient-index allocation is made. Metadata remains aggregated on
+the host. Completed cache reads use the existing prefetch/mmap machinery and do
+not call the raw iterator or resketch. Row counts, non-missing counts and number of
+batches are checked across passes. Destruction removes the cache; failed
+construction also releases readers and removes partial cache files.
+
+Multi-page tests exposed two host conversion helpers that applied global row bases
+to page-local storage. Dense column conversion and sparse feature recovery now use
+local offsets. Native checks verify both helpers on pages with nonzero global
+bases, including dense, sparse, empty and all-missing pages.
+
+48 native cases make 864 cached-page visits and 2,720,419 exact field checks.
+CPU quantization with the same reference cuts independently supplies expected bins,
+row pointers, columns/missing flags and hit counts. Fixtures cover 8/256/257 bins,
+weighted/unweighted rows, numerical/categorical data, interrupted cache traversal,
+input independence and file cleanup. The 43 public cases verify CUDA-source cut
+formulas, all ten numeric types, masked/reversed arrays, row/group/zero weights,
+CPU/MPS/external references, category recoding, metadata, vector trees, CPU training
+from cached columns, same-model CPU prediction and failed-iterator cleanup.
+Upstream does not implement `get_data()` for ExtMemQuantileDMatrix; exact page
+inspection is performed by the native tests, without adding a new public API.
+
+This completes the disk-backed adapter construction path, not CUDA's external
+cache subsystem. `on_host=True`, adaptive host/device ratios, page concatenation,
+device-owned compressed matrix storage, native Metal arrays and GPU collectives
+remain open. Raw packing, dictionaries, metadata and cache I/O remain host work.
+Existing adapter/sketch/binning counters apply; no statistics ABI change was made.
+No new speedup, NVIDIA-equivalence or cross-Apple claim is made.
+Full regression passed **2,047 Python tests, one skip**, every rebuilt native
+suite and the CPU-only build/API checks (2026-11-04, 16:48:37–16:54:33 UTC).
+[Validation](../validation/cuda-extmem-construction-m3.txt).
 
 ## Prediction input preparation and row-level recoding
 
@@ -319,7 +365,7 @@ two CSR chunk-boundary offset reads and a four-byte GPU status read. Preparation
 and traversal are separate synchronous commands. Physical strided windows must
 fit the Metal buffer limit. The later explicit MPS QuantileDMatrix path above
 adds local dense/columnar training ingestion and bin construction. Persistent
-dictionary/raw-input ownership, native device arrays, external-memory adapters,
+dictionary/raw-input ownership, native device arrays, adaptive external caches,
 metadata operations and collectives remain open. No performance improvement is claimed for this change.
 
 Direct native checks pass 144 cases / 6,677,824 values (exact bits except NaN
@@ -385,8 +431,8 @@ All counters report zero in CPU-only builds.
 
 The later input-preparation step below removes host row-level recoding from
 prediction and SHAP. Dictionary copy/storage ownership, cached GPU dictionaries
-and maps, general metadata operations and native device-array/external-memory
-adapters remain unfinished. The name milestone alone did not port the
+and maps, general metadata operations and native device arrays/adaptive external-memory
+caches remain unfinished. The name milestone alone did not port the
 entire data preparation pipeline. No performance benchmark or NVIDIA/cross-Apple comparison was run.
 Full regression passed **1,875 Python tests, one skip**, every rebuilt native suite
 and the CPU-only build/check (2026-11-04, 15:41:19–15:46:40 UTC).

@@ -837,6 +837,7 @@ XGB_DLL int XGExtMemQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatr
 
   auto config =
       ExtMemConfig{cache, on_host, cache_host_ratio, min_cache_page_bytes, missing, n_threads};
+  config.device = OptionalArg<String>(jconfig, "device", std::string{});
   *out = new std::shared_ptr<xgboost::DMatrix>{
       xgboost::DMatrix::Create(iter, proxy, p_ref, reset, next, max_bin, config)};
   API_END();

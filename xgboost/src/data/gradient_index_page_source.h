@@ -83,20 +83,22 @@ class ExtGradientIndexPageSource
   MetaInfo* info_;
 
   std::vector<bst_idx_t> base_rows_;
+  std::vector<bst_idx_t> batch_nnz_;
 
  public:
   ExtGradientIndexPageSource(
       Context const* ctx, float missing, MetaInfo* info, std::shared_ptr<Cache> cache,
       BatchParam param, common::HistogramCuts cuts,
       std::shared_ptr<DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>> source,
-      DMatrixProxy* proxy, std::vector<bst_idx_t> base_rows)
+      DMatrixProxy* proxy, std::vector<bst_idx_t> base_rows, std::vector<bst_idx_t> batch_nnz = {})
       : ExtQantileSourceMixin{missing, ctx->Threads(), static_cast<bst_feature_t>(info->num_col_),
                               source, cache},
         p_{std::move(param)},
         ctx_{ctx},
         proxy_{proxy},
         info_{info},
-        base_rows_{std::move(base_rows)} {
+        base_rows_{std::move(base_rows)},
+        batch_nnz_{std::move(batch_nnz)} {
     CHECK(!this->cache_info_->written);
     this->source_->Reset();
     CHECK(this->source_->Next());
@@ -105,6 +107,7 @@ class ExtGradientIndexPageSource
   }
 
   void Fetch() final;
+  void EndIter() final;
 };
 }  // namespace xgboost::data
 #endif  // XGBOOST_DATA_GRADIENT_INDEX_PAGE_SOURCE_H_

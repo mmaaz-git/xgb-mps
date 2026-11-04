@@ -24,10 +24,7 @@
 #include "xgboost/logging.h"
 
 #if defined(XGBOOST_USE_METAL)
-#include "../collective/communicator-inl.h"
-#include "../common/metal_adapter.h"
-#include "../common/metal_cuda_sketch.h"
-#include "../common/metal_sketch.h"
+#include "metal_quantile.h"
 #endif
 
 namespace xgboost::data {
@@ -70,96 +67,16 @@ IterativeDMatrix::IterativeDMatrix(DataIterHandle iter_handle, DMatrixHandle pro
 }
 
 #if defined(XGBOOST_USE_METAL)
-namespace {
-// The CUDA adapter frontend uses raw flattened 2^26-slot windows, including
-// missing values and partial boundary rows. Preserve those pruning boundaries.
-template <class Fn>
-void MetalAdapterWindows(Context const* ctx, DMatrixProxy const* proxy, float missing, Fn&& fn) {
-  cpu_impl::DispatchAny<false>(proxy, [&](auto const& adapter) {
-    using A = typename std::decay_t<decltype(adapter)>::element_type;
-    if constexpr (std::is_same_v<A, ArrayAdapter> || std::is_same_v<A, ColumnarAdapter>) {
-      std::vector<std::int32_t> map;
-      enc::MappingView mapping;
-      if constexpr (std::is_same_v<A, ColumnarAdapter>) {
-        if (adapter->HasRefCategorical()) {
-          CatContainer cats{adapter->RefCats(), true};
-          cats.Sort(ctx);
-          auto encoded = ::xgboost::cpu_impl::MakeCatAccessor(ctx, adapter->Cats(), &cats);
-          mapping = std::get<0>(encoded).enc;
-          map = std::move(std::get<1>(encoded));
-        }
-      }
-      auto cols = adapter->NumColumns(), rows = adapter->NumRows();
-      CHECK_GT(cols, 0);
-      CHECK_LE(rows, std::numeric_limits<bst_idx_t>::max() / cols);
-      bst_idx_t total = rows * cols;
-      constexpr bst_idx_t kWindow = 1ULL << 26;
-      for (bst_idx_t begin = 0; begin < total; begin += kWindow) {
-        auto input = common::metal::PrepareAdapter(*adapter, missing, begin,
-                                                   std::min(kWindow, total - begin), mapping);
-        fn(*input);
-      }
-    } else {
-      LOG(FATAL) << "Metal QuantileDMatrix construction currently accepts dense or columnar input.";
-    }
-  });
-}
-}  // namespace
 void IterativeDMatrix::InitFromMPS(
     Context const* ctx, BatchParam const& p,
     DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>&& iter, float missing,
     std::shared_ptr<DMatrix> ref) {
-  CHECK_EQ(collective::GetWorldSize(), 1) << "Distributed Metal sketching is not implemented.";
   auto proxy = MakeProxy(proxy_);
   ExternalDataInfo ext;
   std::vector<FeatureType> types;
-  std::unique_ptr<common::metal::CudaSketch> sketch;
-  do {
-    auto cols = BatchColumns(proxy);
-    auto rows = BatchSamples(proxy);
-    CHECK_GE(cols, 1);
-    auto cats = cpu_impl::BatchCats(proxy);
-    if (!ext.n_batches) {
-      ext.n_features = cols;
-      ext.cats = std::make_shared<CatContainer>(cats, BatchCatsIsRef(proxy));
-      types = ref ? ref->Info().feature_types.ConstHostVector()
-                  : proxy->Info().feature_types.ConstHostVector();
-      CHECK(types.empty() || types.size() == cols);
-      if (!ref) sketch = common::metal::MakeCudaSketch(cols, p.max_bin, types, {});
-    } else {
-      CHECK_EQ(cols, ext.n_features) << "Inconsistent number of columns.";
-      CHECK_EQ(cats.n_total_cats, ext.cats->NumCatsTotal()) << error::InconsistentCategories();
-    }
-    if (sketch) {
-      auto weights = proxy->Info().weights_.ConstHostSpan();
-      std::vector<float> expanded;
-      if (!weights.empty() && proxy->Info().IsRanking()) {
-        expanded = common::metal::MakeSketchWeights(rows, {}, weights, proxy->Info().group_ptr_);
-        weights = expanded;
-      }
-      CHECK(weights.empty() || weights.size() == rows);
-      sketch->SetWeights(weights);
-    }
-    bst_idx_t nnz = 0;
-    MetalAdapterWindows(ctx, proxy, missing, [&](auto const& input) {
-      nnz += input.NonMissing();
-      ext.row_stride = std::max(ext.row_stride, input.RowStride());
-      if (sketch) sketch->Push(input);
-    });
-    ext.batch_nnz.push_back(nnz);
-    ext.nnz += nnz;
-    ext.accumulated_rows += rows;
-    ext.base_rowids.push_back(ext.accumulated_rows);
-    ++ext.n_batches;
-  } while (iter.Next());
-  iter.Reset();
-  ext.SetInfo(ctx, true, &info_);
   common::HistogramCuts cuts{0};
-  if (ref)
-    GetCutsFromRef(ctx, ref, ext.n_features, p, &cuts);
-  else
-    cuts = common::metal::MakeCudaCuts(sketch->Read(), ext.n_features, p.max_bin, types);
-  sketch.reset();
+  metal_impl::MakeSketches(ctx, &iter, proxy, ref, p, missing, &cuts, &ext, &types);
+  ext.SetInfo(ctx, true, &info_);
   ghist_ = std::make_shared<GHistIndexMatrix>(info_, std::move(cuts), p.max_bin);
   ghist_->ResizeIndex(ctx, ext.nnz, info_.IsDense());
   if (info_.IsDense()) ghist_->index.SetBinOffset(ghist_->cut.Ptrs());
@@ -170,7 +87,7 @@ void IterativeDMatrix::InitFromMPS(
     CHECK_EQ(rows, ext.base_rowids[batch + 1] - ext.base_rowids[batch]);
     CHECK_EQ(BatchColumns(proxy), ext.n_features);
     auto first = entry_offset;
-    MetalAdapterWindows(ctx, proxy, missing, [&](auto const& input) {
+    metal_impl::AdapterWindows(ctx, proxy, missing, [&](auto const& input) {
       input.WriteIndex(types, ghist_.get(), row_base, entry_offset);
       entry_offset += input.NonMissing();
     });

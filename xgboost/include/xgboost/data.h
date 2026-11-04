@@ -517,6 +517,8 @@ struct ExtMemConfig {
   float missing;
   // The number of CPU threads.
   std::int32_t n_threads{0};
+  // Optional quantile construction device. Empty preserves input-device inference.
+  std::string device;
   // The ratio of the cache that can be compressed. Used for testing.
   float hw_decomp_ratio{std::numeric_limits<float>::quiet_NaN()};
   // Fallback to using nvcomp. Used for testing.

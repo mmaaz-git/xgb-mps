@@ -37,6 +37,10 @@ class ExtMemQuantileDMatrix : public QuantileDMatrix {
   [[nodiscard]] std::vector<bst_idx_t> BatchPtr() const override { return this->batch_ptr_; }
 
  private:
+  void InitFromMPS(
+      Context const* ctx,
+      std::shared_ptr<DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>> iter,
+      DMatrixHandle proxy, BatchParam const& p, float missing, std::shared_ptr<DMatrix> ref);
   void InitFromCPU(
       Context const *ctx,
       std::shared_ptr<DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>> iter,

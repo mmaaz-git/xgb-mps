@@ -10,6 +10,10 @@
 #include "gradient_index.h"       // for GHistIndexMatrix
 #include "proxy_dmatrix.h"        // for DispatchAny
 
+#if defined(XGBOOST_USE_METAL)
+#include "metal_quantile.h"
+#endif
+
 namespace xgboost::data {
 void GradientIndexPageSource::Fetch() {
   if (!this->ReadCache()) {
@@ -36,6 +40,34 @@ void ExtGradientIndexPageSource::Fetch() {
   if (!this->ReadCache()) {
     CHECK_EQ(count_, source_->Iter());
     CHECK_NE(cuts_.Values().size(), 0);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      CHECK_LT(count_, batch_nnz_.size())
+          << "Different number of batches returned between iterations";
+      auto rows = BatchSamples(proxy_);
+      CHECK_EQ(rows, base_rows_.at(count_ + 1) - base_rows_.at(count_));
+      CHECK_EQ(BatchColumns(proxy_), n_features_);
+      auto types = info_->feature_types.ConstHostSpan();
+      page_.reset();
+      page_ = std::make_shared<GHistIndexMatrix>(
+          rows, base_rows_[count_], common::HistogramCuts{cuts_}, p_.max_bin, info_->IsDense());
+      page_->ResizeIndex(ctx_, batch_nnz_[count_], info_->IsDense());
+      if (info_->IsDense()) page_->index.SetBinOffset(page_->cut.Ptrs());
+      bst_idx_t offset = 0;
+      metal_impl::AdapterWindows(ctx_, proxy_, missing_, [&](auto const& input) {
+        input.WriteIndex(types, page_.get(), 0, offset);
+        offset += input.NonMissing();
+      });
+      CHECK_EQ(offset, batch_nnz_[count_]) << "Non-missing counts changed between iterations";
+      page_->InitColumns(ctx_, p_.sparse_thresh);
+      proxy_->Info().num_row_ = rows;
+      proxy_->Info().num_col_ = n_features_;
+      proxy_->Info().num_nonzero_ = offset;
+      info_->Extend(proxy_->Info(), false, true);
+      this->WriteCache();
+      return;
+    }
+#endif
     cpu_impl::DispatchAny(proxy_, [this](auto const& value) {
       CHECK(this->proxy_->Ctx()->IsCPU()) << "All batches must use the same device type.";
       auto h_feature_types = proxy_->Info().feature_types.ConstHostSpan();
@@ -69,5 +101,12 @@ void ExtGradientIndexPageSource::Fetch() {
     });
     this->WriteCache();
   }
+}
+void ExtGradientIndexPageSource::EndIter() {
+  if (ctx_->IsMPS() && !cache_info_->written) {
+    CHECK_EQ(count_, batch_nnz_.size())
+        << "Different number of batches returned between iterations";
+  }
+  ExtQantileSourceMixin::EndIter();
 }
 }  // namespace xgboost::data

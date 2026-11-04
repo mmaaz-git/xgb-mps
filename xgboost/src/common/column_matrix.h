@@ -252,8 +252,9 @@ class ColumnMatrix {
       DispatchBinType(gmat.index.GetBinTypeSize(), [&, size = gmat.Size(), n_threads = n_threads,
                                                     n_features = gmat.Features()](auto t) {
         using RowBinIdxT = decltype(t);
-        SetIndexNoMissing(gmat.base_rowid, gmat.index.data<RowBinIdxT>(), size, n_features,
-                          n_threads);
+        // Both buffers contain one page. The global base row belongs to the
+        // matrix iterator, not to offsets inside this page's storage.
+        SetIndexNoMissing(0, gmat.index.data<RowBinIdxT>(), size, n_features, n_threads);
       });
     } else {
       SetIndexMixedColumns(gmat);

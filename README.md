@@ -14,19 +14,29 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **Metal QuantileDMatrix construction**. Use
-`xgb.QuantileDMatrix(X, y, device="mps", max_bin=256)` for host dense/columnar
-inputs. GPU decoding, row counts, compaction and category recoding feed resident
-CUDA-derived sketches and GPU bin assignment. Streamed batches and reference
-matrices work too. Default input-device selection is unchanged.
+Latest step: **Metal construction for disk-backed external-memory quantile matrices**.
+Use `xgb.ExtMemQuantileDMatrix(iterator, device="mps", max_bin=256)` with
+`DataIter(on_host=False)`. Dense/columnar batches use the same GPU decoding,
+resident CUDA-derived sketching and GPU bin assignment as in-memory construction.
+Each input batch becomes a separate disk-cache page; completed caches no longer
+need the input callbacks. References, category recoding and empty pages work.
 
-New checks pass **65 native cases / 2,184 windows / 1,126,724 exact fields** and
-**58 public tests**, including CUDA's 2^26-slot boundary, partial rows, all-missing
-windows, row/group weights, reference cuts and category recoding. The focused
-combined suite passes **140 tests**. Full regression passes **2,004 Python
-tests**, every rebuilt native suite and the CPU-only build/check.
-No new performance measurement was made. Native Apple GPU tensor handles,
-external-memory adapter construction and device ownership remain unfinished.
+New native checks pass **48 cases / 864 cached-page visits / 2,720,419 exact fields**,
+including CPU-reference bins, row pointers, column entries, hit counts, interrupted
+reads and cache cleanup. **43 public tests** cover the API, cut source oracle,
+training/prediction, metadata and errors. Full regression passes **2,047 Python
+tests**, every rebuilt native suite and the CPU-only build/API checks.
+The adaptive host/device cache, page concatenation, native Apple GPU tensor handles
+and general device ownership remain unfinished. **This path requires
+`on_host=False`; it does not implement CUDA's adaptive cache.** No new performance
+measurement was made.
+[External construction validation](validation/cuda-extmem-construction-m3.txt).
+
+The preceding adapter step added
+`xgb.QuantileDMatrix(X, y, device="mps", max_bin=256)` for host dense/columnar
+inputs and streamed batches. Its checks passed **65 native cases / 2,184 windows /
+1,126,724 exact fields** and **58 public tests**; full regression at that checkpoint
+passed **2,004 Python tests**, every rebuilt native suite and the CPU-only build/check.
 [Adapter construction validation](validation/cuda-adapter-construction-m3.txt).
 
 The preceding prediction step moved input conversion and row-level category
@@ -104,7 +114,7 @@ The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
-The major remaining areas are external-memory adapter construction, native
+The major remaining areas are adaptive external-memory caching, native
 device-array ingestion, remaining initialization/state and metadata operations,
 CUDA algorithm alignment, Apple GPU array interoperability and distributed collectives. Sensitive AFT tails and some
 long-run ranking and Covertype comparisons have numerical differences.
@@ -174,9 +184,23 @@ model = xgb.train({"device": "mps", "tree_method": "hist", "max_bin": 256}, trai
 Construction device is independent of booster device. Omitting it preserves
 upstream input-device selection, including CPU construction for host arrays in
 the sklearn wrapper. The new option supports dense/columnar `DataIter` batches;
-native Metal tensor handles, raw float16 interfaces, sparse device adapters and
-external-memory adapter construction remain open. Raw packing, metadata and
-final gradient-index/column storage remain host work.
+native Metal tensor handles, raw float16 interfaces and sparse device adapters
+remain open. Raw packing, metadata and final gradient-index/column storage remain
+host work.
+
+For disk-backed quantile construction, define your iterator with
+`super().__init__(cache_prefix="/existing/directory/cache", on_host=False)` and use:
+
+```python
+train = xgb.ExtMemQuantileDMatrix(iterator, device="mps", max_bin=256)
+model = xgb.train({"device": "mps", "tree_method": "hist", "max_bin": 256}, train)
+```
+
+One disk page is written per input batch. The cache is reused during training and
+removed when the matrix is freed. `ref=train` is supported for validation matrices.
+`on_host=True` and explicit `cache_host_ratio` are not implemented for Metal yet;
+page concatenation and adaptive GPU caching remain open. Defaults without an
+explicit construction device retain upstream behavior.
 
 Linear GPU training uses `booster="gblinear", updater="coord_descent", device="mps"`.
 Its default `shotgun` updater remains on the host, as it does with CUDA. The
@@ -202,8 +226,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly; GPU-owned interaction masks and monotonic bounds, including initialization/growth; unions and feature filtering on GPU; candidate staging and tree metadata remain host |
 | Vector model storage | Bit-preserving GPU copies for parent/child weights and category words, with GPU FP32 learning-rate scaling of new child weights; allocation/growth and metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
-| Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; explicit MPS QuantileDMatrix adapters also bin on GPU; final matrix storage remains host |
-| Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Explicit MPS QuantileDMatrix adapters now feed resident sketches; native device-array/external-memory adapters remain open |
+| Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; explicit MPS QuantileDMatrix and disk-backed ExtMemQuantileDMatrix adapters also bin on GPU; final matrix storage remains host |
+| Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Explicit MPS in-memory and disk-backed quantile adapters feed resident sketches; native device arrays and adaptive external caching remain open |
 | Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Model dictionary copies, persistent storage and row-level map application remain host |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
@@ -772,7 +796,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Align classification AUC arithmetic/output rules and port multi-output normalization to GPU.
 - [x] Port CUDA raw CSR sketching and resident summaries for ordinary hist/approx matrices.
 - [x] Add explicit MPS QuantileDMatrix decoding, resident sketching and bin assignment.
-- [ ] Complete native device-array/external-memory adapters and remaining metadata/state operations.
+- [x] Add explicit MPS disk-backed ExtMemQuantileDMatrix construction and cache lifecycle checks.
+- [ ] Complete native device arrays, adaptive external caches and remaining metadata/state operations.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.
 - [x] Port query maxima/counts/prefixes and reuse GPU metadata through ranking caches.
 - [x] Port remaining elementwise/survival metric sums and CUDA FP32 row arithmetic; validate multiclass labels on GPU.

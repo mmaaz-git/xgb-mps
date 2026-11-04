@@ -1702,6 +1702,7 @@ class ExtMemQuantileDMatrix(DMatrix, _RefMixIn):
         enable_categorical: bool = True,
         max_quantile_batches: Optional[int] = None,
         cache_host_ratio: Optional[float] = None,
+        device: Optional[str] = None,
     ) -> None:
         """
         Parameters
@@ -1711,6 +1712,11 @@ class ExtMemQuantileDMatrix(DMatrix, _RefMixIn):
 
         max_quantile_batches :
             Deprecated. See :py:class:`QuantileDMatrix`.
+
+        device :
+            Optional construction device. ``"mps"`` constructs dense/columnar
+            batches on Metal and requires ``DataIter(on_host=False)`` for the
+            disk-backed page cache. The default follows the input device.
 
         cache_host_ratio :
 
@@ -1724,6 +1730,7 @@ class ExtMemQuantileDMatrix(DMatrix, _RefMixIn):
             See :ref:`extmem-adaptive-cache` for more info.
 
         """
+        self._construction_device = device
         self.max_bin = max_bin
         self.missing = missing if missing is not None else np.nan
         self.nthread = nthread if nthread is not None else -1
@@ -1750,6 +1757,7 @@ class ExtMemQuantileDMatrix(DMatrix, _RefMixIn):
     ) -> None:
         args = make_jcargs(
             missing=self.missing,
+            device=self._construction_device,
             nthread=self.nthread,
             cache_prefix=it.cache_prefix if it.cache_prefix else "",
             on_host=it.on_host,

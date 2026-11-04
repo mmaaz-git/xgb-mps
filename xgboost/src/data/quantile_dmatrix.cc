@@ -15,6 +15,12 @@
 #include "xgboost/collective/result.h"       // for SafeColl
 #include "xgboost/linalg.h"                  // for Tensor
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_cuda_sketch.h"
+#include "../common/metal_sketch.h"
+#include "metal_quantile.h"
+#endif
+
 namespace xgboost::data {
 void GetCutsFromRef(Context const* ctx, std::shared_ptr<DMatrix> ref, bst_feature_t n_features,
                     BatchParam p, common::HistogramCuts* p_cuts) {
@@ -61,6 +67,66 @@ void GetCutsFromRef(Context const* ctx, std::shared_ptr<DMatrix> ref, bst_featur
 
 #if !defined(XGBOOST_USE_CUDA)
 void GetCutsFromEllpack(EllpackPage const&, common::HistogramCuts*) { common::AssertGPUSupport(); }
+#endif
+
+#if defined(XGBOOST_USE_METAL)
+namespace metal_impl {
+void MakeSketches(Context const* ctx,
+                  DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>* iter,
+                  DMatrixProxy* proxy, std::shared_ptr<DMatrix> ref, BatchParam const& p,
+                  float missing, common::HistogramCuts* cuts, ExternalDataInfo* p_ext,
+                  std::vector<FeatureType>* p_types) {
+  CHECK_EQ(collective::GetWorldSize(), 1) << "Distributed Metal sketching is not implemented.";
+  auto& ext = *p_ext;
+  auto& types = *p_types;
+  std::unique_ptr<common::metal::CudaSketch> sketch;
+  do {
+    auto cols = BatchColumns(proxy);
+    auto rows = BatchSamples(proxy);
+    CHECK_GE(cols, 1);
+    auto cats = cpu_impl::BatchCats(proxy);
+    if (!ext.n_batches) {
+      ext.n_features = cols;
+      ext.cats = std::make_shared<CatContainer>(cats, BatchCatsIsRef(proxy));
+      types = ref ? ref->Info().feature_types.ConstHostVector()
+                  : proxy->Info().feature_types.ConstHostVector();
+      CHECK(types.empty() || types.size() == cols);
+      if (!ref) sketch = common::metal::MakeCudaSketch(cols, p.max_bin, types, {});
+    } else {
+      CHECK_EQ(cols, ext.n_features) << "Inconsistent number of columns.";
+      CHECK_EQ(cats.n_total_cats, ext.cats->NumCatsTotal()) << error::InconsistentCategories();
+    }
+    if (sketch) {
+      auto weights = proxy->Info().weights_.ConstHostSpan();
+      std::vector<float> expanded;
+      if (!weights.empty() && proxy->Info().IsRanking()) {
+        expanded = common::metal::MakeSketchWeights(rows, {}, weights, proxy->Info().group_ptr_);
+        weights = expanded;
+      }
+      CHECK(weights.empty() || weights.size() == rows);
+      sketch->SetWeights(weights);
+    }
+    bst_idx_t nnz = 0;
+    AdapterWindows(ctx, proxy, missing, [&](auto const& input) {
+      nnz += input.NonMissing();
+      ext.row_stride = std::max(ext.row_stride, input.RowStride());
+      if (sketch) sketch->Push(input);
+    });
+    ext.batch_nnz.push_back(nnz);
+    ext.nnz += nnz;
+    ext.accumulated_rows += rows;
+    ext.base_rowids.push_back(ext.accumulated_rows);
+    ++ext.n_batches;
+  } while (iter->Next());
+  iter->Reset();
+  ext.Validate();
+  if (ref)
+    GetCutsFromRef(ctx, ref, ext.n_features, p, cuts);
+  else
+    *cuts = common::metal::MakeCudaCuts(sketch->Read(), ext.n_features, p.max_bin, types);
+  sketch.reset();
+}
+}  // namespace metal_impl
 #endif
 
 namespace cpu_impl {

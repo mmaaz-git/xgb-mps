@@ -556,11 +556,14 @@ XGB_DLL int XGQuantileDMatrixCreateFromCallback(DataIterHandle iter, DMatrixHand
  * @param next     Callback function yielding the next batch of data.
  * @param config   JSON encoded parameters for DMatrix construction.  Accepted fields are:
  *   - missing:      Which value to represent missing value
- *   - cache_prefix: The path of cache file, caller must initialize all the directories in this path.
+ *   - cache_prefix: The path of cache file, caller must initialize all the directories in this
+ * path.
  *   - nthread (optional): Number of threads used for initializing DMatrix.
  *   - max_bin (optional): Maximum number of bins for building histogram. Must be consistent with
  *                         the corresponding booster training parameter.
  *   - on_host (optional): Whether the data should be placed on host memory. Used by GPU inputs.
+ *   - device (optional, Metal fork): Construction device. "mps" accepts host dense/columnar
+ *      batches and requires on_host=false for the disk cache. Omission follows the input device.
  *   - min_cache_page_bytes (optional): The minimum number of bytes for each internal GPU
  *      page. Set to 0 to disable page concatenation. Automatic configuration if the
  *      parameter is not provided or set to None.

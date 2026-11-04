@@ -15,6 +15,10 @@
 #include "simple_batch_iterator.h"  // for SimpleBatchIteratorImpl
 #include "sparse_page_source.h"     // for MakeCachePrefix
 
+#if defined(XGBOOST_USE_METAL)
+#include "metal_quantile.h"
+#endif
+
 #if !defined(XGBOOST_USE_CUDA)
 #include "../common/common.h"  // for AssertGPUSupport
 #endif
@@ -37,12 +41,28 @@ ExtMemQuantileDMatrix::ExtMemQuantileDMatrix(DataIterHandle iter_handle, DMatrix
   auto pctx = MakeProxy(proxy)->Ctx();
   {
     Context ctx;
-    ctx.Init(Args{{"nthread", std::to_string(config.n_threads)}, {"device", pctx->DeviceName()}});
+    ctx.Init(Args{{"nthread", std::to_string(config.n_threads)},
+                  {"device", config.device.empty() ? pctx->DeviceName() : config.device}});
+    CHECK(ctx.IsMPS() ? !pctx->IsCUDA() : ctx.Device() == pctx->Device())
+        << "Construction device must match the input device, except MPS accepts host arrays.";
     this->fmat_ctx_ = ctx;
   }
 
   BatchParam p{max_bin, tree::TrainParam::DftSparseThreshold()};
-  if (fmat_ctx_.IsCPU()) {
+  if (fmat_ctx_.IsMPS()) {
+    CHECK(!on_host_) << "Metal ExtMemQuantileDMatrix currently requires DataIter(on_host=False); "
+                        "the host/device adaptive cache is not implemented.";
+    CHECK(detail::HostRatioIsAuto(config.cache_host_ratio)) << error::CacheHostRatioNotImpl();
+    try {
+      this->InitFromMPS(&fmat_ctx_, iter, proxy, p, config.missing, ref);
+    } catch (...) {
+      // The class destructor is not called when construction fails. Release any
+      // active readers before removing the partially written page cache.
+      ghist_index_source_.reset();
+      DeleteCacheFiles(cache_info_);
+      throw;
+    }
+  } else if (fmat_ctx_.IsCPU()) {
     CHECK(detail::HostRatioIsAuto(config.cache_host_ratio)) << error::CacheHostRatioNotImpl();
     this->InitFromCPU(&fmat_ctx_, iter, proxy, p, config.missing, ref);
   } else {
@@ -67,6 +87,46 @@ BatchSet<ExtSparsePage> ExtMemQuantileDMatrix::GetExtBatches(Context const *, Ba
   auto begin_iter =
       BatchIterator<ExtSparsePage>(new SimpleBatchIteratorImpl<ExtSparsePage>(nullptr));
   return BatchSet<ExtSparsePage>{begin_iter};
+}
+
+void ExtMemQuantileDMatrix::InitFromMPS(
+    Context const* ctx,
+    std::shared_ptr<DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext>> iter,
+    DMatrixHandle proxy_handle, BatchParam const& p, float missing, std::shared_ptr<DMatrix> ref) {
+#if defined(XGBOOST_USE_METAL)
+  auto proxy = MakeProxy(proxy_handle);
+  ExternalDataInfo ext;
+  common::HistogramCuts cuts{0};
+  std::vector<FeatureType> types;
+  metal_impl::MakeSketches(ctx, iter.get(), proxy, ref, p, missing, &cuts, &ext, &types);
+  ext.SetInfo(ctx, true, &info_);
+  info_.feature_types.HostVector() = types;
+  n_batches_ = ext.n_batches;
+  batch_ptr_ = ext.base_rowids;
+
+  // One cache page per input batch, as in CUDA's disk-backed path. Raw input is
+  // decoded and binned on Metal; no full-dataset gradient index is allocated.
+  auto id = MakeCache(this, ".gradient_index.page", false, cache_prefix_, &cache_info_);
+  ghist_index_source_ = std::make_shared<ExtGradientIndexPageSource>(
+      ctx, missing, &info_, cache_info_.at(id), p, cuts, iter, proxy, ext.base_rowids,
+      ext.batch_nnz);
+  bst_idx_t batches = 0, rows = 0, nnz = 0;
+  for (auto const& page : GetGradientIndexImpl()) {
+    CHECK_LT(batches, ext.n_batches);
+    CHECK_EQ(page.base_rowid, ext.base_rowids[batches]);
+    CHECK_EQ(page.Size(), ext.base_rowids[batches + 1] - ext.base_rowids[batches]);
+    CHECK_EQ(page.Features(), ext.n_features);
+    rows += page.Size();
+    nnz += page.row_ptr[page.Size()];
+    ++batches;
+  }
+  CHECK_EQ(batches, ext.n_batches);
+  CHECK_EQ(rows, ext.accumulated_rows);
+  CHECK_EQ(nnz, ext.nnz);
+  CHECK_EQ(cuts.HasCategorical(), info_.HasCategorical());
+#else
+  LOG(FATAL) << "Metal ExtMemQuantileDMatrix requires a build with USE_METAL=ON.";
+#endif
 }
 
 void ExtMemQuantileDMatrix::InitFromCPU(
