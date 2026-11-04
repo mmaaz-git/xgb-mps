@@ -12,6 +12,7 @@
 #include <vector>   // for vector
 
 #include "../common/categorical.h"       // for AsCat
+#include "../common/math.h"              // for CheckNAN
 #include "../encoder/ordinal.h"          // for CatStrArrayView
 #include "../encoder/types.h"            // for Overloaded
 #include "entry.h"                       // for COOTuple
@@ -238,6 +239,11 @@ struct CatAccessor {
   template <typename T, typename Fidx>
   [[nodiscard]] XGBOOST_DEVICE T operator()(T fvalue, Fidx f_idx) const {
     if (!enc.Empty() && !enc[f_idx].empty()) {
+      // A missing value is not a dictionary code. Casting NaN to an integer is
+      // undefined in C++ and can produce zero on ARM, accidentally mapping it.
+      if (common::CheckNAN(fvalue)) {
+        return fvalue;
+      }
       auto f_mapping = enc[f_idx];
       auto cat_idx = common::AsCat(fvalue);
       if (cat_idx >= 0 && cat_idx < common::AsCat(f_mapping.size())) {

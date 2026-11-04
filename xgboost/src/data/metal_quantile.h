@@ -27,7 +27,8 @@ void AdapterWindows(Context const* ctx, DMatrixProxy const* proxy, float missing
                   std::is_same_v<A, common::metal::Tensor>) {
       std::vector<std::int32_t> map;
       enc::MappingView mapping;
-      if constexpr (std::is_same_v<A, ColumnarAdapter>) {
+      if constexpr (std::is_same_v<A, ColumnarAdapter> ||
+                    std::is_same_v<A, common::metal::Tensor>) {
         if (adapter->HasRefCategorical()) {
           CatContainer cats{adapter->RefCats(), true};
           cats.Sort(ctx);

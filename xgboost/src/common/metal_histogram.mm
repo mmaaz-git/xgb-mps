@@ -17,6 +17,7 @@
 
 #include "../collective/aggregator.h"
 #include "../data/adapter.h"
+#include "../data/columnar.h"
 #include "../data/gradient_index.h"
 #include "../data/metainfo.h"
 #include "compressed_iterator.h"
@@ -150,6 +151,8 @@ std::atomic<std::uint64_t> gradient_import_dispatches{0}, gradient_import_pairs{
 std::atomic<std::uint64_t> tensor_csr_dispatches{0}, tensor_csr_values{0},
     tensor_csr_shared_output_bytes{0}, tensor_csr_host_copy_bytes{0}, tensor_csr_gpu_time_ns{0},
     csr_shared_input_bytes{0}, csr_input_copy_bytes{0};
+std::atomic<std::uint64_t> columnar_imports{0}, columnar_pack_bytes{0}, columnar_gpu_time_ns{0},
+    category_import_dispatches{0}, category_import_shared_bytes{0}, category_import_copy_bytes{0};
 std::atomic<std::uint64_t> ellpack_csr_dispatches{0}, ellpack_csr_values{0}, ellpack_csr_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
     ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
@@ -289,6 +292,7 @@ class Runtime {
       category_extract_pipeline, category_validate_pipeline, category_recode_pipeline;
   id<MTLComputePipelineState> input_prepare_pipeline;
   id<MTLComputePipelineState> gradient_import_pipeline;
+  id<MTLComputePipelineState> tensor_gather_bytes_pipeline;
   id<MTLComputePipelineState> metadata_convert_pipeline, metadata_validate_pipeline,
       metadata_qid_mark_pipeline, metadata_qid_starts_pipeline, metadata_qid_counts_pipeline;
   id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
@@ -384,6 +388,7 @@ class Runtime {
       category_recode_pipeline = make_pipeline(@"xgb_category_recode");
       input_prepare_pipeline = make_pipeline(@"xgb_prepare_input");
       gradient_import_pipeline = make_pipeline(@"xgb_import_gradient_pairs");
+      tensor_gather_bytes_pipeline = make_pipeline(@"xgb_tensor_gather_bytes");
       metadata_convert_pipeline = make_pipeline(@"xgb_metadata_convert");
       metadata_validate_pipeline = make_pipeline(@"xgb_metadata_validate");
       metadata_qid_mark_pipeline = make_pipeline(@"xgb_metadata_qid_mark");
@@ -1985,7 +1990,13 @@ Statistics GetStatistics() {
           tensor_csr_host_copy_bytes.load(std::memory_order_relaxed),
           tensor_csr_gpu_time_ns.load(std::memory_order_relaxed),
           csr_shared_input_bytes.load(std::memory_order_relaxed),
-          csr_input_copy_bytes.load(std::memory_order_relaxed)};
+          csr_input_copy_bytes.load(std::memory_order_relaxed),
+          columnar_imports.load(std::memory_order_relaxed),
+          columnar_pack_bytes.load(std::memory_order_relaxed),
+          columnar_gpu_time_ns.load(std::memory_order_relaxed),
+          category_import_dispatches.load(std::memory_order_relaxed),
+          category_import_shared_bytes.load(std::memory_order_relaxed),
+          category_import_copy_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6070,7 +6081,13 @@ struct InputParams {
       padding{0};
 };
 static_assert(sizeof(InputArray) == 48 && sizeof(InputParams) == 56);
-class MetalTensor final : public Tensor {
+class MetalFeatureInput : public Tensor {
+ public:
+  virtual id<MTLBuffer> Buffer() const = 0;
+  virtual std::uint32_t Kind() const = 0;
+  virtual std::vector<InputArray> Arrays(std::size_t begin) const = 0;
+};
+class MetalTensor final : public MetalFeatureInput {
  public:
   id<MTLBuffer> buffer;
   InputArray array;
@@ -6151,11 +6168,182 @@ class MetalTensor final : public Tensor {
   }
   bst_idx_t NumRows() const override { return rows; }
   bst_feature_t NumColumns() const override { return columns; }
+  id<MTLBuffer> Buffer() const override { return buffer; }
+  std::uint32_t Kind() const override { return 1; }
+  std::vector<InputArray> Arrays(std::size_t begin) const override { return {Window(begin)}; }
   InputArray Window(std::size_t begin) const {
     auto out = array;
     // Import validated the complete signed-stride range against the buffer.
     out.offset = std::uint64_t(__int128(array.offset) + __int128(begin) * array.row_stride);
     return out;
+  }
+};
+// Column descriptors are metadata; only GPU commands access their payloads.
+std::unique_ptr<MetalTensor> NativeVector(Json const& json) {
+  CHECK_EQ(get<Array const>(json["shape"]).size(), 1) << "Metal columns must be vectors.";
+  return std::make_unique<MetalTensor>(Json::Dump(json), true);
+}
+template <typename T>
+std::vector<T> NativeNames(MetalTensor const& tensor) {
+  auto& rt = GetRuntime();
+  CHECK_LE(tensor.rows, rt.device.maxBufferLength / sizeof(T));
+  std::vector<T> output(tensor.rows);
+  if (output.empty()) return output;
+  auto out = TryBorrowMemory(rt.device, output.data(), output.size() * sizeof(T), alignof(T));
+  bool shared = out.buffer != nil;
+  if (!shared) out = {Allocate(rt, output.size() * sizeof(T)), 0};
+  std::uint32_t p[]{static_cast<std::uint32_t>(output.size()), sizeof(T)};
+  auto command = [rt.queue commandBuffer];
+  auto e = [command computeCommandEncoder];
+  [e setComputePipelineState:rt.tensor_gather_bytes_pipeline];
+  [e setBuffer:tensor.buffer offset:0 atIndex:0];
+  [e setBuffer:out.buffer offset:out.offset atIndex:1];
+  [e setBytes:&tensor.array length:sizeof(tensor.array) atIndex:2];
+  [e setBytes:p length:sizeof(p) atIndex:3];
+  [e dispatchThreads:MTLSizeMake(output.size(), 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  CompleteOperation(command, &category_import_dispatches, &columnar_gpu_time_ns);
+  if (!shared) std::memcpy(output.data(), out.buffer.contents, output.size() * sizeof(T));
+  (shared ? category_import_shared_bytes : category_import_copy_bytes)
+      .fetch_add(output.size() * sizeof(T), std::memory_order_relaxed);
+  return output;
+}
+::xgboost::cpu_impl::ColumnType NativeCategory(Json const& names) {
+  auto const& obj = get<Object const>(names);
+  if (obj.find("offsets") != obj.cend()) {
+    auto offsets = NativeVector(names["offsets"]), values = NativeVector(names["values"]);
+    CHECK_EQ(offsets->array.type, 6) << "String category offsets must be int32.";
+    CHECK_EQ(values->array.type, 4) << "String category values must be int8.";
+    CHECK_GT(offsets->rows, 1) << "Categorical feature must have at least one category.";
+    CHECK_LE(offsets->rows - 1, std::numeric_limits<std::int32_t>::max());
+    ::xgboost::cpu_impl::CatStrArray out{NativeNames<std::int32_t>(*offsets), NativeNames<std::int8_t>(*values)};
+    CHECK_GE(out.offsets.front(), 0) << "Invalid negative string offset from category index.";
+    CHECK(std::is_sorted(out.offsets.begin(), out.offsets.end())) << "Invalid string offsets.";
+    CHECK_LE(out.offsets.back(), out.values.size()) << "String category offset exceeds values.";
+    return out;
+  }
+  auto tensor = NativeVector(names);
+  auto code = get<Integer const>(names["dtype_code"]);
+  CHECK(code == 0 || code == 1) << error::NoFloatCat();
+  data::CheckNonEmptyCategory(tensor->rows);
+  CHECK_LE(tensor->rows, std::numeric_limits<std::int32_t>::max());
+  switch (tensor->array.type) {
+    case 4: return NativeNames<std::int8_t>(*tensor);
+    case 5: return NativeNames<std::int16_t>(*tensor);
+    case 6: return NativeNames<std::int32_t>(*tensor);
+    case 7: return NativeNames<std::int64_t>(*tensor);
+    case 8: return NativeNames<std::uint8_t>(*tensor);
+    case 9: return NativeNames<std::uint16_t>(*tensor);
+    case 10: return NativeNames<std::uint32_t>(*tensor);
+    case 11: return NativeNames<std::uint64_t>(*tensor);
+    default: LOG(FATAL) << "Unsupported category index type.";
+  }
+  return {};
+}
+class MetalColumnar final : public MetalFeatureInput {
+  id<MTLBuffer> buffer_;
+  bst_idx_t rows_{0};
+  std::vector<InputArray> arrays_;
+  ::xgboost::cpu_impl::CatContainerImpl categories_;
+  std::vector<std::int32_t> segments_{0};
+  std::shared_ptr<CatContainer> reference_;
+
+ public:
+  explicit MetalColumnar(Json const& json) {
+    @autoreleasepool {
+      auto const& columns = get<Array const>(json["columns"]);
+      CHECK_GT(columns.size(), 0) << "The number of columns must not equal to 0.";
+      CHECK_LE(columns.size(), std::numeric_limits<bst_feature_t>::max());
+      std::vector<std::unique_ptr<MetalTensor>> sources;
+      std::vector<std::size_t> destinations;
+      std::size_t length{0};
+      auto& rt = GetRuntime();
+      auto append = [&](std::unique_ptr<MetalTensor> source) {
+        auto offset = (length + 7) & ~std::size_t{7};
+        CHECK_LE(source->buffer.length, rt.device.maxBufferLength);
+        CHECK_LE(offset, rt.device.maxBufferLength - source->buffer.length);
+        length = offset + source->buffer.length;
+        destinations.push_back(offset);
+        sources.push_back(std::move(source));
+        return offset;
+      };
+      for (auto const& col : columns) {
+        auto values = NativeVector(col["values"]);
+        if (arrays_.empty()) rows_ = values->rows;
+        CHECK_EQ(values->rows, rows_) << "All columns should have the same number of rows.";
+        auto a = values->array;
+        a.offset += append(std::move(values));
+        auto const& obj = get<Object const>(col);
+        if (obj.find("mask") != obj.cend()) {
+          auto mask = NativeVector(col["mask"]);
+          CHECK_EQ(mask->array.type, 8) << "Packed validity mask must use uint8 storage.";
+          CHECK_EQ(get<Integer const>(col["mask"]["dtype_code"]), 1);
+          CHECK_EQ(mask->array.row_stride, 1) << "Packed validity mask must be contiguous.";
+          auto bit = get<Integer const>(col["mask_bit"]);
+          CHECK_GE(bit, 0);
+          CHECK_LT(bit, 8);
+          CHECK_GE(mask->rows, (rows_ + bit + 7) / 8) << "Packed validity mask is too short.";
+          a.masked = 1;
+          a.mask_bit = bit;
+          a.mask = mask->array.offset;
+          a.mask += append(std::move(mask));
+        }
+        arrays_.push_back(a);
+        if (obj.find("categories") != obj.cend()) {
+          categories_.columns.push_back(NativeCategory(col["categories"]));
+        } else {
+          categories_.columns.emplace_back();
+        }
+        auto count = std::visit([](auto const& c) { return c.size(); }, categories_.columns.back());
+        segments_.push_back(data::AddCatCount(count, segments_.back()));
+      }
+      categories_.Finalize();
+      auto const& obj = get<Object const>(json);
+      if (obj.find("ref_categories") != obj.cend()) {
+        auto handle = get<Integer const>(json["ref_categories"]);
+        CHECK_GT(handle, 0);
+        auto cats = reinterpret_cast<CatContainer const*>(handle);
+        reference_ = std::make_shared<CatContainer>(cats->HostView(), true);
+        if (reference_->HasCategorical()) {
+          CHECK_EQ(reference_->NumFeatures(), columns.size())
+              << "Invalid reference categories, different number of columns";
+        }
+      }
+      buffer_ = [rt.device newBufferWithLength:std::max<std::size_t>(16, length)
+                                       options:MTLResourceStorageModePrivate];
+      CHECK(buffer_);
+      auto command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      for (std::size_t i = 0; i < sources.size(); ++i) {
+        [blit copyFromBuffer:sources[i]->buffer sourceOffset:0 toBuffer:buffer_
+          destinationOffset:destinations[i] size:sources[i]->buffer.length];
+      }
+      [blit endEncoding];
+      CompleteOperation(command, &columnar_imports, &columnar_gpu_time_ns);
+      columnar_pack_bytes.fetch_add(length, std::memory_order_relaxed);
+    }
+  }
+  bst_idx_t NumRows() const override { return rows_; }
+  bst_feature_t NumColumns() const override { return arrays_.size(); }
+  id<MTLBuffer> Buffer() const override { return buffer_; }
+  std::uint32_t Kind() const override { return 2; }
+  std::vector<InputArray> Arrays(std::size_t begin) const override {
+    auto result = arrays_;
+    for (auto& a : result) {
+      a.offset = std::uint64_t(__int128(a.offset) + __int128(begin) * a.row_stride);
+      if (a.masked) {
+        auto bit = begin + a.mask_bit;
+        a.mask += bit / 8;
+        a.mask_bit = bit % 8;
+      }
+    }
+    return result;
+  }
+  enc::HostColumnsView Cats() const override {
+    return {categories_.columns_v, segments_, segments_.back()};
+  }
+  enc::HostColumnsView RefCats() const override {
+    return reference_ ? reference_->HostView() : enc::HostColumnsView{};
   }
 };
 struct PackedInput {
@@ -6533,21 +6721,35 @@ std::unique_ptr<AdapterInput> PrepareAdapterImpl(Adapter const& adapter, float m
 }
 }  // namespace
 std::shared_ptr<Tensor> ImportTensor(StringView descriptor) {
+  auto json = Json::Load(descriptor);
+  auto const& obj = get<Object const>(json);
+  if (obj.find("columns") != obj.cend()) return std::make_shared<MetalColumnar>(json);
   return std::make_shared<MetalTensor>(descriptor);
 }
 void CopyTensorToSparsePage(Tensor const& source, float missing, SparsePage* output) {
-  auto const& input = dynamic_cast<MetalTensor const&>(source);
-  PackedInput p{input.rows, input.columns, 1, {}};
-  p.native = input.buffer;
-  p.arrays.push_back(input.array);
-  p.params.entries = input.rows * input.columns;
+  auto const& input = dynamic_cast<MetalFeatureInput const&>(source);
+  std::vector<std::int32_t> mapping;
+  enc::MappingView map;
+  if (input.HasRefCategorical()) {
+    Context ctx;
+    ctx.Init({{"device", "mps"}});
+    CatContainer cats{input.RefCats(), true};
+    cats.Sort(&ctx);
+    auto encoded = ::xgboost::cpu_impl::MakeCatAccessor(&ctx, input.Cats(), &cats);
+    map = std::get<0>(encoded).enc;
+    mapping = std::move(std::get<1>(encoded));
+  }
+  PackedInput p{input.NumRows(), input.NumColumns(), input.Kind(), map};
+  p.native = input.Buffer();
+  p.arrays = input.Arrays(0);
+  p.params.entries = input.NumRows() * input.NumColumns();
   std::memcpy(&p.params.missing, &missing, 4);
-  auto prepared = p.FinishAdapter({}, 0, input.rows);
+  auto prepared = p.FinishAdapter(map, 0, input.NumRows());
   auto const& packed = static_cast<MetalAdapterInput const&>(*prepared);
   CHECK(!packed.has_inf) << error::InfInData();
   // CUDA reads the last row offset to size the entry allocation. All entry
   // conversion/filtering and prefix work above remains on GPU.
-  output->offset.Resize(input.rows + 1);
+  output->offset.Resize(input.NumRows() + 1);
   output->data.Resize(packed.nnz);
   auto rows = output->offset.HostSpan();
   auto entries = output->data.HostSpan();
@@ -6780,15 +6982,15 @@ void SetMetadata(MetaInfo* info, StringView field, StringView descriptor) {
 std::unique_ptr<AdapterInput> PrepareAdapter(Tensor const& source, float missing,
                                             bst_idx_t begin, bst_idx_t count,
                                             enc::MappingView mapping) {
-  auto const& input = dynamic_cast<MetalTensor const&>(source);
-  auto cols = input.columns;
-  InputBounds(input.rows * cols, begin, count);
+  auto const& input = dynamic_cast<MetalFeatureInput const&>(source);
+  auto cols = input.NumColumns();
+  InputBounds(input.NumRows() * cols, begin, count);
   CHECK_LE(count, 1ULL << 26);
   auto base = cols ? begin / cols : 0, first = cols ? begin % cols : 0;
-  auto rows = cols ? (count ? (first + count + cols - 1) / cols : 0) : input.rows;
-  PackedInput p{rows, cols, 1, mapping};
-  p.native = input.buffer;
-  p.arrays.push_back(input.Window(base));
+  auto rows = cols ? (count ? (first + count + cols - 1) / cols : 0) : input.NumRows();
+  PackedInput p{rows, cols, input.Kind(), mapping};
+  p.native = input.Buffer();
+  p.arrays = input.Arrays(base);
   p.params.first_entry = first;
   p.params.entries = count;
   std::memcpy(&p.params.missing, &missing, 4);
@@ -6799,13 +7001,13 @@ std::unique_ptr<AdapterInput> PrepareAdapter(Tensor const& source, float missing
 std::unique_ptr<InputBatch> PrepareInput(Tensor const& source, float missing, std::size_t begin,
                                         std::size_t rows, std::uint32_t features,
                                         enc::MappingView mapping) {
-  auto const& input = dynamic_cast<MetalTensor const&>(source);
-  InputBounds(input.rows, begin, rows);
-  CHECK_LE(input.columns, features);
-  PackedInput p{rows, features, 1, mapping};
-  p.params.input_features = input.columns;
-  p.native = input.buffer;
-  p.arrays.push_back(input.Window(begin));
+  auto const& input = dynamic_cast<MetalFeatureInput const&>(source);
+  InputBounds(input.NumRows(), begin, rows);
+  CHECK_LE(input.NumColumns(), features);
+  PackedInput p{rows, features, input.Kind(), mapping};
+  p.params.input_features = input.NumColumns();
+  p.native = input.Buffer();
+  p.arrays = input.Arrays(begin);
   std::memcpy(&p.params.missing, &missing, 4);
   auto result = p.Finish(mapping);
   tensor_prediction_windows.fetch_add(1, std::memory_order_relaxed);

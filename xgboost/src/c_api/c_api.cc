@@ -316,6 +316,15 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["tensor_csr_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.tensor_csr_gpu_time_ns)};
   info["csr_shared_input_bytes"] = Integer{static_cast<std::int64_t>(stats.csr_shared_input_bytes)};
   info["csr_input_copy_bytes"] = Integer{static_cast<std::int64_t>(stats.csr_input_copy_bytes)};
+  info["columnar_imports"] = Integer{static_cast<std::int64_t>(stats.columnar_imports)};
+  info["columnar_pack_bytes"] = Integer{static_cast<std::int64_t>(stats.columnar_pack_bytes)};
+  info["columnar_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.columnar_gpu_time_ns)};
+  info["category_import_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.category_import_dispatches)};
+  info["category_import_shared_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.category_import_shared_bytes)};
+  info["category_import_copy_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.category_import_copy_bytes)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -596,6 +605,12 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["tensor_csr_gpu_time_ns"] = Integer{0};
   info["csr_shared_input_bytes"] = Integer{0};
   info["csr_input_copy_bytes"] = Integer{0};
+  info["columnar_imports"] = Integer{0};
+  info["columnar_pack_bytes"] = Integer{0};
+  info["columnar_gpu_time_ns"] = Integer{0};
+  info["category_import_dispatches"] = Integer{0};
+  info["category_import_shared_bytes"] = Integer{0};
+  info["category_import_copy_bytes"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};

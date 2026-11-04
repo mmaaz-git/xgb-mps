@@ -2749,11 +2749,13 @@ class Booster:
         if _is_cudf_pandas(data):
             data = data._fsproxy_fast  # pylint: disable=protected-access
 
-        from ._metal import MetalData, is_metal
+        from ._metal import MetalColumnar, MetalData, is_metal
         from ._metal import transform as transform_metal
 
         if is_metal(data):
             data = transform_metal(data)
+            if isinstance(data, MetalColumnar) and validate_features:
+                self._validate_features(data.feature_names)
 
         enable_categorical = True
         if _is_arrow(data):
@@ -2786,7 +2788,7 @@ class Booster:
                     f"got {data.shape[1]}"
                 )
 
-        if isinstance(data, MetalData):
+        if isinstance(data, (MetalData, MetalColumnar)):
             _check_call(
                 _LIB.XGBoosterPredictFromMetal(
                     self.handle,

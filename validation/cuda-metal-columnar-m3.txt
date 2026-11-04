@@ -1,0 +1,116 @@
+Native Metal columnar buffers, validity masks and category dictionaries
+=====================================================================
+Date: 2026-11-04
+Host: Apple M3 MacBook Air, 8 CPU cores / 10 GPU cores / 16 GB unified memory.
+Baseline: 6bc2056e777c25be46325a03372e370ed6976f4c (native ordinary tensors).
+Python 3.13.5; PyTorch 2.15.0; MLX / MLX-Metal 0.32.4.
+Homebrew OpenMP selected with DYLD_LIBRARY_PATH before Python.
+
+Operation scope and authority
+-----------------------------
+Vendored data/device_adapter.cu::CudfAdapter and
+ device_adapter.cuh::EncCudfAdapterBatchImpl: independently typed columns, equal
+row counts, masks, dictionaries and reference categories; data/columnar.h defines
+integer/string name types. predictor/gpu_predictor.cu::DispatchedInplacePredict
+uses model dictionaries when the adapter supplies categories.
+
+Existing native proxy/ordinary/inplace C APIs now also accept a columns object.
+Python MetalColumnar accepts a mapping or sequence of one-dimensional native
+Metal arrays; MetalColumn adds packed uint8 validity masks and dictionary names.
+Least significant validity bit comes first, 1 means valid, mask_bit is 0..7.
+Numeric category names are signed/unsigned 8/16/32/64-bit integers. Strings use
+int32 offsets and int8 UTF-8 bytes. Floating names and empty dictionaries reject.
+Feature names/types are inferred with explicit overrides and enablement checks.
+Metadata and gradient APIs remain tensor-only and reject columnar tables.
+
+Snapshot and consolidation use GPU copies. Row values are never staged through
+NumPy/CPU arrays. Existing kernels decode the mixed columns and masks, filter
+missing values, construct sparse/quantile data and recode categorical codes.
+The same input works with ordinary/quantile matrices, external iterators in both
+cache modes, reference categories, inplace prediction and CPU tree fallback.
+DLPack exports are retained across iterator resets, deduplicated by object
+identity and consumed exactly once. Known producer queues synchronize before
+each snapshot; generic producers/raw capsules must provide completed buffers.
+
+Dictionary gathering copies exact bytes on GPU, including strided int64 names
+that differ beyond floating precision. Outputs use guarded shared views with a
+counted CPU-copy fallback. Existing host-owned dictionary containers and their
+GPU sort/recode packer are reused. Host container copies/uploads and persistent
+GPU dictionary ownership remain unfinished; this is not an end-to-end device
+ownership claim. Consolidation currently adds a GPU copy, with optimization
+deferred in accordance with the coverage-first priority.
+
+New counters: columnar_imports, columnar_pack_bytes, columnar_gpu_time_ns,
+category_import_dispatches, category_import_shared_bytes, category_import_copy_bytes.
+They separate table consolidation, exact dictionary gathers and copy fallback.
+Existing tensor counters retain snapshot accounting. Statistics ABI grew; all
+native callers are rebuilt, including unchanged executables.
+
+CPU defect found by equivalence tests
+------------------------------------
+The shared CatAccessor converted NaN to an integer before dictionary lookup.
+On this ARM host that could produce code zero and turn missing rows into a real
+category. Added an explicit NaN guard before the cast. Tests independently check
+missing rows, not merely agreement between two paths using the same accessor.
+Metal already preserved NaN. This removes undefined C++ behavior; no NVIDIA
+execution or claim about measured NVIDIA NaN conversion is made.
+
+Focused validation
+------------------
+Native: PASS 48 cases / 9,263 field checks / 14 rejected descriptors.
+- Private Metal buffers, source overwrite/release, double conversion, negative/
+  zero strides, all eight mask offsets, cropped prediction windows with feature
+  padding, partial flattened sketch windows and no feature payload staging.
+- Exact category names for every integer width, strided/reversed/broadcast views,
+  dictionary shared/copy byte accounting and completed GPU gathers.
+- Reject unequal rows, no columns, short/noncontiguous/wrong-type masks, invalid
+  bit offsets, float/bool/empty dictionaries and invalid string offsets.
+- Shared CPU accessor preserves four NaN bit-pattern fixtures.
+Log: results/native-columnar-native-v2.log, Metal API validation enabled.
+
+Python: PASS 62 cases / 225 warnings / 5.78 seconds.
+- Real PyTorch/MLX; mixed half/float/integer/bool features; strided columns;
+  every mask bit offset; GPU-only providers reject accidental NumPy conversion.
+- Exact CSR/cuts and native/host model bytes separately on CPU/MPS, feature-name
+  validation, CPU tree fallback, serialization and unknown-category rejection.
+- int64 names at both extrema and adjacent values beyond 2^53; UTF-8, empty
+  strings and embedded NUL names; dictionary reordering and reference recoding.
+- External host/disk modes, empty first/middle/last batches, references with
+  different per-batch dictionary orders, source release/cache cleanup.
+- Aliased legacy/versioned capsules used simultaneously as names and codes;
+  exact-once deleters and snapshots independent of subsequent source mutation.
+Log: results/native-columnar-python-final-v2.log.
+Prior broader input regression: 827 passed, eight test-shape errors; the eight
+were corrected and are included in the final 62. No numerical tolerance widened.
+
+Test corrections were API/schema assumptions: set_param takes a mapping,
+categorical enablement defaults to true, numeric feature types q vs float must
+match for byte serialization, optional pyarrow was not installed (exact names
+are checked natively and in serialized models), and common empty inplace output
+has shape (0,0) even in strict mode. Empty shapes are now compared per batch;
+scalar values are flattened only for the cross-batch comparison.
+
+Final full regression
+---------------------
+PASS 2026-11-04T21:22:27Z -> 21:30:07Z (7m40s), FULL_EXIT=0.
+- All 83 native check groups and the test-only CUDA-source reference updater rebuilt/passed.
+- 3,201 Python tests passed, one skipped, 617 warnings, 174.10 seconds.
+- CPU-only configure/build/API/device/cache checks passed; native Metal entry
+  points reject explicitly and all six new statistics fields report zero.
+- No production/test changes after the final build/run; documentation finalized later.
+Driver: results/run-native-columnar-full-v2.sh.
+Session: tmux xgb-native-columnar-full (completed).
+Logs: results/native-columnar-full-driver-v2.log,
+ build-native-columnar-final-v2.log, native-columnar-python-final-v2.log,
+ test-native-columnar-full-v2.log, configure-cpu-native-columnar-v2.log,
+ build-cpu-native-columnar-v2.log, check-cpu-native-columnar-v2.log.
+Changed Python code/tests pass ruff F/I and format checks; git diff --check clean.
+
+Remaining scope
+---------------
+GPU prediction outputs, generic metadata Slice/Extend and state ownership,
+persistent GPU dictionary storage/copies, remaining CUDA arithmetic audits,
+GPU collectives and cross-hardware validation. No new benchmark in this step.
+Native CSR/CSC device-array bindings are not a CUDA parity requirement: upstream
+explicitly rejects cupyx sparse inputs. Internal GPU sparse operations and host
+sparse input remain in scope.

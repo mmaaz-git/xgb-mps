@@ -5,6 +5,7 @@ import json
 import sys
 import warnings
 import weakref
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -75,7 +76,7 @@ def _capsule(data: Any) -> Any:
 
 
 def is_metal(data: Any) -> bool:
-    if isinstance(data, MetalData):
+    if isinstance(data, (MetalData, MetalColumnar)):
         return True
     if type(data).__name__ == "PyCapsule":
         capsule = _capsule(data)
@@ -196,7 +197,159 @@ class MetalData:
         return descriptor
 
 
-def transform(data: Any, *, allow_tensor_shape: bool = False) -> MetalData:
+class MetalColumn:
+    """One native Metal column, optionally masked or dictionary encoded.
+
+    ``values`` is a one-dimensional Metal DLPack tensor (PyTorch MPS and MLX
+    are supported). ``mask`` is an optional contiguous uint8 Metal tensor of
+    packed validity bits: the least significant bit is first, and 1 means valid.
+    ``mask_bit`` selects the first row's bit within the first byte (0 through 7).
+
+    For a categorical column, ``values`` contains dictionary codes and
+    ``categories`` is either an integer Metal tensor of names, or a pair
+    ``(offsets, values)`` of int32 offsets and int8 UTF-8 bytes on Metal. Category
+    names must be nonempty. Use ``enable_categorical=True`` when making a matrix.
+    These are experimental interfaces specific to this Metal fork.
+    """
+
+    def __init__(
+        self,
+        values: Any,
+        *,
+        mask: Any = None,
+        mask_bit: int = 0,
+        categories: Any = None,
+    ) -> None:
+        self.values = values
+        self.mask = mask
+        self.mask_bit = mask_bit
+        self.categories = categories
+
+
+class MetalColumnar:
+    """A native Metal table with independently typed one-dimensional columns.
+
+    Pass a mapping from feature names to tensors or :py:class:`MetalColumn`
+    objects, or a sequence of unnamed columns. All columns must have equal row
+    counts. The table retains DLPack exports across iterator resets; each C API
+    import makes an owned GPU snapshot. Payloads are never converted via NumPy.
+    Known PyTorch/MLX producers are synchronized before each import. Other
+    producers and raw capsules must supply completed buffers.
+
+    Example::
+
+        table = xgboost.MetalColumnar({"size": mps_float_tensor,
+                                      "count": mps_integer_tensor})
+        matrix = xgboost.QuantileDMatrix(table, labels)
+    """
+
+    def __init__(self, columns: Any) -> None:
+        self.feature_names = list(columns) if isinstance(columns, Mapping) else None
+        if self.feature_names is not None:
+            if not all(isinstance(name, str) for name in self.feature_names):
+                raise TypeError("Metal feature names must be strings.")
+            columns = list(columns.values())
+        else:
+            columns = list(columns)
+        if not columns:
+            raise ValueError("The number of columns must not equal to 0.")
+        captured = {}
+
+        def vector(value: Any) -> MetalData:
+            key = id(value)
+            if key not in captured:
+                if not is_metal(value) or isinstance(value, MetalColumnar):
+                    raise TypeError(
+                        "Metal columns require native Metal DLPack tensors."
+                    )
+                captured[key] = transform(value, allow_tensor_shape=True)
+            tensor = captured[key]
+            if len(tensor.shape) != 1:
+                raise ValueError("Metal columns must be vectors.")
+            return tensor
+
+        self._columns = []
+        self.feature_types = []
+        rows = None
+        for column in columns:
+            column = column if isinstance(column, MetalColumn) else MetalColumn(column)
+            values = vector(column.values)
+            if rows is None:
+                rows = values.shape[0]
+            if rows != values.shape[0]:
+                raise ValueError("All columns should have the same number of rows.")
+            entry = {"values": values}
+            if column.mask is not None:
+                if not isinstance(column.mask_bit, int) or not 0 <= column.mask_bit < 8:
+                    raise ValueError("mask_bit must be an integer from 0 through 7.")
+                entry.update(mask=vector(column.mask), mask_bit=column.mask_bit)
+            elif column.mask_bit:
+                raise ValueError("mask_bit requires a validity mask.")
+            if column.categories is not None:
+                names = column.categories
+                if isinstance(names, tuple) and len(names) == 2:
+                    entry["categories"] = dict(
+                        offsets=vector(names[0]), values=vector(names[1])
+                    )
+                else:
+                    entry["categories"] = vector(names)
+            self._columns.append(entry)
+            self.feature_types.append("c" if column.categories is not None else "q")
+        self.shape = (rows, len(columns))
+        self._reference = None
+
+    def _with_reference(self, reference: Any) -> "MetalColumnar":
+        # Reuse retained exports without mutating a caller's table or re-consuming
+        # its capsules when two matrices use different reference dictionaries.
+        result = object.__new__(MetalColumnar)
+        result.__dict__ = self.__dict__.copy()
+        result._reference = reference
+        return result
+
+    @property
+    def descriptor(self) -> bytes:
+        """Synchronize producers and describe the retained native buffers."""
+        _synchronize()
+
+        def encode(value: Any) -> Any:
+            if isinstance(value, MetalData):
+                return json.loads(value._descriptor)
+            if isinstance(value, dict):
+                return {key: encode(item) for key, item in value.items()}
+            return value
+
+        result = dict(columns=[encode(column) for column in self._columns])
+        if self._reference is not None and not self._reference.empty():
+            result["ref_categories"] = self._reference.get_handle()
+        return json.dumps(result).encode("utf-8")
+
+
+def transform_features(data, feature_names, feature_types, enable_categorical):
+    """Infer a native table's schema and retain optional reference categories."""
+    from ._data_utils import Categories, get_ref_categories
+
+    data = transform(data)
+    if isinstance(data, MetalColumnar):
+        feature_types, reference = get_ref_categories(feature_types)
+        if "c" in data.feature_types and not enable_categorical:
+            raise ValueError(
+                "Categorical Metal columns require enable_categorical=True."
+            )
+        feature_names = data.feature_names if feature_names is None else feature_names
+        feature_types = data.feature_types if feature_types is None else feature_types
+        return data._with_reference(reference), feature_names, feature_types
+    if isinstance(feature_types, Categories):
+        raise ValueError("Reference category requires columnar input.")
+    return data, feature_names, feature_types
+
+
+def transform(data: Any, *, allow_tensor_shape: bool = False) -> Any:
+    if isinstance(data, MetalColumnar):
+        if allow_tensor_shape:
+            raise TypeError(
+                "Metal columnar tables cannot be used as metadata or gradients."
+            )
+        return data
     return (
         data
         if isinstance(data, MetalData)

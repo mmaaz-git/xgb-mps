@@ -600,15 +600,23 @@ class CPUPredictor : public Predictor {
       CHECK(metal_prediction) << "Native Metal inplace prediction requires device=mps.";
       auto input = std::any_cast<std::shared_ptr<common::metal::Tensor>>(proxy->Adapter());
       CheckProxyDMatrix(input, proxy, model.learner_model_param);
+      std::vector<std::int32_t> mapping;
+      enc::MappingView map;
+      if (model.Cats()->HasCategorical() && input->HasCategorical()) {
+        auto encoded = MakeCatAccessor(ctx_, input->Cats(), model.Cats());
+        map = std::get<0>(encoded).enc;
+        mapping = std::move(std::get<1>(encoded));
+      }
       struct View {
         common::metal::Tensor const &input;
         float missing;
+        enc::MappingView mapping;
         bst_idx_t const base_rowid{0};
         bst_idx_t Size() const { return input.NumRows(); }
         auto PrepareMetal(std::size_t begin, std::size_t rows, bst_feature_t features) const {
-          return common::metal::PrepareInput(input, missing, begin, rows, features, {});
+          return common::metal::PrepareInput(input, missing, begin, rows, features, mapping);
         }
-      } view{*input, missing};
+      } view{*input, missing, map};
       auto output = linalg::MakeTensorView(ctx_, predictions, input->NumRows(), n_groups);
       MetalPredictBatch(view, metal_prediction.get(), h_model, output);
       return true;

@@ -121,6 +121,8 @@ struct Statistics {
   std::uint64_t tensor_csr_dispatches, tensor_csr_values, tensor_csr_shared_output_bytes,
       tensor_csr_host_copy_bytes, tensor_csr_gpu_time_ns, csr_shared_input_bytes,
       csr_input_copy_bytes;
+  std::uint64_t columnar_imports, columnar_pack_bytes, columnar_gpu_time_ns,
+      category_import_dispatches, category_import_shared_bytes, category_import_copy_bytes;
 };
 
 class Histogram {

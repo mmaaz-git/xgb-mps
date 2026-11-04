@@ -14,7 +14,26 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **native Metal input for ordinary `DMatrix`**. PyTorch/MLX feature
+Latest step: **native Metal columnar input**. `xgb.MetalColumnar` accepts named or
+unnamed PyTorch/MLX columns with independent datatypes. `xgb.MetalColumn` adds
+packed validity masks and integer or UTF-8 categorical dictionaries. Ordinary
+and quantile matrices, external iterators, reference-category recoding, inplace
+prediction and CPU tree fallback now accept these tables. Feature values remain
+in owned GPU snapshots; mask decoding and row-code mapping run on Metal.
+
+Integer dictionary names are copied exactly, including int64 values beyond
+float precision. Name gathering runs on GPU into owned dictionary storage;
+existing dictionary sorting and mapping kernels are reused. General persistent
+dictionary storage/copy ownership remains host-based. A shared CPU accessor fix
+also preserves missing categories explicitly instead of casting NaN to an integer.
+
+Validation passes **62 new Python tests** and **48 native cases / 9,263 field
+checks / 14 rejected descriptors**. Full regression passes **3,201 Python tests,
+one skip**, all **83 rebuilt native check groups**, and CPU-only build/API checks.
+[Columnar validation](validation/cuda-metal-columnar-m3.txt).
+No new benchmark or NVIDIA execution comparison.
+
+The preceding step added **native Metal input for ordinary `DMatrix`**. PyTorch/MLX feature
 tensors and DLPack capsules now work in ordinary constructors and external-data
 iterators. Missing-value filtering, per-row counts, prefix scans and sparse entry
 packing run on GPU. Native inputs also work with CPU tree prediction fallback.
@@ -339,8 +358,7 @@ The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
-The major remaining areas are native columnar input and GPU output
-tensor interoperability, general metadata/state ownership and manipulation,
+The major remaining areas are GPU output tensor interoperability, general metadata/state ownership and manipulation,
 remaining initialization/state operations,
 CUDA algorithm alignment and distributed collectives. Compressed disk caches,
 internal ELLPACK save/load and optional Snappy compute compression are implemented.
@@ -418,7 +436,8 @@ model = xgb.train({"device": "mps", "tree_method": "hist", "max_bin": 256}, trai
 Construction device is independent of booster device. Omitting it selects MPS
 for native Metal feature tensors and CPU for host arrays. Dense/columnar host
 and native Metal `DataIter` batches are supported, including native metadata.
-Native sparse adapters remain open; CPU quantized views are materialized on demand.
+CPU quantized views are materialized on demand. Native CSR/CSC bindings are not
+a CUDA parity requirement; upstream rejects those device-array inputs.
 
 Native feature inputs use the producer's Metal DLPack export:
 
@@ -446,6 +465,32 @@ return its producer tensor on each callback. Labels, weights, base margins,
 survival bounds, feature weights and group/qid metadata may be native tensors
 or host arrays. Float16/32/64, integer widths and bool are supported
 by the native interface, subject to each producer's dtype support.
+
+For independently typed columns, use the explicit native table wrapper:
+
+```python
+columns = xgb.MetalColumnar({
+    "amount": torch.randn(1000, device="mps"),
+    "kind": xgb.MetalColumn(
+        torch.arange(1000, device="mps", dtype=torch.int32) % 3,
+        categories=torch.tensor([10, 20, 30], device="mps", dtype=torch.int64),
+    ),
+})
+train = xgb.QuantileDMatrix(columns, y_gpu, enable_categorical=True)
+model = xgb.train({"device": "mps"}, train)
+prediction = model.inplace_predict(columns)
+```
+
+A column's optional `mask` is a contiguous GPU uint8 tensor of packed validity
+bits: least significant bit first, 1 means valid. `mask_bit=0..7` selects the
+first row's bit. String dictionaries use `categories=(offsets, values)`, with
+GPU int32 offsets and int8 UTF-8 bytes. Pass `feature_types=model.get_categories()`
+when constructing a new matrix that should recode against the training dictionary.
+Table columns must have equal row counts, and category dictionaries must be
+nonempty. A table retains its DLPack exports across iterator resets; producer
+writes are completed before each import. A producer that replaces its allocation
+requires a new table. Numeric feature types default to `q`, dictionary columns to
+`c`; named tables also participate in prediction feature-name checks.
 
 Custom objectives can return Metal gradients and Hessians through the same
 DLPack bridge. `Objective` and `TreeObjective` are supported, including distinct
@@ -513,7 +558,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Host dense/columnar and native Metal quantile inputs feed resident sketches; distributed sketches remain open |
 | Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Model dictionary copies, persistent storage and row-level map application remain host |
 | Quantized data cache | Ordinary in-memory DMatrix pages use raw CSR-to-ELLPACK compression. Quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly; CPU access explicitly materializes host mirrors. Compressed disk storage, internal ELLPACK save/load and optional native Snappy compression are implemented |
-| Native Apple feature tensors | Metal DLPack inputs for ordinary and quantile matrices, external iterators and inplace prediction/CPU fallback; GPU sparse entry packing, strided snapshots, half decoding and PyTorch/MLX synchronization. GPU outputs and native columnar adapters remain open |
+| Native Apple feature tensors | Metal DLPack inputs for ordinary and quantile matrices, external iterators and inplace prediction/CPU fallback; GPU sparse entry packing, strided snapshots, half decoding and PyTorch/MLX synchronization. Native columnar masks and integer/string dictionaries now use the same consumers. GPU outputs and persistent dictionary ownership remain open |
 | Native custom-gradient imports | CUDA typed casts and GPU pair packing for regular and split/value entry points; real PyTorch/MLX and legacy/versioned capsules. Safe shared destinations or counted copy fallback; generic allocation remains host-owned |
 | Native metadata imports | GPU typed copies/conversion and CUDA label/weight predicates; GPU query-ID RLE/prefix scans. Scalars, vectors, matrices, empty/strided data and half supported. Final group boundaries and group-size prefix sums remain host as in CUDA; general allocation/slicing/concatenation remain host |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |

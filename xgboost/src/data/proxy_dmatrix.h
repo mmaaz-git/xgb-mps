@@ -23,6 +23,8 @@
 #include "xgboost/string_view.h"   // for StringView
 
 namespace xgboost::data {
+class DMatrixProxy;
+enc::HostColumnsView MetalBatchCats(DMatrixProxy const* proxy);
 /**
  * @brief A proxy to external iterator.
  *
@@ -272,7 +274,7 @@ decltype(auto) DispatchAny(DMatrixProxy const* proxy, Fn&& fn, bool* type_error 
  * @return A host view to the categories
  */
 [[nodiscard]] inline decltype(auto) BatchCats(DMatrixProxy const* proxy) {
-  if (proxy->Ctx()->IsMPS()) return enc::HostColumnsView{};
+  if (proxy->Ctx()->IsMPS()) return MetalBatchCats(proxy);
   return DispatchAny<false>(proxy, [](auto const& adapter) -> decltype(auto) {
     using AdapterT = typename std::remove_reference_t<decltype(adapter)>::element_type;
     if constexpr (std::is_same_v<AdapterT, ColumnarAdapter>) {

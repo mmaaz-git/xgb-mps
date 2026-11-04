@@ -81,11 +81,20 @@ XGB_DLL int XGBuildInfo(char const **out);
  */
 XGB_DLL int XGBMetalInfo(char const **out);
 
-/** Import a native Metal feature tensor into a proxy. `data` is a JSON descriptor
+/** Import a native Metal feature tensor or columnar table into a proxy.
+ * A tensor's `data` is a JSON descriptor
  * with device_type=8, device_id=0, buffer (valid id<MTLBuffer> address), byte_offset,
  * two-dimensional shape, element strides and DLPack dtype_code/dtype_bits/dtype_lanes.
  * The caller must finish producer GPU work and retain the source through this call.
  * Import copies the addressed byte span to owned GPU storage before returning.
+ * A table uses {"columns": [column, ...], "ref_categories": optional category handle}.
+ * Each column has "values" (a one-dimensional tensor descriptor), optional "mask"
+ * (contiguous uint8 tensor, packed validity bits with least significant bit first),
+ * "mask_bit" (0..7, required with mask), and optional "categories". Categories are
+ * an integer tensor of names, or {"offsets": int32 tensor, "values": int8 tensor}
+ * for string names. Mask bit 1 means valid. All columns must have equal row counts.
+ * Category names are copied exactly into owned dictionary storage; sorting,
+ * dictionary mapping and row-code conversion use Metal kernels.
  */
 XGB_DLL int XGProxyDMatrixSetDataMetal(DMatrixHandle handle, char const *data);
 /** Create an ordinary DMatrix from the same native Metal feature descriptor.

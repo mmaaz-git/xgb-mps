@@ -7472,6 +7472,16 @@ inline uint xgb_input_float(device const uchar* data, InputArray a, ulong row, u
   float value = (a.type < 8) ? float(as_type<long>(bits)) : float(bits);
   return as_type<uint>(value);
 }
+// Copy exact dictionary bit patterns, including strided int64 names, without
+// float conversion. Also used for packed validity bytes.
+kernel void xgb_tensor_gather_bytes(
+    device const uchar* source [[buffer(0)]], device uchar* output [[buffer(1)]],
+    constant InputArray& a [[buffer(2)]], constant uint2& p [[buffer(3)]],
+    uint i [[thread_position_in_grid]]) {
+  if (i >= p.x) return;
+  for (uint b = 0; b < p.y; ++b)
+    output[ulong(i) * p.y + b] = source[long(a.offset) + long(i) * a.row_stride + b];
+}
 struct GradientImportParams { ulong count; uint columns, padding; };
 kernel void xgb_import_gradient_pairs(
     device const uchar* grad [[buffer(0)]], device const uchar* hess [[buffer(1)]],

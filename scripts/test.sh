@@ -42,6 +42,15 @@ clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
   -framework Metal -framework Foundation -Wl,-rpath,"$PWD/xgboost/lib" \
   -o results/metal_tensor_csr_api_test
 MTL_DEBUG_LAYER=1 results/metal_tensor_csr_api_test
+echo "Checking native columnar snapshots, validity bits and exact dictionary gathers"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_columnar_api.mm \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -framework Metal -framework Foundation -Wl,-rpath,"$PWD/xgboost/lib" \
+  -o results/metal_columnar_api_test
+MTL_DEBUG_LAYER=1 results/metal_columnar_api_test
 echo "Compiling standalone tests against the production Metal shader"
 echo "Checking CUDA ranking random draws and independent engine positions"
 clang++ -O2 -std=c++17 -fobjc-arc tests/metal_ranking_rng.mm \

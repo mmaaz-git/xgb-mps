@@ -24,6 +24,15 @@
 #endif
 
 namespace xgboost::data {
+enc::HostColumnsView MetalBatchCats(DMatrixProxy const *proxy) {
+#if defined(XGBOOST_USE_METAL)
+  auto input = std::any_cast<std::shared_ptr<common::metal::Tensor>>(proxy->Adapter());
+  return input->HasRefCategorical() ? input->RefCats() : input->Cats();
+#else
+  LOG(FATAL) << "Metal tensor input requires XGBoost built with USE_METAL=ON.";
+  return {};
+#endif
+}
 void MetalPush(DMatrixProxy *proxy, float missing, SparsePage *page) {
 #if defined(XGBOOST_USE_METAL)
   auto tensor = std::any_cast<std::shared_ptr<common::metal::Tensor>>(proxy->Adapter());
@@ -129,7 +138,14 @@ std::shared_ptr<DMatrix> CreateDMatrixFromProxy(Context const *ctx,
 }
 
 [[nodiscard]] bool BatchCatsIsRef(DMatrixProxy const *proxy) {
-  if (proxy->Ctx()->IsMPS()) return false;
+  if (proxy->Ctx()->IsMPS()) {
+#if defined(XGBOOST_USE_METAL)
+    return std::any_cast<std::shared_ptr<common::metal::Tensor>>(proxy->Adapter())
+        ->HasRefCategorical();
+#else
+    return false;
+#endif
+  }
   if (proxy->Device().IsCUDA()) {
 #if defined(XGBOOST_USE_CUDA)
     return cuda_impl::BatchCatsIsRef(proxy);

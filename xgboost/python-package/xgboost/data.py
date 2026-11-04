@@ -46,6 +46,7 @@ from ._data_utils import (
 )
 from ._metal import is_metal
 from ._metal import transform as transform_metal
+from ._metal import transform_features as transform_metal_features
 from ._typing import (
     CupyT,
     DataType,
@@ -1319,8 +1320,9 @@ def dispatch_data_backend(
         return True
 
     if is_metal(data):
-        assert check_cats(feature_types)
-        tensor = transform_metal(data)
+        tensor, feature_names, feature_types = transform_metal_features(
+            data, feature_names, feature_types, enable_categorical
+        )
         handle = ctypes.c_void_p()
         _check_call(
             _LIB.XGDMatrixCreateFromMetal(
@@ -1629,7 +1631,9 @@ def _proxy_transform(
     enable_categorical: bool,
 ) -> TransformedData:
     if is_metal(data):
-        return transform_metal(data), feature_names, feature_types
+        return transform_metal_features(
+            data, feature_names, feature_types, enable_categorical
+        )
     if _is_cudf_pandas(data):
         data = data._fsproxy_fast  # pylint: disable=protected-access
     if _is_cudf_df(data) or _is_cudf_ser(data):
