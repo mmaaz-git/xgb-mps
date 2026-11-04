@@ -46,25 +46,34 @@ void ValidateLabel(Context const* ctx, MetaInfo const& info, std::int64_t n_clas
   auto check = [=] XGBOOST_DEVICE(float y) -> bool {
     return y >= 0 && y < n_classes && std::floor(y) == y;
   };
-  auto valid = ctx->DispatchDevice(
-      [&] { return std::all_of(linalg::cbegin(label), linalg::cend(label), check); },
-      [&] {
+  bool valid;
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    valid = common::metal::ValidateLabels(common::metal::LabelDomain::kClassIndex,
+                                          info.labels.HostView(), n_classes);
+  } else
+#endif
+  {
+    valid = ctx->DispatchDevice(
+        [&] { return std::all_of(linalg::cbegin(label), linalg::cend(label), check); },
+        [&] {
 #if defined(XGBOOST_USE_CUDA)
-        return common::AllOf(ctx->CUDACtx()->CTP(), linalg::tcbegin(label), linalg::tcend(label),
-                             check);
+          return common::AllOf(ctx->CUDACtx()->CTP(), linalg::tcbegin(label), linalg::tcend(label),
+                               check);
 #else
-        common::AssertGPUSupport();
-        return false;
+          common::AssertGPUSupport();
+          return false;
 #endif  // defined(XGBOOST_USE_CUDA)
-      },
-      [&] {
+        },
+        [&] {
 #if defined(XGBOOST_USE_SYCL)
-        return sycl::linalg::Validate(ctx->Device(), label, check);
+          return sycl::linalg::Validate(ctx->Device(), label, check);
 #else
-        common::AssertSYCLSupport();
-        return false;
+          common::AssertSYCLSupport();
+          return false;
 #endif  // defined(XGBOOST_USE_SYCL)
-      });
+        });
+  }
   CHECK(valid)
       << "SoftmaxMultiClassObj: label must be discrete values in the range of [0, num_class).";
 }

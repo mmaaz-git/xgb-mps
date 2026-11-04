@@ -258,6 +258,12 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.ranking_roc_auc_gpu_time_ns)};
   info["sketch_finalize_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.sketch_finalize_dispatches)};
+  info["label_validation_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.label_validation_dispatches)};
+  info["base_score_dispatches"] = Integer{static_cast<std::int64_t>(stats.base_score_dispatches)};
+  info["base_score_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.base_score_gpu_time_ns)};
+  info["label_validation_gpu_time_ns"] =
+      Integer{static_cast<std::int64_t>(stats.label_validation_gpu_time_ns)};
   info["expectile_init_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.expectile_init_dispatches)};
   info["prediction_init_dispatches"] =
@@ -349,6 +355,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ranking_roc_auc_dispatches"] = Integer{0};
   info["ranking_roc_auc_gpu_time_ns"] = Integer{0};
   info["sketch_finalize_dispatches"] = Integer{0};
+  info["label_validation_dispatches"] = Integer{0};
+  info["base_score_dispatches"] = Integer{0};
+  info["base_score_gpu_time_ns"] = Integer{0};
+  info["label_validation_gpu_time_ns"] = Integer{0};
   info["expectile_init_dispatches"] = Integer{0};
   info["prediction_init_dispatches"] = Integer{0};
   info["initialization_gpu_time_ns"] = Integer{0};

@@ -44,6 +44,8 @@ std::atomic<std::uint64_t> sketch_finalize_dispatches{0}, sketch_finalize_column
     sketch_finalize_gpu_time_ns{0};
 std::atomic<std::uint64_t> expectile_init_dispatches{0}, prediction_init_dispatches{0},
     initialization_gpu_time_ns{0};
+std::atomic<std::uint64_t> label_validation_dispatches{0}, label_validation_gpu_time_ns{0};
+std::atomic<std::uint64_t> base_score_dispatches{0}, base_score_gpu_time_ns{0};
 std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches{0},
     column_sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
@@ -135,6 +137,8 @@ class Runtime {
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline, sketch_finalize_pipeline;
   id<MTLComputePipelineState> expectile_init_pipeline, broadcast_targets_pipeline;
+  id<MTLComputePipelineState> label_validation_pipeline;
+  id<MTLComputePipelineState> base_score_pipeline;
   id<MTLComputePipelineState> column_iota_pipeline, column_rng_pipeline, column_keys_pipeline,
       column_select_pipeline, column_sort_small_pipeline, column_output_pipeline,
       column_sample_small_pipeline;
@@ -211,6 +215,8 @@ class Runtime {
       sketch_finalize_pipeline = make_pipeline(@"xgb_sketch_finalize");
       expectile_init_pipeline = make_pipeline(@"xgb_expectile_init");
       broadcast_targets_pipeline = make_pipeline(@"xgb_broadcast_targets");
+      label_validation_pipeline = make_pipeline(@"xgb_validate_labels");
+      base_score_pipeline = make_pipeline(@"xgb_base_score");
       column_iota_pipeline = make_pipeline(@"xgb_column_iota");
       column_rng_pipeline = make_pipeline(@"xgb_column_rng");
       column_keys_pipeline = make_pipeline(@"xgb_column_keys");
@@ -1051,7 +1057,11 @@ Statistics GetStatistics() {
           sketch_finalize_gpu_time_ns.load(std::memory_order_relaxed),
           expectile_init_dispatches.load(std::memory_order_relaxed),
           prediction_init_dispatches.load(std::memory_order_relaxed),
-          initialization_gpu_time_ns.load(std::memory_order_relaxed)};
+          initialization_gpu_time_ns.load(std::memory_order_relaxed),
+          label_validation_dispatches.load(std::memory_order_relaxed),
+          label_validation_gpu_time_ns.load(std::memory_order_relaxed),
+          base_score_dispatches.load(std::memory_order_relaxed),
+          base_score_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -3366,6 +3376,91 @@ void Gradients(Objective objective, Span<float const> predictions, Span<float co
     objective_shared_input_bytes.fetch_add(shared_input, std::memory_order_relaxed);
     objective_shared_output_bytes.fetch_add(shared_output, std::memory_order_relaxed);
     objective_staging_bytes.fetch_add(staged, std::memory_order_relaxed);
+  }
+}
+bool ValidateLabels(LabelDomain domain, linalg::MatrixView<float const> labels,
+                    std::int64_t n_classes) {
+  CHECK_LE(static_cast<std::uint32_t>(domain),
+           static_cast<std::uint32_t>(LabelDomain::kClassIndex));
+  if (domain == LabelDomain::kAny || labels.Size() == 0) return true;
+  CHECK_LE(labels.Shape(0), std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(labels.Shape(1), std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(labels.Size(), std::numeric_limits<std::uint32_t>::max());
+  // Validate strides without overflowing the address calculation.
+  auto available = labels.Values().size();
+  CHECK_GT(available, 0);
+  std::size_t last = 0;
+  for (std::size_t d = 0; d < 2; ++d) {
+    if (labels.Stride(d)) {
+      CHECK_LE(labels.Shape(d) - 1, (available - 1 - last) / labels.Stride(d));
+      last += (labels.Shape(d) - 1) * labels.Stride(d);
+    }
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto invalid = Allocate(rt, sizeof(std::uint32_t));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto clear = [command blitCommandEncoder];
+    CHECK(clear);
+    [clear fillBuffer:invalid range:NSMakeRange(0, invalid.length) value:0];
+    [clear endEncoding];
+    struct {
+      std::uint64_t stride0, stride1;
+      std::uint32_t columns, domain;
+      float class_limit;
+      std::uint32_t padding;
+    } p{labels.Stride(0),
+        labels.Stride(1),
+        static_cast<std::uint32_t>(labels.Shape(1)),
+        static_cast<std::uint32_t>(domain),
+        static_cast<float>(n_classes),
+        0};
+    static_assert(sizeof(p) == 32);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.label_validation_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:invalid offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(labels.Size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &label_validation_dispatches, &label_validation_gpu_time_ns);
+    return *static_cast<std::uint32_t const*>(invalid.contents) == 0;
+  }
+}
+bool BaseScoreToMargin(BaseScoreTransform transform, Span<float> values) {
+  auto kind = static_cast<std::uint32_t>(transform);
+  CHECK_LE(kind, static_cast<std::uint32_t>(BaseScoreTransform::kPositiveLogarithm));
+  if (transform == BaseScoreTransform::kIdentity || values.empty()) return true;
+  CHECK_LE(values.size(), std::numeric_limits<std::uint32_t>::max());
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, values.data(), values.size_bytes());
+    auto output = Allocate(rt, values.size_bytes());
+    auto invalid = Allocate(rt, sizeof(std::uint32_t));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto clear = [command blitCommandEncoder];
+    CHECK(clear);
+    [clear fillBuffer:invalid range:NSMakeRange(0, invalid.length) value:0];
+    [clear endEncoding];
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.base_score_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:output offset:0 atIndex:1];
+    [e setBuffer:invalid offset:0 atIndex:2];
+    [e setBytes:&kind length:sizeof(kind) atIndex:3];
+    [e dispatchThreads:MTLSizeMake(values.size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &base_score_dispatches, &base_score_gpu_time_ns);
+    if (*static_cast<std::uint32_t const*>(invalid.contents)) return false;
+    std::memcpy(values.data(), output.contents, values.size_bytes());
+    return true;
   }
 }
 void InitExpectileGradients(float mean, Span<float const> labels, Span<float const> weights,

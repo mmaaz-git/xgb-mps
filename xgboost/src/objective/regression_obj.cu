@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>  // for int32_t
 #include <memory>   // for unique_ptr
+#include <type_traits>
 #include <vector>   // for vector
 
 #include "../collective/aggregator.h"
@@ -55,36 +56,63 @@ void CheckRegInputs(MetaInfo const& info, HostDeviceVector<float> const& preds) 
   CHECK_EQ(info.labels.Size(), preds.Size()) << "Invalid shape of labels.";
 }
 
+#if defined(XGBOOST_USE_METAL)
+template <typename Loss>
+constexpr common::metal::LabelDomain MetalLabelDomain() {
+  using Domain = common::metal::LabelDomain;
+  if constexpr (std::is_base_of_v<LogisticRegression, Loss>)
+    return Domain::kUnitInterval;
+  else if constexpr (std::is_same_v<Loss, SquaredLogError>)
+    return Domain::kGreaterThanMinusOne;
+  else if constexpr (std::is_same_v<Loss, GammaDeviance>)
+    return Domain::kPositive;
+  else if constexpr (std::is_same_v<Loss, PoissonLabel>)
+    return Domain::kNonnegative;
+  else {
+    static_assert(std::is_same_v<Loss, LinearSquareLoss>,
+                  "Add the Metal label predicate for this loss");
+    return Domain::kAny;
+  }
+}
+#endif
 template <typename Loss>
 void ValidateLabel(Context const* ctx, MetaInfo const& info) {
   auto label = info.labels.View(ctx->Device());
-  auto valid = ctx->DispatchDevice(
-      [&] {
-        return std::all_of(linalg::cbegin(label), linalg::cend(label),
-                           [](float y) -> bool { return Loss::CheckLabel(y); });
-      },
-      [&] {
+  bool valid;
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    valid = common::metal::ValidateLabels(MetalLabelDomain<Loss>(), info.labels.HostView());
+  } else
+#endif
+  {
+    valid = ctx->DispatchDevice(
+        [&] {
+          return std::all_of(linalg::cbegin(label), linalg::cend(label),
+                             [](float y) -> bool { return Loss::CheckLabel(y); });
+        },
+        [&] {
 #if defined(XGBOOST_USE_CUDA)
-        auto it = dh::MakeIndexTransformIter([=] XGBOOST_DEVICE(std::size_t i) -> float {
-          auto [m, n] = linalg::UnravelIndex(i, label.Shape());
-          return label(m, n);
-        });
-        return common::AllOf(ctx->CUDACtx()->CTP(), it, it + label.Size(),
-                             [] XGBOOST_DEVICE(float y) { return Loss::CheckLabel(y); });
+          auto it = dh::MakeIndexTransformIter([=] XGBOOST_DEVICE(std::size_t i) -> float {
+            auto [m, n] = linalg::UnravelIndex(i, label.Shape());
+            return label(m, n);
+          });
+          return common::AllOf(ctx->CUDACtx()->CTP(), it, it + label.Size(),
+                               [] XGBOOST_DEVICE(float y) { return Loss::CheckLabel(y); });
 #else
-        common::AssertGPUSupport();
-        return false;
+          common::AssertGPUSupport();
+          return false;
 #endif  // defined(XGBOOST_USE_CUDA)
-      },
-      [&] {
+        },
+        [&] {
 #if defined(XGBOOST_USE_SYCL)
-        return sycl::linalg::Validate(ctx->Device(), label,
-                                      [](float y) -> bool { return Loss::CheckLabel(y); });
+          return sycl::linalg::Validate(ctx->Device(), label,
+                                        [](float y) -> bool { return Loss::CheckLabel(y); });
 #else
-        common::AssertSYCLSupport();
-        return false;
+          common::AssertSYCLSupport();
+          return false;
 #endif  // defined(XGBOOST_USE_SYCL)
-      });
+        });
+  }
   if (!valid) {
     LOG(FATAL) << Loss::LabelErrorMsg();
   }
@@ -121,6 +149,16 @@ void ProbToMarginImpl(Context const* ctx, linalg::Vector<float>* base_score, Fn&
   linalg::ElementWiseKernel(ctx, intercept, [=] XGBOOST_DEVICE(std::size_t i) mutable {
     intercept(i) = fn(intercept(i));
   });
+}
+void ProbToLogMargin(Context const* ctx, linalg::Vector<float>* base_score) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    common::metal::BaseScoreToMargin(common::metal::BaseScoreTransform::kLogarithm,
+                                     base_score->Data()->HostSpan());
+    return;
+  }
+#endif
+  ProbToMarginImpl(ctx, base_score, [] XGBOOST_DEVICE(float v) { return std::log(v); });
 }
 }  // anonymous namespace
 
@@ -241,6 +279,24 @@ class RegLossObj : public FitInterceptGlmLike {
   }
 
   void ProbToMargin(linalg::Vector<float>* base_score) const override {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      using Transform = common::metal::BaseScoreTransform;
+      constexpr auto kind = [] {
+        if constexpr (std::is_same_v<Loss, LinearSquareLoss> || std::is_same_v<Loss, LogisticRaw>)
+          return Transform::kIdentity;
+        else if constexpr (std::is_same_v<Loss, GammaDeviance>)
+          return Transform::kPositiveLogarithm;
+        else {
+          static_assert(std::is_base_of_v<LogisticRegression, Loss>);
+          return Transform::kLogistic;
+        }
+      }();
+      CHECK(common::metal::BaseScoreToMargin(kind, base_score->Data()->HostSpan()))
+          << Loss::InterceptErrorMsg();
+      return;
+    }
+#endif
     ProbToMarginImpl(
         this->ctx_, base_score, [] XGBOOST_DEVICE(float v) { return Loss::ProbToMargin(v); },
         [] XGBOOST_DEVICE(float v) { return Loss::CheckIntercept(v); }, Loss::InterceptErrorMsg);
@@ -726,7 +782,7 @@ class PoissonRegression : public FitInterceptGlmLike {
         .Eval(io_preds);
   }
   void ProbToMargin(linalg::Vector<float>* base_score) const override {
-    ProbToMarginImpl(this->ctx_, base_score, [] XGBOOST_DEVICE(float v) { return std::log(v); });
+    ProbToLogMargin(this->ctx_, base_score);
   }
   [[nodiscard]] const char* DefaultEvalMetric() const override { return "poisson-nloglik"; }
 
@@ -825,7 +881,7 @@ class CoxRegression : public FitIntercept {
   }
   void EvalTransform(HostDeviceVector<bst_float>* io_preds) override { PredTransform(io_preds); }
   void ProbToMargin(linalg::Vector<float>* base_score) const override {
-    ProbToMarginImpl(this->ctx_, base_score, [] XGBOOST_DEVICE(float v) { return std::log(v); });
+    ProbToLogMargin(this->ctx_, base_score);
   }
   [[nodiscard]] const char* DefaultEvalMetric() const override { return "cox-nloglik"; }
 
@@ -924,7 +980,7 @@ class TweedieRegression : public FitInterceptGlmLike {
         .Eval(io_preds);
   }
   void ProbToMargin(linalg::Vector<float>* base_score) const override {
-    ProbToMarginImpl(this->ctx_, base_score, [] XGBOOST_DEVICE(float v) { return std::log(v); });
+    ProbToLogMargin(this->ctx_, base_score);
   }
 
   [[nodiscard]] const char* DefaultEvalMetric() const override { return metric_.c_str(); }

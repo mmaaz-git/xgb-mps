@@ -4234,7 +4234,8 @@ kernel void xgb_column_rng(device uint* indices [[buffer(0)]], device float* uni
     }
   }
 }
-// Float log for the uniform-draw domain [0, 1]. Range reduction uses a 1/128
+// CPU-compatible float log, shared by sampling and intercept conversion.
+// Range reduction uses a 1/128
 // grid and a cubic with the rounding behavior of the tested Apple libm. The
 // generic correctly-rounded log can differ by an FP32 ULP and break score ties.
 // Table entries are binary64 1/c and log(c), with c halved for indices >= 64.
@@ -4369,12 +4370,20 @@ constant ulong2 xgb_column_log_table[] = {
     ulong2(0x3fe0101010101010ul, 0xbf70080559588b35ul),
     ulong2(0x3fe0000000000000ul, 0x0000000000000000ul),
 };
-inline float xgb_column_logf(float value) {
+inline float xgb_compatible_logf(float value) {
   using namespace xgb_survival;
   uint bits = as_type<uint>(value);
-  if (!bits) return -INFINITY;
+  uint magnitude = bits & 0x7fffffffu;
+  if (!magnitude) return -INFINITY;
+  if ((bits & 0x80000000u) || magnitude > 0x7f800000u) return NAN;
+  if (magnitude == 0x7f800000u) return INFINITY;
+  int normalize = 0;
+  if (bits < 0x800000u) {
+    normalize = int(clz(bits)) - 8;
+    bits = 0x800000u | ((bits << normalize) & 0x7fffffu);
+  }
   uint index = ((bits & 0x7fffffu) + 0x8000u) >> 16;
-  int exponent = as_type<int>(bits - 0x3f3f8000u) >> 23;
+  int exponent = (as_type<int>(bits - 0x3f3f8000u) >> 23) - normalize;
   D mantissa{(ulong(bits) | 0x1ff800000ul) << 29};
   ulong2 table = xgb_column_log_table[index];
   D r = mantissa * D{table.x} - one;
@@ -4383,6 +4392,7 @@ inline float xgb_column_logf(float value) {
   result = r * D{0x3fefffffffff6666ul} + result;
   return xgb_dto_float((r * r) * polynomial + result);
 }
+inline float xgb_column_logf(float value) { return xgb_compatible_logf(value); }
 kernel void xgb_column_keys(device const uint* features [[buffer(0)]],
                             device const float* weights [[buffer(1)]],
                             device const float* uniforms [[buffer(2)]],
@@ -4661,6 +4671,63 @@ inline uint xgb_sketch_prune(device const float4* input, uint count, uint budget
   }
   if (last != count - 1) output[written++] = input[count - 1];
   return written;
+}
+// Bit comparisons retain subnormal values, signed-zero equality and NaN rules.
+inline bool xgb_valid_label(uint bits, uint domain, float class_limit) {
+  uint magnitude = bits & 0x7fffffffu;
+  if (!domain) return true;
+  bool ordered = magnitude <= 0x7f800000u;
+  bool nonnegative = ordered && (!(bits & 0x80000000u) || magnitude == 0);
+  switch (domain) {
+    case 1: return nonnegative && !xgb_float_less(as_type<uint>(1.f), bits);
+    case 2: return xgb_float_less(as_type<uint>(-1.f), bits);
+    case 3: return xgb_float_less(0u, bits);
+    case 4: return nonnegative;
+    case 5: {
+      if (!nonnegative || !xgb_float_less(bits, as_type<uint>(class_limit))) return false;
+      if (!magnitude) return true;
+      uint exponent = magnitude >> 23;
+      if (exponent < 127) return false;
+      if (exponent >= 150) return true;
+      return (magnitude & ((1u << (150 - exponent)) - 1)) == 0;
+    }
+  }
+  return false;
+}
+struct LabelValidationParams {
+  ulong stride0, stride1;
+  uint columns, domain;
+  float class_limit;
+  uint padding;
+};
+kernel void xgb_base_score(device const uint* input [[buffer(0)]],
+                           device uint* output [[buffer(1)]],
+                           device atomic_uint* invalid [[buffer(2)]],
+                           constant uint& kind [[buffer(3)]],
+                           uint index [[thread_position_in_grid]]) {
+  uint bits = input[index];
+  if ((kind == 1 && !xgb_valid_label(bits, 1, 0)) ||
+      (kind == 3 && !xgb_valid_label(bits, 3, 0))) {
+    atomic_store_explicit(invalid, 1u, memory_order_relaxed);
+    return;
+  }
+  float value = as_type<float>(bits);
+  if (kind == 1) {
+    if (xgb_float_less(bits, as_type<uint>(1e-6f))) value = 1e-6f;
+    if (xgb_float_less(as_type<uint>(1.f - 1e-6f), as_type<uint>(value))) value = 1.f - 1e-6f;
+    float odds = xgb_fsub_preserve(xgb_fdiv_preserve(1.f, value), 1.f);
+    output[index] = as_type<uint>(xgb_compatible_logf(odds)) ^ 0x80000000u;
+  } else {
+    output[index] = as_type<uint>(xgb_compatible_logf(value));
+  }
+}
+kernel void xgb_validate_labels(device const uint* labels [[buffer(0)]],
+                                device atomic_uint* invalid [[buffer(1)]],
+                                constant LabelValidationParams& p [[buffer(2)]],
+                                uint index [[thread_position_in_grid]]) {
+  ulong offset = ulong(index / p.columns) * p.stride0 + ulong(index % p.columns) * p.stride1;
+  if (!xgb_valid_label(labels[offset], p.domain, p.class_limit))
+    atomic_store_explicit(invalid, 1u, memory_order_relaxed);
 }
 struct ObjectiveInitParams {
   ulong count;

@@ -90,6 +90,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
 | Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; other objective-specific initialization work remains CPU |
 | Objective initialization | GPU expectile initial gradients/Hessians and absolute-error target-mean broadcast; small final base-score adjustments remain host, as in CUDA |
+| Objective validation / base scores | GPU logistic, gamma, squared-log, Poisson/Tweedie and multiclass label checks; checked logistic/gamma intercepts and logarithm/logit conversion, including Cox base-score conversion |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
 | AFT survival | GPU normal/logistic/extreme gradients, prediction/base-score transforms, likelihood and interval-accuracy metrics; numerically sensitive censored gradient rows are corrected on CPU and counted explicitly |
@@ -132,6 +133,11 @@ host ingestion, staging and final cut materialization.
 `expectile_init_dispatches` and `prediction_init_dispatches` expose the new
 objective-specific initialization work. Their combined GPU duration is reported
 by `initialization_gpu_time_ns`, separately from ordinary objective GPU time.
+`label_validation_dispatches` / `label_validation_gpu_time_ns` and
+`base_score_dispatches` / `base_score_gpu_time_ns` report objective label checking
+and intercept conversion separately. Invalid checked inputs still count completed
+GPU work. Empty inputs, identity conversions and unconditional label predicates
+require no dispatch.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
@@ -147,7 +153,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **715 passed, 1 skipped**. The skip requires a machine without an
+- Python: **778 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
@@ -241,6 +247,14 @@ On Apple M3, 2026-11-03:
   checked by classification; broadcasts preserve every bit, including NaN
   payloads. Checks include empty/million-row inputs, multiple targets, zero/tiny/
   overflowing weights, guards and aliased broadcast inputs.
+- Objective label validation: **120,093,300 individual predicate comparisons**
+  and **576 production API cases / 216,948,024 tensor values** against CPU.
+  Includes subnormals, signed zeros, NaNs/infinities, integer class boundaries,
+  strided/broadcast views, ignored padding and source guards.
+- Base-score conversion: **74 native cases / 4,570,936 comparisons**, matching
+  CPU bits except NaN classification; identity preserves NaN payloads. Covers
+  all exponent ranges, logarithm table boundaries, logistic clamping, objective
+  API integration, empty vectors and rejected inputs remaining unchanged.
 - Grouped ranking PR-AUC: **297 production cases / 14,198,354 rows / 4,660 query
   results**, checked against CPU and independent continuous-integral references.
   Includes irregular/empty queries, recursive scan carries, widely differing query
@@ -1577,3 +1591,20 @@ this coverage work.
 [Validation](validation/objective-initialization-m3.txt): all native suites,
 **715 Python tests (one skipped)** and the independent CPU-only build pass with
 Metal API Validation enabled for GPU tests.
+
+
+### Objective labels and base-score conversion coverage
+
+Objective label predicates now run on Metal for logistic, gamma, squared-log,
+Poisson/Tweedie and multiclass objectives. Logistic/gamma intercept validation
+and log/logit base-score conversion, including Cox base scores, also run on
+Metal. Existing error messages and checked-input behavior are preserved.
+
+[Validation](validation/objective-domain-m3.txt): **778 Python tests pass (one
+skipped)**, all native suites pass with Metal API Validation, and the independent
+CPU-only build passes. New native checks cover 120,093,300 individual label
+predicates, 576 strided validation cases and 4,570,936 base-score comparisons.
+Finite margin conversions match the tested CPU's bits; exceptional values and
+invalid-input handling are checked separately. These results are correctness
+checks, not performance measurements. Generic metadata validation and other
+coverage gaps remain listed in the ledger.

@@ -23,8 +23,9 @@ measurements, including regressions, remain available.
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | Metal uniform and gradient-based row sampling/replay, including CPU-compatible draws, norms, sorted thresholds and rescaling; scalar/vector root-gradient sums and dense root histogram sums on Metal; column initialization, uniform/weighted selection and final feature ordering now use Metal |
-| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, expectile initial gradients/Hessians and Newton stump fitting use Metal; label validation and other initialization work remain CPU |
+| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
+| Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; expectile's host margin loop matches upstream host execution |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation use Metal; other initialization work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; biased top-k/mean pair construction, gradients, MAP prefixes and query normalization execute on Metal. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients and prediction/base-score transforms; GPU identifies small censored probabilities for original CPU gradient recomputation, exposed through correction counters/time. Full GPU coverage remains incomplete |
@@ -331,5 +332,43 @@ saved-model continuation and the conditions that skip initialization.
 commands. `initialization_gpu_time_ns` measures these commands separately from
 ordinary objective/transform GPU durations. The small final intercept additions
 and expectile ordering remain on the host, matching the CUDA source. Generic
-state allocation/filling, label validation and other initialization paths still
+state allocation/filling, metadata validation and other initialization paths still
 require audit; this is not a claim that all initialization is GPU-resident.
+
+## Objective labels and base-score conversion
+
+Objective label checks for logistic regression/classification/logitraw, squared
+log error, gamma, Poisson/Tweedie and multiclass classification now execute on
+Metal. The GPU reduces predicate failures to one status flag; existing host code
+retains the same error messages and weight-shape checks. Integer-bit comparisons
+preserve subnormal values, signed-zero equality and NaN comparison behavior.
+Multiclass integrality uses exponent/mantissa bits, avoiding subnormal flushing
+in a native floor/equality comparison. The class bound is converted to FP32 just
+as it is in the CPU comparison. Empty inputs and square loss's unconditional
+predicate return true without scanning or dispatching.
+
+The production API supports row-major, column-major, padded and broadcast tensor
+views. Tests compare 120,093,300 individual predicate results with the upstream
+CPU predicates and 576 API cases covering 216,948,024 selected tensor values.
+Public tests exercise invalid labels, first-iteration dispatch, weighted/multiple
+target training and CPU-equivalent predictions. This does not port the earlier
+generic DMatrix metadata validation performed while input is constructed.
+
+Logistic/gamma intercept validation and logarithm/logit margin conversion now
+run on Metal. Logistic keeps the CPU's inclusive [0,1] validation, `1e-6` clamp
+and `-logf(1/x - 1)` operation order. Gamma requires a positive intercept; the
+Poisson/Tweedie/Cox logarithm path retains the original unchecked-log behavior.
+Cox gradients and its prediction transform are host-side in the vendored source;
+its CUDA-capable base-score conversion is included here.
+
+The shared CPU-compatible FP32 logarithm now handles positive subnormals and
+exceptional values as well as the column sampler's original uniform domain.
+Native base-score checks cover 4,570,936 comparisons with exact CPU bits except
+NaN classification. This is observed agreement with the tested Apple CPU libm,
+not a proof for every FP32 input or other libm versions. Source/output guards,
+actual objective APIs and rejected vectors remaining wholly unchanged are
+checked. Public tests cover raw margins, serialization and validation errors.
+
+`label_validation_*` and `base_score_*` expose independent dispatch counts and
+GPU times, including completed error paths. Identity conversions require no
+dispatch. Model storage, input staging and error reporting remain host-side.

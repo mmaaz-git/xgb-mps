@@ -84,6 +84,22 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_initialization_api_test
 MTL_DEBUG_LAYER=1 results/metal_initialization_api_test
+echo "Checking objective label predicates and strided production validation"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_label_validation.mm \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp -framework Foundation -framework Metal \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_label_validation_test
+MTL_DEBUG_LAYER=1 results/metal_label_validation_test xgboost/src/common/metal_histogram.metal
+echo "Checking CPU-compatible base-score conversions and validation errors"
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_base_score_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_base_score_api_test
+MTL_DEBUG_LAYER=1 results/metal_base_score_api_test
 echo "Checking production ROC/PR-AUC against CPU and independent references"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

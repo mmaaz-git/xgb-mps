@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "xgboost/base.h"
+#include "xgboost/linalg.h"
 #include "xgboost/span.h"
 
 namespace xgboost::common::metal {
@@ -31,6 +32,26 @@ enum class Transform : std::uint32_t {
   kQuantile = 7
 };
 enum class AdaptiveObjective : std::uint32_t { kAbsolute = 0, kQuantile = 1 };
+enum class LabelDomain : std::uint32_t {
+  kAny = 0,
+  kUnitInterval = 1,
+  kGreaterThanMinusOne = 2,
+  kPositive = 3,
+  kNonnegative = 4,
+  kClassIndex = 5
+};
+// Checks the selected tensor elements, including strided label views. Empty
+// inputs and the unconditional kAny predicate require no device operation.
+bool ValidateLabels(LabelDomain domain, linalg::MatrixView<float const> labels,
+                    std::int64_t n_classes = 0);
+enum class BaseScoreTransform : std::uint32_t {
+  kIdentity = 0,
+  kLogistic = 1,
+  kLogarithm = 2,
+  kPositiveLogarithm = 3
+};
+// Invalid checked intercepts return false without modifying any host value.
+bool BaseScoreToMargin(BaseScoreTransform transform, Span<float> values);
 void AdaptiveGradients(AdaptiveObjective objective, Span<float const> predictions,
                        Span<float const> labels, Span<float const> weights, std::uint32_t targets,
                        Span<float const> alpha, Span<GradientPair> output);
