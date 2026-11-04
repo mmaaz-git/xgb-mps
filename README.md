@@ -14,10 +14,12 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **shared quantized gradients, CUDA Philox uniform row
-sampling, and integer root reductions for `hist` and `approx`**. The current suite
-passes 1,278 Python tests and all native checks. Gradient-based sampling is the
-next algorithm-alignment task. [Validation](validation/shared-quantized-state-m3.txt).
+Latest validated step: **CUDA-source gradient-based sampling on shared integer
+gradients**, including quantized prefix sums, Philox selection, integer rescaling
+and saved-state replay for reduced value gradients. The full suite passes **1,286 Python tests**, all native checks and the CPU-only
+build/API check. Independent host oracles check the stages locally; NVIDIA execution
+and compiler-specific details remain unverified.
+[Validation](validation/cuda-gradient-sampling-m3.txt).
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
 remaining objective initialization and training-state operations,
@@ -85,8 +87,8 @@ vendored upstream version deprecates `gblinear`, but this port supports it.
 
 Approximate training is also available with `tree_method="approx"`. It uses
 unsampled Hessians for cuts and resets sampling per tree, following CUDA's updater
-order. Uniform sampling and all roots now share quantized state; weighted sketches
-and gradient-based sampling still require CUDA alignment.
+order. Both sampling methods, histograms and roots share quantized state; weighted
+sketches still require CUDA alignment.
 
 Explicit tree updater selection, `exact` and distributed training are rejected
 for `mps`. Inaccessible Metal devices produce an
@@ -97,8 +99,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 
 | Operation | Implemented coverage |
 | --- | --- |
-| Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; uniform sampling/roots share integer state; weighted sketches and gradient-based sampling still need CUDA alignment |
-| Gradient state | Shared per-tree integer gradients/scales for uniform sampling, all roots and histograms; GPU target/layout copies and bit-preserving Hessian extraction |
+| Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; both sampling methods/roots share integer state; weighted sketches still need CUDA alignment |
+| Gradient state | Shared per-tree integer gradients/scales for both sampling methods, all roots and histograms; GPU target/layout copies and bit-preserving Hessian extraction |
 | Histograms | Dense/sparse indices, external pages, scaled integer sums and shared-memory accumulation; resident integer cache retains page additions/subtractions, with a binary64 view for split evaluation |
 | Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps interaction masks |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
@@ -106,8 +108,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Feature sketches | GPU group/Hessian weighting, sorted-column weighted summaries, streaming level compaction and final numeric merging/pruning; row queues and value sorting remain CPU; final cut materialization remains host, as in CUDA |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
-| Gradient-based sampling | GPU norms, stable sorting, CPU-ordered FP32 prefixes, threshold selection, random draws and gradient rescaling; includes strided multi-target replay and zero budgets; host chooses the per-tree seed |
-| Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed uniform integer sampling/all roots/histograms. Gradient-based sampling order and leaf/split integer state still need alignment |
+| Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
+| Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Leaf/split integer state still needs alignment |
 | Root statistics / stump fitting | All scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; objective stump fitting retains its separate binary64 GPU reduction |
 | Reduced-gradient leaf fitting | GPU segmented binary64 sums over resident row IDs, accumulation across external pages, regularized/clipped final weights; existing host tree receives the completed leaf values |
 | Linear coordinate descent | GPU bias/feature gradient sums and residual updates; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
@@ -148,7 +150,9 @@ time overlaps GPU duration; adding those numbers would double-count time. Counte
 are process-wide, so concurrent models contribute to the same totals.
 `gradient_sampling_dispatches` and `gradient_sampling_gpu_time_ns` report the
 gradient-based sampler separately; they are also included in the general sampling
-counters and must not be added to those totals.
+counters and must not be added to those totals. `cuda_gradient_sampling_dispatches`
+counts the new integer sampler once per nonempty sampled tree; float replay shares
+its saved state and does not increment that counter.
 `ranking_roc_auc_dispatches` and `ranking_roc_auc_gpu_time_ns` likewise describe a
 subset of ROC-AUC and generic metric work; their timings overlap those totals.
 The corresponding `ranking_pr_auc_*` counters are subsets of PR-AUC and metric totals.
@@ -223,11 +227,16 @@ On Apple M3, 2026-11-03:
   engine check value, and 64-bit skip boundaries. Shared state: **228 native cases /
   4,319,326 pairs**, root cancellation, target scales, replay and ownership. **60
   new Python cases** check all root layouts and quantization before uniform rejection.
-- Native gradient-based sampling: **498 exact cases / 6,748,668 rows**, comparing
+- Legacy low-level gradient sampling: **498 exact cases / 6,748,668 rows**, comparing
   norms, thresholds, masks and rescaled gradients to production CPU routines and
   libc++ random draws. Includes subnormals, overflow, equal gradients, zero/full
-  budgets, strided storage and reduced-gradient replay. Six additional production
-  Sampler checks preserve the host random-engine state and replay decisions.
+  budgets, strided storage and reduced-gradient replay. Production training now uses
+  the CUDA-derived path instead.
+- CUDA-derived gradient sampling: **136 native cases / 4,499,447 pairs**, plus
+  54 production lifecycle calls and seven explicit rescaling-domain rejections.
+  Independent checks cover 200,081 norm FMAs, 100,144 integer conversions, 91 wide
+  target reductions, recursive integer prefixes and 86,268 rescaled integer pairs.
+  Eight added public forest cases check exact integer-derived root predictions.
 - Native bin assignment: **168 exact cases / 216,600 entries / 38,616,312 hit
   counts**, including all index widths, category truncation, subnormal/signed-zero
   boundaries, invalid values and guard regions.
@@ -526,7 +535,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Keep histograms in Metal shared memory; port conversion, subtraction and gathering.
 - [x] Reuse split workspaces across tree levels and boosting rounds.
 - [x] Port uniform sampling, including random-stream compatibility and replay.
-- [x] Port gradient-based sampling, including exact CPU thresholds and replay.
+- [x] Implement CUDA-derived gradient-based integer sampling and replay; NVIDIA execution validation remains.
 - [x] Port uniform/weighted column sampling, with CPU-compatible random streams.
 - [ ] Port remaining training-state updates.
 - [x] Port final numeric sketch level merging and pruning.
@@ -1348,6 +1357,10 @@ are retained with the [source benchmarks and reproduction commands](docs/PUBLISH
 
 ### Gradient-based sampling update
 
+Historical CPU-formula implementation; production now uses the CUDA-derived
+integer sampler described in the latest update below. These performance results
+have not been rerun for the new sampler.
+
 Moved gradient-based row sampling to Metal: regularized norms, stable sorting,
 ordered FP32 prefixes, threshold search, CPU-compatible random draws and gradient
 rescaling. Reduced-gradient leaf fitting replays sampling from the original split
@@ -1871,6 +1884,24 @@ The full run passes **1,278 Python tests (one skipped)**, all native suites, and
 the independent CPU-only build/API check. No NVIDIA execution comparison or new
 performance benchmark was performed.
 
-Gradient-based sampling still needs CUDA integer norms, prefix sums and rescaling;
-leaf sums, split scans, column/ranking RNG, sketches and other ledger gaps remain.
-Full CUDA parity is not complete.
+At this uniform-sampling checkpoint, gradient-based sampling still needed integer
+norms, prefix sums and rescaling; the following update implements that pipeline.
+Leaf sums, split scans, column/ranking RNG, sketches and other ledger gaps remain.
+
+
+### CUDA-derived gradient-based integer sampling
+
+Gradient-based sampling now starts from original quantized gradients and retains
+those scales through norm calculation, threshold selection, Philox decisions and
+integer rescaling. Histogram/root calculations consume the resulting integers;
+reduced value gradients replay saved decisions in FP32. This removes the previous
+CPU-specific norms, ordered float prefix, threshold fallback and random stream
+from production MPS sampling.
+
+The implementation models a pinned CCCL reduction policy and an explicit binary64
+contraction choice. Native tests check each stage against independent host formulas,
+including undefined conversion boundaries, while training tests retain their
+existing prediction tolerances. See the [scope and limitations](docs/CUDA_PARITY.md#cuda-derived-gradient-based-sampling)
+and [validation](validation/cuda-gradient-sampling-m3.txt). Actual NVIDIA compiler/
+hardware comparison remains required; this is not measured CUDA equivalence.
+No new performance measurements were run.

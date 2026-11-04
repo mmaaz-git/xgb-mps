@@ -1,0 +1,100 @@
+CUDA-derived gradient-based sampling on Apple M3
+Date: 2026-11-03 America/Los_Angeles (2026-11-04 UTC)
+Machine: MacBook Air, Apple M3 (8 CPU / 10 GPU cores), 16 GB, macOS 26.6.2.
+
+Scope
+-----
+Production MPS sampling now uses the original per-target integer gradients and
+scales. It computes binary64 norm terms, FP32 target reductions/square roots,
+sorted norms, CUDA-quantized integer prefixes, first-valid thresholds, Philox
+selection, binary64 rescaling and integer requantization on Metal. Saved norms,
+threshold and seed replay sampling onto arbitrary FP32 value-gradient layouts.
+Histograms and all roots retain the sampled integer state. CPU sampler unchanged.
+
+CUDA source authority: tree/gpu_hist/{sampler.cu,sampler.cuh,quantiser.cuh},
+tree/hist/sampler.h and common/random.cuh. The modern CCCL RNG and fixed-segment
+SM60-SM90 reduction policy are pinned to NVIDIA/cccl commit
+3d0d040ac0dc5907daf2a0731edb378e5562099d.
+
+No NVIDIA hardware execution comparison was performed. The explicit norm FMA
+model and Metal bound-reduction order require validation against actual NVCC/GPU
+configurations; older Thrust and newer architecture policies may round differently.
+Nonfinite norms with nonzero budget and rescaled coordinates outside int64 range
+raise errors; CUDA C++ conversions are undefined there. These tests do not claim
+portable CUDA output equivalence for that domain. No performance benchmarks run.
+
+Authoritative full run
+----------------------
+Driver: results/run-cuda-mvs-full-v1.sh
+Tmux session: xgb-cuda-mvs-full-v1 (completed)
+Log: results/cuda-mvs-full-driver-v1.log
+2026-11-04 07:30:28 through 07:33:47 UTC; exit status 0.
+1. Metal build: PASS (results/build-cuda-mvs-final-v1.log).
+2. ALL native binaries rebuilt for the extended Statistics ABI; all suites PASS.
+   Full Python suite: 1286 passed, 1 skipped, 307 warnings in 49.55 seconds.
+   Log: results/test-cuda-mvs-full-v1.log.
+3. Independent CPU-only build: PASS (results/build-cpu-cuda-mvs-v1.log).
+4. CPU-only API/device-error check: PASS (results/check-cpu-cuda-mvs-v1.log).
+No numerical tolerance was changed.
+After adding a Python <3.13 exact-rational FMA fallback to the host oracle:
+- Fallback checked against math.fma: 36 exact cases PASS.
+- Focused public suite: 118 passed in 4.56 seconds
+  (results/test-cuda-mvs-python-final-v2.log).
+Production arithmetic did not change after the full run.
+
+New native kernel checks (tests/metal_cuda_gradient.mm)
+-----------------------------------------------------
+PASS 200081 binary64 norm FMA cases against hardware std::fma.
+PASS 100144 binary64/int64 conversion cases, including exact overflow flags.
+PASS 91 norms across 13 segment widths, through 16385 targets, against the pinned
+     CCCL stripe/shuffle/reduction topology.
+PASS exact uint64 prefixes for 1, 255, 256, 257, 65536, 65537 and 1000003 inputs,
+     including unsigned carries and multiple recursive levels.
+PASS 86268 individual quantized sampling/rescaling gradient pairs against an
+     independent host CUDA-formula oracle. No FP32 bridge is used in this check.
+
+New production API checks (tests/metal_cuda_gradient_api.cc)
+----------------------------------------------------------
+PASS 136 cases / 4499447 gradient pairs; 7 additional undefined rescaling cases
+     rejected exactly where the independent host domain check predicts overflow.
+PASS 54 integrated Sampler calls, integer roots, reduced value-gradient replay
+     and RNG lifetime, including empty inputs, no-op rates and three fresh trees.
+Checks exact norms, thresholds, roots, original scales, C/F/padded/broadcast
+views, input lifetime, output guards and replay with a different target count.
+Cases include zeros, constant gradients, subnormals, wide exponents, positive
+Hessian minimum, zero/floor-zero budgets, block boundaries and million-row arrays.
+Nonfinite norm tests distinguish the zero-budget all-reject path from the
+undefined nonzero-budget float-to-integer conversion.
+
+Public training validation
+--------------------------
+CPU custom objectives now receive independent CUDA-derived gradient sampling
+instead of invoking CPU's distinct sampling algorithm. Original rtol/atol=2e-5
+checks remain, including scalar/vector training, reduced leaf fitting, external
+pages, regularization, clipping and resumed models. The public objective interface
+is FP32, so these are downstream prediction comparisons; native integer checks
+provide the stronger exact-state evidence.
+Eight new hist/approx forest cases check exact root predictions, original-state
+reuse and per-tree/round/target seed consumption against integer-derived roots.
+The previous eight uniform-forest cases remain.
+Legacy CPU-formula low-level sampler tests still pass; production no longer calls
+that API. Its old CPU-vs-MPS production assertion was replaced with the independent
+CUDA-formula lifecycle tests above, not relaxed.
+
+Initial diagnostics and corrections
+-----------------------------------
+Initial API test compilation exposed only fixture shape/Span API mistakes.
+The first executed API run hit a real rescaling-domain boundary in a wide-target
+fixture. The production check already rejected it. The host oracle was corrected
+to check the domain before conversion (avoiding undefined host casts), and the
+suite now explicitly requires matching rejection for seven such cases.
+No production numerical fix or tolerance relaxation was needed after these runs.
+
+Remaining full-project gaps
+---------------------------
+Integer leaf sums and split scans/child statistics; CUDA sketch pipeline and
+adapter preprocessing; column/ranking RNG and objective/metric edge audits;
+AFT CPU corrections; Apple GPU array interoperability; distributed collectives;
+persistent GPU ownership/asynchrony; cross-Apple and actual NVIDIA validation.
+Full CUDA parity is NOT complete. Historical performance/numerical reports were
+not rerun or superseded by this correctness checkpoint.

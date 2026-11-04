@@ -4,6 +4,7 @@ import pytest
 import scipy.sparse as sp
 import xgboost as xgb
 from cuda_uniform_reference import UniformSquaredError
+from cuda_gradient_reference import GradientSquaredError
 from xgboost.objective import TreeObjective
 
 
@@ -67,12 +68,10 @@ def test_gpu_reduced_leaf_fitting(metal, layout, sampling, subsample, regulariza
         params.update(reg_alpha=.3, max_delta_step=.125)
     elif regularization == "root_only":
         params.update(min_child_weight=1e9, reg_lambda=.1)
-    cpu_params = params | {"device": "cpu"}
+    cpu_params = params | {"device": "cpu", "subsample": 1.}
     def cpu_objective(rounds_before=0):
-        return (UniformSquaredError(params, Reduced(), rounds_before=rounds_before)
-                if sampling == "uniform" else Reduced())
-    if sampling == "uniform":
-        cpu_params["subsample"] = 1.
+        reference = UniformSquaredError if sampling == "uniform" else GradientSquaredError
+        return reference(params, Reduced(), rounds_before=rounds_before)
     cpu = xgb.train(cpu_params, data, 3, obj=cpu_objective())
     before = xgb.metal_info()
     gpu = xgb.train(params | {"device": "mps"}, data, 3, obj=Reduced())

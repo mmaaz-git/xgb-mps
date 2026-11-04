@@ -20,6 +20,10 @@ class QuantizedGradients {
   // CUDA's <cuda/std/random> branch (Philox4x64), with one draw per row.
   // Mutates the integer gradients exactly once; replay can be called repeatedly.
   virtual void SampleUniform(float probability, std::uint32_t seed) = 0;
+  // CUDA gradient-based sampling on the original integers. Optional diagnostics
+  // expose completed norms/threshold for source-derived local validation.
+  virtual void SampleGradient(float probability, std::uint32_t seed,
+                              Span<float> norms = {}, float* threshold = nullptr) = 0;
   virtual void ApplySampling(linalg::MatrixView<GradientPair> values) const = 0;
 };
 std::shared_ptr<QuantizedGradients> MakeQuantizedGradients(

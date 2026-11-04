@@ -64,6 +64,7 @@ std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches
     column_sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
+std::atomic<std::uint64_t> cuda_gradient_sampling_dispatches{0};
 std::atomic<std::uint64_t> quantized_gradient_sum_dispatches{0},
     cuda_uniform_sampling_dispatches{0};
 std::atomic<std::uint64_t> histogram_integer_store_dispatches{0},
@@ -159,6 +160,11 @@ class Runtime {
   id<MTLComputePipelineState> uniform_sampling_pipeline, sketch_finalize_pipeline;
   id<MTLComputePipelineState> sketch_weight_pipeline, sketch_sorted_pipeline, sketch_update_pipeline;
   id<MTLComputePipelineState> gradient_state_pipeline;
+  id<MTLComputePipelineState> cuda_mvs_term_pipeline, cuda_mvs_norm_pipeline,
+      cuda_mvs_norm_small_pipeline, cuda_mvs_bound_pipeline, cuda_mvs_scale_pipeline,
+      cuda_mvs_quantize_pipeline, prefix_u64_pipeline, prefix_u64_add_pipeline,
+      cuda_mvs_candidate_pipeline, cuda_mvs_select_pipeline, cuda_mvs_integer_pipeline,
+      cuda_mvs_replay_pipeline;
   id<MTLComputePipelineState> quantized_sum_pipeline, quantized_sum_finish_pipeline,
       cuda_uniform_integer_pipeline, cuda_uniform_replay_pipeline;
   id<MTLComputePipelineState> expectile_init_pipeline, broadcast_targets_pipeline;
@@ -265,6 +271,18 @@ class Runtime {
       column_output_pipeline = make_pipeline(@"xgb_column_output");
       column_sample_small_pipeline = make_pipeline(@"xgb_column_sample_small");
 
+      cuda_mvs_term_pipeline = make_pipeline(@"xgb_cuda_mvs_term");
+      cuda_mvs_norm_pipeline = make_pipeline(@"xgb_cuda_mvs_norm");
+      cuda_mvs_norm_small_pipeline = make_pipeline(@"xgb_cuda_mvs_norm_small");
+      cuda_mvs_bound_pipeline = make_pipeline(@"xgb_cuda_mvs_bound");
+      cuda_mvs_scale_pipeline = make_pipeline(@"xgb_cuda_mvs_scale");
+      cuda_mvs_quantize_pipeline = make_pipeline(@"xgb_cuda_mvs_quantize");
+      prefix_u64_pipeline = make_pipeline(@"xgb_prefix_u64");
+      prefix_u64_add_pipeline = make_pipeline(@"xgb_prefix_u64_add");
+      cuda_mvs_candidate_pipeline = make_pipeline(@"xgb_cuda_mvs_candidate");
+      cuda_mvs_select_pipeline = make_pipeline(@"xgb_cuda_mvs_select");
+      cuda_mvs_integer_pipeline = make_pipeline(@"xgb_cuda_mvs_integer");
+      cuda_mvs_replay_pipeline = make_pipeline(@"xgb_cuda_mvs_replay");
       quantized_sum_pipeline = make_pipeline(@"xgb_quantized_sum");
       quantized_sum_finish_pipeline = make_pipeline(@"xgb_quantized_sum_finish");
       cuda_uniform_integer_pipeline = make_pipeline(@"xgb_cuda_uniform_integer");
@@ -1005,7 +1023,8 @@ class MetalQuantizedGradients final : public QuantizedGradients {
   std::size_t rows_;
   float probability_{1.f};
   std::uint32_t seed_{0};
-  bool sampled_{false};
+  bool sampled_{false}, gradient_sampling_{false};
+  id<MTLBuffer> norms_, sampling_state_;
 
  public:
   std::vector<std::unique_ptr<MetalQuantizedColumn>> columns;
@@ -1122,6 +1141,8 @@ class MetalQuantizedGradients final : public QuantizedGradients {
                                        std::memory_order_relaxed);
     }
   }
+  void SampleGradient(float probability, std::uint32_t seed, Span<float> norms,
+                      float* threshold) override;
   void ApplySampling(linalg::MatrixView<GradientPair> values) const override {
     CHECK_EQ(values.Shape(0), rows_);
     CheckGradientView(values, true);
@@ -1141,9 +1162,14 @@ class MetalQuantizedGradients final : public QuantizedGradients {
       CHECK(command);
       auto e = [command computeCommandEncoder];
       CHECK(e);
-      [e setComputePipelineState:rt_.cuda_uniform_replay_pipeline];
+      [e setComputePipelineState:gradient_sampling_ ? rt_.cuda_mvs_replay_pipeline
+                                                 : rt_.cuda_uniform_replay_pipeline];
       [e setBuffer:data offset:0 atIndex:0];
       [e setBytes:&p length:sizeof(p) atIndex:1];
+      if (gradient_sampling_) {
+        [e setBuffer:norms_ offset:0 atIndex:2];
+        [e setBuffer:sampling_state_ offset:0 atIndex:3];
+      }
       [e dispatchThreads:MTLSizeMake(rows_, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
       [command commit];
@@ -1522,7 +1548,8 @@ Statistics GetStatistics() {
           histogram_integer_subtraction_dispatches.load(std::memory_order_relaxed),
           histogram_integer_sum_dispatches.load(std::memory_order_relaxed),
           quantized_gradient_sum_dispatches.load(std::memory_order_relaxed),
-          cuda_uniform_sampling_dispatches.load(std::memory_order_relaxed)};
+          cuda_uniform_sampling_dispatches.load(std::memory_order_relaxed),
+          cuda_gradient_sampling_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2120,6 +2147,199 @@ id<MTLBuffer> EncodeColumnSort(Runtime& rt, id<MTLCommandBuffer> command, id<MTL
   [e endEncoding];
   return EncodeRadixRecords(rt, command, source, shape);
 }
+struct CudaMvsParams {
+  std::uint64_t rows;
+  std::uint32_t targets, sample_rows;
+};
+struct CudaMvsState {
+  std::int32_t exponent;
+  std::uint32_t error, index;
+  float threshold;
+};
+static_assert(sizeof(CudaMvsState) == 16 && sizeof(CudaMvsParams) == 16);
+id<MTLBuffer> EncodePrefixU64(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuffer> input,
+                              std::uint64_t count) {
+  CHECK_GT(count, 0);
+  auto blocks = (count + 255) / 256;
+  auto output = Allocate(rt, count * sizeof(std::uint64_t));
+  auto totals = Allocate(rt, blocks * sizeof(std::uint64_t));
+  auto e = [command computeCommandEncoder];
+  CHECK(e);
+  [e setComputePipelineState:rt.prefix_u64_pipeline];
+  [e setBuffer:input offset:0 atIndex:0];
+  [e setBuffer:output offset:0 atIndex:1];
+  [e setBuffer:totals offset:0 atIndex:2];
+  [e setBytes:&count length:sizeof(count) atIndex:3];
+  [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  if (blocks > 1) {
+    auto upper = EncodePrefixU64(rt, command, totals, blocks);
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.prefix_u64_add_pipeline];
+    [e setBuffer:output offset:0 atIndex:0];
+    [e setBuffer:upper offset:0 atIndex:1];
+    [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+  }
+  return output;
+}
+void MetalQuantizedGradients::SampleGradient(float probability, std::uint32_t seed,
+                                             Span<float> norms, float* threshold) {
+  CHECK(!sampled_) << "Quantized gradients can be sampled only once per tree.";
+  CHECK_GE(probability, 0.f);
+  CHECK_LE(probability, 1.f);
+  CHECK(norms.empty() || norms.size() == rows_);
+  probability_ = probability;
+  seed_ = seed;
+  sampled_ = true;
+  if (probability == 1.f) return;
+  gradient_sampling_ = true;
+  @autoreleasepool {
+    auto count = std::uint64_t{rows_}, blocks = (count + 255) / 256;
+    CudaMvsParams p{count, static_cast<std::uint32_t>(columns.size()),
+                    static_cast<std::uint32_t>(count * probability)};
+    CHECK_LE(p.sample_rows, count);
+    CudaMvsState initial{0, 0, static_cast<std::uint32_t>(count),
+                         std::numeric_limits<float>::infinity()};
+    sampling_state_ = Upload(rt_, &initial, sizeof(initial));
+    norms_ = Allocate(rt_, count * sizeof(float));
+    if (!count) {
+      if (threshold) *threshold = initial.threshold;
+      return;
+    }
+    CHECK_LE(count, std::numeric_limits<std::size_t>::max() / columns.size() / sizeof(float));
+    auto terms = Allocate(rt_, count * columns.size() * sizeof(float));
+    auto partial = Allocate(rt_, blocks * sizeof(GradientPairPrecise));
+    auto total = Allocate(rt_, sizeof(GradientPairPrecise));
+    auto candidates = Allocate(rt_, count * sizeof(float));
+    auto command = [rt_.queue commandBuffer];
+    CHECK(command);
+    for (std::size_t t = 0; t < columns.size(); ++t) {
+      auto const& column = *columns[t];
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.cuda_mvs_term_pipeline];
+      [e setBuffer:column.gradients_ offset:0 atIndex:0];
+      [e setBuffer:column.gradient_scale_ offset:0 atIndex:1];
+      [e setBuffer:terms offset:t * count * sizeof(float) atIndex:2];
+      [e setBytes:&count length:sizeof(count) atIndex:3];
+      [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:p.targets <= 16 ? rt_.cuda_mvs_norm_small_pipeline
+                                               : rt_.cuda_mvs_norm_pipeline];
+    [e setBuffer:terms offset:0 atIndex:0];
+    [e setBuffer:norms_ offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    if (p.targets <= 16)
+      [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    else
+      [e dispatchThreadgroups:MTLSizeMake(count, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(p.targets <= 512 ? 32 : 256, 1, 1)];
+    [e endEncoding];
+    auto sorted = EncodeColumnSort(rt_, command, norms_,
+                                   SortShape{count, 1, 1, 1, static_cast<std::uint32_t>(blocks)});
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt_.cuda_mvs_bound_pipeline];
+    [e setBuffer:sorted offset:0 atIndex:0];
+    [e setBuffer:partial offset:0 atIndex:1];
+    [e setBytes:&count length:sizeof(count) atIndex:2];
+    [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    struct {
+      std::uint64_t rows, stride0, stride1;
+      std::uint32_t targets, blocks;
+    } reduction{count, 0, 0, 1, static_cast<std::uint32_t>(blocks)};
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt_.gradient_sum_finish_pipeline];
+    [e setBuffer:partial offset:0 atIndex:0];
+    [e setBuffer:total offset:0 atIndex:1];
+    [e setBytes:&reduction length:sizeof(reduction) atIndex:2];
+    [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt_.cuda_mvs_scale_pipeline];
+    [e setBuffer:total offset:0 atIndex:0];
+    [e setBuffer:sampling_state_ offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [e endEncoding];
+    if (p.sample_rows) {
+      auto fixed = Allocate(rt_, count * sizeof(std::uint64_t));
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.cuda_mvs_quantize_pipeline];
+      [e setBuffer:sorted offset:0 atIndex:0];
+      [e setBuffer:fixed offset:0 atIndex:1];
+      [e setBuffer:sampling_state_ offset:0 atIndex:2];
+      [e setBytes:&count length:sizeof(count) atIndex:3];
+      [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      auto prefix = EncodePrefixU64(rt_, command, fixed, count);
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.cuda_mvs_candidate_pipeline];
+      [e setBuffer:sorted offset:0 atIndex:0];
+      [e setBuffer:prefix offset:0 atIndex:1];
+      [e setBuffer:sampling_state_ offset:0 atIndex:2];
+      [e setBuffer:candidates offset:0 atIndex:3];
+      [e setBytes:&p length:sizeof(p) atIndex:4];
+      [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt_.cuda_mvs_select_pipeline];
+    [e setBuffer:sorted offset:0 atIndex:0];
+    [e setBuffer:candidates offset:0 atIndex:1];
+    [e setBuffer:sampling_state_ offset:0 atIndex:2];
+    [e setBytes:&p length:sizeof(p) atIndex:3];
+    [e dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [e endEncoding];
+    CudaUniformParams apply{count, 0, 0, 0, seed, probability, 0};
+    for (auto const& column : columns) {
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.cuda_mvs_integer_pipeline];
+      [e setBuffer:column->gradients_ offset:0 atIndex:0];
+      [e setBytes:&apply length:sizeof(apply) atIndex:1];
+      [e setBuffer:column->gradient_scale_ offset:0 atIndex:2];
+      [e setBuffer:norms_ offset:0 atIndex:3];
+      [e setBuffer:sampling_state_ offset:0 atIndex:4];
+      [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    auto info = static_cast<CudaMvsState const*>(sampling_state_.contents);
+    CHECK_EQ(info->error & 1u, 0)
+        << "Gradient-based sampling requires finite FP32 norms; "
+           "nonfinite norms make CUDA's float-to-integer prefix conversion undefined.";
+    CHECK_EQ(info->error & 2u, 0)
+        << "Gradient-based sampling rescaling exceeds int64 range; "
+           "CUDA's float-to-integer conversion is undefined for these values.";
+    if (!norms.empty()) std::memcpy(norms.data(), norms_.contents, norms.size_bytes());
+    if (threshold) *threshold = info->threshold;
+    sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
+    gradient_sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
+    cuda_gradient_sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
+    radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0) {
+      auto ns = static_cast<std::uint64_t>(elapsed * 1e9);
+      sampling_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+      gradient_sampling_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+    }
+  }
+}
+
 }  // namespace
 
 namespace {

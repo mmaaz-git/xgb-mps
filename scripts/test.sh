@@ -180,11 +180,11 @@ echo "Checking adaptive objective scales and gradients against CPU references"
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_adaptive.mm \
   -framework Metal -framework Foundation -o results/metal_adaptive_test
 results/metal_adaptive_test xgboost/src/common/metal_histogram.metal
-echo "Checking GPU sampling against the CPU random engine and Bernoulli distribution"
+echo "Checking legacy low-level uniform sampling against the CPU random engine"
 clang++ -std=c++17 -fobjc-arc tests/metal_sampling.mm \
   -framework Metal -framework Foundation -o results/metal_sampling_test
 results/metal_sampling_test xgboost/src/common/metal_histogram.metal
-echo "Checking gradient sampling norms, thresholds, rescaling and replay against production CPU"
+echo "Checking legacy low-level gradient sampling against CPU norms, thresholds and replay"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
   -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
@@ -272,5 +272,17 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_quantized_state_api_test
 MTL_DEBUG_LAYER=1 results/metal_quantized_state_api_test
+echo "Checking CUDA-derived norm FMA, integer prefixes and rescaled integer pairs"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_cuda_gradient.mm \
+  -framework Metal -framework Foundation -o results/metal_cuda_gradient_test
+MTL_DEBUG_LAYER=1 results/metal_cuda_gradient_test xgboost/src/common/metal_histogram.metal
+echo "Checking production CUDA-derived gradient sampling, replay and seed lifetime"
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_cuda_gradient_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_cuda_gradient_api_test
+MTL_DEBUG_LAYER=1 results/metal_cuda_gradient_api_test
 echo "Running training validation tests; a real GPU is required"
 .venv/bin/python -m pytest -q tests --require-metal

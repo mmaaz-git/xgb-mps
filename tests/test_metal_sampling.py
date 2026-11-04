@@ -1,8 +1,9 @@
-"""CUDA uniform decisions and replay; legacy gradient sampling remains CPU-oriented."""
+"""CUDA-source sampling decisions and replay, with CPU downstream validation."""
 import numpy as np
 import pytest
 import xgboost as xgb
 from cuda_uniform_reference import UniformSquaredError
+from cuda_gradient_reference import GradientSquaredError
 from xgboost.objective import TreeObjective
 
 
@@ -49,17 +50,15 @@ def test_replay_sampling_for_reduced_gradient_leaves(metal, threads, sampling_me
     p = dict(tree_method="hist", multi_strategy="multi_output_tree", nthread=threads,
              max_depth=4, max_bin=33, subsample=0.6, seed=77, base_score=0,
              sampling_method=sampling_method, seed_per_iteration=True)
-    cpu_params = p | {"device": "cpu"}
-    cpu_objective = Reduced()
-    if sampling_method == "uniform":
-        cpu_params["subsample"] = 1.
-        cpu_objective = UniformSquaredError(p, Reduced())
+    cpu_params = p | {"device": "cpu", "subsample": 1.}
+    reference = UniformSquaredError if sampling_method == "uniform" else GradientSquaredError
+    cpu_objective = reference(p, Reduced())
     cpu = xgb.train(cpu_params, d, 4, obj=cpu_objective)
     before = xgb.metal_info()["sampling_dispatches"]
     gpu = xgb.train(p | {"device": "mps"}, d, 4, obj=Reduced())
     # Each tree samples the split gradient and replays that mask on value gradients.
-    # Uniform state counts integer sampling once; replay shares the saved mask.
-    assert xgb.metal_info()["sampling_dispatches"] - before == (4 if sampling_method == "uniform" else 8)
+    # The shared state counts integer sampling once; replay shares saved decisions.
+    assert xgb.metal_info()["sampling_dispatches"] - before == 4
     np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
 
 
@@ -74,9 +73,10 @@ def test_gradient_gpu_sampling(metal, subsample, strategy, threads):
     d = xgb.DMatrix(x, label=y)
     p = dict(tree_method="hist", multi_strategy=strategy, nthread=threads,
              max_depth=3, max_bin=33, subsample=subsample, seed=21, base_score=0,
-             sampling_method="gradient_based")
+             sampling_method="gradient_based", seed_per_iteration=True)
     before = xgb.metal_info()["gradient_sampling_dispatches"]
-    cpu = xgb.train(p | {"device": "cpu"}, d, 4)
+    cpu = xgb.train(p | {"device": "cpu", "subsample": 1.}, d, 4,
+                    obj=GradientSquaredError(p))
     assert xgb.metal_info()["gradient_sampling_dispatches"] == before
     gpu = xgb.train(p | {"device": "mps"}, d, 4)
     after = xgb.metal_info()["gradient_sampling_dispatches"]
@@ -89,7 +89,8 @@ def test_gradient_gpu_sampling(metal, subsample, strategy, threads):
 @pytest.mark.parametrize("tree_method", ["hist", "approx"])
 @pytest.mark.parametrize("trees", [2, 3])
 @pytest.mark.parametrize("targets", [1, 3])
-def test_uniform_forests_use_fresh_original_state(metal, tree_method, trees, targets):
+@pytest.mark.parametrize("sampling_method", ["uniform", "gradient_based"])
+def test_forests_use_fresh_original_state(metal, tree_method, trees, targets, sampling_method):
     from cuda_uniform_reference import weights
 
     rows, rounds, seed = 257, 2, 113
@@ -101,11 +102,14 @@ def test_uniform_forests_use_fresh_original_state(metal, tree_method, trees, tar
     data = xgb.DMatrix(x, label=np.zeros(grad.shape), nthread=1)
     params = dict(device="mps", tree_method=tree_method, num_parallel_tree=trees,
                   multi_strategy="one_output_per_tree", base_score=0., eta=.3,
-                  subsample=.6, seed=seed, max_depth=1, max_bin=2, reg_lambda=1., nthread=1)
+                  subsample=.6, seed=seed, max_depth=1, max_bin=2, reg_lambda=1., nthread=1,
+                  sampling_method=sampling_method)
     before = xgb.metal_info()
     model = xgb.train(params, data, rounds, obj=lambda p, d: (grad.copy(), hess.copy()))
     after = xgb.metal_info()
-    assert after["cuda_uniform_sampling_dispatches"] - before["cuda_uniform_sampling_dispatches"] == rounds * trees * targets
+    counter = ("cuda_uniform_sampling_dispatches" if sampling_method == "uniform"
+               else "cuda_gradient_sampling_dispatches")
+    assert after[counter] - before[counter] == rounds * trees * targets
     assert after["quantization_dispatches"] - before["quantization_dispatches"] == rounds * trees * targets
     rng = np.random.RandomState(seed)
     expected = np.zeros(targets, dtype=np.float32)
@@ -114,10 +118,15 @@ def test_uniform_forests_use_fresh_original_state(metal, tree_method, trees, tar
         for target in range(targets):
             for _ in range(trees):
                 row_seed = int(rng.randint(0, 1 << 32, dtype=np.uint32))
-                keep = weights(row_seed, rows) <= np.float32(.6)
-                # Dyadic inputs are represented exactly by the original quantizer.
-                g = grad[keep, target].sum(dtype=np.float64)
-                h = hess[keep, target].sum(dtype=np.float64)
+                if sampling_method == "uniform":
+                    keep = weights(row_seed, rows) <= np.float32(.6)
+                    # Dyadic inputs are represented exactly by the original quantizer.
+                    g = grad[keep, target].sum(dtype=np.float64)
+                    h = hess[keep, target].sum(dtype=np.float64)
+                else:
+                    from cuda_gradient_reference import sample
+                    _, _, roots = sample(grad[:, target], hess[:, target], np.float32(.6), row_seed)
+                    g, h = roots[0][0], roots[1][0]
                 expected[target] += np.float32(-g / (h + 1.)) * learning_rate
     expected = np.tile(expected, (rows, 1))
     if targets == 1:

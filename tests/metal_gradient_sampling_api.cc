@@ -1,3 +1,4 @@
+// Legacy low-level CPU-formula API regression (production no longer calls it).
 // Compare actual Metal sampling against upstream CPU threshold/norm routines
 // and the platform's standard-library random stream. Includes in-place/replay,
 // strided storage, padding guards, underflow, overflow and large scans.
@@ -168,43 +169,6 @@ void Case(size_t rows, size_t targets, int layout, int mode, size_t budget, uint
   }
 }
 
-void CheckSamplerAPI() {
-  for (int threads : {1, 3})
-    for (float fraction : {0.f, 0.6f, 1.f}) {
-      Context cpu, gpu;
-      cpu.Init({{"device", "cpu"}, {"nthread", std::to_string(threads)}});
-      gpu.Init({{"device", "mps"}, {"nthread", std::to_string(threads)}});
-      cpu.Rng().seed(701);
-      gpu.Rng().seed(701);
-      tree::TrainParam params;
-      params.Init(
-          Args{{"sampling_method", "gradient_based"}, {"subsample", std::to_string(fraction)}});
-      tree::cpu_impl::Sampler a{params}, b{params};
-      linalg::Matrix<GradientPair> original({1031, 1}, DeviceOrd::CPU()),
-          expected({1031, 1}, DeviceOrd::CPU()), actual({1031, 1}, DeviceOrd::CPU());
-      for (size_t i = 0; i < 1031; ++i) {
-        auto value = GradientPair{float(int(i % 31) - 15) / 7, float(i % 17) / 3};
-        original.HostView()(i, 0) = expected.HostView()(i, 0) = actual.HostView()(i, 0) = value;
-      }
-      a.Sample(&cpu, expected.HostView());
-      b.Sample(&gpu, actual.HostView());
-      Check(std::memcmp(expected.HostView().Values().data(), actual.HostView().Values().data(),
-                        1031 * sizeof(GradientPair)) == 0,
-            "Sampler integration differs");
-      linalg::Matrix<GradientPair> ve({1031, 3}, DeviceOrd::CPU()), va({1031, 3}, DeviceOrd::CPU());
-      for (size_t i = 0; i < 1031; ++i)
-        for (size_t t = 0; t < 3; ++t)
-          ve.HostView()(i, t) = va.HostView()(i, t) =
-              GradientPair{float(i % 21) - 10, float(t + 1)};
-      a.ApplySampling(&cpu, original.HostView(), &ve);
-      b.ApplySampling(&gpu, original.HostView(), &va);
-      Check(std::memcmp(ve.HostView().Values().data(), va.HostView().Values().data(),
-                        1031 * 3 * sizeof(GradientPair)) == 0,
-            "Reduced-gradient replay differs");
-      Check(cpu.Rng()() == gpu.Rng()(), "Host random-engine state differs");
-    }
-  std::puts("PASS 6 production Sampler calls and reduced-gradient replay pairs");
-}
 
 int main() {
   try {
@@ -222,7 +186,6 @@ int main() {
       for (size_t t : {1, 3})
         for (int mode : {0, 3, 4})
           Case(n, t, t == 1 ? 0 : 1, mode, size_t(n * 0.4f), 9939, 3, true);
-    CheckSamplerAPI();
     std::printf("PASS %zu exact sampling cases / %zu rows / %zu gradient and guard fields\n", cases,
                 checked_rows, checked_fields);
     return 0;

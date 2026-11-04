@@ -5437,3 +5437,267 @@ kernel void xgb_cuda_uniform_replay(device uint2* values [[buffer(0)]],
   for (uint t = 0; t < p.targets; ++t)
     values[ulong(row) * p.stride0 + ulong(t) * p.stride1] = uint2(0);
 }
+
+// CUDA gradient-based sampling operates on the original quantized pairs.
+// Explicit contraction model: binary64 squares and a fused lambda*h2+g2,
+// followed by FP32 conversion/reduction. Native std::fma tests validate this
+// choice; actual NVCC contraction remains an NVIDIA validation requirement.
+inline void xgb_shift128_jam(thread ulong& hi, thread ulong& lo, uint distance) {
+  if (!distance) return;
+  if (distance >= 128) {
+    lo = ulong(hi != 0 || lo != 0);
+    hi = 0;
+  } else if (distance >= 64) {
+    uint d = distance - 64;
+    lo = (d ? hi >> d : hi) | ulong(lo != 0 || (d && (hi << (64 - d)) != 0));
+    hi = 0;
+  } else {
+    lo = (hi << (64 - distance)) | (lo >> distance) | ulong((lo << (64 - distance)) != 0);
+    hi >>= distance;
+  }
+}
+// Nonnegative finite normal operands (or zero), with no cancellation. Keep the
+// exact 106-bit product and aligned addend until one final binary64 rounding.
+inline XGBDouble xgb_positive_dfma(XGBDouble a, XGBDouble b, XGBDouble c) {
+  if (!a.bits || !b.bits) return c;
+  if (!c.bits) return xgb_dmul(a, b);
+  int ea, eb, ec;
+  ulong ma, mb, mc;
+  xgb_dunpack(a.bits, ea, ma);
+  xgb_dunpack(b.bits, eb, mb);
+  xgb_dunpack(c.bits, ec, mc);
+  ulong pl, ph = xgb_mul_high(ma, mb, pl);
+  bool high = (ph & (1ul << 41)) != 0;
+  int pe = ea + eb - 2046 + int(high), ce = ec - 1023;
+  uint shift = high ? 21 : 22;  // Normalize both operands to bit 126.
+  ph = (ph << shift) | (pl >> (64 - shift));
+  pl <<= shift;
+  ulong ch = mc << 10, cl = 0;
+  int exponent = max(pe, ce);
+  xgb_shift128_jam(ph, pl, uint(exponent - pe));
+  xgb_shift128_jam(ch, cl, uint(exponent - ce));
+  ulong low = pl + cl, top = ph + ch + ulong(low < pl);
+  bool carry = (top >> 63) != 0;
+  uint right = carry ? 8 : 7;
+  ulong sig = (top >> right) | ulong(low != 0 || (top & ((1ul << right) - 1)) != 0);
+  return xgb_dround(0, exponent + 1023 + int(carry), sig);
+}
+struct CudaMvsParams {
+  ulong rows;
+  uint targets, sample_rows;
+};
+struct CudaMvsState {
+  int exponent;
+  atomic_uint error, index;
+  float threshold;
+};
+kernel void xgb_cuda_mvs_term(device const ulong2* pairs [[buffer(0)]],
+                              device const GradientScale& scale [[buffer(1)]],
+                              device float* terms [[buffer(2)]], constant ulong& rows [[buffer(3)]],
+                              uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= rows) return;
+  ulong2 value = pairs[row];
+  XGBDouble g{xgb_scaled_integer(value.x, -scale.grad_exponent)},
+      h{xgb_scaled_integer(value.y, -scale.hess_exponent)};
+  XGBDouble g2 = xgb_dmul(g, g), h2 = xgb_dmul(h, h);
+  terms[row] = xgb_dto_float(xgb_positive_dfma(xgb_dfrom_float(.1f), h2, g2));
+}
+kernel void xgb_cuda_mvs_norm_small(device const float* terms [[buffer(0)]],
+                                    device float* norms [[buffer(1)]],
+                                    constant CudaMvsParams& p [[buffer(2)]],
+                                    uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.rows) return;
+  float sum = terms[row];
+  for (uint t = 1; t < p.targets; ++t) sum = xgb_fadd_preserve(sum, terms[ulong(t) * p.rows + row]);
+  norms[row] = xgb_mvs_sqrt(sum);
+}
+// CCCL's SM60-SM90 fixed-segment policy: <=16 targets use one thread,
+// <=512 use 32 threads, larger segments use 256. The transform iterator disables
+// vector loads. Each lane accumulates its stripe sequentially; warp shuffle
+// offsets ascend 1,2,4,8,16, then thread zero combines the eight warp sums.
+kernel void xgb_cuda_mvs_norm(
+    device const float* terms [[buffer(0)]], device float* norms [[buffer(1)]],
+    constant CudaMvsParams& p [[buffer(2)]], uint row [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]], uint width [[threads_per_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
+  float sum = 0;
+  for (uint t = tid; t < p.targets; t += width)
+    sum = xgb_fadd_preserve(sum, terms[ulong(t) * p.rows + row]);
+  for (uint offset = 1; offset < 32; offset <<= 1) {
+    float other = simd_shuffle_down(sum, offset);
+    if (lane + offset < 32) sum = xgb_fadd_preserve(sum, other);
+  }
+  threadgroup float warp_sums[8];
+  if (!lane) warp_sums[simd] = sum;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (!tid) {
+    for (uint w = 1; w < width / 32; ++w) sum = xgb_fadd_preserve(sum, warp_sums[w]);
+    norms[row] = xgb_mvs_sqrt(sum);
+  }
+}
+kernel void xgb_cuda_mvs_bound(device const uint2* sorted [[buffer(0)]],
+                               device ulong2* partial [[buffer(1)]],
+                               constant ulong& rows [[buffer(2)]],
+                               uint group [[threadgroup_position_in_grid]],
+                               uint tid [[thread_index_in_threadgroup]],
+                               uint lane [[thread_index_in_simdgroup]],
+                               uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong row = ulong(group) * 256 + tid;
+  float value = row < rows ? as_type<float>(sorted[row].x ^ 0x80000000u) : 0;
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(xgb_dfrom_float(value), {0}, bounds, sums, lane, simd);
+  if (!simd && !lane) partial[group] = total;
+}
+kernel void xgb_cuda_mvs_scale(device const ulong2& total [[buffer(0)]],
+                               device CudaMvsState& state [[buffer(1)]],
+                               constant CudaMvsParams& p [[buffer(2)]]) {
+  bool valid = total.x < kDoubleInf;
+  state.exponent = valid ? xgb_gradient_exponent(total.x, 0, p.rows) : 0;
+  atomic_store_explicit(&state.error, uint(!valid && p.sample_rows != 0), memory_order_relaxed);
+  atomic_store_explicit(&state.index, 0xffffffffu, memory_order_relaxed);
+  state.threshold = as_type<float>(0x7f800000u);
+}
+kernel void xgb_cuda_mvs_quantize(device const uint2* sorted [[buffer(0)]],
+                                  device ulong* integers [[buffer(1)]],
+                                  device const CudaMvsState& state [[buffer(2)]],
+                                  constant ulong& rows [[buffer(3)]],
+                                  uint row [[thread_position_in_grid]]) {
+  if (ulong(row) < rows)
+    integers[row] =
+        atomic_load_explicit(&state.error, memory_order_relaxed)
+            ? 0
+            : as_type<ulong>(quantize_float(sorted[row].x ^ 0x80000000u, state.exponent));
+}
+kernel void xgb_prefix_u64(device const ulong* input [[buffer(0)]],
+                           device ulong* output [[buffer(1)]], device ulong* totals [[buffer(2)]],
+                           constant ulong& count [[buffer(3)]],
+                           uint group [[threadgroup_position_in_grid]],
+                           uint tid [[thread_index_in_threadgroup]]) {
+  ulong row = ulong(group) * 256 + tid;
+  threadgroup ulong values[256];
+  values[tid] = row < count ? input[row] : 0;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint offset = 1; offset < 256; offset <<= 1) {
+    ulong prior = tid >= offset ? values[tid - offset] : 0;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    values[tid] += prior;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (row < count) output[row] = values[tid];
+  if (tid == 255) totals[group] = values[tid];
+}
+kernel void xgb_prefix_u64_add(device ulong* output [[buffer(0)]],
+                               device const ulong* upper [[buffer(1)]],
+                               uint row [[thread_position_in_grid]]) {
+  if (row / 256) output[row] += upper[row / 256 - 1];
+}
+kernel void xgb_cuda_mvs_candidate(device const uint2* sorted [[buffer(0)]],
+                                   device const ulong* prefix [[buffer(1)]],
+                                   device CudaMvsState& state [[buffer(2)]],
+                                   device float* candidates [[buffer(3)]],
+                                   constant CudaMvsParams& p [[buffer(4)]],
+                                   uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.rows || atomic_load_explicit(&state.error, memory_order_relaxed)) return;
+  float denominator = float(p.sample_rows) - float(p.rows - row - 1);
+  if (denominator <= 0) return;
+  float cumulative = xgb_dto_float({xgb_scaled_integer(prefix[row], -state.exponent)});
+  float u = xgb_mvs_divide(cumulative, denominator);
+  float lower = as_type<float>(sorted[row].x ^ 0x80000000u);
+  float upper = ulong(row) + 1 == p.rows ? as_type<float>(0x7f800000u)
+                                         : as_type<float>(sorted[row + 1].x ^ 0x80000000u);
+  // Compare positive bits to preserve subnormal boundaries on Apple hardware.
+  if (as_type<uint>(u) > as_type<uint>(lower) && as_type<uint>(u) <= as_type<uint>(upper)) {
+    candidates[row] = u;
+    atomic_fetch_min_explicit(&state.index, row, memory_order_relaxed);
+  }
+}
+kernel void xgb_cuda_mvs_select(device const uint2* sorted [[buffer(0)]],
+                                device const float* candidates [[buffer(1)]],
+                                device CudaMvsState& state [[buffer(2)]],
+                                constant CudaMvsParams& p [[buffer(3)]]) {
+  uint index = atomic_load_explicit(&state.index, memory_order_relaxed);
+  if (!p.sample_rows || !p.rows || atomic_load_explicit(&state.error, memory_order_relaxed)) {
+    index = uint(p.rows);
+    state.threshold = as_type<float>(0x7f800000u);
+  } else if (index == 0xffffffffu) {
+    // CUDA min_element selects the first FLT_MAX if no candidate is valid.
+    index = 1;
+    state.threshold =
+        p.rows > 1 ? as_type<float>(sorted[1].x ^ 0x80000000u) : as_type<float>(0x7f800000u);
+  } else {
+    state.threshold = candidates[index];
+    ++index;
+  }
+  atomic_store_explicit(&state.index, index, memory_order_relaxed);
+}
+inline float xgb_cuda_mvs_probability(float norm, float threshold) {
+  uint bits = as_type<uint>(threshold), magnitude = bits & 0x7fffffffu;
+  if (magnitude == 0x7f800000u) return 0;
+  if (magnitude < as_type<uint>(1e-6f))
+    threshold = as_type<float>((bits & 0x80000000u) | as_type<uint>(1e-6f));
+  return xgb_mvs_divide(norm, threshold);
+}
+inline bool xgb_cuda_mvs_selected(float probability, uint seed, ulong row) {
+  return probability >= 1.f ||
+         (probability > 0.f && xgb_cuda_random_weight(seed, row) <= probability);
+}
+// Truncate a finite binary64 value times a power of two. Flag conversions for
+// which CUDA's C++ float-to-integer conversion has undefined behavior.
+inline ulong xgb_cuda_quantize_double(XGBDouble value, int scale, device atomic_uint* error) {
+  ulong bits = value.bits, magnitude = bits & ~kDoubleSign, mantissa = bits & kDoubleFrac;
+  int encoded = int((bits >> 52) & 2047);
+  if (!magnitude) return 0;
+  if (encoded) mantissa |= 1ul << 52;
+  int shift = scale + (encoded ? encoded - 1075 : -1074);
+  ulong limit = bits & kDoubleSign ? kDoubleSign : kDoubleSign - 1;
+  if (encoded == 2047 || shift >= 64 || (shift >= 0 && mantissa > (limit >> uint(shift)))) {
+    atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+    return 0;
+  }
+  ulong result = shift >= 0 ? mantissa << uint(shift) : shift <= -64 ? 0 : mantissa >> uint(-shift);
+  return bits & kDoubleSign ? 0ul - result : result;
+}
+kernel void xgb_cuda_mvs_integer(device ulong2* pairs [[buffer(0)]],
+                                 constant CudaUniformParams& p [[buffer(1)]],
+                                 device const GradientScale& scale [[buffer(2)]],
+                                 device const float* norms [[buffer(3)]],
+                                 device CudaMvsState& state [[buffer(4)]],
+                                 uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.rows) return;
+  ulong2 pair = pairs[row];
+  if (all(pair == ulong2(0))) return;
+  float probability = xgb_cuda_mvs_probability(norms[row], state.threshold);
+  if (!xgb_cuda_mvs_selected(probability, p.seed, row)) {
+    pairs[row] = ulong2(0);
+    return;
+  }
+  float reciprocal = probability >= 1.f ? 1.f : xgb_mvs_divide(1.f, probability);
+  XGBDouble factor = xgb_dfrom_float(reciprocal);
+  XGBDouble g = xgb_dmul({xgb_scaled_integer(pair.x, -scale.grad_exponent)}, factor);
+  XGBDouble h = xgb_dmul({xgb_scaled_integer(pair.y, -scale.hess_exponent)}, factor);
+  ulong qg = xgb_cuda_quantize_double(g, scale.grad_exponent, &state.error);
+  ulong qh = xgb_cuda_quantize_double(h, scale.hess_exponent, &state.error);
+  if (h.bits > 0 && h.bits < kDoubleSign && qh == 0) qh = 1;
+  pairs[row] = ulong2(qg, qh);
+}
+kernel void xgb_cuda_mvs_replay(device uint2* values [[buffer(0)]],
+                                constant CudaUniformParams& p [[buffer(1)]],
+                                device const float* norms [[buffer(2)]],
+                                device const CudaMvsState& state [[buffer(3)]],
+                                uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.rows) return;
+  float probability = xgb_cuda_mvs_probability(norms[row], state.threshold);
+  bool selected = xgb_cuda_mvs_selected(probability, p.seed, row);
+  float factor = selected && probability < 1.f ? xgb_mvs_divide(1.f, probability) : 1.f;
+  for (uint t = 0; t < p.targets; ++t) {
+    ulong out = ulong(row) * p.stride0 + ulong(t) * p.stride1;
+    uint2 pair = values[out];
+    if (!selected)
+      pair = uint2(0);
+    else if (probability < 1.f)
+      pair = uint2(as_type<uint>(xgb_fmul_preserve(as_type<float>(pair.x), factor)),
+                   as_type<uint>(xgb_fmul_preserve(as_type<float>(pair.y), factor)));
+    values[out] = pair;
+  }
+}
