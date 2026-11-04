@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 import xgboost as xgb
+from cuda_split_reference import RecordedSquaredError, audit_recorded
 
 
 def dataset(seed=13, layout="dense", objective="reg:squarederror"):
@@ -130,8 +131,18 @@ def test_hist_features(metal, extra):
     d = xgb.DMatrix(x, label=y, weight=w)
     p = parameters(**extra)
     cpu = xgb.train(p, d, num_boost_round=6)
-    gpu = train_metal(d, p, rounds=6)
-    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+    if "colsample_bytree" in extra:
+        # CUDA has a different column stream. Keep this dataset/feature case,
+        # audit CUDA split arithmetic, and check the same model on CPU.
+        recorded = RecordedSquaredError()
+        gpu = train_metal(d, p, rounds=6, obj=recorded)
+        assert min(audit_recorded(gpu, d, x, recorded, p)) > 0
+        loaded = xgb.Booster(model_file=gpu.save_raw())
+        loaded.set_param({"device": "cpu"})
+        np.testing.assert_allclose(gpu.predict(d), loaded.predict(d), rtol=2e-5, atol=2e-5)
+    else:
+        gpu = train_metal(d, p, rounds=6)
+        np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
 
 
 @pytest.mark.gpu

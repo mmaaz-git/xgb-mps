@@ -6,10 +6,11 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
+#include <random>
 #include <vector>
 
 #include "../data/gradient_index.h"
@@ -195,9 +196,9 @@ class Runtime {
       linear_residual_pipeline;
   id<MTLComputePipelineState> leaf_sum_pipeline, leaf_sum_finish_pipeline, leaf_weight_pipeline;
   id<MTLComputePipelineState> leaf_integer_sum_pipeline, leaf_integer_sum_finish_pipeline;
-  id<MTLComputePipelineState> column_iota_pipeline, column_rng_pipeline, column_keys_pipeline,
-      column_select_pipeline, column_sort_small_pipeline, column_output_pipeline,
-      column_sample_small_pipeline;
+  id<MTLComputePipelineState> column_iota_pipeline, column_keys_pipeline, column_select_pipeline,
+      column_sort_small_pipeline, column_output_pipeline, column_shuffle_init_pipeline,
+      column_shuffle_compact_pipeline;
   id<MTLComputePipelineState> gradient_sampling_norm_pipeline, gradient_sampling_prefix_pipeline,
       gradient_sampling_threshold_pipeline, gradient_sampling_apply_pipeline;
   id<MTLComputePipelineState> ranking_roc_init_pipeline, ranking_roc_merge_pipeline,
@@ -303,12 +304,12 @@ class Runtime {
       leaf_sum_finish_pipeline = make_pipeline(@"xgb_leaf_sum_finish");
       leaf_weight_pipeline = make_pipeline(@"xgb_leaf_weight");
       column_iota_pipeline = make_pipeline(@"xgb_column_iota");
-      column_rng_pipeline = make_pipeline(@"xgb_column_rng");
       column_keys_pipeline = make_pipeline(@"xgb_column_keys");
       column_select_pipeline = make_pipeline(@"xgb_column_select");
       column_sort_small_pipeline = make_pipeline(@"xgb_column_sort_small");
       column_output_pipeline = make_pipeline(@"xgb_column_output");
-      column_sample_small_pipeline = make_pipeline(@"xgb_column_sample_small");
+      column_shuffle_init_pipeline = make_pipeline(@"xgb_column_shuffle_init");
+      column_shuffle_compact_pipeline = make_pipeline(@"xgb_column_shuffle_compact");
 
       cuda_mvs_term_pipeline = make_pipeline(@"xgb_cuda_mvs_term");
       cuda_mvs_norm_pipeline = make_pipeline(@"xgb_cuda_mvs_norm");
@@ -4398,24 +4399,23 @@ void InitFeatureSet(Span<bst_feature_t> features) {
 
 void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weights,
                     std::uint32_t seed, Span<bst_feature_t> selected, Span<float> uniforms,
-                    Span<float> keys) {
+                    Span<float> keys, Span<bst_feature_t> permutation) {
   CHECK_LE(selected.size(), features.size());
   CHECK_LE(features.size(), std::numeric_limits<std::uint32_t>::max());
   CHECK(uniforms.empty() || (!weights.empty() && uniforms.size() == features.size()));
   CHECK(keys.empty() || (!weights.empty() && keys.size() == features.size()));
+  CHECK(permutation.empty() || (weights.empty() && permutation.size() == features.size()));
   if (selected.empty()) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
-    bool fused = weights.empty() && features.size() <= 2048 &&
-                 rt.device.maxThreadgroupMemoryLength >= 2048 * 8 + 624 * 4;
     auto input = Upload(rt, features.data(), features.size_bytes());
     auto output = Allocate(rt, selected.size_bytes());
-    auto weight = fused ? nil : Upload(rt, weights.data(), weights.size_bytes());
-    auto indices = fused ? nil : Allocate(rt, features.size_bytes());
-    auto random = fused ? nil : Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
-    auto scores = fused ? nil : Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
-    auto invalid = fused ? nil : Allocate(rt, sizeof(std::uint32_t));
-    auto records = fused ? nil : Allocate(rt, selected.size() * 2 * sizeof(std::uint32_t));
+    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto indices = Allocate(rt, weights.empty() ? features.size_bytes() : 4);
+    auto random = Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
+    auto scores = Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
+    auto invalid = Allocate(rt, sizeof(std::uint32_t));
+    auto records = Allocate(rt, selected.size() * 2 * sizeof(std::uint32_t));
     struct {
       std::uint32_t rows, selected, seed, weighted;
       std::uint64_t weights;
@@ -4424,7 +4424,7 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
     static_assert(sizeof(p) == 24);
     auto command = [rt.queue commandBuffer];
     CHECK(command);
-    if (!fused) {
+    {
       auto clear = [command blitCommandEncoder];
       CHECK(clear);
       [clear fillBuffer:invalid range:NSMakeRange(0, invalid.length) value:0];
@@ -4434,52 +4434,58 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
       [command commit];
       [command waitUntilCompleted];
       CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-      if (!fused)
-        CHECK_EQ(*static_cast<std::uint32_t const*>(invalid.contents), 0)
-            << "Feature index exceeds weights";
+      CHECK_EQ(*static_cast<std::uint32_t const*>(invalid.contents), 0)
+          << "Feature index exceeds weights";
       std::memcpy(selected.data(), output.contents, selected.size_bytes());
       if (!uniforms.empty()) std::memcpy(uniforms.data(), random.contents, uniforms.size_bytes());
       if (!keys.empty()) std::memcpy(keys.data(), scores.contents, keys.size_bytes());
+      if (!permutation.empty())
+        std::memcpy(permutation.data(), indices.contents, permutation.size_bytes());
       column_sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
       auto elapsed = command.GPUEndTime - command.GPUStartTime;
       if (elapsed > 0)
         column_sampling_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                               std::memory_order_relaxed);
     };
-    if (fused) {
-      std::uint32_t width = 2;
-      while (width < p.rows) width <<= 1;
-      auto e = [command computeCommandEncoder];
-      CHECK(e);
-      [e setComputePipelineState:rt.column_sample_small_pipeline];
-      [e setBuffer:input offset:0 atIndex:0];
-      [e setBuffer:output offset:0 atIndex:1];
-      [e setBytes:&p length:sizeof(p) atIndex:2];
-      [e setThreadgroupMemoryLength:width * 8 atIndex:0];
-      [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-      [e endEncoding];
-      finish();
-      return;
-    }
     if (!p.weighted) {
+      std::uint32_t bits = 8;
+      while ((std::uint64_t{1} << bits) < p.rows) ++bits;
+      auto domain = std::uint64_t{1} << bits;
+      struct {
+        std::uint32_t rows, left_bits, right_bits, padding;
+        std::uint32_t keys[24];
+      } shuffle{p.rows, bits / 2, (bits + 1) / 2, 0, {}};
+      static_assert(sizeof(shuffle) == 112);
+      // Thrust constructs its round keys on host before launching the shuffle.
+      // Its default engine is minstd_rand; uint32 uniform uses a binary64 real
+      // draw over [0, UINT32_MAX+1), then truncates. Keep those rounding boundaries.
+      std::minstd_rand rng(seed);
+      for (auto& key : shuffle.keys)
+        key = static_cast<std::uint32_t>((double(rng() - 1) / 2147483646.0) * 0x1p32);
+      auto padded = Allocate(rt, domain * sizeof(std::uint32_t));
+      auto flags = Allocate(rt, domain * sizeof(std::uint64_t));
       auto e = [command computeCommandEncoder];
       CHECK(e);
-      [e setComputePipelineState:rt.column_iota_pipeline];
-      [e setBuffer:indices offset:0 atIndex:0];
-      [e dispatchThreads:MTLSizeMake(p.rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e setComputePipelineState:rt.column_shuffle_init_pipeline];
+      [e setBuffer:padded offset:0 atIndex:0];
+      [e setBuffer:flags offset:0 atIndex:1];
+      [e setBytes:&shuffle length:sizeof(shuffle) atIndex:2];
+      [e dispatchThreads:MTLSizeMake(domain, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      auto prefix = EncodePrefixU64(rt, command, flags, domain);
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.column_shuffle_compact_pipeline];
+      [e setBuffer:padded offset:0 atIndex:0];
+      [e setBuffer:prefix offset:0 atIndex:1];
+      [e setBuffer:indices offset:0 atIndex:2];
+      [e setBytes:&p.rows length:sizeof(p.rows) atIndex:3];
+      [e dispatchThreads:MTLSizeMake(domain, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
     }
-    auto e = [command computeCommandEncoder];
-    CHECK(e);
-    [e setComputePipelineState:rt.column_rng_pipeline];
-    [e setBuffer:indices offset:0 atIndex:0];
-    [e setBuffer:random offset:0 atIndex:1];
-    [e setBytes:&p length:sizeof(p) atIndex:2];
-    [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-    [e endEncoding];
     id<MTLBuffer> ranked = Allocate(rt, 8);
     if (p.weighted) {
-      e = [command computeCommandEncoder];
+      auto e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.column_keys_pipeline];
       [e setBuffer:input offset:0 atIndex:0];
@@ -4494,7 +4500,7 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
       auto offsets = Upload(rt, bounds, sizeof(bounds));
       ranked = EncodeGroupSort(rt, command, scores, offsets, p.rows, 1, 1, p.rows).records;
     }
-    e = [command computeCommandEncoder];
+    auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.column_select_pipeline];
     [e setBuffer:input offset:0 atIndex:0];

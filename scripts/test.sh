@@ -212,7 +212,7 @@ echo "Checking column-sampling logarithm against CPU libm and tie boundaries"
 clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_column_log.mm \
   -framework Metal -framework Foundation -o results/metal_column_log_test
 MTL_DEBUG_LAYER=1 results/metal_column_log_test xgboost/src/common/metal_histogram.metal
-echo "Checking column selection, MT19937 draws and tree/level/node caches against CPU"
+echo "Checking CUDA column selection, Philox draws, Thrust permutations and tree/level/node caches"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
   -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \

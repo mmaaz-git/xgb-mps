@@ -39,7 +39,8 @@ work, not accepted substitutes for CUDA behavior:
   The older Thrust branch is not an equivalent stream. Gradient-based sampling now
   uses that RNG and CUDA-derived norms/thresholds/integer rescaling. Compiler
   contraction and hardware-dependent reduction details remain unverified on NVIDIA;
-  column/ranking random streams still need alignment.
+  weighted columns now use the same modern Philox stream, and unweighted columns
+  use Thrust's distinct shuffle stream. Ranking random streams still need alignment.
 - Quantile sketches: CPU row queues, `SetPruneSorted`, ordered summary merging
   and pruning differ from CUDA's sorted weighted scan and GPU sketch pipeline.
   Existing exact CPU cut tests do not validate that CUDA pipeline.
@@ -72,7 +73,7 @@ must be reported rather than hidden by widening test tolerances.
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned integer cache; external-page accumulation and subtraction retain exact quantized sums, with a binary64 view for host orchestration. GPU growth copies both buffers, empty first pages overwrite reused ranges, and feature gathering remains GPU. Scalar/vector split gathering now reads integer buffers; host cache policy/metadata remain |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly from resident sorted indices; GPU-owned interaction masks and monotonic bounds, group unions, ascending feature filtering, bound initialization/growth; candidate staging and tree metadata remain host |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
-| Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; column initialization/selection/order run on Metal but still need CUDA RNG alignment |
+| Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; columns use modern CUDA Philox weighted priorities and Thrust Feistel shuffle with GPU compaction/ordering; shuffle key setup and cache metadata remain host as in CUDA, while feature arrays still stage through host |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
 | Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; expectile's host margin loop matches upstream host execution |
@@ -421,44 +422,74 @@ explicit numerical limitation, not an unported CPU-gradient fallback.
 
 ## Column sampling behavior
 
-Feature initialization, uniform and weighted sampling without replacement, and
-final feature-ID sorting execute on Metal for `colsample_bytree`,
-`colsample_bylevel` and `colsample_bynode`. Existing host caches retain the same
-per-tree/per-level reuse and per-node resampling rules. The host consumes one
-parent RNG seed per actual sample, exactly as the CPU path does; rates of one
-reuse the feature set without consuming a seed or dispatching a sampler.
+Column selection follows `common/random.cu` and the modern branch of
+`common/random.cuh`. The parent consumes one seed per actual sample, with unchanged
+per-tree/per-level caching and per-node resampling. Rates of one reuse the input
+without a seed or sampler dispatch. Feature initialization and final integer-ID
+sorting remain GPU operations.
 
-The GPU implements MT19937 and Apple libc++ uniform-real and rejection-based
-uniform-integer draws. Uniform selection uses forward Fisher-Yates and stops
-when its selected prefix is fixed; unused local-generator draws cannot affect
-later samples. Weighted sampling gathers feature weights, applies the CPU's
-`1e-6` floor, computes `log(u)/weight`, stably orders priorities and sorts selected
-integer IDs. Unweighted candidate sets of at most 2,048 columns use a fused kernel with
-cooperative sorting, subject to available threadgroup memory. Weighted and larger
-sets use separate GPU stages, with integer radix sorting for large selections. Both paths preserve IDs
-above the exact-integer range of FP32.
+Weighted selection now uses the existing Philox4x64 implementation: seed, discard
+by candidate position, then `uniform_real_distribution<float>`. Every candidate
+independently generates its draw, gathers its feature weight, applies the `1e-6`
+floor and computes FP32 `log(u)/weight` on GPU. Priorities sort stably descending,
+the requested prefix is selected, and feature IDs sort ascending. The modern
+Philox and older Thrust weighted engines differ; the older stream is not claimed.
 
-Weighted score ties are sensitive to libm rounding. A sampling-specific table
-and cubic logarithm matches the tested Apple CPU rounding; generic binary64 log
-rounding differed by up to two FP32 ULP in weighted keys. Tests now require exact
-CPU keys, including weights deliberately chosen to produce tied scores. A separate
-8,086,019-input check covers random draws, all exponent ranges in the draw domain,
-range-reduction boundaries, zero and one with zero observed mismatches. This is a
-local Apple libc++/libm compatibility result, not a guarantee about other library
-versions or every possible weighted priority.
+Unweighted CUDA sampling uses **Thrust's default minstd_rand engine and Feistel
+shuffle**, even with modern Philox available. Upstream constructs 24 round keys
+on host using a binary64 uniform distribution and integer conversion. Metal keeps
+that placement and those rounding boundaries. GPU threads apply the 24-round
+bijection across a padded power-of-two domain, then a 64-bit inclusive prefix and
+stable compaction retain indices within the actual column count. This follows
+Thrust's shuffle, not its separate cycle-walking adapter. The former CPU MT19937,
+Fisher-Yates and fused small-column kernels have been removed. The pinned source
+is [NVIDIA CCCL](https://github.com/NVIDIA/cccl/tree/3d0d040ac0dc5907daf2a0731edb378e5562099d),
+particularly its [shuffle](https://github.com/NVIDIA/cccl/blob/3d0d040ac0dc5907daf2a0731edb378e5562099d/thrust/thrust/system/detail/generic/shuffle.inl)
+and [bijection](https://github.com/NVIDIA/cccl/blob/3d0d040ac0dc5907daf2a0731edb378e5562099d/thrust/thrust/detail/random_bijection.h).
 
-Native checks cover 530 cases, 3,275,463 selected IDs and 4,610,295 exact random
-draws, including million-feature samples and the production sampler hierarchy.
-Inputs and output guards, weight-index bounds, parent RNG consumption, cached
-levels and GPU dispatch counts are checked. Public tests cover scalar/vector trees,
-zero/nonuniform feature weights, missing values and model persistence.
+**Same-seed sampled models intentionally change from the former CPU stream.**
+Native source tests preserve all old input families and add seed-modulus boundaries:
+**550 cases / 3,281,095 selected IDs / 4,610,295 exact Philox draws / 1,320,896 exact
+permutation entries**. They cover million-column inputs, padded/non-power-of-two
+sizes, signed/high feature IDs, weight floors, deliberate priority ties, guards,
+unchanged inputs, cached levels, parent RNG state and completed GPU counters.
+Optional diagnostic permutation readback is used only by tests. The internal
+`SampleFeatures` signature changed; final validation rebuilds all native callers.
+No public API or statistics layout changed.
 
-RNG generation is sequential on one GPU lane to preserve the CPU stream. Host
-feature vectors and cache metadata remain authoritative; sampling uploads inputs,
-waits for completion and reads back selected IDs. These are explicit performance
-limits. `column_init_dispatches`, `column_sampling_dispatches` and
-`column_sampling_gpu_time_ns` expose completed work; the sampling time excludes
-the separate initialization command and host staging/wait overhead.
+The independent reference was also compared with **actual, unmodified pinned
+Thrust/CCCL headers compiled for the host**: 66 permutations / 434,730 indices,
+144 round keys and 60,000 Philox uniforms agree exactly. This is stronger than two
+local rewrites agreeing, but is still not NVIDIA execution. The optional probe
+is `tests/cuda_column_upstream.cc`; build details are in the validation record.
+
+Weighted log priorities retain the tested Apple-compatible logarithm. All native
+keys in this corpus match host `std::log(float)` exactly, including deliberate
+ties. The existing 8,086,019-input log check remains separate local math evidence.
+**This does not guarantee NVIDIA libdevice rounding**: tightly spaced priorities
+can change order across math libraries. New public weighted-selection fixtures
+require a boundary separation exceeding eight FP32 ULPs of their independent
+logarithm reference. No tolerance was widened to conceal a failed selection.
+
+Public coverage adds **48 scalar/vector training cases**, checking independently
+predicted single-feature roots over three rounds, hierarchical rates, zero/varied
+weights, seeds and CPU-loaded model predictions. All 88 column tests and a broader
+307-test focused run pass. Unsampled vector fixtures retain original CPU-training
+comparisons; sampled fixtures now use source split arithmetic and same-model CPU
+prediction checks at unchanged tolerances. A custom-objective intercept mismatch
+in the first test revision was corrected by retaining the original built-in
+objective for the unsampled baseline.
+
+Host feature vectors and cache metadata remain authoritative. One command contains
+sampling, compaction/priority ordering and final ID sorting, then selected IDs
+return to host. `column_init_dispatches`, `column_sampling_dispatches` and
+`column_sampling_gpu_time_ns` retain their scope; GPU time excludes host key setup,
+staging and waiting. Resident ownership, actual NVIDIA/cross-Apple checks and
+broader training-schedule correspondence remain open. No new benchmark was run;
+historical CPU-stream/fused-kernel timings are not measurements of this version.
+Full validation passes **1,734 Python tests, one skip**, every rebuilt native suite
+and the CPU-only build/device check (2026-11-04, 11:59:26–12:03:47 UTC).
+[Validation record](../validation/cuda-column-sampling-m3.txt).
 
 ## Numeric sketch finalization
 

@@ -1,0 +1,101 @@
+CUDA-source column sampling on Apple M3
+Date: 2026-11-04
+Source base: 899e930 plus the column-sampling changes accompanying this record.
+
+Authority: xgboost/src/common/random.cu and random.cuh; algorithm.cuh::ArgSort.
+  NVIDIA/cccl pinned3d0d040ac0dc5907daf2a0731edb378e5562099d, matching the existing
+  Philox reference. Actual source archive cached at results/cccl-source.
+  thrust/thrust/{detail/shuffle.inl,system/detail/generic/shuffle.inl,
+  detail/random_bijection.h,random.h,random/detail/uniform_{int,real}_distribution.inl,
+  random/linear_congruential_engine.h,random/detail/linear_congruential_engine.inl}.
+  Complete GitHub source tree checked: no CUDA shuffle policy override exists;
+  public dispatcher selects generic shuffle. Default uint32 distribution is0..UINT_MAX.
+
+Changes:
+  Weighted RNG now modern CUDA Philox4x64: seed,discard(candidate),uniform<float>.
+  Existing shader helper reused, parallelized with key construction. FP32 log(u)/
+  max(feature_weight,1e-6), stable descending priorities and final ascending IDs.
+  Unweighted uses Thrust minstd_rand seed modulo2147483647 (zero becomes1),
+  multiplier48271.24round keys formed on host exactly as Thrust's constructor:
+    uint32(double(draw-1)/2147483646.0 *4294967296.0).
+  GPU Feistel permutation over domain2^max(8,bit_width(n-1));64-bit flag prefix,
+  stable compaction of valid keys, prefix selection and ascending feature-ID sort.
+  It is not cycle walking/Fisher-Yates. Old MT19937 and fused CPU-stream kernels
+  removed. All GPU stages share one command. Host24key construction matches CUDA
+  placement; existing host hierarchy, one-parent-seed/sample and rate1 bypass stay.
+  Optional internal permutation readback added to SampleFeatures, changing its
+  mangled signature; all native callers rebuilt. Public API/stats ABI unchanged.
+
+Before/after:
+  results/test-column-cuda-before-v1.log fails old899e930 at17columns/7selected/seed7:
+  "Column sampler does not use CUDA's Thrust shuffle".
+  Source fixture passes after replacement. Same-seed sampled trees intentionally
+  differ from CPU and the previous Metal implementation; data/oldedgefamilies kept.
+
+Actual upstream host reference check:
+  tests/cuda_column_upstream.cc compiles unmodified pinned Thrust/CCCL headers on
+  Apple CPU and compares the independent tests/cuda_column_reference.h oracle.
+  PASS66 permutations /434730indices /144round keys /60000 exact Philox uniforms.
+  Seeds0/1/7/2147483647/2147483648/UINT_MAX; sizes0/1/2/3/255/256/257/2047/2048/2049/65537.
+  Build command from repository root, assuming pinned CCCL extracted there:
+    clang++ -O2 -std=c++20 -ffp-contract=off \
+      -DTHRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CPP \
+      -I results/cccl-source/thrust -I results/cccl-source/cub \
+      -I results/cccl-source/libcudacxx/include tests/cuda_column_upstream.cc \
+      -o results/cuda_column_upstream_test
+    results/cuda_column_upstream_test
+  This optional test does not add a network dependency to scripts/test.sh.
+  Initial compile hit Apple libc++ forward-declaration ABI attributes; including
+  host standard headers before CCCL fixed it, with no upstream modifications.
+  v2driver11:53:31-11:53:32UTC exit0; test-column-cuda-upstream-v2.log PASS.
+
+Native tests/metal_column_sampling_api.cc:
+  PASS550cases /3281095selected featureIDs /4610295exactPhilox draws /
+  1320896exact full permutation indices. All530oldfamilies retained,20seed-boundary
+  cases added plus explicit before/afterfixture. Includes1,000,003columns,
+  padding boundaries, unordered IDs and values above2^24, zero/subnormal/extreme
+  weights, all-priority ties, deliberately constructed log ties, output guards,
+  immutable inputs, weight-index errors, empty bypass, production hierarchy/caches,
+  exact parent RNG consumption and GPU completed-operation counters.
+  CPU hierarchy remains as seed-consumption/unsampled check; selected arrays use
+  independent CUDA-source sampling. Keys match source formula with LOCAL Apple
+  std::log(float) by bits: maximum0ULP, unchanged assertion. No libdevice claim.
+  Native driver11:55:08-11:55:20UTC exit0, Metal API validation enabled.
+  build-column-cuda-v1.log/test-column-cuda-native-v1.log PASS.
+
+Python integration:
+  tests/cuda_column_reference.py independent integer shuffle and Philox priorities.
+ 48new test_cuda_column_selection_in_training cases: scalar/vector,3rounds,
+  4hierarchical rate patterns,2seeds,none/varied/zero featureweights. All144roots
+  independently expected to choose one specific feature. Weighted priority boundary
+  must exceed8FP32ULPs of independent log reference, avoiding ambiguous math ties.
+  Existing40columnfixtures preserved, sampledvector/scalar source-tree checks and
+  same-model CPU predictions retain2e-5tolerances; reload equality retained.
+  Unsampledvector keeps original built-in objective/CPU training identity checks.
+  12sampledvector split fixtures and1main hist-feature fixture now compare source
+  arithmetic plus same-model CPU predictions, since CPU column RNG is different.
+  No prediction tolerance relaxed. Existing source selected-feature checks are not
+  a proof of complete CUDA training scheduling; native hierarchy/public root tests
+  separately test sampling/seed contracts.
+  Pythonv1:84passed4failed because new customobjective skipped unsampledintercept
+  estimation. Restored built-in objective for those original baselines.
+  Pythonv2:307passed1skipped1warning33.76s,11:57:57-11:58:32UTCexit0;
+  includes all88column tests plus split/main-training/approx files.
+
+Full regression:
+  results/run-column-cuda-full-v1.sh,11:59:26-12:03:47UTC exit0.
+  build-column-cuda-final-v1.log PASS final Metal build.
+  test-column-cuda-full-v1.log PASS all rebuilt native suites/reference updater;
+  1734Python passed,1skipped,370warnings,104.65s. Native sampling counts and exact
+  key assertions match above; separate local Apple log corpus also passes.
+  build-cpu-column-cuda-v1.log PASS CPU-only build.
+  check-cpu-column-cuda-v1.log PASS unavailable Metal and clear device=mps error.
+  No production/test changes after full validation started. No benchmarks run.
+
+Limits:
+  No actual NVIDIA/cross-Apple execution. Weighted libdevice log rounding and
+  training scheduler correspondence remain unverified. Modern weighted Philox
+  targeted; legacy Thrust weighted RNG is a different, unclaimed stream.
+  Host input/cache ownership, staging/waits and other coverage-ledger gaps remain.
+  No benchmark run; old CPU-stream/fused-path timings do not measure this version.
+  Full CUDA parity NOT complete.

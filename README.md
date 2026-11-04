@@ -14,16 +14,14 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **grouped ROC CUDA-source edge behavior**. Finite query weights whose
-FP32 square overflows now return a NaN metric, as CUDA's source does, instead of
-throwing the CPU-specific error. Validation passes 390 added native query cases
-and all 73 public grouped AUC tests. Full regression passes **1,686 Python tests**,
-every native suite and the CPU-only build check.
-[Validation](validation/cuda-grouped-roc-m3.txt) · [Scope](docs/CUDA_PARITY.md#grouped-roc-cuda-source-contract).
-The preceding classification AUC step moved multi-output normalization and
-weighted averaging onto Metal and passed 1,666 Python tests plus all native suites.
-Extreme-weight PR follows CUDA's less accurate integral arithmetic, explicitly
-documented in its [validation record](validation/cuda-classification-auc-m3.txt).
+Latest step: **CUDA-source column sampling**. Weighted selection now uses Philox;
+unweighted selection uses Thrust's Feistel shuffle and stable GPU compaction.
+This intentionally changes sampled models from the previous CPU random stream.
+Validation passes **550 native cases**, 4.6 million exact draws, 1.32 million
+exact permutation indices and **307 focused Python tests**. Full regression passes
+**1,734 Python tests**, every rebuilt native suite and the CPU-only build check.
+The reference also matches actual upstream Thrust/CCCL headers on this Mac.
+[Validation](validation/cuda-column-sampling-m3.txt) · [Scope](docs/CUDA_PARITY.md#column-sampling-behavior).
 Actual NVIDIA execution equivalence remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
@@ -133,7 +131,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Ranking training | Stable grouped sorting, NDCG cache/label checks and top-k and mean-sampled pairwise/NDCG/MAP pairs, gradients and normalization, including unbiased loss corrections and position-bias updates, on Metal |
 | ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; collective transport remains host |
 | Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior |
-| Column sampling | GPU feature initialization, CPU-compatible MT19937 draws, uniform/weighted selection, stable priority ordering and integer feature sorting; tree/level/node caches remain host |
+| Column sampling | CUDA-source Philox weighted draws and Thrust Feistel unweighted shuffle; GPU compaction, stable priority ordering and integer feature sorting; 24 shuffle keys and cache metadata remain host as in CUDA, while feature arrays still stage through host |
 | Grouped ranking PR-AUC | CUDA-source FP32 cast boundaries, original-order positive totals, segmented binary64 prefixes, integral arithmetic and two-row validity; GPU sorting, validation and aggregation |
 | PR-AUC | Binary, multiclass and multilabel; CUDA-source term casts, separate recall/validity totals, source integral and invalid-output rules; GPU aggregation metadata and normalization; collective transport remains host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision with CUDA-source arithmetic/fallbacks; GPU label validation and NDCG cache initialization |
@@ -327,11 +325,16 @@ On Apple M3, 2026-11-03:
   subnormal half-weight rounding and GPU counters. Finite squared-weight overflow
   now returns NaN, matching CUDA source. All **73 public grouped AUC tests** pass.
   [CUDA-source validation](validation/cuda-grouped-roc-m3.txt).
-- Column sampling: **530 native cases / 3,275,463 selected feature IDs /
-  4,610,295 random draws**, exactly matching CPU; weighted priorities also match
-  bit for bit, including constructed ties. Production hierarchy/cache behavior,
-  parent RNG state and guards are checked. A separate **8,086,019-input** logarithm
-  check has zero CPU mismatches on this M3.
+- Column sampling: **550 native cases / 3,281,095 selected feature IDs /
+  4,610,295 exact Philox draws / 1,320,896 exact shuffle indices**, checked against
+  CUDA-source references. An optional actual Thrust/CCCL host check verifies
+  66 permutations, 434,730 indices, 144 shuffle keys and 60,000 draws. Native
+  weighted keys match the local Apple log reference exactly, including constructed
+  ties; this is not a libdevice rounding guarantee. Hierarchy, seed consumption,
+  guards and GPU counters are checked. **48 added public cases** verify selected
+  tree-root features independently; existing sampled scalar/vector fixtures use
+  source arithmetic and same-model CPU prediction checks with unchanged tolerances.
+  [Validation](validation/cuda-column-sampling-m3.txt).
 - Sketch finalization: **942 native columns / 2,047,144 retained source entries**,
   with **9,731,868 exact field comparisons** across GPU summaries and independent
   CPU rank queries. Includes 28 streamed sketches through 1,000,003-row ingestion,
@@ -567,7 +570,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Reuse split workspaces across tree levels and boosting rounds.
 - [x] Port uniform sampling, including random-stream compatibility and replay.
 - [x] Implement CUDA-derived gradient-based integer sampling and replay; NVIDIA execution validation remains.
-- [x] Port uniform/weighted column sampling, with CPU-compatible random streams.
+- [x] Port uniform/weighted column sampling with CUDA-source Philox and Thrust shuffle streams.
 - [ ] Port remaining training-state updates.
 - [x] Port final numeric sketch level merging and pruning.
 - [x] Port sketch weighting, sorted-column summaries and streaming level compaction.
@@ -577,7 +580,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Align precision/NDCG/MAP arithmetic, prefixes and degenerate-query weighting with CUDA source.
 - [x] Align grouped PR-AUC term rounding, recall totals, integral and query validity with CUDA source.
 - [x] Align classification AUC arithmetic/output rules and port multi-output normalization to GPU.
-- [ ] Align sketch algorithms and column/ranking streams with CUDA.
+- [ ] Align sketch algorithms and ranking streams with CUDA.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.
@@ -1569,6 +1572,10 @@ snapshots are retained; these results do not establish an isolated hardware limi
 
 ### Column sampling update
 
+This historical update used CPU random streams. They have since been replaced by
+[CUDA-source sampling](docs/CUDA_PARITY.md#column-sampling-behavior); the timings
+below describe the earlier implementation and have not been rerun for the new one.
+
 Column sampling now runs feature initialization, random generation, uniform and
 weighted selection, stable priority ordering and final feature-ID sorting on Metal.
 The existing tree/level/node sampling rules and parent random stream are preserved.
@@ -2268,3 +2275,28 @@ does not initialize slots with no pairs. That undefined behavior is not reproduc
 The million-row cases also exceed CUDA's current pair-launch limit; they verify
 Metal's larger supported domain, not an executable CUDA comparison.
 [Validation](validation/cuda-grouped-roc-m3.txt). No benchmark was run.
+
+### CUDA column sampling and shuffle
+
+Weighted sampling now generates CUDA's modern Philox uniform draws independently
+on GPU and forms FP32 log/weight priorities. Unweighted sampling uses Thrust's
+24-round Feistel permutation, a GPU prefix scan and stable compaction. The 24
+shuffle keys are generated on host, matching upstream Thrust's placement. Final
+feature ordering remains on GPU; host tree/level caches and seed consumption are
+unchanged. The former MT19937/Fisher-Yates kernels have been removed.
+
+This changes sampled models from the CPU-oriented backend. Native tests retain
+all earlier edge families and verify **550 cases**, 3,281,095 selected feature IDs,
+4,610,295 exact Philox uniforms and 1,320,896 exact permutation entries. A separate
+host build of pinned, unmodified Thrust/CCCL validates the scalar reference.
+Weighted log keys match Apple libm exactly in this corpus; NVIDIA libdevice and
+cross-Apple behavior remain unverified.
+
+The **307-test focused Python run** passes, including 48 added cases that check
+selected root features over three rounds against source RNG/selection formulas.
+Unsampled CPU training checks remain; sampled models use source tree checks and
+unchanged same-model CPU prediction tolerances. Full regression passes **1,734
+Python tests, one skip**, every rebuilt native suite and the CPU-only build/device
+check. The Python suite took 104.65 seconds; the complete run took 4 minutes 21 seconds.
+No benchmark was run, and the removed CPU-stream fused path's timings do not
+describe this implementation. [Validation](validation/cuda-column-sampling-m3.txt).

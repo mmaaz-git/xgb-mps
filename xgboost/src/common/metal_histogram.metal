@@ -4302,21 +4302,6 @@ kernel void xgb_ranking_pr_score(
   if (!tid) partial[group] = ulong2(result.x, one.bits);
 }
 
-// MT19937's in-place recurrence matches std::mt19937, including its 624-word
-// wraparound. One lane owns the stream: rejection draws cannot be reordered.
-inline uint xgb_column_mt(threadgroup uint* state, thread uint& position) {
-  uint next = position + 1 == 624 ? 0 : position + 1;
-  uint other = position + 397;
-  if (other >= 624) other -= 624;
-  uint y = (state[position] & 0x80000000u) | (state[next] & 0x7fffffffu);
-  uint value = state[other] ^ (y >> 1) ^ ((y & 1u) ? 0x9908b0dfu : 0u);
-  state[position] = value;
-  position = next;
-  value ^= value >> 11;
-  value ^= (value << 7) & 0x9d2c5680u;
-  value ^= (value << 15) & 0xefc60000u;
-  return value ^ (value >> 18);
-}
 struct ColumnSampleParams {
   uint rows, selected, seed, weighted;
   ulong weights;
@@ -4325,29 +4310,38 @@ kernel void xgb_column_iota(device uint* output [[buffer(0)]],
                             uint row [[thread_position_in_grid]]) {
   output[row] = row;
 }
-kernel void xgb_column_rng(device uint* indices [[buffer(0)]], device float* uniforms [[buffer(1)]],
-                           constant ColumnSampleParams& p [[buffer(2)]]) {
-  threadgroup uint state[624];
-  state[0] = p.seed;
-  for (uint i = 1; i < 624; ++i) state[i] = 1812433253u * (state[i - 1] ^ (state[i - 1] >> 30)) + i;
-  uint position = 0;
-  if (p.weighted) {
-    for (uint i = 0; i < p.rows; ++i)
-      uniforms[i] = float(xgb_column_mt(state, position)) * 0x1p-32f;
-  } else {
-    // Forward Fisher-Yates: later swaps cannot change the selected prefix.
-    // The local engine is discarded, so unused tail draws need not execute.
-    for (uint i = 0; i < min(p.selected, p.rows - 1); ++i) {
-      uint range = p.rows - i, bits = 32 - clz(range - 1);
-      uint mask = 0xffffffffu >> (32 - bits), draw;
-      do {
-        draw = xgb_column_mt(state, position) & mask;
-      } while (draw >= range);
-      uint value = indices[i];
-      indices[i] = indices[i + draw];
-      indices[i + draw] = value;
-    }
+struct ColumnShuffleParams {
+  uint rows, left_bits, right_bits, padding;
+  uint keys[24];
+};
+// Thrust's shuffle uses a Feistel permutation of a padded power-of-two domain,
+// followed by stable compaction of indices <rows. The 24 round keys are formed
+// on host, matching thrust::detail::feistel_bijection's constructor placement.
+// NVIDIA/cccl 3d0d040ac0dc5907daf2a0731edb378e5562099d (Apache-2.0).
+// Feistel mapping: Copyright (c) 2008-2025 NVIDIA Corporation.
+kernel void xgb_column_shuffle_init(device uint* indices [[buffer(0)]],
+                                    device ulong* flags [[buffer(1)]],
+                                    constant ColumnShuffleParams& p [[buffer(2)]],
+                                    uint index [[thread_position_in_grid]]) {
+  uint left = index >> p.right_bits, right_mask = (1u << p.right_bits) - 1;
+  uint right = index & right_mask, left_mask = (1u << p.left_bits) - 1;
+  for (uint round = 0; round < 24; ++round) {
+    ulong product = 0xD2B74407B1CE6E93ul * ulong(left);
+    uint next_left = (uint(product >> 32) ^ p.keys[round] ^ right) & left_mask;
+    right = ((uint(product) << (p.right_bits - p.left_bits)) | (right >> p.left_bits)) & right_mask;
+    left = next_left;
   }
+  uint permuted = (left << p.right_bits) | right;
+  indices[index] = permuted;
+  flags[index] = ulong(permuted < p.rows);
+}
+kernel void xgb_column_shuffle_compact(device const uint* indices [[buffer(0)]],
+                                       device const ulong* prefix [[buffer(1)]],
+                                       device uint* shuffled [[buffer(2)]],
+                                       constant uint& rows [[buffer(3)]],
+                                       uint index [[thread_position_in_grid]]) {
+  uint permuted = indices[index];
+  if (permuted < rows) shuffled[prefix[index] - 1] = permuted;
 }
 // CPU-compatible float log, shared by sampling and intercept conversion.
 // Range reduction uses a 1/128
@@ -4508,14 +4502,17 @@ inline float xgb_compatible_logf(float value) {
   return xgb_dto_float((r * r) * polynomial + result);
 }
 inline float xgb_column_logf(float value) { return xgb_compatible_logf(value); }
+inline float xgb_cuda_random_weight(uint seed, ulong row);
 kernel void xgb_column_keys(device const uint* features [[buffer(0)]],
                             device const float* weights [[buffer(1)]],
-                            device const float* uniforms [[buffer(2)]],
-                            device float* keys [[buffer(3)]],
+                            device float* uniforms [[buffer(2)]], device float* keys [[buffer(3)]],
                             device atomic_uint* invalid [[buffer(4)]],
                             constant ColumnSampleParams& p [[buffer(5)]],
                             uint row [[thread_position_in_grid]]) {
   using namespace xgb_survival;
+  // common/random.cu's modern branch: Philox(seed), discard(row), uniform<float>.
+  float uniform = xgb_cuda_random_weight(p.seed, row);
+  uniforms[row] = uniform;
   uint feature = features[row];
   if (feature >= p.weights) {
     atomic_store_explicit(invalid, 1u, memory_order_relaxed);
@@ -4525,7 +4522,7 @@ kernel void xgb_column_keys(device const uint* features [[buffer(0)]],
   float weight = weights[feature];
   // Compare preserved bits: Metal can flush subnormal weights in native math.
   if (xgb_float_less(as_type<uint>(weight), as_type<uint>(1e-6f))) weight = 1e-6f;
-  float logarithm = xgb_column_logf(uniforms[row]);
+  float logarithm = xgb_column_logf(uniform);
   keys[row] = xgb_dto_float(From(logarithm) / From(weight));
 }
 kernel void xgb_column_select(device const uint* features [[buffer(0)]],
@@ -4571,48 +4568,6 @@ kernel void xgb_column_output(device const uint2* selected [[buffer(0)]],
                               device uint* output [[buffer(1)]],
                               uint row [[thread_position_in_grid]]) {
   output[row] = selected[row].x;
-}
-
-// Fuse small uniform samples. Keeping weighted log/sort work in separate
-// kernels avoids the measured slowdown of a combined kernel.
-kernel void xgb_column_sample_small(device const uint* features [[buffer(0)]],
-                                    device uint* output [[buffer(1)]],
-                                    constant ColumnSampleParams& p [[buffer(2)]],
-                                    threadgroup uint2* work [[threadgroup(0)]],
-                                    uint tid [[thread_index_in_threadgroup]]) {
-  uint width = 2, selected_width = 2;
-  while (width < p.rows) width <<= 1;
-  while (selected_width < p.selected) selected_width <<= 1;
-  threadgroup uint state[624];
-  for (uint i = tid; i < width; i += 256)
-    work[i] = i < p.rows ? uint2(features[i], i) : uint2(0xffffffffu);
-  if (!tid) {
-    uint previous = p.seed;
-    state[0] = previous;
-    for (uint i = 1; i < 624; ++i) {
-      previous = 1812433253u * (previous ^ (previous >> 30)) + i;
-      state[i] = previous;
-    }
-  }
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  if (!tid) {
-    uint position = 0;
-    for (uint i = 0; i < min(p.selected, p.rows - 1); ++i) {
-      uint range = p.rows - i, bits = 32 - clz(range - 1);
-      uint mask = 0xffffffffu >> (32 - bits), draw;
-      do {
-        draw = xgb_column_mt(state, position) & mask;
-      } while (draw >= range);
-      uint2 value = work[i];
-      work[i] = work[i + draw];
-      work[i + draw] = value;
-    }
-  }
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  for (uint i = p.selected + tid; i < selected_width; i += 256) work[i] = uint2(0xffffffffu);
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  xgb_column_sort_records(work, selected_width, tid);
-  for (uint i = tid; i < p.selected; i += 256) output[i] = work[i].x;
 }
 
 // Sketch fields are (rmin, rmax, wmin, feature value). Preserve FP32 operations,
