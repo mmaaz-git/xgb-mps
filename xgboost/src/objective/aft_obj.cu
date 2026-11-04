@@ -19,6 +19,7 @@
 #include "xgboost/span.h"
 
 #if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ops.h"
 #include "../common/metal_survival.h"
 #endif
 
@@ -75,8 +76,6 @@ class AFTObj : public ObjFunction {
     const size_t ndata = preds.Size();
     CHECK_EQ(info.labels_lower_bound_.Size(), ndata);
     CHECK_EQ(info.labels_upper_bound_.Size(), ndata);
-    out_gpair->SetDevice(ctx_->Device());
-    out_gpair->Reshape(ndata, 1);
     const auto device = ctx_->Device();
     const float aft_loss_distribution_scale = param_.aft_loss_distribution_scale;
     const bool is_null_weight = info.weights_.Size() == 0;
@@ -88,12 +87,18 @@ class AFTObj : public ObjFunction {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       common::metal::SurvivalGradients(static_cast<std::uint32_t>(param_.aft_loss_distribution),
-          aft_loss_distribution_scale, preds.ConstHostSpan(), info.labels_lower_bound_.ConstHostSpan(),
-          info.labels_upper_bound_.ConstHostSpan(), info.weights_.ConstHostSpan(),
-          out_gpair->Data()->HostSpan());
+                                       aft_loss_distribution_scale,
+                                       common::metal::ConstDeviceSpan(preds),
+                                       common::metal::ConstDeviceSpan(info.labels_lower_bound_),
+                                       common::metal::ConstDeviceSpan(info.labels_upper_bound_),
+                                       common::metal::ConstDeviceSpan(info.weights_),
+                                       common::metal::PrepareGradientOutput(out_gpair, ndata, 1));
       return;
     }
 #endif
+    out_gpair->SetDevice(ctx_->Device());
+    out_gpair->Reshape(ndata, 1);
+
     switch (param_.aft_loss_distribution) {
     case common::ProbabilityDistributionType::kNormal:
       GetGradientImpl<common::NormalDistribution>(preds, info, out_gpair, ndata, device,
@@ -115,7 +120,7 @@ class AFTObj : public ObjFunction {
   void PredTransform(HostDeviceVector<bst_float> *io_preds) const override {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::SurvivalTransform(false, io_preds->HostSpan());
+      common::metal::SurvivalTransform(false, common::metal::DeviceSpan(*io_preds));
       return;
     }
 #endif
@@ -136,7 +141,7 @@ class AFTObj : public ObjFunction {
   void ProbToMargin(linalg::Vector<float>* base_score) const override {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::SurvivalTransform(true, base_score->HostView().Values());
+      common::metal::SurvivalTransform(true, base_score->View(DeviceOrd::MPS()).Values());
       return;
     }
 #endif

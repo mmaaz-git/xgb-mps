@@ -14,7 +14,27 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **Metal vector storage and metadata operations**. The generic vector
+Latest step: **resident objective inputs and gradient outputs**. Regression,
+classification, absolute/quantile and AFT objective calls now consume explicit
+Metal spans and write gradients into owned Metal storage. Their prediction
+transforms, plus scalar regression and AFT base-margin conversions, retain it.
+Regression/classification label checks no longer request a host mirror first.
+Checked margin conversion publishes its result only after validation succeeds.
+
+The arithmetic kernels are unchanged. Native checks verify CPU comparisons,
+GPU writes, repeated calls without readback/reupload, CPU/MPS handoffs, invalid
+inputs and guarded buffer fallbacks. Focused validation passes **384 cases /
+1,003,052 field checks / eight rejected calls** and **619 Python tests**.
+Full regression passes **3,321 Python tests, one expected skip**, all **86
+rebuilt native check groups**, and the CPU-only build/API checks.
+[Objective storage validation](validation/cuda-metal-objective-state-m3.txt).
+
+This closes objective-level storage gaps. Initialization reductions, ranking,
+metrics, tree/prediction callers and public result plumbing still need consumer
+migration and can request host mirrors. The execution context still defaults
+generic state to CPU storage. No new speedup or NVIDIA execution claim.
+
+The preceding step added **Metal vector storage and metadata operations**. The generic vector
 layer now supports owned Metal allocations, GPU fills/copies/growth, and lazy
 host mirrors with CUDA-derived access rules. Native labels, weights, margins,
 survival bounds and feature weights retain this storage after import. Internal
@@ -629,11 +649,11 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Generic sums | CUDA-source FP32 generic reductions with final double return; optional-weight reductions use binary64; scalar default weights need no array dispatch |
 | Means | GPU scalar FP32 terms and accumulation; per-target sample and weighted sample means use binary64 terms/reductions; parallel association can differ from CUB |
 | Objective initialization | GPU multiclass packed class-weight histogram, normalization/logarithm/centering, expectile initial gradients/Hessians and absolute-error target-mean broadcast; quantile vector normalization also runs on GPU; generic allocation/state remain host |
-| Objective validation / base scores | GPU logistic, gamma, squared-log, Poisson/Tweedie and multiclass label checks; checked logistic/gamma intercepts and logarithm/logit conversion, including Cox base-score conversion |
+| Objective validation / base scores | GPU logistic, gamma, squared-log, Poisson/Tweedie and multiclass label checks; checked logistic/gamma intercepts and logarithm/logit conversion, including Cox base-score conversion; device label views and owned scalar base-margin storage, with results published only after validation succeeds |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
-| Gradients | CUDA-source FP32/FP64 expressions for squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass and expectile; adaptive absolute-error and quantile gradients preserve source expressions, FP32 residual-root sums and binary64 weight sums; host scale-statistic collective matches upstream |
-| AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU |
-| Prediction transforms | CUDA-source sigmoid, exponential, hinge, cumulative expectile and quantile insertion sorting with preserved subnormals; multiclass softmax uses sequential binary64 sums of FP32 terms, and argmax preserves source NaN/subnormal comparisons |
+| Gradients | CUDA-source FP32/FP64 expressions for squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass and expectile; adaptive absolute-error and quantile gradients preserve source expressions, FP32 residual-root sums and binary64 weight sums; host scale-statistic collective matches upstream; explicit Metal input spans and owned gradient outputs avoid implicit objective-level host mirrors |
+| AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; gradient and transform payloads retain owned Metal storage; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU. Metric consumers still need storage migration |
+| Prediction transforms | CUDA-source sigmoid, exponential, hinge, cumulative expectile and quantile insertion sorting with preserved subnormals; multiclass softmax uses sequential binary64 sums of FP32 terms, and argmax preserves source NaN/subnormal comparisons; nonranking objective transforms retain Metal vector storage |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights; GPU raw-input decoding and category-map application |
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input conversion and row-level category mapping on GPU; raw packing/transfers remain host; approximate SHAP uses an explicit CPU fallback, as CUDA does not implement it |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |

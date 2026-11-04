@@ -2056,7 +2056,7 @@ void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>*
   [command commit];
   [command waitUntilCompleted];
   CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-  counter->fetch_add(1, std::memory_order_relaxed);
+  if (counter) counter->fetch_add(1, std::memory_order_relaxed);
   auto elapsed = command.GPUEndTime - command.GPUStartTime;
   if (elapsed > 0)
     duration->fetch_add(static_cast<std::uint64_t>(elapsed * 1e9), std::memory_order_relaxed);
@@ -6021,6 +6021,42 @@ std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predi
 }
 
 namespace {
+// Objective payloads may be owned Metal spans or host callers of the native API.
+// Keep guarded host compatibility and account every fallback explicitly.
+BorrowedMemory ObjectiveInput(Runtime const& rt, void const* data, std::size_t bytes) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, 4);
+  if (input.buffer) {
+    objective_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  } else {
+    input = {Upload(rt, data, bytes), 0};
+    objective_staging_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
+struct ObjectiveOutput {
+  void* destination;
+  std::size_t bytes;
+  BorrowedMemory memory;
+  bool shared;
+  ObjectiveOutput(Runtime const& rt, void* data, std::size_t size, bool disjoint)
+      : destination{data}, bytes{size},
+        memory{disjoint ? TryBorrowMemory(rt.device, data, size, 8) : BorrowedMemory{}},
+        shared{memory.buffer != nil} {
+    if (shared) objective_shared_output_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    else {
+      memory = {Allocate(rt, bytes), 0};
+      objective_staging_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+  }
+  void Publish() const {
+    if (!shared) std::memcpy(destination, memory.buffer.contents, bytes);
+  }
+};
+template <typename T, typename... Inputs>
+bool ObjectiveOutputDisjoint(Span<T> output, Inputs... inputs) {
+  return (!MemoryRangesOverlap(output.data(), output.size_bytes(), inputs.data(),
+                               inputs.size_bytes()) && ...);
+}
 struct SurvivalCommand {
   id<MTLCommandBuffer> command;
   id<MTLBuffer> result;
@@ -6028,20 +6064,21 @@ struct SurvivalCommand {
 };
 SurvivalCommand EncodeSurvival(bool metric, std::uint32_t distribution, float scale, bool accuracy,
                                Span<float const> predictions, Span<float const> lower,
-                               Span<float const> upper, Span<float const> weights) {
+                               Span<float const> upper, Span<float const> weights,
+                               BorrowedMemory gradient_output = {}) {
   CHECK_LE(distribution, 2);
   CHECK_EQ(predictions.size(), lower.size());
   CHECK_EQ(predictions.size(), upper.size());
   CHECK(weights.empty() || weights.size() == predictions.size());
   CHECK_LE(predictions.size(), std::numeric_limits<std::uint32_t>::max());
   auto& rt = GetRuntime();
-  auto pred = Upload(rt, predictions.data(), predictions.size_bytes());
-  auto lo = Upload(rt, lower.data(), lower.size_bytes());
-  auto hi = Upload(rt, upper.data(), upper.size_bytes());
-  auto w = Upload(rt, weights.data(), weights.size_bytes());
+  auto input = [&](Span<float const> values) {
+    return metric ? BorrowedMemory{Upload(rt, values.data(), values.size_bytes()), 0}
+                  : ObjectiveInput(rt, values.data(), values.size_bytes());
+  };
+  auto pred = input(predictions), lo = input(lower), hi = input(upper), w = input(weights);
   auto blocks = (predictions.size() + 255) / 256;
-  auto result = Allocate(
-      rt, metric ? blocks * 2 * sizeof(double) : predictions.size() * sizeof(GradientPair));
+  auto result = metric ? Allocate(rt, blocks * 2 * sizeof(double)) : gradient_output.buffer;
   struct {
     std::uint64_t rows;
     std::uint32_t distribution, weighted, accuracy;
@@ -6053,11 +6090,11 @@ SurvivalCommand EncodeSurvival(bool metric, std::uint32_t distribution, float sc
   auto e = [command computeCommandEncoder];
   CHECK(e);
   [e setComputePipelineState:metric ? rt.aft_metric_pipeline : rt.aft_gradient_pipeline];
-  [e setBuffer:pred offset:0 atIndex:0];
-  [e setBuffer:lo offset:0 atIndex:1];
-  [e setBuffer:hi offset:0 atIndex:2];
-  [e setBuffer:w offset:0 atIndex:3];
-  [e setBuffer:result offset:0 atIndex:4];
+  [e setBuffer:pred.buffer offset:pred.offset atIndex:0];
+  [e setBuffer:lo.buffer offset:lo.offset atIndex:1];
+  [e setBuffer:hi.buffer offset:hi.offset atIndex:2];
+  [e setBuffer:w.buffer offset:w.offset atIndex:3];
+  [e setBuffer:result offset:(metric ? 0 : gradient_output.offset) atIndex:4];
   [e setBytes:&p length:sizeof(p) atIndex:5];
   [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
   [e endEncoding];
@@ -6070,9 +6107,13 @@ void SurvivalGradients(std::uint32_t distribution, float scale, Span<float const
   CHECK_EQ(predictions.size(), output.size());
   if (predictions.empty()) return;
   @autoreleasepool {
-    auto op = EncodeSurvival(false, distribution, scale, false, predictions, lower, upper, weights);
+    auto& rt = GetRuntime();
+    ObjectiveOutput out{rt, output.data(), output.size_bytes(),
+                         ObjectiveOutputDisjoint(output, predictions, lower, upper, weights)};
+    auto op = EncodeSurvival(false, distribution, scale, false, predictions, lower, upper, weights,
+                              out.memory);
     CompleteOperation(op.command, &objective_dispatches);
-    std::memcpy(output.data(), op.result.contents, output.size_bytes());
+    out.Publish();
     survival_gradient_dispatches.fetch_add(1, std::memory_order_relaxed);
   }
 }
@@ -6146,10 +6187,10 @@ void AdaptiveGradients(Context const* ctx, AdaptiveObjective objective,
   @autoreleasepool {
     auto& rt = GetRuntime();
     CHECK_EQ(rt.residual_reduce_pipeline.threadExecutionWidth, 32);
-    auto pred = Upload(rt, predictions.data(), predictions.size_bytes());
-    auto label = Upload(rt, labels.data(), labels.size_bytes());
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
-    auto levels = Upload(rt, alpha.data(), alpha.size_bytes());
+    auto pred = ObjectiveInput(rt, predictions.data(), predictions.size_bytes());
+    auto label = ObjectiveInput(rt, labels.data(), labels.size_bytes());
+    auto weight = ObjectiveInput(rt, weights.data(), weights.size_bytes());
+    auto levels = ObjectiveInput(rt, alpha.data(), alpha.size_bytes());
     std::vector<double> statistics(targets + 1, 0.);
     if (rows) {
       auto partial = Allocate(rt, std::size_t(p.blocks) * targets * 2 * sizeof(std::uint64_t));
@@ -6159,9 +6200,9 @@ void AdaptiveGradients(Context const* ctx, AdaptiveObjective objective,
       auto e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.residual_reduce_pipeline];
-      [e setBuffer:pred offset:0 atIndex:0];
-      [e setBuffer:label offset:0 atIndex:1];
-      [e setBuffer:weight offset:0 atIndex:2];
+      [e setBuffer:pred.buffer offset:pred.offset atIndex:0];
+      [e setBuffer:label.buffer offset:label.offset atIndex:1];
+      [e setBuffer:weight.buffer offset:weight.offset atIndex:2];
       [e setBuffer:partial offset:0 atIndex:3];
       [e setBytes:&p length:sizeof(p) atIndex:4];
       [e dispatchThreadgroups:MTLSizeMake(p.blocks, targets, 1)
@@ -6200,7 +6241,9 @@ void AdaptiveGradients(Context const* ctx, AdaptiveObjective objective,
         collective::GlobalSum(&cpu_ctx, linalg::MakeVec(statistics.data(), statistics.size())));
     if (!rows) return;
     auto stats = Upload(rt, statistics.data(), statistics.size() * sizeof(double));
-    auto scale = Allocate(rt, targets * sizeof(float)), out = Allocate(rt, output.size_bytes());
+    auto scale = Allocate(rt, targets * sizeof(float));
+    ObjectiveOutput out{rt, output.data(), output.size_bytes(),
+                         ObjectiveOutputDisjoint(output, predictions, labels, weights, alpha)};
     auto command = [rt.queue commandBuffer];
     CHECK(command);
     auto e = [command computeCommandEncoder];
@@ -6214,18 +6257,18 @@ void AdaptiveGradients(Context const* ctx, AdaptiveObjective objective,
     e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.adaptive_pipeline];
-    [e setBuffer:pred offset:0 atIndex:0];
-    [e setBuffer:label offset:0 atIndex:1];
-    [e setBuffer:weight offset:0 atIndex:2];
+    [e setBuffer:pred.buffer offset:pred.offset atIndex:0];
+    [e setBuffer:label.buffer offset:label.offset atIndex:1];
+    [e setBuffer:weight.buffer offset:weight.offset atIndex:2];
     [e setBuffer:scale offset:0 atIndex:3];
-    [e setBuffer:levels offset:0 atIndex:4];
-    [e setBuffer:out offset:0 atIndex:5];
+    [e setBuffer:levels.buffer offset:levels.offset atIndex:4];
+    [e setBuffer:out.memory.buffer offset:out.memory.offset atIndex:5];
     [e setBytes:&p length:sizeof(p) atIndex:6];
     [e dispatchThreads:MTLSizeMake(predictions.size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     CompleteOperation(command, &objective_dispatches);
-    std::memcpy(output.data(), out.contents, output.size_bytes());
+    out.Publish();
   }
 }
 
@@ -6328,7 +6371,7 @@ bool ValidateLabels(LabelDomain domain, linalg::MatrixView<float const> labels,
   }
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto input = ObjectiveInput(rt, labels.Values().data(), labels.Values().size_bytes());
     auto invalid = Allocate(rt, sizeof(std::uint32_t));
     auto command = [rt.queue commandBuffer];
     CHECK(command);
@@ -6351,7 +6394,7 @@ bool ValidateLabels(LabelDomain domain, linalg::MatrixView<float const> labels,
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.label_validation_pipeline];
-    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:input.buffer offset:input.offset atIndex:0];
     [e setBuffer:invalid offset:0 atIndex:1];
     [e setBytes:&p length:sizeof(p) atIndex:2];
     [e dispatchThreads:MTLSizeMake(labels.Size(), 1, 1)
@@ -6368,7 +6411,7 @@ bool BaseScoreToMargin(BaseScoreTransform transform, Span<float> values) {
   CHECK_LE(values.size(), std::numeric_limits<std::uint32_t>::max());
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, values.data(), values.size_bytes());
+    auto input = ObjectiveInput(rt, values.data(), values.size_bytes());
     auto output = Allocate(rt, values.size_bytes());
     auto invalid = Allocate(rt, sizeof(std::uint32_t));
     auto command = [rt.queue commandBuffer];
@@ -6380,7 +6423,7 @@ bool BaseScoreToMargin(BaseScoreTransform transform, Span<float> values) {
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.base_score_pipeline];
-    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:input.buffer offset:input.offset atIndex:0];
     [e setBuffer:output offset:0 atIndex:1];
     [e setBuffer:invalid offset:0 atIndex:2];
     [e setBytes:&kind length:sizeof(kind) atIndex:3];
@@ -6389,7 +6432,21 @@ bool BaseScoreToMargin(BaseScoreTransform transform, Span<float> values) {
     [e endEncoding];
     CompleteOperation(command, &base_score_dispatches, &base_score_gpu_time_ns);
     if (*static_cast<std::uint32_t const*>(invalid.contents)) return false;
-    std::memcpy(values.data(), output.contents, values.size_bytes());
+    // Commit the result only after validation succeeds. A GPU blit preserves
+    // the no-write-on-invalid contract without reading payloads back to the CPU.
+    auto target = TryBorrowMemory(rt.device, values.data(), values.size_bytes(), 4);
+    if (target.buffer) {
+      auto publish = [rt.queue commandBuffer];
+      auto blit = [publish blitCommandEncoder];
+      [blit copyFromBuffer:output sourceOffset:0 toBuffer:target.buffer
+        destinationOffset:target.offset size:values.size_bytes()];
+      [blit endEncoding];
+      CompleteOperation(publish, nullptr, &base_score_gpu_time_ns);
+      objective_shared_output_bytes.fetch_add(values.size_bytes(), std::memory_order_relaxed);
+    } else {
+      std::memcpy(values.data(), output.contents, values.size_bytes());
+      objective_staging_bytes.fetch_add(values.size_bytes(), std::memory_order_relaxed);
+    }
     return true;
   }
 }

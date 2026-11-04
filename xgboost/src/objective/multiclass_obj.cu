@@ -41,8 +41,7 @@ DMLC_REGISTRY_FILE_TAG(multiclass_obj_gpu);
 
 namespace {
 void ValidateLabel(Context const* ctx, MetaInfo const& info, std::int64_t n_classes) {
-  auto label = info.labels.View(ctx->Device());
-  CHECK_LE(label.Shape(1), 1) << "multi-class-multi-label is not yet supported.";
+  CHECK_LE(info.labels.Shape(1), 1) << "multi-class-multi-label is not yet supported.";
   auto check = [=] XGBOOST_DEVICE(float y) -> bool {
     return y >= 0 && y < n_classes && std::floor(y) == y;
   };
@@ -50,10 +49,11 @@ void ValidateLabel(Context const* ctx, MetaInfo const& info, std::int64_t n_clas
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
     valid = common::metal::ValidateLabels(common::metal::LabelDomain::kClassIndex,
-                                          info.labels.HostView(), n_classes);
+                                          info.labels.View(DeviceOrd::MPS()), n_classes);
   } else
 #endif
   {
+    auto label = info.labels.View(ctx->Device());
     valid = ctx->DispatchDevice(
         [&] { return std::all_of(linalg::cbegin(label), linalg::cend(label), check); },
         [&] {
@@ -108,11 +108,6 @@ class SoftmaxMultiClassObj : public ObjFunction {
 
     // fallback to cpu if current device doesn't supports fp64
     auto device = ctx_->DeviceFP64();
-    auto labels = info.labels.View(device);
-
-    out_gpair->SetDevice(device);
-    out_gpair->Reshape(info.num_row_, n_classes);
-    auto gpair = out_gpair->View(device);
 
     if (!info.weights_.Empty()) {
       CHECK_EQ(info.weights_.Size(), n_samples)
@@ -121,12 +116,19 @@ class SoftmaxMultiClassObj : public ObjFunction {
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::Gradients(common::metal::Objective::kSoftmax, preds.ConstHostSpan(),
-                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
-                               n_classes, 0.0f, 1.0f, {}, out_gpair->Data()->HostSpan());
+      common::metal::Gradients(
+          common::metal::Objective::kSoftmax, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), n_classes, 0.0f, 1.0f, {},
+          common::metal::PrepareGradientOutput(out_gpair, info.num_row_, n_classes));
       return;
     }
 #endif
+    auto labels = info.labels.View(device);
+    out_gpair->SetDevice(device);
+    out_gpair->Reshape(info.num_row_, n_classes);
+    auto gpair = out_gpair->View(device);
+
     info.weights_.SetDevice(device);
     auto weights = common::MakeOptionalWeights(this->ctx_->Device(), info.weights_);
 
@@ -178,7 +180,7 @@ class SoftmaxMultiClassObj : public ObjFunction {
     if (ctx_->IsMPS()) {
       common::metal::TransformPredictions(
           prob ? common::metal::Transform::kSoftmax : common::metal::Transform::kArgmax,
-          io_preds->HostSpan(), n_classes);
+          common::metal::DeviceSpan(*io_preds), n_classes);
       if (!prob) io_preds->Resize(n_samples);
       return;
     }

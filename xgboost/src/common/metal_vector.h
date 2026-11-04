@@ -4,9 +4,22 @@
 #include <cstdint>
 #include <memory>
 
+#include "xgboost/host_device_vector.h"
 #include "xgboost/span.h"
 
 namespace xgboost::common::metal {
+// Select storage explicitly while the execution context's generic consumers
+// still default to CPU. Const input access preserves a valid device copy.
+template <typename T>
+auto ConstDeviceSpan(HostDeviceVector<T> const& values) {
+  values.SetDevice(DeviceOrd::MPS());
+  return values.ConstDeviceSpan();
+}
+template <typename T>
+auto DeviceSpan(HostDeviceVector<T>& values) {
+  values.SetDevice(DeviceOrd::MPS());
+  return values.DeviceSpan();
+}
 // Owned shared Metal allocation. Data() is an addressable span, not an MTLBuffer
 // handle. All operations complete before returning; foreign writers must finish
 // before passing the allocation back. Resize without a pattern is uninitialized.

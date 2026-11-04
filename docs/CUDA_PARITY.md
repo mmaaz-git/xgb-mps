@@ -82,12 +82,12 @@ must be reported rather than hidden by widening test tolerances.
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly from resident sorted indices; GPU-owned interaction masks and monotonic bounds, group unions, ascending feature filtering, bound initialization/growth; candidate staging and tree metadata remain host |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; columns use modern CUDA Philox weighted priorities and Thrust Feistel shuffle with GPU compaction/ordering; shuffle key setup and cache metadata remain host as in CUDA, while feature arrays still stage through host |
-| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, multiclass packed class priors and normalization/log/centering, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; native metadata import validation also runs on Metal; host-input validation, general metadata ownership and other initialization work remain CPU |
-| Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; multiclass softmax follows source sequential binary64 accumulation of FP32 terms and argmax handles source NaN/subnormal comparisons; identity transforms require no dispatch |
-| Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; expectile's host margin loop matches upstream host execution |
-| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal source-expression gradients, FP32 residual-root sums, binary64 optional-weight sums and quantile prediction sorting; upstream host scale-statistic collective restored for empty/nonempty workers; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; generic initialization/state work remains CPU |
+| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, multiclass packed class priors and normalization/log/centering, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; native metadata import validation also runs on Metal. These gradient outputs now retain Metal vector storage; validation and objective input/output spans avoid implicit host mirrors. Host-input validation, initialization reductions and other callers still need migration |
+| Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; multiclass softmax follows source sequential binary64 accumulation of FP32 terms and argmax handles source NaN/subnormal comparisons; identity transforms require no dispatch. Nonranking objective transforms now retain explicit Metal vector storage |
+| Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; checked results publish by GPU blit only on success and retain Metal vector storage; expectile's host margin loop matches upstream host execution |
+| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal source-expression gradients, FP32 residual-root sums, binary64 optional-weight sums and quantile prediction sorting; upstream host scale-statistic collective restored for empty/nonempty workers; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; gradient payloads now retain Metal vector storage. Generic initialization/state work still needs migration |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
-| AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
+| AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms, now with explicit Metal input/output storage; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Other initialization/state work still requires porting/audit |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
 | Prediction cache from leaf IDs | `predictor/predictor.cu` | Metal; supports strided target slices and negated sampling positions |
@@ -3335,3 +3335,86 @@ No new benchmark, NVIDIA execution or other Apple-device comparison.
 Remaining work includes migrating generic allocations
 and their consumers, persistent dictionary ownership, remaining CUDA arithmetic
 and operation audits, GPU collectives and cross-hardware validation.
+
+## Objective inputs, gradients and transforms retain Metal storage
+
+CUDA authority is the existing objective `.cu` implementations and
+`HostDeviceVector`/`linalg::Tensor::View` access rules. The previous storage step
+made a Metal ordinal available; this step connects it to regression,
+classification, absolute/quantile and AFT objective calls. It does not alter
+shader arithmetic or replace CUDA formulas with CPU formulas.
+
+The Metal branches run before generic `SetDevice(CPU)` or label/gradient host-view
+access. Predictions, labels, weights, survival bounds and expectile/quantile
+levels use explicit const Metal spans; gradient matrices select Metal storage
+before reshaping and writable access. Empty multiclass inputs still return early,
+as upstream does. Repeated calls reuse valid input allocations and the output
+buffer. CPU callers can subsequently access these objects and Metal callers can
+reuse them afterward. Mutable device access invalidates the host mirror.
+
+Regression and multiclass label validation consumes a device tensor view.
+Sigmoid/exponential/hinge/softmax/argmax/expectile/quantile and AFT transforms use
+writable device spans, preserving shape and argmax compaction. Identity
+transformations remain no-ops arithmetically. Checked logistic/gamma and logarithmic
+base-margin conversion uses guarded input binding, GPU scratch and a GPU blit
+into the destination after successful validation. An invalid checked intercept
+leaves every payload byte unchanged. AFT margin transforms already support
+shared output binding and now receive device storage. Cox gradients remain on
+the host as in upstream CUDA; its shared logarithmic margin helper is migrated.
+Expectile's host margin conversion remains upstream-defined host work.
+
+Adaptive and AFT gradient wrappers bind eligible inputs and outputs directly.
+Host native-API callers remain supported. Read-only/unshareable inputs use a
+counted upload; overlapping or insufficiently aligned outputs use a GPU scratch
+result followed by the counted host compatibility copy. Metal float2/uint2 output
+binding requires eight-byte alignment even though host GradientPair alignment is
+four. All commands complete synchronously. Adaptive residual statistics still
+cross the small host collective that the CUDA implementation explicitly uses;
+that is separate from a full prediction/label/gradient payload readback.
+
+Existing objective shared-input/shared-output/staging counters now also cover
+these adaptive/AFT bindings, label validation and base-margin conversion. They
+count bindings/fallback payload bytes, not whole-program transfers, GPU temporary
+capacity or the small status/collective messages. Base-score dispatches still
+count transformation requests; its GPU time includes the successful publication
+blit. The statistics ABI is unchanged.
+
+Validation adds **384 native cases / 1,003,052 field checks / eight rejected calls**.
+Actual ObjFunction calls cover all named nonranking gradient families and all
+three AFT distributions, zero/single/multiple rows, scalar/multiple targets,
+weights, repeated calls, output ownership and CPU/MPS handoffs. CPU comparisons
+use the existing 3e-6 scaled tolerance for well-conditioned fixtures. Independent
+existing CUDA-expression and sensitive-tail oracles remain the arithmetic
+checks. Counters and access flags require no implicit vector readback or payload
+staging during resident calls, no repeated uploads/allocations, and explicit host
+access afterward. Invalid labels are written on GPU over a stale host mirror;
+invalid checked margins preserve their bytes. Direct binding cases compare exact
+result bits across disjoint, overlapping, read-only and four-byte-aligned output
+storage with output guards. Existing native objective/adaptive/AFT/base-score
+and host-memory checks pass, as do **619 focused Python regressions**.
+
+A first new test failed to compile because a templated Context update needed an
+explicit Args container; the fixture was corrected. The focused shell driver
+also omitted the existing adaptive test's communicator JSON argument; it resumed
+with that argument without rerunning the already-passed objective oracle. Review
+caught the Metal eight-byte output requirement before the final run; it is now
+covered by a dedicated four-byte-aligned host-output fixture. No shader formulas
+or tolerances were changed to obtain passing results.
+
+Final full regression completed **2026-11-04 22:27:29–22:35:02 UTC** (7m33s):
+**3,321 Python tests passed, one expected skip** (621 warnings, 191.53s), all
+**86 rebuilt native check groups**, the source reference updater, and the CPU-only
+build/API/device/cache checks. The skip is the unavailable-device test on a host
+with an accessible GPU. No production or test changes followed the final build/run;
+documentation was finalized afterward.
+[Validation record](../validation/cuda-metal-objective-state-m3.txt).
+
+This is not end-to-end training residency:
+base-score estimation/stump and other initialization consumers, ranking, metrics,
+tree/prediction state and public output plumbing still have host accesses. In
+particular, the existing C prediction result API obtains a host vector before
+an explicit MetalOutput snapshot. Those paths require their own migration;
+Device() still defaults to CPU and must not be flipped without the remaining
+dispatcher audit. Persistent dictionary ownership, other CUDA operation/arithmetic
+audits, GPU collectives and cross-hardware validation remain open.
+No new benchmark, NVIDIA execution or other Apple-device comparison.

@@ -109,23 +109,24 @@ class QuantileRegression : public ObjFunction {
     CHECK_GE(n_targets, n_alphas);
     CHECK_EQ(preds.Size(), info.num_row_ * n_targets);
 
-    auto labels = info.labels.View(ctx_->Device());
-
-    out_gpair->SetDevice(ctx_->Device());
     CHECK_EQ(info.labels.Shape(1), 1)
         << "Multi-target for quantile regression is not yet supported.";
-    out_gpair->Reshape(info.num_row_, n_targets);
-    auto gpair = out_gpair->View(ctx_->Device());
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::AdaptiveGradients(ctx_, common::metal::AdaptiveObjective::kQuantile,
-                                       preds.ConstHostSpan(), info.labels.HostView().Values(),
-                                       info.weights_.ConstHostSpan(), n_targets,
-                                       alpha_.ConstHostSpan(), out_gpair->HostView().Values());
+      common::metal::AdaptiveGradients(
+          ctx_, common::metal::AdaptiveObjective::kQuantile, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), n_targets,
+          common::metal::ConstDeviceSpan(alpha_),
+          common::metal::PrepareGradientOutput(out_gpair, info.num_row_, this->Targets(info)));
       return;
     }
 #endif
+    auto labels = info.labels.View(ctx_->Device());
+    out_gpair->SetDevice(ctx_->Device());
+    out_gpair->Reshape(info.num_row_, n_targets);
+    auto gpair = out_gpair->View(ctx_->Device());
 
     auto weight = common::MakeOptionalWeights(ctx_->Device(), info.weights_);
 
@@ -193,8 +194,8 @@ class QuantileRegression : public ObjFunction {
     CHECK_EQ(io_preds->Size() % alpha_.Size(), 0);
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::TransformPredictions(common::metal::Transform::kQuantile, io_preds->HostSpan(),
-                                          alpha_.Size());
+      common::metal::TransformPredictions(common::metal::Transform::kQuantile,
+                                          common::metal::DeviceSpan(*io_preds), alpha_.Size());
       return;
     }
 #endif

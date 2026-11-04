@@ -1,0 +1,89 @@
+Objective GPU storage and guarded payload bindings
+==================================================
+Date: 2026-11-04
+Host: Apple M3 MacBook Air, 8 CPU / 10 GPU cores / 16 GB unified memory.
+Baseline: 9799d2e719bf75605ddeaafda7155ff17b1963e0 (Metal vector storage).
+Python 3.13.5, PyTorch 2.15.0, MLX/MLX-Metal 0.32.4.
+Homebrew libomp selected through DYLD_LIBRARY_PATH before Python.
+
+Authority/scope
+---------------
+CUDA objective/regression_obj.cu, multiclass_obj.cu, hinge.cu, quantile_obj.cu,
+aft_obj.cu and HostDeviceVector/Tensor access rules define placement/behavior.
+Metal branches now precede host view/device selection, using const Metal input
+spans and owned device-writable gradient outputs. Prediction transforms and
+regression/AFT base-margin conversions retain Metal vectors. Label validation
+uses a device tensor. Checked margins compute into scratch and publish by GPU
+blit only if valid. Numerical shaders and formulas unchanged.
+Adaptive/AFT inputs/output binding now avoids copies for eligible disjoint
+buffers, with counted host compatibility fallbacks for readonly inputs, output
+aliases or insufficient alignment. GPU float2/uint2 outputs require 8-byte
+alignment, although host GradientPair alignment is 4. Commands synchronous.
+Adaptive small host scale-statistic collective retained exactly as CUDA's
+placement; final validation flags still read as scalars. Existing byte counters
+extended in scope; statistics ABI unchanged.
+
+Focused validation
+------------------
+PASS 384 native cases / 1,003,052 field checks / eight rejected calls, with Metal
+API validation. ObjFunction CPU comparisons and roundtrips include 15 named
+pointwise/classification/adaptive objectives plus AFT normal/logistic/extreme,
+rows0/1/17/257/1025, one/three targets as supported, weighted/unweighted inputs,
+repeat output reuse, CPU/MPS handoffs, PredTransform/EvalTransform, checked base
+margins and invalid GPU-written labels. Transfer counters require no vector
+readback or payload staging during resident calls and no repeated allocations or
+input uploads. CPU fixture tolerance 3e-6 scaled; unchanged arithmetic also
+covered by existing independent CUDA-source native tests.
+Nineteen direct binding cases check bit-exact results and guards for disjoint,
+aliasing, read-only input and 4-byte-aligned outputs. Final live vector gauges zero.
+Log: results/objective-residency-focused-v5.log.
+
+Existing native regressions passed:
+- Objective source expressions: 624 cases / 14,305,782 exact fields.
+- Adaptive CPU/source arithmetic: 68 cases / 8,421,648 fields (single worker).
+- AFT production API: 75 cases / 307,275 gradient pairs; zero failures and zero
+  CPU corrections. The existing 322 sensitive-tail CPU-tolerance differences are
+  reported; the separate upstream-expression replay suite is part of the full run.
+- Base-score: 74 cases / 4,570,936 exact values, guards and invalid-input behavior.
+- Guarded objective memory: 51 cases / 1,693,795 gradient pairs.
+- Guarded leaf memory: 49 cases / 1,118,257 row positions.
+Logs: results/objective-residency-focused-v2.log, objective-residency-focused-v3.log.
+PASS 619 Python tests / six warnings / 27.15 seconds: objective, label, intercept,
+scalar/multiclass transform, owned output, native metadata and vector-state suites.
+
+Corrections during validation:
+- New C++ fixture needed explicit Args for templated Context::UpdateAllowUnknown.
+- Existing adaptive executable requires communicator JSON; focused driver resumed
+  with '{}' after the omitted argument, without rerunning passed objective oracle.
+- Code review caught required 8-byte Metal output alignment. Binding guard fixed
+  and dedicated valid 4-byte host-aligned output fixture added before final run.
+- No production arithmetic kernels or test tolerances changed.
+
+Full regression
+---------------
+PASS: 2026-11-04T22:27:29Z through 2026-11-04T22:35:02Z (7m33s), FULL_EXIT=0.
+- Final Metal build passed.
+- All 86 rebuilt native check groups and source reference updater passed.
+  This includes source replay and distributed objective-statistic regression.
+- 3,321 Python tests passed, one expected skip, 621 warnings, 191.53 seconds.
+  Skip: unavailable-device test on a host with a real accessible GPU.
+  Warning categories remain the existing deprecation/data/parameter notices.
+- CPU-only build and API/device/cache checks passed.
+- No production or test changes after the final build/run; documentation finalized
+  afterward. Changed C++/CUDA sections formatted; git diff --check clean.
+Driver results/run-objective-residency-full-v1.sh.
+Session tmux xgb-objective-residency-full completed.
+Logs under results/: objective-residency-full-driver-v1.log,
+build-objective-residency-final-v1.log, test-objective-residency-full-v1.log,
+configure-cpu-objective-residency-v1.log, build-cpu-objective-residency-v1.log,
+check-cpu-objective-residency-v1.log.
+
+Limits/remaining work
+---------------------
+The execution Context still defaults generic state to CPU storage. Initialization
+reductions, stump fitting, ranking, metrics, tree/prediction callers and public
+output plumbing may request host mirrors; resident objective calls are not a
+claim of complete training/prediction residency. C API prediction still obtains
+a host vector before explicit MetalOutput export. Persistent dictionary ownership,
+remaining CUDA operation/arithmetic audits and GPU collectives remain unfinished.
+No new benchmark, NVIDIA execution or other Apple-device comparison.

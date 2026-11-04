@@ -77,14 +77,15 @@ constexpr common::metal::LabelDomain MetalLabelDomain() {
 #endif
 template <typename Loss>
 void ValidateLabel(Context const* ctx, MetaInfo const& info) {
-  auto label = info.labels.View(ctx->Device());
   bool valid;
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
-    valid = common::metal::ValidateLabels(MetalLabelDomain<Loss>(), info.labels.HostView());
+    valid =
+        common::metal::ValidateLabels(MetalLabelDomain<Loss>(), info.labels.View(DeviceOrd::MPS()));
   } else
 #endif
   {
+    auto label = info.labels.View(ctx->Device());
     valid = ctx->DispatchDevice(
         [&] {
           return std::all_of(linalg::cbegin(label), linalg::cend(label),
@@ -154,7 +155,7 @@ void ProbToLogMargin(Context const* ctx, linalg::Vector<float>* base_score) {
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
     common::metal::BaseScoreToMargin(common::metal::BaseScoreTransform::kLogarithm,
-                                     base_score->Data()->HostSpan());
+                                     common::metal::DeviceSpan(*base_score->Data()));
     return;
   }
 #endif
@@ -192,7 +193,6 @@ class RegLossObj : public FitInterceptGlmLike {
     }
 
     size_t const ndata = preds.Size();
-    out_gpair->SetDevice(ctx_->Device());
     auto device = ctx_->Device();
 
     bool is_null_weight = info.weights_.Size() == 0;
@@ -207,16 +207,19 @@ class RegLossObj : public FitInterceptGlmLike {
     const size_t n_data_blocks = std::max(static_cast<size_t>(1), (on_device ? ndata : nthreads));
     const size_t block_size = ndata / n_data_blocks + !!(ndata % n_data_blocks);
     auto const n_targets = this->Targets(info);
-    out_gpair->Reshape(info.num_row_, n_targets);
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::Gradients(common::metal::ObjectiveFromName(Loss::Name()),
-                               preds.ConstHostSpan(), info.labels.Data()->ConstHostSpan(),
-                               info.weights_.ConstHostSpan(), this->Targets(info), 0.0f,
-                               scale_pos_weight, {}, out_gpair->Data()->HostSpan());
+      common::metal::Gradients(
+          common::metal::ObjectiveFromName(Loss::Name()), common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), this->Targets(info), 0.0f,
+          scale_pos_weight, {},
+          common::metal::PrepareGradientOutput(out_gpair, info.num_row_, this->Targets(info)));
       return;
     }
 #endif
+    out_gpair->SetDevice(ctx_->Device());
+    out_gpair->Reshape(info.num_row_, n_targets);
 
     common::Transform<>::Init(
         [block_size, ndata, n_targets] XGBOOST_DEVICE(
@@ -254,7 +257,7 @@ class RegLossObj : public FitInterceptGlmLike {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       common::metal::TransformPredictions(common::metal::TransformFromName(Loss::Name()),
-                                          io_preds->HostSpan(), 1);
+                                          common::metal::DeviceSpan(*io_preds), 1);
       return;
     }
 #endif
@@ -292,7 +295,7 @@ class RegLossObj : public FitInterceptGlmLike {
           return Transform::kLogistic;
         }
       }();
-      CHECK(common::metal::BaseScoreToMargin(kind, base_score->Data()->HostSpan()))
+      CHECK(common::metal::BaseScoreToMargin(kind, common::metal::DeviceSpan(*base_score->Data())))
           << Loss::InterceptErrorMsg();
       return;
     }
@@ -369,18 +372,20 @@ class SquaredLogErrorRegression : public FitIntercept {
     if (iter == 0) {
       ValidateLabel<SquaredLogError>(this->ctx_, info);
     }
-    auto labels = info.labels.View(ctx_->Device());
 
-    out_gpair->SetDevice(ctx_->Device());
-    out_gpair->Reshape(info.num_row_, this->Targets(info));
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::Gradients(common::metal::Objective::kSquaredLog, preds.ConstHostSpan(),
-                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
-                               this->Targets(info), 0.0f, 1.0f, {}, out_gpair->Data()->HostSpan());
+      common::metal::Gradients(
+          common::metal::Objective::kSquaredLog, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), this->Targets(info), 0.0f, 1.0f, {},
+          common::metal::PrepareGradientOutput(out_gpair, info.num_row_, this->Targets(info)));
       return;
     }
 #endif
+    auto labels = info.labels.View(ctx_->Device());
+    out_gpair->SetDevice(ctx_->Device());
+    out_gpair->Reshape(info.num_row_, this->Targets(info));
 
     auto gpair = out_gpair->View(ctx_->Device());
 
@@ -426,18 +431,20 @@ class PseudoHuberRegression : public FitIntercept {
     CheckRegInputs(info, preds);
     auto slope = param_.huber_slope;
     CHECK_NE(slope, 0.0) << "slope for pseudo huber cannot be 0.";
-    auto labels = info.labels.View(ctx_->Device());
 
-    out_gpair->SetDevice(ctx_->Device());
-    out_gpair->Reshape(info.num_row_, this->Targets(info));
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::Gradients(common::metal::Objective::kPseudoHuber, preds.ConstHostSpan(),
-                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
-                               this->Targets(info), slope, 1.0f, {}, out_gpair->Data()->HostSpan());
+      common::metal::Gradients(
+          common::metal::Objective::kPseudoHuber, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), this->Targets(info), slope, 1.0f, {},
+          common::metal::PrepareGradientOutput(out_gpair, info.num_row_, this->Targets(info)));
       return;
     }
 #endif
+    auto labels = info.labels.View(ctx_->Device());
+    out_gpair->SetDevice(ctx_->Device());
+    out_gpair->Reshape(info.num_row_, this->Targets(info));
 
     auto gpair = out_gpair->View(ctx_->Device());
 
@@ -524,21 +531,22 @@ class ExpectileRegression : public FitIntercept {
     CHECK_GE(n_targets, n_alphas);
     CHECK_EQ(preds.Size(), info.num_row_ * n_targets);
 
-    auto labels = info.labels.View(ctx_->Device());
-
-    out_gpair->SetDevice(ctx_->Device());
     CHECK_EQ(info.labels.Shape(1), 1)
         << "Multi-target for expectile regression is not yet supported.";
-    out_gpair->Reshape(info.num_row_, n_targets);
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::Gradients(common::metal::Objective::kExpectile, preds.ConstHostSpan(),
-                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
-                               this->Targets(info), 0.0f, 1.0f, alpha_.ConstHostSpan(),
-                               out_gpair->Data()->HostSpan());
+      common::metal::Gradients(
+          common::metal::Objective::kExpectile, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), this->Targets(info), 0.0f, 1.0f,
+          common::metal::ConstDeviceSpan(alpha_),
+          common::metal::PrepareGradientOutput(out_gpair, info.num_row_, this->Targets(info)));
       return;
     }
 #endif
+    auto labels = info.labels.View(ctx_->Device());
+    out_gpair->SetDevice(ctx_->Device());
+    out_gpair->Reshape(info.num_row_, n_targets);
 
     auto gpair = out_gpair->View(ctx_->Device());
 
@@ -640,7 +648,7 @@ class ExpectileRegression : public FitIntercept {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       common::metal::TransformPredictions(common::metal::Transform::kExpectile,
-                                          io_preds->HostSpan(), alpha_.Size());
+                                          common::metal::DeviceSpan(*io_preds), alpha_.Size());
       return;
     }
 #endif
@@ -735,17 +743,19 @@ class PoissonRegression : public FitInterceptGlmLike {
       ValidateLabel<PoissonLabel>(this->ctx_, info);
     }
     auto const n_targets = this->Targets(info);
-    out_gpair->SetDevice(ctx_->Device());
-    out_gpair->Reshape(info.num_row_, n_targets);
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::Gradients(common::metal::Objective::kPoisson, preds.ConstHostSpan(),
-                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
-                               this->Targets(info), param_.max_delta_step, 1.0f, {},
-                               out_gpair->Data()->HostSpan());
+      common::metal::Gradients(
+          common::metal::Objective::kPoisson, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), this->Targets(info), param_.max_delta_step,
+          1.0f, {},
+          common::metal::PrepareGradientOutput(out_gpair, info.num_row_, this->Targets(info)));
       return;
     }
 #endif
+    out_gpair->SetDevice(ctx_->Device());
+    out_gpair->Reshape(info.num_row_, n_targets);
 
     auto labels = info.labels.View(ctx_->Device());
     preds.SetDevice(ctx_->Device());
@@ -768,7 +778,8 @@ class PoissonRegression : public FitInterceptGlmLike {
   void PredTransform(HostDeviceVector<bst_float>* io_preds) const override {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::TransformPredictions(common::metal::Transform::kExp, io_preds->HostSpan(), 1);
+      common::metal::TransformPredictions(common::metal::Transform::kExp,
+                                          common::metal::DeviceSpan(*io_preds), 1);
       return;
     }
 #endif
@@ -933,17 +944,19 @@ class TweedieRegression : public FitInterceptGlmLike {
       ValidateLabel<TweedieLabel>(this->ctx_, info);
     }
     auto const n_targets = this->Targets(info);
-    out_gpair->SetDevice(ctx_->Device());
-    out_gpair->Reshape(info.num_row_, n_targets);
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::Gradients(common::metal::Objective::kTweedie, preds.ConstHostSpan(),
-                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
-                               this->Targets(info), param_.tweedie_variance_power, 1.0f, {},
-                               out_gpair->Data()->HostSpan());
+      common::metal::Gradients(
+          common::metal::Objective::kTweedie, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), this->Targets(info),
+          param_.tweedie_variance_power, 1.0f, {},
+          common::metal::PrepareGradientOutput(out_gpair, info.num_row_, this->Targets(info)));
       return;
     }
 #endif
+    out_gpair->SetDevice(ctx_->Device());
+    out_gpair->Reshape(info.num_row_, n_targets);
 
     auto labels = info.labels.View(ctx_->Device());
     preds.SetDevice(ctx_->Device());
@@ -966,7 +979,8 @@ class TweedieRegression : public FitInterceptGlmLike {
   void PredTransform(HostDeviceVector<bst_float>* io_preds) const override {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::TransformPredictions(common::metal::Transform::kExp, io_preds->HostSpan(), 1);
+      common::metal::TransformPredictions(common::metal::Transform::kExp,
+                                          common::metal::DeviceSpan(*io_preds), 1);
       return;
     }
 #endif
@@ -1027,22 +1041,22 @@ class MeanAbsoluteError : public ObjFunction {
   void GetGradient(HostDeviceVector<float> const& preds, const MetaInfo& info,
                    std::int32_t /*iter*/, linalg::Matrix<GradientPair>* out_gpair) override {
     CheckRegInputs(info, preds);
-    auto labels = info.labels.View(ctx_->Device());
     auto const n_targets = this->Targets(info);
-
-    out_gpair->SetDevice(ctx_->Device());
-    out_gpair->Reshape(info.num_row_, n_targets);
-    auto gpair = out_gpair->View(ctx_->Device());
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::AdaptiveGradients(ctx_, common::metal::AdaptiveObjective::kAbsolute,
-                                       preds.ConstHostSpan(), info.labels.HostView().Values(),
-                                       info.weights_.ConstHostSpan(), n_targets, {},
-                                       out_gpair->HostView().Values());
+      common::metal::AdaptiveGradients(
+          ctx_, common::metal::AdaptiveObjective::kAbsolute, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), n_targets, {},
+          common::metal::PrepareGradientOutput(out_gpair, info.num_row_, this->Targets(info)));
       return;
     }
 #endif
+    auto labels = info.labels.View(ctx_->Device());
+    out_gpair->SetDevice(ctx_->Device());
+    out_gpair->Reshape(info.num_row_, n_targets);
+    auto gpair = out_gpair->View(ctx_->Device());
 
     preds.SetDevice(ctx_->Device());
     auto predt = linalg::MakeTensorView(ctx_, &preds, info.num_row_, n_targets);

@@ -50,15 +50,17 @@ class HingeObj : public FitIntercept {
     }
 
     bst_target_t n_targets = this->Targets(info);
-    out_gpair->Reshape(info.num_row_, n_targets);
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::Gradients(common::metal::Objective::kHinge, preds.ConstHostSpan(),
-                               info.labels.Data()->ConstHostSpan(), info.weights_.ConstHostSpan(),
-                               this->Targets(info), 0.0f, 1.0f, {}, out_gpair->Data()->HostSpan());
+      common::metal::Gradients(
+          common::metal::Objective::kHinge, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), this->Targets(info), 0.0f, 1.0f, {},
+          common::metal::PrepareGradientOutput(out_gpair, info.num_row_, this->Targets(info)));
       return;
     }
 #endif
+    out_gpair->Reshape(info.num_row_, n_targets);
 
     auto gpair = out_gpair->View(ctx_->Device());
 
@@ -93,8 +95,8 @@ class HingeObj : public FitIntercept {
   void PredTransform(HostDeviceVector<float> *io_preds) const override {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::TransformPredictions(common::metal::Transform::kHinge, io_preds->HostSpan(),
-                                          1);
+      common::metal::TransformPredictions(common::metal::Transform::kHinge,
+                                          common::metal::DeviceSpan(*io_preds), 1);
       return;
     }
 #endif

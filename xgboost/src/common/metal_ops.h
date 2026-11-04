@@ -3,12 +3,19 @@
 #include <array>
 #include <cstdint>
 
+#include "metal_vector.h"
 #include "xgboost/base.h"
 #include "xgboost/context.h"
 #include "xgboost/linalg.h"
 #include "xgboost/span.h"
 
 namespace xgboost::common::metal {
+inline auto PrepareGradientOutput(linalg::Matrix<GradientPair>* output, bst_idx_t rows,
+                                  bst_target_t targets) {
+  output->SetDevice(DeviceOrd::MPS());
+  output->Reshape(rows, targets);
+  return output->Data()->DeviceSpan();
+}
 // Values form the host/shader ABI. Keep in sync with xgb_objective.
 enum class Objective : std::uint32_t {
   kSquare = 0,
@@ -51,7 +58,7 @@ enum class BaseScoreTransform : std::uint32_t {
   kLogarithm = 2,
   kPositiveLogarithm = 3
 };
-// Invalid checked intercepts return false without modifying any host value.
+// Invalid checked intercepts return false without modifying any input value.
 bool BaseScoreToMargin(BaseScoreTransform transform, Span<float> values);
 void AdaptiveGradients(Context const* ctx, AdaptiveObjective objective,
                        Span<float const> predictions, Span<float const> labels,
