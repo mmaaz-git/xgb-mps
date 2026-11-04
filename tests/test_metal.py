@@ -1,7 +1,9 @@
 """Backend dispatch, equivalence, and model compatibility tests.
 
 CPU execution never satisfies a GPU test: every nonempty training job must
-increase the counter of completed Metal histogram dispatches.
+increase the counter of completed Metal histogram dispatches. CPU training
+equivalence uses fixed QuantileDMatrix cuts: ordinary CPU and CUDA-derived Metal
+sketches are intentionally different and are checked in test_metal_sketch.py.
 """
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -98,7 +100,7 @@ def test_training_equivalence(metal, seed, layout, objective):
     # Keep this CPU-identity fixture strictly positive; CUDA tree-oracle tests
     # cover zero-weight rows, missing ties and exact integer child statistics.
     w[w == 0] = .5
-    d = xgb.DMatrix(x, label=y, weight=w)
+    d = xgb.QuantileDMatrix(x, max_bin=64, label=y, weight=w)
     p = parameters(objective)
     cpu = xgb.train({**p, "device": "cpu"}, d, num_boost_round=10)
     gpu = train_metal(d, p)
@@ -128,7 +130,7 @@ def test_quantile_matrix_and_bin_widths(metal, max_bin):
 ])
 def test_hist_features(metal, extra):
     x, y, w = dataset()
-    d = xgb.DMatrix(x, label=y, weight=w)
+    d = xgb.QuantileDMatrix(x, max_bin=64, label=y, weight=w)
     p = parameters(**extra)
     cpu = xgb.train(p, d, num_boost_round=6)
     if "colsample_bytree" in extra:
@@ -150,7 +152,7 @@ def test_categorical_and_model_cpu_interchange(metal, tmp_path):
     x, y, _ = dataset()
     frame = pd.DataFrame(x[:, :4], columns=["a", "b", "c", "d"])
     frame["category"] = pd.Categorical(np.arange(len(y)) % 7)
-    d = xgb.DMatrix(frame, label=y, enable_categorical=True)
+    d = xgb.QuantileDMatrix(frame, max_bin=64, label=y, enable_categorical=True)
     p = parameters(max_cat_to_onehot=3)
     cpu = xgb.train(p, d, num_boost_round=6)
     gpu = train_metal(d, p, rounds=6)
@@ -182,7 +184,7 @@ def test_shared_histogram_training(metal):
     rng = np.random.default_rng(3)
     x = rng.normal(size=(32769, 9)).astype(np.float32)
     y = 3 * x[:, 0] + x[:, 1] ** 2 - x[:, 2]
-    d = xgb.DMatrix(x, label=y)
+    d = xgb.QuantileDMatrix(x, max_bin=256, label=y)
     before = xgb.metal_info()["shared_histogram_dispatches"]
     p = parameters(max_bin=256)
     gpu = train_metal(d, p, rounds=4)
@@ -196,7 +198,7 @@ def test_shared_histogram_training(metal):
 def test_multiple_targets(metal, strategy):
     x, y, _ = dataset()
     y = np.column_stack([y, y * 2 + x[:, 3]])
-    d = xgb.DMatrix(x, label=y)
+    d = xgb.QuantileDMatrix(x, max_bin=64, label=y)
     p = parameters(multi_strategy=strategy)
     cpu = xgb.train(p, d, num_boost_round=5)
     gpu = train_metal(d, p, rounds=5)
@@ -234,7 +236,7 @@ def test_external_memory_pages(metal, tmp_path):
 @pytest.mark.parametrize("scale", [1e-12, 1e-6, 1e6, 1e12])
 def test_custom_gradient_scales(metal, scale):
     x, y, _ = dataset()
-    d = xgb.DMatrix(x, label=y)
+    d = xgb.QuantileDMatrix(x, max_bin=64, label=y)
     p = parameters(base_score=0, reg_lambda=0, min_child_weight=0)
 
     def objective(prediction, data):
@@ -276,7 +278,7 @@ def test_sklearn_and_held_out_predictions(metal):
 @pytest.mark.gpu
 def test_ranking(metal):
     x, y, _ = dataset()
-    d = xgb.DMatrix(x, label=np.digitize(y, np.quantile(y, [0.25, 0.5, 0.75])))
+    d = xgb.QuantileDMatrix(x, max_bin=64, label=np.digitize(y, np.quantile(y, [0.25, 0.5, 0.75])))
     d.set_group([16] * 64)
     p = parameters(objective="rank:pairwise")
     cpu = xgb.train(p, d, num_boost_round=4)
@@ -288,7 +290,7 @@ def test_ranking(metal):
 def test_concurrent_independent_models(metal):
     def fit(seed):
         x, y, w = dataset(seed)
-        d = xgb.DMatrix(x, label=y, weight=w)
+        d = xgb.QuantileDMatrix(x, max_bin=64, label=y, weight=w)
         p = parameters()
         cpu = xgb.train(p, d, num_boost_round=4)
         gpu = train_metal(d, p, rounds=4)

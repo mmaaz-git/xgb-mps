@@ -1,8 +1,9 @@
-"""Fresh matrices finalize numeric sketch levels on Metal with exact CPU cuts."""
+"""Fresh ordinary matrices use CUDA-derived Metal sketches, not CPU level queues."""
 import numpy as np
 import pytest
 import scipy.sparse as sp
 import xgboost as xgb
+from cuda_sketch_reference import assert_cuts, assert_same_model_cpu
 
 
 @pytest.mark.parametrize("layout", ["dense", "missing", "sparse"])
@@ -40,18 +41,17 @@ def test_sketch_finalization(metal, layout, weights, categorical):
     assert xgb.metal_info()["sketch_finalize_dispatches"] == before["sketch_finalize_dispatches"]
     gpu = xgb.train(params | {"device": "mps"}, data["mps"], 3)
     after = xgb.metal_info()
-    assert after["sketch_finalize_dispatches"] == before["sketch_finalize_dispatches"] + 1
-    assert after["sketch_finalize_columns"] == before["sketch_finalize_columns"] + types.count("q")
-    assert after["sketch_finalize_gpu_time_ns"] > before["sketch_finalize_gpu_time_ns"]
-    assert after["sketch_update_dispatches"] > before["sketch_update_dispatches"]
-    assert after["sketch_ingest_gpu_time_ns"] > before["sketch_ingest_gpu_time_ns"]
-    for actual, expected in zip(data["mps"].get_quantile_cut(), data["cpu"].get_quantile_cut()):
-        np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
-    np.testing.assert_allclose(gpu.predict(data["mps"]), cpu.predict(data["cpu"]), rtol=2e-5, atol=2e-5)
+    assert after["cuda_sketch_batches"] == before["cuda_sketch_batches"] + 1
+    assert after["cuda_sketch_input_entries"] - before["cuda_sketch_input_entries"] == data["mps"].num_nonmissing()
+    assert after["cuda_sketch_gpu_time_ns"] > before["cuda_sketch_gpu_time_ns"]
+    for key in ["sketch_finalize_dispatches", "sketch_update_dispatches", "sketch_sorted_dispatches"]:
+        assert after[key] == before[key]  # No HostSketchContainer path.
+    assert_cuts(data["mps"], params["max_bin"])
+    assert_same_model_cpu(gpu, data["mps"])
     # Cached gradient indices must reuse their completed cuts on continuation.
-    prior = xgb.metal_info()["sketch_finalize_dispatches"]
+    prior = xgb.metal_info()["cuda_sketch_batches"]
     xgb.train(params | {"device": "mps"}, data["mps"], 1, xgb_model=gpu)
-    assert xgb.metal_info()["sketch_finalize_dispatches"] == prior
+    assert xgb.metal_info()["cuda_sketch_batches"] == prior
 
 
 def test_categorical_only_sketch(metal):
@@ -62,6 +62,8 @@ def test_categorical_only_sketch(metal):
     after = xgb.metal_info()
     assert after["sketch_finalize_dispatches"] == before["sketch_finalize_dispatches"]
     assert after["sketch_update_dispatches"] == before["sketch_update_dispatches"]
+    assert after["cuda_sketch_batches"] == before["cuda_sketch_batches"] + 1
+    assert_cuts(data, 256)
 
 
 def test_group_weighted_sketch(metal):
@@ -75,10 +77,8 @@ def test_group_weighted_sketch(metal):
     before = xgb.metal_info()["sketch_weight_dispatches"]
     models = {d: xgb.train(params | {"device": d}, matrices[d], 2) for d in matrices}
     assert xgb.metal_info()["sketch_weight_dispatches"] == before + 1
-    for actual, expected in zip(matrices["mps"].get_quantile_cut(), matrices["cpu"].get_quantile_cut()):
-        np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
-    np.testing.assert_allclose(models["mps"].predict(matrices["mps"]),
-                               models["cpu"].predict(matrices["cpu"]), rtol=2e-5, atol=2e-5)
+    assert_cuts(matrices["mps"], params["max_bin"])
+    assert_same_model_cpu(models["mps"], matrices["mps"])
 
 
 def test_external_page_sketch(metal, tmp_path):
@@ -107,10 +107,76 @@ def test_external_page_sketch(metal, tmp_path):
 
     data = {d: xgb.DMatrix(Pages(d), nthread=2) for d in ["cpu", "mps"]}
     params = dict(max_depth=3, max_bin=33, nthread=2, seed=31)
-    before = xgb.metal_info()["sketch_finalize_dispatches"]
+    before = xgb.metal_info()["cuda_sketch_batches"]
     models = {d: xgb.train(params | {"device": d}, data[d], 3) for d in data}
-    assert xgb.metal_info()["sketch_finalize_dispatches"] == before + 1
-    for actual, expected in zip(data["mps"].get_quantile_cut(), data["cpu"].get_quantile_cut()):
-        np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
-    np.testing.assert_allclose(models["mps"].predict(data["mps"]), models["cpu"].predict(data["cpu"]),
-                               rtol=2e-5, atol=2e-5)
+    assert xgb.metal_info()["cuda_sketch_batches"] == before + 4
+    assert_cuts(data["mps"], params["max_bin"], page_rows=[1031] * 4, csr=xgb.DMatrix(x).get_data())
+    assert_same_model_cpu(models["mps"], data["mps"])
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_sketch_backend_cache_switch(metal, tmp_path, external):
+    rng = np.random.default_rng(751)
+    x = rng.normal(size=(1026, 5)).astype(np.float32)
+    y = x[:, 0] * 2 - x[:, 2]
+    params = dict(max_bin=17, max_depth=2, nthread=2, base_score=0)
+
+    class Pages(xgb.DataIter):
+        def __init__(self, suffix):
+            self.page = 0
+            super().__init__(cache_prefix=str(tmp_path / suffix))
+
+        def reset(self):
+            self.page = 0
+
+        def next(self, input_data):
+            if self.page == 3:
+                return False
+            start = self.page * 342
+            input_data(data=x[start:start + 342], label=y[start:start + 342])
+            self.page += 1
+            return True
+
+    def matrix(suffix):
+        return xgb.DMatrix(Pages(suffix), nthread=2) if external else xgb.DMatrix(x, label=y, nthread=2)
+
+    data = matrix("switch")
+    xgb.train(params | {"device": "cpu"}, data, 1)
+    cpu_cuts = data.get_quantile_cut()
+    before = xgb.metal_info()["cuda_sketch_batches"]
+    gpu = xgb.train(params | {"device": "mps"}, data, 1)
+    assert xgb.metal_info()["cuda_sketch_batches"] == before + (3 if external else 1)
+    assert_cuts(data, 17, csr=xgb.DMatrix(x).get_data(), page_rows=[342] * 3 if external else None)
+    metal_cuts = data.get_quantile_cut()
+    assert not np.array_equal(cpu_cuts[1], metal_cuts[1])
+    # Inspection/prediction and same-backend continuation must keep the MPS cache.
+    before = xgb.metal_info()["cuda_sketch_batches"]
+    assert_same_model_cpu(gpu, data)
+    xgb.train(params | {"device": "mps"}, data, 1, xgb_model=gpu)
+    assert xgb.metal_info()["cuda_sketch_batches"] == before
+    xgb.train(params | {"device": "cpu"}, data, 1)
+    assert xgb.metal_info()["cuda_sketch_batches"] == before
+    for actual, expected in zip(data.get_quantile_cut(), cpu_cuts):
+        np.testing.assert_array_equal(actual, expected)
+    xgb.train(params | {"device": "mps"}, data, 1)
+    for actual, expected in zip(data.get_quantile_cut(), metal_cuts):
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_metal_reference_quantile_cuts_are_fixed(metal):
+    rng = np.random.default_rng(789)
+    x = rng.normal(size=(1025, 5)).astype(np.float32)
+    y = x[:, 0] - x[:, 1]
+    params = dict(max_bin=17, nthread=2, max_depth=2, base_score=0)
+    data = xgb.DMatrix(x, label=y, nthread=2)
+    xgb.train(params | {"device": "mps"}, data, 1)
+    expected = data.get_quantile_cut()
+    before = xgb.metal_info()["cuda_sketch_batches"]
+    reference = xgb.QuantileDMatrix(x, label=y, ref=data, max_bin=17, nthread=2)
+    for matrix in [data, reference]:
+        for actual, cut in zip(matrix.get_quantile_cut(), expected):
+            np.testing.assert_array_equal(actual, cut)
+    cpu = xgb.train(params | {"device": "cpu"}, reference, 3)
+    gpu = xgb.train(params | {"device": "mps"}, reference, 3)
+    assert xgb.metal_info()["cuda_sketch_batches"] == before
+    np.testing.assert_allclose(gpu.predict(reference), cpu.predict(reference), rtol=2e-5, atol=2e-5)

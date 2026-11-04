@@ -386,6 +386,7 @@ kernel void xgb_transform(device const float* input [[buffer(0)]],
   }
 }
 
+inline bool xgb_float_less(uint a, uint b);
 inline float xgb_fadd_preserve(float a, float b);
 inline float xgb_fmul_preserve(float a, float b);
 
@@ -419,10 +420,11 @@ kernel void xgb_predict(
       if (isnan(value))
         next = node.missing;
       else {
-        bool left = value < node.split;
+        uint bits = as_type<uint>(value);
+        bool left = xgb_float_less(bits, as_type<uint>(node.split));
         if (node.categorical) {
           left = true;
-          if (value >= 0.0f && value < 16777216.0f) {
+          if (!xgb_float_less(bits, 0u) && xgb_float_less(bits, as_type<uint>(16777216.0f))) {
             uint category = uint(value), word = category / 32;
             if (word < node.category_size)
               left = (categories[node.category_begin + word] & (1u << (31 - category % 32))) == 0;
@@ -6463,4 +6465,279 @@ kernel void xgb_interaction_scatter(device const uint* flags [[buffer(0)]],
   if (f >= n) return;
   if (flags[f]) output[prefix[f]] = f;
   if (f == n - 1) *count = prefix[f] + flags[f];
+}
+
+// CUDA SketchContainer: raw CSR sorting, CSC summaries, prune/merge/normalize.
+// Arithmetic stays FP32, including weight scans. See common/quantile.cu.
+struct CudaSketchParams {
+  ulong size, columns, budget, begin, base_row;
+  uint weighted, mode;
+};
+inline ulong xgb_cs_column(device const ulong* ptr, ulong columns, ulong i) {
+  ulong lo = 0, hi = columns + 1;
+  while (lo < hi) {
+    ulong mid = lo + (hi - lo) / 2;
+    if (ptr[mid] <= i)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo - 1;
+}
+kernel void xgb_cs_sort_keys(device const uint2* entries [[buffer(0)]],
+                             device const uint2* previous [[buffer(1)]],
+                             device uint2* records [[buffer(2)]],
+                             constant CudaSketchParams& p [[buffer(3)]],
+                             uint i [[thread_position_in_grid]]) {
+  uint index = p.mode ? previous[i].y : i;
+  uint2 v = entries[index];
+  uint bits = (v.y & 0x7fffffffu) ? v.y : 0u;  // +/-0 compare equal.
+  uint key = p.mode ? v.x : (bits ^ ((bits & 0x80000000u) ? 0xffffffffu : 0x80000000u));
+  records[i] = uint2(key, index);
+}
+kernel void xgb_cs_bounds(device const uint2* records [[buffer(0)]],
+                          device ulong* ptr [[buffer(1)]],
+                          constant CudaSketchParams& p [[buffer(2)]],
+                          uint c [[thread_position_in_grid]]) {
+  ulong lo = 0, hi = p.size;
+  while (lo < hi) {
+    ulong mid = lo + (hi - lo) / 2;
+    if (records[mid].x < c)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  ptr[c] = lo;
+}
+kernel void xgb_cs_gather(
+    device const uint2* entries [[buffer(0)]], device const uint2* records [[buffer(1)]],
+    device const ulong* rows [[buffer(2)]], device const float* weights [[buffer(3)]],
+    device float4* out [[buffer(4)]], device float* w [[buffer(5)]], device uint* ids [[buffer(6)]],
+    constant CudaSketchParams& p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
+  uint index = records[i].y;
+  out[i] = float4(0, 0, 0, as_type<float>(entries[index].y));
+  ids[i] = records[i].x;
+  // budget carries the number of CSR rows during this stage.
+  w[i] = p.weighted ? weights[xgb_cs_column(rows, p.budget, p.begin + index) + p.base_row] : 0.f;
+}
+// Hierarchical segmented inclusive FP32 scan. Different legal parallel scan
+// associations can round differently from CUB; do not substitute binary64 sums.
+kernel void xgb_cs_prefix(device const float* input [[buffer(0)]],
+                          device const uint* ids [[buffer(1)]], device float* output [[buffer(2)]],
+                          device float* totals [[buffer(3)]], device uint* total_ids [[buffer(4)]],
+                          constant uint& count [[buffer(5)]],
+                          uint lane [[thread_index_in_threadgroup]],
+                          uint block [[threadgroup_position_in_grid]]) {
+  threadgroup float shared[256];
+  threadgroup uint keys[256];
+  uint i = block * 256 + lane;
+  float value = i < count ? input[i] : 0.f;
+  uint key = i < count ? ids[i] : 0xffffffffu;
+  shared[lane] = value;
+  keys[lane] = key;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint step = 1; step < 256; step *= 2) {
+    float left = lane >= step && keys[lane - step] == key ? shared[lane - step] : 0.f;
+    bool combine = lane >= step && keys[lane - step] == key;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (combine) value = xgb_fadd_preserve(left, value);
+    shared[lane] = value;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (i < count) output[i] = value;
+  if (lane == min(255u, count - block * 256 - 1)) {
+    totals[block] = value;
+    total_ids[block] = key;
+  }
+}
+kernel void xgb_cs_prefix_add(device float* values [[buffer(0)]],
+                              device const uint* ids [[buffer(1)]],
+                              device const float* upper [[buffer(2)]],
+                              device const uint* upper_ids [[buffer(3)]],
+                              uint i [[thread_position_in_grid]]) {
+  uint block = i / 256;
+  if (block && ids[i] == upper_ids[block - 1])
+    values[i] = xgb_fadd_preserve(upper[block - 1], values[i]);
+}
+kernel void xgb_cs_attach(device float4* entries [[buffer(0)]],
+                          device const float* weights [[buffer(1)]],
+                          uint i [[thread_position_in_grid]]) {
+  entries[i].y = weights[i];
+}
+kernel void xgb_cs_flags(device const float4* entries [[buffer(0)]],
+                         device const ulong* ptr [[buffer(1)]],
+                         device const uchar* types [[buffer(2)]],
+                         device const ulong* selected [[buffer(3)]],
+                         device ulong* flags [[buffer(4)]],
+                         constant CudaSketchParams& p [[buffer(5)]],
+                         uint i [[thread_position_in_grid]]) {
+  ulong c = xgb_cs_column(ptr, p.columns, i);
+  bool same = false;
+  if (i > ptr[c]) {
+    // Raw categories use ==. Summary uniqueness subtracts values: inf-inf is
+    // NaN, so repeated selected indices must be removed independently first.
+    same = p.mode == 1 ? xgb_sketch_equal(entries[i].w, entries[i - 1].w)
+                       : xgb_sketch_equal(xgb_fsub_preserve(entries[i].w, entries[i - 1].w), 0.f);
+    if (p.mode == 2 && selected[i] == selected[i - 1]) same = true;
+  }
+  flags[i] = !(same && (p.mode != 1 || types[c] == 1));
+}
+kernel void xgb_cs_compact(device const float4* input [[buffer(0)]],
+                           device const ulong* ptr [[buffer(1)]],
+                           device const ulong* prefix [[buffer(2)]],
+                           device float4* output [[buffer(3)]], device ulong* out_ptr [[buffer(4)]],
+                           constant CudaSketchParams& p [[buffer(5)]],
+                           uint i [[thread_position_in_grid]]) {
+  if (i < p.size && (!i || prefix[i] != prefix[i - 1])) output[prefix[i] - 1] = input[i];
+  if (i <= p.columns) out_ptr[i] = ptr[i] ? prefix[ptr[i] - 1] : 0;
+}
+kernel void xgb_cs_raw_ranks(device const float4* input [[buffer(0)]],
+                             device const ulong* ptr [[buffer(1)]],
+                             device float4* output [[buffer(2)]],
+                             constant CudaSketchParams& p [[buffer(3)]],
+                             uint i [[thread_position_in_grid]]) {
+  ulong c = xgb_cs_column(ptr, p.columns, i), local = i - ptr[c];
+  float lo = p.weighted ? (local ? input[i - 1].y : 0.f) : float(local);
+  float hi = p.weighted ? input[i].y : float(local + 1);
+  float w = p.weighted ? xgb_fsub_preserve(hi, lo) : 1.f;
+  if (xgb_sketch_less(w, 0.f)) w = 1e-6f;
+  output[i] = float4(lo, hi, w, input[i].w);
+}
+kernel void xgb_cs_cut_counts(device const ulong* ptr [[buffer(0)]],
+                              device const uchar* types [[buffer(1)]],
+                              device ulong* counts [[buffer(2)]],
+                              constant CudaSketchParams& p [[buffer(3)]],
+                              uint i [[thread_position_in_grid]]) {
+  counts[i] =
+      i == 0 ? 0 : (types[i - 1] == 1 ? ptr[i] - ptr[i - 1] : min(ptr[i] - ptr[i - 1], p.budget));
+}
+inline ulong xgb_cs_query(device const float4* input, ulong n, float rank) {
+  rank = xgb_fmul_preserve(rank, 2.f);
+  if (xgb_sketch_less(rank, xgb_fadd_preserve(input[0].x, input[0].y))) return 0;
+  if (xgb_sketch_ge(rank, xgb_fadd_preserve(input[n - 1].x, input[n - 1].y))) return n - 1;
+  ulong lo = 1, hi = n - 1;
+  while (lo < hi) {
+    ulong mid = lo + (hi - lo) / 2;
+    if (!xgb_sketch_less(rank, xgb_fadd_preserve(input[mid].x, input[mid].y)))
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  ulong i = lo - 1;
+  return xgb_sketch_less(
+             rank, xgb_fadd_preserve(xgb_sketch_next(input[i]), xgb_sketch_prev(input[i + 1])))
+             ? i
+             : i + 1;
+}
+kernel void xgb_cs_prune(device const float4* input [[buffer(0)]],
+                         device const ulong* ptr [[buffer(1)]],
+                         device const ulong* out_ptr [[buffer(2)]],
+                         device const uchar* types [[buffer(3)]],
+                         device float4* output [[buffer(4)]], device ulong* selected [[buffer(5)]],
+                         constant CudaSketchParams& p [[buffer(6)]],
+                         uint i [[thread_position_in_grid]]) {
+  ulong c = xgb_cs_column(out_ptr, p.columns, i);
+  ulong n = ptr[c + 1] - ptr[c], to = out_ptr[c + 1] - out_ptr[c], local = i - out_ptr[c];
+  device const float4* column = input + ptr[c];
+  ulong index = local;
+  if (n > to && types[c] != 1) {
+    if (local == 0)
+      index = 0;
+    else if (local == to - 1)
+      index = n - 1;
+    else if (local) {
+      float w = xgb_fsub_preserve(column[n - 1].x, column[0].y);
+      float q = xgb_fadd_preserve(
+          xgb_fdiv_preserve(xgb_fmul_preserve(float(local), w), xgb_fsub_preserve(float(to), 1.f)),
+          column[0].y);
+      index = xgb_cs_query(column, n, q);
+    }
+  }
+  output[i] = column[index];
+  selected[i] = ptr[c] + index;
+}
+// The incoming summary is small (the raw rows have already been pruned).
+// One lane per column implements CUDA's reverse scan in a deterministic order.
+kernel void xgb_cs_scan_input(device float4* entries [[buffer(0)]],
+                              device const ulong* ptr [[buffer(1)]],
+                              uint c [[thread_position_in_grid]]) {
+  ulong begin = ptr[c], end = ptr[c + 1];
+  if (begin == end) return;
+  float4 right = entries[end - 1];
+  for (ulong i = end - 1; i > begin;) {
+    --i;
+    float4 left = entries[i];
+    if (xgb_sketch_equal(xgb_fsub_preserve(left.w, right.w), 0.f) &&
+        !xgb_sketch_equal(xgb_fsub_preserve(left.x, right.x), 0.f)) {
+      left.z = xgb_fadd_preserve(left.z, right.z);
+      left.y = xgb_fadd_preserve(left.x, left.z);
+    }
+    entries[i] = left;
+    right = left;
+  }
+}
+kernel void xgb_cs_merge_ptr(device const ulong* a [[buffer(0)]],
+                             device const ulong* b [[buffer(1)]],
+                             device ulong* output [[buffer(2)]],
+                             uint c [[thread_position_in_grid]]) {
+  output[c] = a[c] + b[c];
+}
+inline float xgb_cs_other_min(device const float4* a, ulong i) {
+  return i ? xgb_sketch_next(a[i - 1]) : 0.f;
+}
+inline float xgb_cs_other_max(device const float4* a, ulong n, ulong i) {
+  return i == n ? a[n - 1].y : xgb_sketch_prev(a[i]);
+}
+kernel void xgb_cs_merge(device const float4* x [[buffer(0)]], device const ulong* xp [[buffer(1)]],
+                         device const float4* y [[buffer(2)]], device const ulong* yp [[buffer(3)]],
+                         device const ulong* op [[buffer(4)]], device float4* output [[buffer(5)]],
+                         constant CudaSketchParams& p [[buffer(6)]],
+                         uint index [[thread_position_in_grid]]) {
+  ulong c = xgb_cs_column(op, p.columns, index), k = index - op[c];
+  device const float4* a = x + xp[c];
+  device const float4* b = y + yp[c];
+  ulong m = xp[c + 1] - xp[c], n = yp[c + 1] - yp[c];
+  if (!m) {
+    output[index] = b[k];
+    return;
+  }
+  if (!n) {
+    output[index] = a[k];
+    return;
+  }
+  ulong lo = k > n ? k - n : 0, hi = min(k, m);
+  while (lo < hi) {
+    ulong i = lo + (hi - lo) / 2, j = k - i;
+    if (j && i < m && xgb_sketch_ge(b[j - 1].w, a[i].w))
+      lo = i + 1;
+    else
+      hi = i;
+  }
+  ulong i = lo, j = k - lo;
+  if (i < m && j < n && xgb_sketch_equal(a[i].w, b[j].w)) {
+    output[index] = float4(xgb_fadd_preserve(a[i].x, b[j].x), xgb_fadd_preserve(a[i].y, b[j].y),
+                           xgb_fadd_preserve(a[i].z, b[j].z), a[i].w);
+  } else if (i < m && (j == n || xgb_sketch_less(a[i].w, b[j].w))) {
+    output[index] = float4(xgb_fadd_preserve(a[i].x, xgb_cs_other_min(b, j)),
+                           xgb_fadd_preserve(a[i].y, xgb_cs_other_max(b, n, j)), a[i].zw);
+  } else {
+    output[index] = float4(xgb_fadd_preserve(xgb_cs_other_min(a, i), b[j].x),
+                           xgb_fadd_preserve(xgb_cs_other_max(a, m, i), b[j].y), b[j].zw);
+  }
+}
+// CUDA reads/writes neighboring ranks in-place with no ordering guarantee.
+// Execute its equations left-to-right within each column to avoid that race.
+kernel void xgb_cs_fix(device float4* entries [[buffer(0)]], device const ulong* ptr [[buffer(1)]],
+                       uint c [[thread_position_in_grid]]) {
+  float lo = 0, hi = 0;
+  for (ulong i = ptr[c]; i < ptr[c + 1]; ++i) {
+    float4 v = entries[i];
+    if (xgb_sketch_less(v.x, lo)) v.x = lo;
+    if (xgb_sketch_less(v.y, hi)) v.y = hi;
+    float next = xgb_sketch_next(v);
+    if (xgb_sketch_less(v.y, next)) v.y = next;
+    entries[i] = v;
+    lo = v.x;
+    hi = v.y;
+  }
 }

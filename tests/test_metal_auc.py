@@ -3,6 +3,9 @@ import numpy as np
 import pytest
 import xgboost as xgb
 
+# Fixed quantile cuts isolate CPU tree/objective equivalence from the distinct
+# CPU and CUDA sketch algorithms. Ordinary Metal cuts have source-oracle tests.
+
 
 def score(model, d):
     return float(model.eval(d).rsplit(":", 1)[1])
@@ -81,7 +84,7 @@ def test_roc_training(metal, metric, targets):
     rng = np.random.default_rng(819)
     x = rng.normal(size=(8193, 5)).astype(np.float32)
     y = (x[:, :targets] > 0).astype(np.float32)
-    d = xgb.DMatrix(x, label=y, nthread=2)
+    d = xgb.QuantileDMatrix(x, label=y, nthread=2, max_bin=256)
     params = dict(objective="binary:logistic", eval_metric=metric, nthread=2, max_depth=4)
     cpu_log, gpu_log = {}, {}
     cpu = xgb.train(params | {"device": "cpu"}, d, 5, evals=[(d, "train")],

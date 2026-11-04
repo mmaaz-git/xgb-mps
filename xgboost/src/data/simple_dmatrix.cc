@@ -138,7 +138,12 @@ BatchSet<GHistIndexMatrix> SimpleDMatrix::GetGradientIndex(Context const* ctx,
     }
     CHECK(!detail::RegenGHist(batch_param_, param)) << "Inconsistent sparse threshold.";
   }
-  if (!gradient_index_ || detail::RegenGHist(batch_param_, param)) {
+  // Ordinary CPU and Metal matrices use different sketch algorithms. Empty
+  // parameters (prediction/cut inspection) and fixed reference cuts must retain
+  // the existing index, just as CPU-to-CUDA QuantileDMatrix conversion does.
+  bool backend_changed = param.Initialized() && !param.forbid_regen && !ctx->IsCUDA() &&
+                         gradient_index_metal_ != ctx->IsMPS();
+  if (!gradient_index_ || detail::RegenGHist(batch_param_, param) || backend_changed) {
     // GIDX page doesn't exist, generate it
     LOG(DEBUG) << "Generating new Gradient Index.";
     // These places can ask for a CSR gidx:
@@ -165,6 +170,7 @@ BatchSet<GHistIndexMatrix> SimpleDMatrix::GetGradientIndex(Context const* ctx,
                                                  sorted_sketch, param.hess});
     }
 
+    gradient_index_metal_ = ctx->IsMPS();
     batch_param_ = param.MakeCache();
     CHECK_EQ(batch_param_.hess.data(), param.hess.data());
   }

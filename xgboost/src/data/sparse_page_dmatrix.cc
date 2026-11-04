@@ -163,7 +163,9 @@ BatchSet<GHistIndexMatrix> SparsePageDMatrix::GetGradientIndex(Context const *ct
   }
   detail::CheckEmpty(batch_param_, param);
   auto id = MakeCache(this, ".gradient_index.page", false, cache_prefix_, &cache_info_);
-  if (!cache_info_.at(id)->written || detail::RegenGHist(batch_param_, param)) {
+  bool backend_changed = param.Initialized() && !param.forbid_regen && !ctx->IsCUDA() &&
+                         gradient_index_metal_ != ctx->IsMPS();
+  if (!cache_info_.at(id)->written || detail::RegenGHist(batch_param_, param) || backend_changed) {
     this->InitializeSparsePage(ctx);
     cache_info_.erase(id);
     id = MakeCache(this, ".gradient_index.page", false, cache_prefix_, &cache_info_);
@@ -173,6 +175,7 @@ BatchSet<GHistIndexMatrix> SparsePageDMatrix::GetGradientIndex(Context const *ct
     auto cuts = common::SketchOnDMatrix(ctx, this, param.max_bin, sorted_sketch, param.hess);
     this->InitializeSparsePage(ctx);  // reset after use.
 
+    gradient_index_metal_ = ctx->IsMPS();
     batch_param_ = param;
     ghist_index_source_.reset();
     CHECK_NE(cuts.Values().size(), 0);

@@ -256,6 +256,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.ranking_roc_auc_dispatches)};
   info["ranking_roc_auc_gpu_time_ns"] =
       Integer{static_cast<std::int64_t>(stats.ranking_roc_auc_gpu_time_ns)};
+  info["cuda_sketch_dispatches"] = Integer{static_cast<std::int64_t>(stats.cuda_sketch_dispatches)};
+  info["cuda_sketch_batches"] = Integer{static_cast<std::int64_t>(stats.cuda_sketch_batches)};
+  info["cuda_sketch_input_entries"] = Integer{static_cast<std::int64_t>(stats.cuda_sketch_input_entries)};
+  info["cuda_sketch_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.cuda_sketch_gpu_time_ns)};
   info["sketch_finalize_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.sketch_finalize_dispatches)};
   info["label_validation_dispatches"] =
@@ -436,6 +440,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["gradient_sampling_gpu_time_ns"] = Integer{0};
   info["ranking_roc_auc_dispatches"] = Integer{0};
   info["ranking_roc_auc_gpu_time_ns"] = Integer{0};
+  info["cuda_sketch_dispatches"] = Integer{0};
+  info["cuda_sketch_batches"] = Integer{0};
+  info["cuda_sketch_input_entries"] = Integer{0};
+  info["cuda_sketch_gpu_time_ns"] = Integer{0};
   info["sketch_finalize_dispatches"] = Integer{0};
   info["label_validation_dispatches"] = Integer{0};
   info["base_score_dispatches"] = Integer{0};

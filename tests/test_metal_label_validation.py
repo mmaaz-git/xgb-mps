@@ -3,6 +3,9 @@ import numpy as np
 import pytest
 import xgboost as xgb
 
+# Fixed quantile cuts isolate CPU tree/objective equivalence from the distinct
+# CPU and CUDA sketch algorithms. Ordinary Metal cuts have source-oracle tests.
+
 TINY = np.finfo(np.float32).smallest_subnormal
 CASES = [
     ("reg:logistic", -TINY), ("binary:logistic", -TINY),
@@ -38,7 +41,7 @@ def test_label_validation_training(metal, objective, targets):
     x = rng.normal(size=(1025, 5)).astype(np.float32)
     multi = objective.startswith("multi:")
     y = rng.integers(0, 3, len(x)).astype(np.float32) if multi else rng.uniform(.1, .9, (len(x), targets)).astype(np.float32)
-    data = xgb.DMatrix(x, label=y, weight=rng.uniform(0, 2, len(x)), nthread=2)
+    data = xgb.QuantileDMatrix(x, label=y, weight=rng.uniform(0, 2, len(x)), nthread=2, max_bin=32)
     params = dict(objective=objective, base_score=.5, nthread=2, max_depth=2, max_bin=32, eta=.1)
     if multi:
         params["num_class"] = 3

@@ -41,9 +41,10 @@ work, not accepted substitutes for CUDA behavior:
   contraction and hardware-dependent reduction details remain unverified on NVIDIA;
   weighted columns now use the same modern Philox stream, and unweighted columns
   use Thrust's distinct shuffle stream. Ranking random streams still need alignment.
-- Quantile sketches: CPU row queues, `SetPruneSorted`, ordered summary merging
-  and pruning differ from CUDA's sorted weighted scan and GPU sketch pipeline.
-  Existing exact CPU cut tests do not validate that CUDA pipeline.
+- Quantile sketches: ordinary MPS matrices now use CUDA-derived raw sorting,
+  FP32 scans and resident summaries, as detailed below. Adapter/device-array
+  ingestion and distributed sketch collectives remain open. Scan association,
+  sorting ties and rank-repair scheduling are explicitly bounded validation limits.
 - Interaction constraints now follow CUDA's cumulative group unions and ascending
   nonroot queries, with explicit overlapping-group tests; the former CPU history
   filter has been removed from production MPS training and the source oracles.
@@ -68,7 +69,7 @@ must be reported rather than hidden by widening test tolerances.
 | CUDA subsystem | Principal upstream source | Metal status |
 | --- | --- | --- |
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
-| Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Both sampling methods and all roots share quantized state; weighted sketches still differ from CUDA; preprocessing remains hybrid |
+| Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Both sampling methods and all roots share quantized state; ordinary raw CSR sketches now follow CUDA; adapter preprocessing remains hybrid |
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Original per-tree scales feed both integer sampling methods, all roots and histograms; reduced value leaves now use original scales and integer sums; scalar/vector split statistics retain integers |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned integer cache; external-page accumulation and subtraction retain exact quantized sums, with a binary64 view for host orchestration. GPU growth copies both buffers, empty first pages overwrite reused ranges, and feature gathering remains GPU. Scalar/vector split gathering now reads integer buffers; host cache policy/metadata remain |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly from resident sorted indices; GPU-owned interaction masks and monotonic bounds, group unions, ascending feature filtering, bound initialization/growth; candidate staging and tree metadata remain host |
@@ -91,7 +92,7 @@ must be reported rather than hidden by widening test tolerances.
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; collective transport remains host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
-| Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Group/Hessian weighting, sorted-column weighted summaries, streaming level compaction, final numeric merging, rank repair and pruning use Metal. Row ingestion/queue folding, value sorting and category collection remain CPU. Final cut materialization is host-side in both CUDA and Metal. SparsePage bin assignment and hit counts use Metal; adapter-built QuantileDMatrix bins remain CPU |
+| Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Adapter/device-array ingestion, adapter-built QuantileDMatrix bins and distributed sketch collectives remain open |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
@@ -491,7 +492,75 @@ Full validation passes **1,734 Python tests, one skip**, every rebuilt native su
 and the CPU-only build/device check (2026-11-04, 11:59:26–12:03:47 UTC).
 [Validation record](../validation/cuda-column-sampling-m3.txt).
 
-## Numeric sketch finalization
+## CUDA-derived resident sketches
+
+`metal_cuda_sketch.cc`, `metal_cuda_sketch.h` and the runtime/shader now implement
+ordinary CSR ingestion from `DeviceSketchWithHessian` and the single-worker
+`SketchContainer` lifecycle. `SketchOnDMatrix` dispatches to this path for MPS
+regardless of the CPU `use_sorted` setting. It covers in-memory and external-page
+ordinary matrices, including group weights and Hessian-weighted `approx`.
+
+- Raw windows retain CUDA's 64M-entry partitioning and CSR-based covered-row counts.
+  Stable radix sorting orders values then feature IDs. GPU binary search gathers
+  row weights with page base-row offsets; group/Hessian unification uses Metal.
+- A hierarchical FP32 inclusive scan computes per-feature weights. Categorical
+  duplicates and their attached scanned weights are compacted on GPU before
+  sketch ranks are formed. Unweighted ranks use sample positions, not a scan of ones.
+- Per-window budgets use CUDA's row count, epsilon and `LimitSizeLevel`. Pruning
+  retains endpoints and answers FP32 rank queries. Reverse input scanning merges
+  duplicate raw weights while avoiding double-counted selected summaries.
+- GPU summaries/column pointers persist across pushes. Parallel merge partitions
+  implement opposite-summary rank contributions, equal-value combination and
+  first-entry uniqueness. Intermediate pruning follows cumulative rows seen.
+- Final summaries are copied once for host `QueryCutValues` and category validation
+  and expansion, matching CUDA `MakeCuts` placement. No host level queues or sorted
+  CSC pages participate in ordinary MPS sketching.
+
+Numerical and placement limits are explicit. Thrust does not promise the same
+ordering of equal feature/value keys as our stable sort. CUB may associate FP32
+scans differently; the public oracle states Metal's 256-entry tree association,
+while native dyadic-weight fixtures have exact sums independent of association.
+Input-summary reverse scans use one GPU lane per column in a deterministic order.
+CUDA's in-place `FixError` reads neighboring ranks while other threads may write
+those ranks; Metal applies its equations left-to-right per column, avoiding the
+race and ensuring monotonic rank bounds. These are not NVIDIA bitwise-equivalence
+claims. Raw CSR/metadata staging, allocation and size-readback synchronization
+remain. Group/Hessian weights currently stage through host memory before the
+resident sketch uploads them. Performance has not been measured for this path.
+
+Ordinary CPU and Metal cut caches are tagged by sketch backend. An initialized
+training request switching backends rebuilds the index; cut inspection/prediction
+and `forbid_regen` reference requests preserve it. QuantileDMatrix fixed cuts stay
+fixed. The adapter/device-array path and distributed GPU sketch exchange are not
+implemented by this change.
+
+Native tests verify 64 cases, 276 pushes, 1,867,178 raw entries and 229,976 exact
+summary fields against an independent scalar CUDA-equation reference. Cases cover
+window splits inside rows, empty rows/columns, base-row offsets, duplicates,
+categories, zero/tiny/large weights, signed-zero weights, infinite feature values
+and the one-row pruning budget. Intermediate pruning retains both index and
+value uniqueness predicates: equal infinities do not compare equal by subtraction. Public tests
+verify exact source-oracle cuts, weighted/approx ordering, external pages, backend
+switches and reference preservation. Thirty `approx` cases independently check cuts and all scalar integer splits/
+leaves across two one-round calls with changing Hessians, both samplers and growth
+policies. CPU tree-equivalence tests now explicitly fix their cuts; ordinary
+sketch tests no longer require the distinct CPU algorithm's thresholds.
+
+A subnormal-cut integration fixture also exposed a prediction bug: Metal float
+comparison flushed tiny thresholds while CPU traversal distinguished them.
+Numeric and category traversal now use the existing bit-preserving comparison;
+five threshold fixtures and a negative-subnormal category fixture cover the fix.
+Final full validation passes **1,773 Python tests, one skip**, every rebuilt
+native suite/reference updater and CPU-only build/device check (2026-11-04,
+12:32:43–12:36:45 UTC). The Python suite took 93.03 seconds.
+[Validation record](../validation/cuda-resident-sketch-m3.txt).
+
+## Numeric sketch finalization (earlier CPU-compatible helpers)
+
+The following records the earlier implementation and its original validation.
+These helpers remain tested; ordinary MPS matrices now bypass this level-queue
+pipeline in favor of the resident CUDA-derived path above.
+
 
 Fresh MPS histogram matrices batch the retained levels of all numeric columns
 into one Metal command. GPU merging preserves level order and equal-value rank
@@ -530,7 +599,10 @@ dispatch numeric sketch work. See [validation](../validation/sketch-finalization
 host ingestion, staging, waiting and cut materialization; it cannot be used as
 an end-to-end preprocessing time or speedup.
 
-## Sketch weights, sorted summaries and streaming compaction
+## Sketch weights, sorted summaries and streaming compaction (earlier implementation)
+
+The historical sorted/level-queue path below is superseded for ordinary MPS
+matrices by the resident sketch above; the weighting helper remains in use.
 
 MPS sketch construction now expands group weights and multiplies row/group weights
 by Hessians on Metal. It preserves the CPU's FP32 product, subnormal results and
@@ -823,8 +895,9 @@ each tree. Constant-Hessian tasks cache cuts; other tasks regenerate at the next
 updater invocation. CPU approx intentionally retains its different shared-forest
 sampling and sampled-Hessian sketching order.
 
-This is partial CUDA algorithm alignment. The underlying sketch, row/column RNG and tree-statistic storage still require
-CUDA alignment. Histogram quantization now follows the CUDA formulas, but its
+This paragraph describes the earlier updater milestone; subsequent integer-state,
+row/column sampling and resident-sketch sections supersede these gaps. At that
+point, the underlying sketch, RNG and tree-statistic storage still required CUDA alignment. Histogram quantization now follows the CUDA formulas, but its
 placement in training does not yet match CUDA. In particular, Metal still samples float gradients before histogram
 quantization; CUDA samples already quantized gradients. Source value sorting,
 row queue construction and category collection remain host work. The updater is
@@ -848,8 +921,10 @@ QuantileDMatrix bins remain host work.
 cases independently check CUDA updater ordering: cuts match the unsampled sketch
 reference at sampling rates 0, .3 and .8; two rounds of three trees make two cut
 builds and six row/column resets. They cover dense, missing, CSR, categorical and
-external-page inputs and both row samplers. The cut reference uses CPU approx
-without sampling to isolate ordering; it does not validate CUDA's GPU sketch.
+external-page inputs and both row samplers. The original cut reference used CPU approx without sampling. It now uses the
+independent CUDA-equation sketch oracle described above, including the declared
+Metal FP32 scan association. An additional thirty cases audit sketch-to-tree
+behavior over changing Hessians.
 Two scalar tests independently check the no-sampling leaf formula. Other tests
 cover regression, classification, multi-output scalar trees, both growth policies,
 constraints, forests, empty inputs and saved-model continuation. CPU model

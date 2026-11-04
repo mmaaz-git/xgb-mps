@@ -19,7 +19,7 @@ class Reduced(TreeObjective):
         return np.mean(grad, axis=1), np.mean(hess, axis=1)
 
 
-def dataset(layout, tmp_path):
+def dataset(layout, tmp_path, fixed=False):
     rng = np.random.default_rng(183)
     x = rng.normal(size=(1031, 7)).astype(np.float32)
     y = np.column_stack([x[:, 0] + x[:, 1], x[:, 1] ** 2, -2 * x[:, 2]])
@@ -31,6 +31,8 @@ def dataset(layout, tmp_path):
         x[rng.random(x.shape) < .65] = 0
         x = sp.csr_matrix(x)
     if layout != "external":
+        if fixed:
+            return xgb.QuantileDMatrix(x, label=y, weight=weights, nthread=2, max_bin=33)
         return xgb.DMatrix(x, label=y, weight=weights, nthread=2)
 
     class Pages(xgb.DataIter):
@@ -48,6 +50,8 @@ def dataset(layout, tmp_path):
             input_data(data=x[begin:end], label=y[begin:end], weight=weights[begin:end])
             self.page += 1
             return True
+    if fixed:
+        return xgb.ExtMemQuantileDMatrix(Pages(), nthread=2, max_bin=33)
     return xgb.DMatrix(Pages(), nthread=2)
 
 
@@ -56,7 +60,8 @@ def dataset(layout, tmp_path):
     ("uniform", 1.), ("gradient_based", .6)])
 @pytest.mark.parametrize("regularization", ["none", "penalties", "clipped", "root_only"])
 def test_gpu_reduced_leaf_fitting(metal, layout, sampling, subsample, regularization, tmp_path):
-    data = dataset(layout, tmp_path)
+    # Fixed reference cuts keep CPU downstream leaf-fitting checks meaningful.
+    data = dataset(layout, tmp_path, fixed=True)
     params = dict(nthread=2, max_depth=3, max_bin=33, base_score=[0., 0., 0.], eta=.3,
                   multi_strategy="multi_output_tree", subsample=subsample,
                   sampling_method=sampling, seed=71, debug_synchronize=True, seed_per_iteration=True)

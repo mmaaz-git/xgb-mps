@@ -3,6 +3,9 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 import xgboost as xgb
+
+# Fixed quantile cuts isolate CPU tree/objective equivalence from the distinct
+# CPU and CUDA sketch algorithms. Ordinary Metal cuts have source-oracle tests.
 from cuda_uniform_reference import UniformSquaredError
 from cuda_split_reference import RecordedSquaredError, audit_recorded, audit_tree, dense_values, trees
 
@@ -46,10 +49,12 @@ def test_quantized_page_invalidation_and_device_switch(metal):
     d = xgb.DMatrix(x, label=x[:, 0] - x[:, 1])
     for bins in [16, 257, 64, 16]:
         p = dict(tree_method="hist", max_bin=bins, max_depth=3, nthread=2)
-        expected = xgb.train(p | {"device": "cpu"}, d, 3).predict(d)
+        xgb.train(p | {"device": "cpu"}, d, 3)  # Populate the CPU cache before switching.
         before = xgb.metal_info()["index_uploads"]
         model = xgb.train(p | {"device": "mps"}, d, 3)
         assert xgb.metal_info()["index_uploads"] - before == 1
+        reference = xgb.QuantileDMatrix(x, label=x[:, 0] - x[:, 1], ref=d, max_bin=bins)
+        expected = xgb.train(p | {"device": "cpu"}, reference, 3).predict(reference)
         np.testing.assert_allclose(model.predict(d), expected, rtol=2e-5, atol=2e-5)
         model.set_param({"device": "cpu"})
         np.testing.assert_allclose(model.predict(d), expected, rtol=2e-5, atol=2e-5)
@@ -94,7 +99,7 @@ def test_row_workspace_resize_and_reuse(metal, layout, targets):
         if layout == "sparse":
             x[rng.random(x.shape) < .7] = 0
             x = sp.csr_matrix(x)
-        d = xgb.DMatrix(x, label=y, nthread=2)
+        d = xgb.QuantileDMatrix(x, label=y, nthread=2, max_bin=256)
         if not models:
             models = {device: xgb.Booster(params | {"device": device}, cache=[d])
                        for device in ["cpu", "mps"]}

@@ -1,7 +1,7 @@
 """Approx integration and CUDA updater ordering, without a CUDA execution claim.
 
-CPU model comparisons are limited to common flow (no row/column sampling).
-The current Metal sketch/sampler implementations still differ from CUDA's.
+Ordinary approx uses CUDA-derived sketches, which differ from CPU sketches.
+Sketch-source oracles and fixed-cut hist comparisons are separate contracts.
 """
 import json
 
@@ -10,6 +10,7 @@ import pytest
 import scipy.sparse as sp
 import xgboost as xgb
 from cuda_uniform_reference import UniformSquaredError
+from cuda_sketch_reference import cuts, assert_same_model_cpu, fixed_hist_matrix
 
 
 def matrices(layout, kind, tmp_path, positive_weights=False):
@@ -64,6 +65,9 @@ def matrices(layout, kind, tmp_path, positive_weights=False):
             data[device] = xgb.DMatrix(Pages(device), nthread=2)
         else:
             data[device] = xgb.DMatrix(x, label=y, weight=weight, feature_types=types, nthread=2)
+    for d in data.values():
+        d._sketch_csr = xgb.DMatrix(x).get_data()
+        d._sketch_page_rows = [131, 131, 131, 128] if layout == "external" else None
     return data, params, groups
 
 
@@ -87,27 +91,20 @@ def test_approx_training(metal, layout, kind, subsample, sampling, growth, tmp_p
                   seed_per_iteration=True, subsample=subsample, sampling_method=sampling,
                   grow_policy=growth, max_depth=3 if growth == "depthwise" else 0,
                   max_leaves=0 if growth == "depthwise" else 7, reg_lambda=2., **objective)
-    before_cpu = xgb.metal_info()
-    cpu = xgb.train(params | {"device": "cpu"}, data["cpu"], 3) if subsample == 1 else None
-    assert xgb.metal_info()["hessian_extract_dispatches"] == before_cpu["hessian_extract_dispatches"]
     before = xgb.metal_info()
     gpu = xgb.train(params | {"device": "mps"}, data["mps"], 3)
     after = xgb.metal_info()
     assert after["gradient_copy_dispatches"] - before["gradient_copy_dispatches"] >= 3 * groups
     assert after["hessian_extract_dispatches"] - before["hessian_extract_dispatches"] == 3 * groups
     for key in ["gradient_sum_dispatches", "sketch_weight_dispatches", "binning_dispatches",
-                "sketch_update_dispatches", "histogram_dispatches", "split_dispatches",
+                "cuda_sketch_dispatches", "histogram_dispatches", "split_dispatches",
                 "partition_dispatches", "leaf_partition_dispatches", "gradient_state_gpu_time_ns"]:
         assert after[key] > before[key], key
-    # Upstream selects sorted sketches only when Hessians require regeneration.
-    if kind in {"binary", "multiclass"}:
-        assert after["sketch_sorted_dispatches"] > before["sketch_sorted_dispatches"]
-    else:
-        assert after["sketch_sorted_dispatches"] == before["sketch_sorted_dispatches"]
+    # CUDA raw sketching bypasses both CPU sorted-column and level-queue paths.
+    assert after["sketch_sorted_dispatches"] == before["sketch_sorted_dispatches"]
+    assert after["sketch_update_dispatches"] == before["sketch_update_dispatches"]
     assert json.loads(gpu.save_config())["learner"]["gradient_booster"]["gbtree_train_param"]["tree_method"] == "approx"
-    if cpu is not None:
-        compare(cpu, gpu, data)
-        cpu = xgb.train(params | {"device": "cpu"}, data["cpu"], 2, xgb_model=cpu.save_raw())
+    assert_same_model_cpu(gpu, data["mps"])
     saved = gpu.save_raw()
     reloaded = xgb.Booster(model_file=saved)
     reloaded.set_param({"device": "mps"})
@@ -116,8 +113,7 @@ def test_approx_training(metal, layout, kind, subsample, sampling, growth, tmp_p
     repeat = xgb.train(params | {"device": "mps"}, data["mps"], 2, xgb_model=saved)
     np.testing.assert_array_equal(repeat.predict(data["mps"]), gpu.predict(data["mps"]))
     assert np.isfinite(gpu.predict(data["mps"])).all()
-    if cpu is not None:
-        compare(cpu, gpu, data)
+    assert_same_model_cpu(gpu, data["mps"])
 
 
 @pytest.mark.parametrize("kind", ["regression", "binary"])
@@ -130,10 +126,8 @@ def test_approx_constraints_and_forests(metal, kind, options, tmp_path):
     params = dict(tree_method="approx", max_bin=33, nthread=2, max_depth=3,
                   seed=37, seed_per_iteration=True, **objective, **options)
     gpu = xgb.train(params | {"device": "mps"}, data["mps"], 3)
-    if "colsample_bytree" not in options:
-        cpu = xgb.train(params | {"device": "cpu"}, data["cpu"], 3)
-        compare(cpu, gpu, data)
-    else:
+    assert_same_model_cpu(gpu, data["mps"])
+    if "colsample_bytree" in options:
         # CUDA resets feature sampling after row sampling for each tree; CPU
         # approx initializes its sampler before row sampling and shares forests.
         repeat = xgb.train(params | {"device": "mps"}, data["mps"], 3)
@@ -147,8 +141,8 @@ def test_approx_resketch_policy(metal, kind, expected, tmp_path):
     xgb.train(dict(tree_method="approx", device="mps", nthread=2, max_depth=2,
                    max_bin=17, **objective), data["mps"], 4)
     after = xgb.metal_info()
-    assert after["sketch_finalize_dispatches"] - before["sketch_finalize_dispatches"] == expected
-    assert after["sketch_sorted_dispatches"] - before["sketch_sorted_dispatches"] == (0 if kind == "regression" else expected)
+    assert after["cuda_sketch_batches"] - before["cuda_sketch_batches"] == expected
+    assert after["sketch_sorted_dispatches"] == before["sketch_sorted_dispatches"]
     assert after["hessian_extract_dispatches"] - before["hessian_extract_dispatches"] == 4
 
 
@@ -173,6 +167,7 @@ def test_approx_empty_and_zero_sampling(metal, rows, sampling, subsample):
     dict(multi_strategy="multi_output_tree"), dict(num_parallel_tree=3)])
 def test_hist_gradient_layout_copies(metal, options, tmp_path):
     data, objective, _ = matrices("missing", "multitarget", tmp_path)
+    data = {d: fixed_hist_matrix(matrix, 17) for d, matrix in data.items()}
     params = dict(tree_method="hist", nthread=2, max_depth=2, max_bin=17,
                   seed=37, subsample=.7, seed_per_iteration=True, **objective, **options)
     if options.get("num_parallel_tree", 1) > 1:
@@ -198,8 +193,8 @@ def test_cuda_approx_cuts_precede_sampling(metal, layout, sampling, subsample, t
     """Source oracle: GPUGlobalApproxMaker::Update extracts original Hessians.
 
     Supply fixed, nonconstant Hessians so gradients cannot obscure ordering.
-    CPU approx with NO sampling is a reference for the existing sketch only;
-    this does not validate CUDA's separate GPU sketch algorithm.
+    The independent CUDA sketch oracle consumes the original Hessians before
+    any row mask. This distinguishes resketching from sampled-gradient cuts.
     """
     data, _, _ = matrices(layout, "regression", tmp_path)
     rows = data["cpu"].num_row()
@@ -213,14 +208,14 @@ def test_cuda_approx_cuts_precede_sampling(metal, layout, sampling, subsample, t
 
     params = dict(tree_method="approx", nthread=2, max_depth=3, max_bin=17,
                   base_score=0., seed=39, objective="binary:logitraw", num_parallel_tree=3)
-    xgb.train(params | {"device": "cpu", "subsample": 1.}, data["cpu"], 1, obj=objective)
-    expected_cuts = data["cpu"].get_quantile_cut()
+    expected_cuts = cuts(data["mps"], 17, hessian=hess,
+                          csr=data["mps"]._sketch_csr, page_rows=data["mps"]._sketch_page_rows)
     before = xgb.metal_info()
     gpu = xgb.train(params | {"device": "mps", "subsample": subsample,
                              "sampling_method": sampling}, data["mps"], 2, obj=objective)
     after = xgb.metal_info()
     # CUDA rebuilds these cuts once per updater call, not once per forest tree.
-    assert after["sketch_finalize_dispatches"] - before["sketch_finalize_dispatches"] == 2
+    assert after["cuda_sketch_batches"] - before["cuda_sketch_batches"] == (8 if layout == "external" else 2)
     assert after["hessian_extract_dispatches"] - before["hessian_extract_dispatches"] == 2
     assert after["gradient_copy_dispatches"] - before["gradient_copy_dispatches"] == 6
     assert after["sampling_dispatches"] - before["sampling_dispatches"] == 6
@@ -247,3 +242,39 @@ def test_approx_root_matches_unsampled_formula(metal, trees):
     gpu = xgb.train(params, dtrain, 1, obj=lambda p, d: (grad.copy(), hess.copy()))
     expected = -.3 * np.sum(grad, dtype=np.float64) / (np.sum(hess, dtype=np.float64) + 2.)
     np.testing.assert_allclose(gpu.predict(dtrain), expected, atol=1e-7, rtol=1e-6)
+
+
+@pytest.mark.parametrize("layout", ["dense", "missing", "sparse", "categorical", "external"])
+@pytest.mark.parametrize("sampling,subsample", [("uniform", 1.), ("uniform", .6), ("gradient_based", .6)])
+@pytest.mark.parametrize("growth", ["depthwise", "lossguide"])
+def test_cuda_approx_sketch_and_tree(metal, layout, sampling, subsample, growth, tmp_path):
+    """Independently check cuts AND every split/leaf using original Hessians.
+
+    Each round changes the supplied Hessians. The scalar CUDA sketch and integer
+    tree oracles replace the invalid CPU-approx model-identity expectation.
+    """
+    from cuda_split_reference import audit_recorded, dense_values
+    from cuda_sketch_reference import assert_cuts
+    data, _, _ = matrices(layout, "regression", tmp_path)
+    matrix = data["mps"]
+    rng = np.random.default_rng(817)
+    params = dict(device="mps", tree_method="approx", objective="binary:logitraw",
+                  base_score=0., max_bin=17, max_depth=3 if growth == "depthwise" else 0,
+                  max_leaves=0 if growth == "depthwise" else 7, grow_policy=growth,
+                  nthread=2, seed=41, seed_per_iteration=True, subsample=subsample,
+                  sampling_method=sampling, reg_lambda=2., eta=.3)
+    for step in range(2):
+        grad = rng.normal(size=matrix.num_row()).astype(np.float32)
+        hess = rng.uniform(.1, 4, matrix.num_row()).astype(np.float32)
+        hess[::13] = 0
+        # Preserve weights in the DMatrix: CUDA sketches hessian * sample weight.
+        class Recorded:
+            gradients = [(grad, hess)]
+        model = xgb.train(params | {"seed": 41 + step}, matrix, 1,
+                          obj=lambda pred, d: (grad.copy(), hess.copy()))
+        assert_cuts(matrix, 17, hessian=hess, csr=matrix._sketch_csr,
+                    page_rows=matrix._sketch_page_rows)
+        counts = audit_recorded(model, matrix, dense_values(matrix._sketch_csr), Recorded(),
+                                 params | {"seed": 41 + step})
+        assert min(counts) > 0
+        assert_same_model_cpu(model, matrix)

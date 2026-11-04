@@ -52,6 +52,7 @@ class SimpleDMatrix : public DMatrix {
   std::shared_ptr<SortedCSCPage> sorted_column_page_{nullptr};
   std::shared_ptr<EllpackPage> ellpack_page_{nullptr};
   std::shared_ptr<GHistIndexMatrix> gradient_index_{nullptr};
+  bool gradient_index_metal_{false};
   BatchParam batch_param_;
 
   bool EllpackExists() const override { return static_cast<bool>(ellpack_page_); }

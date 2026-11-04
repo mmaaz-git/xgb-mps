@@ -4,6 +4,9 @@ import json
 import numpy as np
 import pytest
 import xgboost as xgb
+
+# Fixed quantile cuts isolate CPU tree/objective equivalence from the distinct
+# CPU and CUDA sketch algorithms. Ordinary Metal cuts have source-oracle tests.
 from cuda_split_reference import RecordedSquaredError, audit_recorded
 from cuda_multi_split_reference import audit_recorded as audit_vector
 from cuda_column_reference import sample
@@ -25,7 +28,7 @@ def test_column_sampling_training(metal, rates, weights, strategy):
         if weights == "zeros":
             feature_weights[::2] = 0
     x[rng.random(x.shape) < .1] = np.nan
-    data = xgb.DMatrix(x, label=y, feature_weights=feature_weights, nthread=2)
+    data = xgb.QuantileDMatrix(x, label=y, feature_weights=feature_weights, nthread=2, max_bin=33)
     params = dict(tree_method="hist", max_depth=3, max_bin=33, nthread=2, seed=49,
                   multi_strategy=strategy, colsample_bytree=rates[0],
                   colsample_bylevel=rates[1], colsample_bynode=rates[2])

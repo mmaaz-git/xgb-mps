@@ -2,6 +2,9 @@
 import numpy as np
 import pytest
 import xgboost as xgb
+
+# Fixed quantile cuts isolate CPU tree/objective equivalence from the distinct
+# CPU and CUDA sketch algorithms. Ordinary Metal cuts have source-oracle tests.
 from cuda_uniform_reference import UniformSquaredError
 from cuda_gradient_reference import GradientSquaredError
 from xgboost.objective import TreeObjective
@@ -16,7 +19,7 @@ def test_uniform_gpu_sampling(metal, subsample, strategy, threads):
     x = rng.normal(size=(1027, 7)).astype(np.float32)
     y = np.column_stack([x[:, 0] * 2 - x[:, 1], x[:, 2] ** 2 + x[:, 3]])
     x[rng.random(x.shape) < 0.1] = np.nan
-    d = xgb.DMatrix(x, label=y)
+    d = xgb.QuantileDMatrix(x, label=y, max_bin=33)
     p = dict(tree_method="hist", multi_strategy=strategy, nthread=threads,
              max_depth=3, max_bin=33, subsample=subsample, seed=21, base_score=0,
              seed_per_iteration=True)
@@ -51,7 +54,7 @@ def test_replay_sampling_for_reduced_gradient_leaves(metal, threads, sampling_me
     rng = np.random.default_rng(777)
     x = rng.normal(size=(1027, 7)).astype(np.float32)
     y = np.column_stack([x[:, 0] * 2, x[:, 1] - x[:, 2], x[:, 3] ** 2])
-    d = xgb.DMatrix(x, label=y)
+    d = xgb.QuantileDMatrix(x, label=y, max_bin=33)
     p = dict(tree_method="hist", multi_strategy="multi_output_tree", nthread=threads,
              max_depth=4, max_bin=33, subsample=0.6, seed=77, base_score=0,
              sampling_method=sampling_method, seed_per_iteration=True)
@@ -75,7 +78,7 @@ def test_gradient_gpu_sampling(metal, subsample, strategy, threads):
     x = rng.normal(size=(1027, 7)).astype(np.float32)
     y = np.column_stack([x[:, 0] * 2 - x[:, 1], x[:, 2] ** 2 + x[:, 3]])
     x[rng.random(x.shape) < 0.1] = np.nan
-    d = xgb.DMatrix(x, label=y)
+    d = xgb.QuantileDMatrix(x, label=y, max_bin=33)
     p = dict(tree_method="hist", multi_strategy=strategy, nthread=threads,
              max_depth=3, max_bin=33, subsample=subsample, seed=21, base_score=0,
              sampling_method="gradient_based", seed_per_iteration=True)

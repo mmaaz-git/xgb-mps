@@ -64,6 +64,7 @@ namespace xgboost::data {
 class SparsePageDMatrix : public DMatrix {
   MetaInfo info_;
   BatchParam batch_param_;
+  bool gradient_index_metal_{false};
   std::map<std::string, std::shared_ptr<Cache>> cache_info_;
 
   DMatrixHandle proxy_;

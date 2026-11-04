@@ -5,6 +5,9 @@ import numpy as np
 import pytest
 import xgboost as xgb
 
+# Fixed quantile cuts isolate CPU tree/objective equivalence from the distinct
+# CPU and CUDA sketch algorithms. Ordinary Metal cuts have source-oracle tests.
+
 
 @pytest.mark.parametrize("objective", ["reg:expectileerror", "reg:absoluteerror"])
 @pytest.mark.parametrize("targets", [1, 3])
@@ -20,7 +23,7 @@ def test_initialization(metal, objective, targets, mode):
     w = None if mode == "unweighted" else rng.uniform(0, 2, len(x)).astype(np.float32)
     if w is not None:
         w[::17] = 0
-    data = xgb.DMatrix(x, label=y, weight=w, nthread=2)
+    data = xgb.QuantileDMatrix(x, label=y, weight=w, nthread=2, max_bin=32)
     params = dict(objective=objective, nthread=2, max_depth=2, max_bin=32, eta=0)
     if objective == "reg:expectileerror":
         params["expectile_alpha"] = [.5] if targets == 1 else [.1, .5, .9]

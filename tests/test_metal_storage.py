@@ -3,6 +3,9 @@ import numpy as np
 import pytest
 import xgboost as xgb
 
+# Fixed quantile cuts isolate CPU tree/objective equivalence from the distinct
+# CPU and CUDA sketch algorithms. Ordinary Metal cuts have source-oracle tests.
+
 
 def compare_storage(d, p):
     before = xgb.metal_info()
@@ -28,7 +31,7 @@ def test_histogram_cache_growth_and_eviction(metal, cache, growth, strategy):
     x = rng.normal(size=(4097, 9)).astype(np.float32)
     y = np.column_stack([2 * x[:, 0] - x[:, 1], x[:, 2] ** 2 + x[:, 3]])
     x[rng.random(x.shape) < 0.2] = np.nan
-    d = xgb.DMatrix(x, label=y)
+    d = xgb.QuantileDMatrix(x, label=y, max_bin=65)
     p = dict(nthread=2, tree_method="hist", max_depth=5, max_leaves=21,
              max_cached_hist_node=cache, grow_policy=growth,
              multi_strategy=strategy, max_bin=65)

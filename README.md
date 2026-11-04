@@ -14,17 +14,20 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **CUDA-source column sampling**. Weighted selection now uses Philox;
-unweighted selection uses Thrust's Feistel shuffle and stable GPU compaction.
-This intentionally changes sampled models from the previous CPU random stream.
-Validation passes **550 native cases**, 4.6 million exact draws, 1.32 million
-exact permutation indices and **307 focused Python tests**. Full regression passes
-**1,734 Python tests**, every rebuilt native suite and the CPU-only build check.
-The reference also matches actual upstream Thrust/CCCL headers on this Mac.
-[Validation](validation/cuda-column-sampling-m3.txt) · [Scope](docs/CUDA_PARITY.md#column-sampling-behavior).
+Latest step: **CUDA-derived quantile sketching for ordinary matrices**. Metal now
+sorts raw CSR entries, scans FP32 weights, deduplicates categories, and maintains
+GPU summaries through CUDA-style pruning and merging. Both `hist` and `approx`
+use this path, including external-memory pages. Device switches rebuild ordinary
+matrix cuts; fixed QuantileDMatrix reference cuts remain unchanged.
+Native checks cover **64 cases**, 276 pushes, 1.87 million input entries and
+229,976 exact summary fields. **258 focused Python tests** pass, including
+independent sketch-to-tree audits. Full validation passes **1,773 Python tests**,
+every rebuilt native suite and the CPU-only build/device check.
+[Validation record](validation/cuda-resident-sketch-m3.txt).
+[Scope and numerical limits](docs/CUDA_PARITY.md#cuda-derived-resident-sketches).
 Actual NVIDIA execution equivalence remains unverified.
 
-The major remaining areas are sketch ingestion and matrix preprocessing,
+The major remaining areas are adapter/device-array sketch ingestion and matrix preprocessing,
 remaining objective initialization and training-state operations, CUDA algorithm
 alignment, categorical/metadata operations, Apple GPU array
 interoperability and distributed collectives. AFT still has CPU corrections;
@@ -40,9 +43,9 @@ row partitioning, scalar/vector split evaluation, root-gradient sums, stump
 fitting, reduced-gradient leaf refitting, linear coordinate descent, means,
 stable column/grouped sorting, ROC/PR-AUC, ranking metrics,
 gradient-based row sampling, uniform/weighted column sampling and quantile/median
-estimation on Metal. Sketch weighting, sorted-column summaries, streaming level
-compaction and numeric finalization also run on Metal; row queues, value sorting
-and several specialized features still run on the CPU. Histogram conversion,
+estimation on Metal. Ordinary matrices now sort entries and maintain CUDA-derived
+quantile summaries on Metal. Adapter-based preprocessing and several specialized
+features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
 
@@ -90,8 +93,8 @@ vendored upstream version deprecates `gblinear`, but this port supports it.
 
 Approximate training is also available with `tree_method="approx"`. It uses
 unsampled Hessians for cuts and resets sampling per tree, following CUDA's updater
-order. Both sampling methods, histograms and roots share quantized state; weighted
-sketches still require CUDA alignment.
+order. Both sampling methods, histograms and roots share quantized state. Ordinary
+matrices now use CUDA-derived weighted sketches with explicit FP32 scan-order limits.
 
 Explicit tree updater selection, `exact` and distributed training are rejected
 for `mps`. Inaccessible Metal devices produce an
@@ -102,14 +105,14 @@ selecting `mps` does not imply that every stage runs on the GPU.
 
 | Operation | Implemented coverage |
 | --- | --- |
-| Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; both sampling methods/roots share integer state; weighted sketches still need CUDA alignment |
+| Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; both sampling methods/roots share integer state; CUDA-derived raw CSR sketches |
 | Gradient state | Shared per-tree integer gradients/scales for both sampling methods, all roots and histograms; GPU target/layout copies and bit-preserving Hessian extraction |
 | Histograms | Dense/sparse indices, external pages, scaled integer sums and shared-memory accumulation; resident integer cache retains page additions/subtractions; scalar/vector split scans read integers directly, with a binary64 view for host consumers |
 | Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly; GPU-owned interaction masks and monotonic bounds, including initialization/growth; unions and feature filtering on GPU; candidate staging and tree metadata remain host |
 | Vector model storage | Bit-preserving GPU copies for parent/child weights and category words, with GPU FP32 learning-rate scaling of new child weights; allocation/growth and metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; adapter-built QuantileDMatrix bins remain CPU |
-| Feature sketches | GPU group/Hessian weighting, sorted-column weighted summaries, streaming level compaction and final numeric merging/pruning; row queues and value sorting remain CPU; final cut materialization remains host, as in CUDA |
+| Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Adapter/device-array ingestion remains open |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
@@ -160,15 +163,13 @@ its saved state and does not increment that counter.
 `ranking_roc_auc_dispatches` and `ranking_roc_auc_gpu_time_ns` likewise describe a
 subset of ROC-AUC and generic metric work; their timings overlap those totals.
 The corresponding `ranking_pr_auc_*` counters are subsets of PR-AUC and metric totals.
-`sketch_finalize_dispatches`, `sketch_finalize_columns` and
-`sketch_finalize_gpu_time_ns` report final numeric sketch processing, excluding
-host ingestion, staging and final cut materialization.
-`sketch_weight_dispatches`, `sketch_sorted_dispatches` and
-`sketch_update_dispatches` report weighting, sorted-column summaries and streaming
-compaction. `sketch_ingest_gpu_time_ns` covers these commands, excluding host
-queue construction/sorting, allocation and staging. The sorted-column path is
-used by public `tree_method="approx"` training, with the CUDA-alignment limitations
-listed in the coverage ledger.
+`cuda_sketch_batches` counts nonempty raw-entry windows (64M entries maximum,
+matching CUDA). `cuda_sketch_input_entries` counts their input entries, while
+`cuda_sketch_dispatches` and `cuda_sketch_gpu_time_ns` count completed commands
+and GPU duration. These timings exclude staging, allocation, waits and host cut
+materialization. `sketch_weight_dispatches` also covers group/Hessian weighting.
+The older `sketch_sorted_*`, `sketch_update_*` and `sketch_finalize_*` counters
+belong to CPU-compatible summary helpers; ordinary MPS training bypasses them.
 `expectile_init_dispatches` and `prediction_init_dispatches` expose the new
 objective-specific initialization work. Their combined GPU duration is reported
 by `initialization_gpu_time_ns`, separately from ordinary objective GPU time.
@@ -580,7 +581,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Align precision/NDCG/MAP arithmetic, prefixes and degenerate-query weighting with CUDA source.
 - [x] Align grouped PR-AUC term rounding, recall totals, integral and query validity with CUDA source.
 - [x] Align classification AUC arithmetic/output rules and port multi-output normalization to GPU.
-- [ ] Align sketch algorithms and ranking streams with CUDA.
+- [x] Port CUDA raw CSR sketching and resident summaries for ordinary hist/approx matrices.
+- [ ] Complete adapter/device-array sketches and align ranking streams with CUDA.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.
@@ -2300,3 +2302,31 @@ Python tests, one skip**, every rebuilt native suite and the CPU-only build/devi
 check. The Python suite took 104.65 seconds; the complete run took 4 minutes 21 seconds.
 No benchmark was run, and the removed CPU-stream fused path's timings do not
 describe this implementation. [Validation](validation/cuda-column-sampling-m3.txt).
+
+
+### CUDA-derived raw sketching and resident summaries
+
+Ordinary `hist` and `approx` now consume raw SparsePage windows on Metal. Stable
+radix passes order feature/value pairs; row weights are gathered from CSR offsets,
+FP32 weights are scanned by feature, and categorical duplicates are compacted.
+Summaries stay on the GPU across windows/pages, with CUDA rank queries, endpoint
+selection, reverse duplicate-weight accumulation, parallel merge partitions and
+rank repair. Final cut materialization stays on host, as in CUDA. Weighted scan
+association and equal-value sorting order can differ from CUB/Thrust; no bitwise
+cross-device guarantee is implied. Ordered rank repair avoids CUDA's neighbor
+read/write race. These choices are detailed in the coverage ledger.
+
+New tests check source equations, raw window boundaries, caches, fixed references,
+external pages and sketch-to-tree behavior. Existing CPU training-equivalence
+fixtures now explicitly share QuantileDMatrix cuts where the two sketch algorithms
+differ; their prediction tolerances and datasets are retained. This exposed a
+separate Metal traversal bug at subnormal split thresholds. Numeric and category
+comparisons now preserve tiny values, with dedicated prediction regressions.
+
+This step does not complete adapter preprocessing, Apple GPU array interoperability
+or distributed sketch collectives. Input staging, allocation and synchronization
+remain performance work. Final validation passes **1,773 Python tests, one skip**,
+every rebuilt native suite and the CPU-only build/device check (4 minutes 2 seconds;
+Python tests 93.03 seconds). [Validation](validation/cuda-resident-sketch-m3.txt).
+No benchmark was run; earlier timings predate this sketch
+pipeline and should not be read as measurements of its performance.

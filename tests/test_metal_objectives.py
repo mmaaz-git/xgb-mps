@@ -3,6 +3,9 @@ import numpy as np
 import pytest
 import xgboost as xgb
 
+# Fixed quantile cuts isolate CPU tree/objective equivalence from the distinct
+# CPU and CUDA sketch algorithms. Ordinary Metal cuts have source-oracle tests.
+
 OBJECTIVES = [
     ("reg:squarederror", {}), ("reg:squaredlogerror", {}),
     ("reg:logistic", {"scale_pos_weight": 1.7}),
@@ -30,7 +33,7 @@ def test_objectives_execute_on_metal(metal, objective, extra, weighted):
     weights = rng.uniform(0.1, 2, len(x)).astype(np.float32) if weighted else None
     if weighted:
         weights[::19] = 0
-    d = xgb.DMatrix(x, label=y, weight=weights)
+    d = xgb.QuantileDMatrix(x, label=y, weight=weights, max_bin=32)
     params = dict(objective=objective, tree_method="hist", max_depth=3,
                   max_bin=32, nthread=2, seed=9, **extra)
     cpu = xgb.train(params | {"device": "cpu"}, d, num_boost_round=4)
@@ -65,7 +68,7 @@ def test_multitarget_gradients(metal, objective, extra):
     rng = np.random.default_rng(321)
     x = rng.normal(size=(257, 4)).astype(np.float32)
     y = (rng.uniform(size=(257, 3)) > 0.5).astype(np.float32) if "logistic" in objective or objective.startswith("binary:") else rng.uniform(0.1, 2, (257, 3)).astype(np.float32)
-    d = xgb.DMatrix(x, label=y, weight=rng.uniform(0.1, 2, len(x)))
+    d = xgb.QuantileDMatrix(x, label=y, weight=rng.uniform(0.1, 2, len(x)), max_bin=16)
     p = dict(objective=objective, tree_method="hist", max_depth=2, max_bin=16, nthread=2, **extra)
     cpu = xgb.train(p | {"device": "cpu"}, d, 3)
     before = xgb.metal_info()["objective_dispatches"]
@@ -105,7 +108,7 @@ def test_adaptive_scales_and_boundaries(metal, objective, case):
         weights[:] = 1e-12
     elif case == "large_scale":
         y *= 1e12
-    d = xgb.DMatrix(x, label=y, weight=weights)
+    d = xgb.QuantileDMatrix(x, label=y, weight=weights, max_bin=32)
     p = dict(objective=objective, nthread=2, max_depth=3, max_bin=32,
              base_score=0, reg_lambda=0, min_child_weight=0, **extra)
     cpu = xgb.train(p | {"device": "cpu"}, d, 3)
@@ -125,7 +128,7 @@ def test_objective_shared_memory_accounting(metal, targets, weighted):
     x = rng.normal(size=(rows, 5)).astype(np.float32)
     y = rng.normal(size=(rows, targets)).astype(np.float32)
     w = rng.uniform(.1, 3, rows).astype(np.float32) if weighted else None
-    d = xgb.DMatrix(x, label=y, weight=w, nthread=2)
+    d = xgb.QuantileDMatrix(x, label=y, weight=w, nthread=2, max_bin=256)
     params = dict(nthread=2, base_score=.5, max_depth=3, objective="reg:squarederror")
     cpu = xgb.train(params | {"device": "cpu"}, d, 3)
     before = xgb.metal_info()

@@ -104,3 +104,39 @@ def test_gpu_leaf_cache_update(metal, strategy):
     actual = xgb.train(p | {"device": "mps"}, d, 5).predict(d)
     assert xgb.metal_info()["leaf_update_dispatches"] > before
     np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.parametrize("threshold", [-8, -1, 0, 1, 8])
+def test_prediction_subnormal_split_boundaries(metal, threshold):
+    import json
+    tiny = np.finfo(np.float32).smallest_subnormal
+    cpu = xgb.train(dict(nthread=1, max_depth=1, min_child_weight=0, reg_lambda=0,
+                         eta=1, base_score=0), xgb.DMatrix([[0.], [1.]], label=[-1., 1.]), 1)
+    model = json.loads(cpu.save_raw(raw_format="json"))
+    tree = model["learner"]["gradient_booster"]["model"]["trees"][0]
+    assert tree["left_children"][0] >= 0
+    tree["split_conditions"][0] = float(np.float32(threshold) * tiny)
+    cpu = xgb.Booster(model_file=bytearray(json.dumps(model), "utf-8"))
+    cpu.set_param({"device": "cpu"})
+    x = (np.arange(-10, 11, dtype=np.float32) * tiny).reshape(-1, 1)
+    x = np.vstack([x, [[-0.], [0.], [np.nan]]]).astype(np.float32)
+    data = xgb.DMatrix(x, nthread=1)
+    for leaf in [False, True]:
+        gpu = metal_copy(cpu)
+        before = xgb.metal_info()["prediction_dispatches"]
+        np.testing.assert_array_equal(gpu.predict(data, pred_leaf=leaf), cpu.predict(data, pred_leaf=leaf))
+        assert xgb.metal_info()["prediction_dispatches"] == before + 1
+    gpu = metal_copy(cpu)
+    np.testing.assert_array_equal(gpu.inplace_predict(x), cpu.inplace_predict(x))
+
+
+def test_prediction_negative_subnormal_category(metal):
+    train = xgb.DMatrix([[0.], [1.]], label=[-1., 1.], feature_types=["c"], nthread=1)
+    cpu = xgb.train(dict(nthread=1, max_depth=1, min_child_weight=0, reg_lambda=0,
+                         eta=1, base_score=0), train, 1)
+    tiny = np.finfo(np.float32).smallest_subnormal
+    data = xgb.DMatrix(np.array([-tiny, -0., 0., tiny, 1., np.nan]).reshape(-1, 1),
+                       feature_types=["c"], nthread=1)
+    for leaf in [False, True]:
+        np.testing.assert_array_equal(metal_copy(cpu).predict(data, pred_leaf=leaf),
+                                       cpu.predict(data, pred_leaf=leaf))

@@ -13,6 +13,9 @@
 #include "cache_manager.h"           // for CacheManager
 #include "io.h"                      // for AlignedResourceReadStream, AlignedFileWriteStream
 #include "quantile.h"
+#if defined(XGBOOST_USE_METAL)
+#include "metal_cuda_sketch.h"
+#endif
 #include "xgboost/base.h"
 #include "xgboost/context.h"  // for Context
 #include "xgboost/data.h"     // for SparsePage, SortedCSCPage
@@ -52,6 +55,9 @@ void HistogramCuts::Save(common::AlignedFileWriteStream *fo) const {
 
 HistogramCuts SketchOnDMatrix(Context const *ctx, DMatrix *m, bst_bin_t max_bins, bool use_sorted,
                               Span<float const> hessian) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) return metal::CudaSketchOnDMatrix(ctx, m, max_bins, hessian);
+#endif
   auto const &info = m->Info();
   auto n_threads = ctx->Threads();
   std::vector<bst_idx_t> reduced(info.num_col_, 0);

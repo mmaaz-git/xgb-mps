@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <random>
@@ -16,6 +17,7 @@
 #include "../data/gradient_index.h"
 #include "metal_auc.h"
 #include "metal_constraints.h"
+#include "metal_cuda_sketch.h"
 #include "metal_data.h"
 #include "metal_gradient.h"
 #include "metal_histogram.h"
@@ -49,6 +51,8 @@ std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> gradient_sampling_dispatches{0}, gradient_sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> sketch_finalize_dispatches{0}, sketch_finalize_columns{0},
     sketch_finalize_gpu_time_ns{0};
+std::atomic<std::uint64_t> cuda_sketch_dispatches{0}, cuda_sketch_batches{0},
+    cuda_sketch_input_entries{0}, cuda_sketch_gpu_time_ns{0};
 std::atomic<std::uint64_t> sketch_weight_dispatches{0}, sketch_sorted_dispatches{0},
     sketch_update_dispatches{0}, sketch_ingest_gpu_time_ns{0};
 std::atomic<std::uint64_t> gradient_copy_dispatches{0}, hessian_extract_dispatches{0},
@@ -179,6 +183,21 @@ class Runtime {
       ranking_bias_finish_pipeline, ranking_bias_update_pipeline, ranking_bias_pairs_pipeline,
       ranking_bias_dispatch_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
+  id<MTLComputePipelineState> cs_sort_keys_pipeline;
+  id<MTLComputePipelineState> cs_bounds_pipeline;
+  id<MTLComputePipelineState> cs_gather_pipeline;
+  id<MTLComputePipelineState> cs_prefix_pipeline;
+  id<MTLComputePipelineState> cs_prefix_add_pipeline;
+  id<MTLComputePipelineState> cs_attach_pipeline;
+  id<MTLComputePipelineState> cs_flags_pipeline;
+  id<MTLComputePipelineState> cs_compact_pipeline;
+  id<MTLComputePipelineState> cs_raw_ranks_pipeline;
+  id<MTLComputePipelineState> cs_cut_counts_pipeline;
+  id<MTLComputePipelineState> cs_prune_pipeline;
+  id<MTLComputePipelineState> cs_scan_input_pipeline;
+  id<MTLComputePipelineState> cs_merge_ptr_pipeline;
+  id<MTLComputePipelineState> cs_merge_pipeline;
+  id<MTLComputePipelineState> cs_fix_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline, sketch_finalize_pipeline;
   id<MTLComputePipelineState> sketch_weight_pipeline, sketch_sorted_pipeline, sketch_update_pipeline;
   id<MTLComputePipelineState> gradient_state_pipeline;
@@ -285,6 +304,21 @@ class Runtime {
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
       quantile_metric_pipeline = make_pipeline(@"xgb_quantile_metric");
       uniform_sampling_pipeline = make_pipeline(@"xgb_uniform_sample");
+      cs_sort_keys_pipeline = make_pipeline(@"xgb_cs_sort_keys");
+      cs_bounds_pipeline = make_pipeline(@"xgb_cs_bounds");
+      cs_gather_pipeline = make_pipeline(@"xgb_cs_gather");
+      cs_prefix_pipeline = make_pipeline(@"xgb_cs_prefix");
+      cs_prefix_add_pipeline = make_pipeline(@"xgb_cs_prefix_add");
+      cs_attach_pipeline = make_pipeline(@"xgb_cs_attach");
+      cs_flags_pipeline = make_pipeline(@"xgb_cs_flags");
+      cs_compact_pipeline = make_pipeline(@"xgb_cs_compact");
+      cs_raw_ranks_pipeline = make_pipeline(@"xgb_cs_raw_ranks");
+      cs_cut_counts_pipeline = make_pipeline(@"xgb_cs_cut_counts");
+      cs_prune_pipeline = make_pipeline(@"xgb_cs_prune");
+      cs_scan_input_pipeline = make_pipeline(@"xgb_cs_scan_input");
+      cs_merge_ptr_pipeline = make_pipeline(@"xgb_cs_merge_ptr");
+      cs_merge_pipeline = make_pipeline(@"xgb_cs_merge");
+      cs_fix_pipeline = make_pipeline(@"xgb_cs_fix");
       sketch_finalize_pipeline = make_pipeline(@"xgb_sketch_finalize");
       sketch_weight_pipeline = make_pipeline(@"xgb_sketch_weights");
       sketch_sorted_pipeline = make_pipeline(@"xgb_sketch_sorted");
@@ -1697,7 +1731,11 @@ Statistics GetStatistics() {
           interaction_query_dispatches.load(std::memory_order_relaxed),
           interaction_buffer_growths.load(std::memory_order_relaxed),
           interaction_gpu_time_ns.load(std::memory_order_relaxed),
-          split_bounds_init_dispatches.load(std::memory_order_relaxed)};
+          split_bounds_init_dispatches.load(std::memory_order_relaxed),
+          cuda_sketch_dispatches.load(std::memory_order_relaxed),
+          cuda_sketch_batches.load(std::memory_order_relaxed),
+          cuda_sketch_input_entries.load(std::memory_order_relaxed),
+          cuda_sketch_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6165,4 +6203,240 @@ void EvaluateMultiSplits(Span<HistogramInput const> histograms, Span<MultiSplitT
                                   std::memory_order_relaxed);
   }
 }
+
+namespace {
+struct CudaSketchParams {
+  std::uint64_t size, columns, budget, begin, base_row;
+  std::uint32_t weighted, mode;
+};
+static_assert(sizeof(CudaSketchParams) == 48);
+void CSDispatch(id<MTLCommandBuffer> command, id<MTLComputePipelineState> pipeline,
+                std::size_t count, std::initializer_list<id<MTLBuffer>> buffers,
+                CudaSketchParams const* params = nullptr) {
+  if (!count) return;
+  CHECK_LE(count, std::numeric_limits<std::uint32_t>::max());
+  auto e = [command computeCommandEncoder];
+  CHECK(e);
+  [e setComputePipelineState:pipeline];
+  std::size_t index = 0;
+  for (auto buffer : buffers) [e setBuffer:buffer offset:0 atIndex:index++];
+  if (params) [e setBytes:params length:sizeof(*params) atIndex:index];
+  [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+}
+void CSComplete(id<MTLCommandBuffer> command) {
+  CompleteOperation(command, &cuda_sketch_dispatches, &cuda_sketch_gpu_time_ns);
+}
+id<MTLBuffer> CSEncodePrefix(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuffer> input,
+                             id<MTLBuffer> ids, std::uint32_t count) {
+  auto blocks = (std::uint64_t{count} + 255) / 256;
+  auto output = Allocate(rt, std::size_t{count} * sizeof(float));
+  auto totals = Allocate(rt, blocks * sizeof(float));
+  auto total_ids = Allocate(rt, blocks * sizeof(std::uint32_t));
+  auto e = [command computeCommandEncoder];
+  CHECK(e);
+  [e setComputePipelineState:rt.cs_prefix_pipeline];
+  [e setBuffer:input offset:0 atIndex:0];
+  [e setBuffer:ids offset:0 atIndex:1];
+  [e setBuffer:output offset:0 atIndex:2];
+  [e setBuffer:totals offset:0 atIndex:3];
+  [e setBuffer:total_ids offset:0 atIndex:4];
+  [e setBytes:&count length:sizeof(count) atIndex:5];
+  [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  if (blocks > 1) {
+    auto upper = CSEncodePrefix(rt, command, totals, total_ids, blocks);
+    CSDispatch(command, rt.cs_prefix_add_pipeline, count, {output, ids, upper, total_ids});
+  }
+  return output;
+}
+struct CSDeviceSummary {
+  id<MTLBuffer> entries, ptr;
+  std::size_t size;
+};
+class MetalCudaSketch final : public CudaSketch {
+  Runtime& rt_;
+  bst_feature_t columns_;
+  bst_bin_t max_bin_;
+  bst_idx_t rows_seen_{0};
+  std::size_t weight_count_;
+  bool has_cat_;
+  id<MTLBuffer> types_, weights_;
+  CSDeviceSummary resident_;
+
+  CudaSketchParams Params(std::size_t size) const {
+    return {size, columns_, 0, 0, 0, weight_count_ != 0, 0};
+  }
+  std::size_t Total(id<MTLBuffer> ptr) const {
+    return static_cast<std::uint64_t const*>(ptr.contents)[columns_];
+  }
+  CSDeviceSummary Unique(CSDeviceSummary input, bool categories_only,
+                         id<MTLBuffer> selected = nil) {
+    if (!input.size) return input;
+    auto p = Params(input.size);
+    p.mode = categories_only ? 1 : (selected ? 2 : 0);
+    auto flags = Allocate(rt_, input.size * sizeof(std::uint64_t));
+    auto command = [rt_.queue commandBuffer];
+    CHECK(command);
+    CSDispatch(command, rt_.cs_flags_pipeline, input.size,
+               {input.entries, input.ptr, types_, selected ? selected : input.entries, flags}, &p);
+    auto prefix = EncodePrefixU64(rt_, command, flags, input.size);
+    CSDeviceSummary output{Allocate(rt_, input.size * sizeof(WQSummary<>::Entry)),
+                           Allocate(rt_, (std::size_t{columns_} + 1) * sizeof(std::uint64_t)), 0};
+    CSDispatch(command, rt_.cs_compact_pipeline, std::max(input.size, std::size_t{columns_} + 1),
+               {input.entries, input.ptr, prefix, output.entries, output.ptr}, &p);
+    CSComplete(command);
+    output.size = Total(output.ptr);
+    return output;
+  }
+  CSDeviceSummary Prune(CSDeviceSummary input, std::size_t budget, bool raw) {
+    auto p = Params(input.size);
+    p.budget = budget;
+    auto counts = Allocate(rt_, (std::size_t{columns_} + 1) * sizeof(std::uint64_t));
+    auto command = [rt_.queue commandBuffer];
+    CHECK(command);
+    CSDispatch(command, rt_.cs_cut_counts_pipeline, std::size_t{columns_} + 1,
+               {input.ptr, types_, counts}, &p);
+    auto ptr = EncodePrefixU64(rt_, command, counts, std::size_t{columns_} + 1);
+    CSComplete(command);
+    auto count = Total(ptr);
+    if (!raw && count == input.size) return input;
+    CSDeviceSummary output{Allocate(rt_, count * sizeof(WQSummary<>::Entry)), ptr, count};
+    auto selected = Allocate(rt_, count * sizeof(std::uint64_t));
+    command = [rt_.queue commandBuffer];
+    CHECK(command);
+    CSDispatch(command, rt_.cs_prune_pipeline, count,
+               {input.entries, input.ptr, ptr, types_, output.entries, selected}, &p);
+    if (raw) CSDispatch(command, rt_.cs_scan_input_pipeline, columns_, {output.entries, ptr});
+    CSComplete(command);
+    // Fuse index-unique/gather/value-unique while retaining both predicates.
+    // Value subtraction alone does not remove repeated indices with infinities.
+    return Unique(output, false, raw ? nil : selected);
+  }
+  void Merge(CSDeviceSummary input) {
+    if (!input.size) return;
+    if (resident_.size) {
+      auto p = Params(resident_.size + input.size);
+      CSDeviceSummary output{Allocate(rt_, p.size * sizeof(WQSummary<>::Entry)),
+                             Allocate(rt_, (std::size_t{columns_} + 1) * sizeof(std::uint64_t)),
+                             p.size};
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      CSDispatch(command, rt_.cs_merge_ptr_pipeline, std::size_t{columns_} + 1,
+                 {resident_.ptr, input.ptr, output.ptr});
+      CSDispatch(
+          command, rt_.cs_merge_pipeline, p.size,
+          {resident_.entries, resident_.ptr, input.entries, input.ptr, output.ptr, output.entries},
+          &p);
+      CSComplete(command);
+      resident_ = Unique(output, false);
+    } else {
+      resident_ = Unique(input, false);
+    }
+    auto command = [rt_.queue commandBuffer];
+    CHECK(command);
+    CSDispatch(command, rt_.cs_fix_pipeline, columns_, {resident_.entries, resident_.ptr});
+    CSComplete(command);
+  }
+
+ public:
+  MetalCudaSketch(bst_feature_t columns, bst_bin_t max_bin, Span<FeatureType const> types,
+                  Span<float const> weights)
+      : rt_{GetRuntime()},
+        columns_{columns},
+        max_bin_{max_bin},
+        weight_count_{weights.size()},
+        has_cat_{std::find(types.begin(), types.end(), FeatureType::kCategorical) != types.end()} {
+    CHECK_GE(max_bin, 2);
+    CHECK_LT(columns, std::numeric_limits<std::uint32_t>::max());
+    CHECK(types.empty() || types.size() == columns);
+    std::vector<FeatureType> numerical(types.empty() ? columns : 0, FeatureType::kNumerical);
+    types_ = types.empty() ? Upload(rt_, numerical.data(), numerical.size())
+                           : Upload(rt_, types.data(), types.size_bytes());
+    weights_ = Upload(rt_, weights.data(), weights.size_bytes());
+    std::vector<std::uint64_t> ptr(std::size_t{columns} + 1, 0);
+    resident_ = {Allocate(rt_, 0), Upload(rt_, ptr.data(), ptr.size() * sizeof(std::uint64_t)), 0};
+  }
+  void Push(Span<::xgboost::Entry const> entries, Span<bst_idx_t const> row_ptr, std::size_t begin,
+            bst_idx_t base_rowid, bst_idx_t rows_in_window) override {
+    if (entries.empty()) return;
+    CHECK_GT(columns_, 0);
+    CHECK_LE(entries.size(), 1ULL << 26);  // The CUDA frontend's entry window.
+    CHECK_GE(row_ptr.size(), 2);
+    CHECK_LE(begin, row_ptr.back());
+    CHECK_LE(entries.size(), row_ptr.back() - begin);
+    CHECK_LE(row_ptr.front(), begin);
+    CHECK_GT(rows_in_window, 0);
+    if (weight_count_) CHECK_LE(base_rowid + row_ptr.size() - 1, weight_count_);
+    CHECK_LE(rows_in_window, std::numeric_limits<bst_idx_t>::max() - rows_seen_);
+    rows_seen_ += rows_in_window;
+    @autoreleasepool {
+      auto p = Params(entries.size());
+      p.begin = begin;
+      p.base_row = base_rowid;
+      p.budget = row_ptr.size() - 1;
+      auto source = Upload(rt_, entries.data(), entries.size_bytes());
+      auto rows = Upload(rt_, row_ptr.data(), row_ptr.size_bytes());
+      auto records = Allocate(rt_, entries.size() * 2 * sizeof(std::uint32_t));
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      CSDispatch(command, rt_.cs_sort_keys_pipeline, entries.size(), {source, source, records}, &p);
+      SortShape shape{entries.size(), 0, 0, 1,
+                      static_cast<std::uint32_t>((entries.size() + 255) / 256)};
+      records = EncodeRadixRecords(rt_, command, records, shape);
+      auto by_feature = Allocate(rt_, entries.size() * 2 * sizeof(std::uint32_t));
+      p.mode = 1;
+      CSDispatch(command, rt_.cs_sort_keys_pipeline, entries.size(), {source, records, by_feature},
+                 &p);
+      records = EncodeRadixRecords(rt_, command, by_feature, shape);
+      CSDeviceSummary raw{Allocate(rt_, entries.size() * sizeof(WQSummary<>::Entry)),
+                          Allocate(rt_, (std::size_t{columns_} + 1) * sizeof(std::uint64_t)),
+                          entries.size()};
+      auto weights = Allocate(rt_, entries.size() * sizeof(float));
+      auto ids = Allocate(rt_, entries.size() * sizeof(std::uint32_t));
+      CSDispatch(command, rt_.cs_bounds_pipeline, std::size_t{columns_} + 1, {records, raw.ptr},
+                 &p);
+      CSDispatch(command, rt_.cs_gather_pipeline, entries.size(),
+                 {source, records, rows, weights_, raw.entries, weights, ids}, &p);
+      if (weight_count_) {
+        auto scanned = CSEncodePrefix(rt_, command, weights, ids, entries.size());
+        CSDispatch(command, rt_.cs_attach_pipeline, entries.size(), {raw.entries, scanned});
+      }
+      CSComplete(command);
+      if (has_cat_) raw = Unique(raw, true);
+      auto ranked = Allocate(rt_, raw.size * sizeof(WQSummary<>::Entry));
+      command = [rt_.queue commandBuffer];
+      CHECK(command);
+      CSDispatch(command, rt_.cs_raw_ranks_pipeline, raw.size, {raw.entries, raw.ptr, ranked}, &p);
+      CSComplete(command);
+      raw.entries = ranked;
+      auto n = std::max<bst_idx_t>(1, rows_in_window);
+      auto batch = Prune(raw, std::min<std::size_t>(SketchSummaryBudget(max_bin_, n), n), true);
+      Merge(batch);
+      resident_ = Prune(resident_,
+                        SketchSummaryBudget(max_bin_, std::max<bst_idx_t>(1, rows_seen_)), false);
+      cuda_sketch_batches.fetch_add(1, std::memory_order_relaxed);
+      cuda_sketch_input_entries.fetch_add(entries.size(), std::memory_order_relaxed);
+    }
+  }
+  CudaSketchSummary Read() const override {
+    CudaSketchSummary out;
+    out.ptr.resize(std::size_t{columns_} + 1);
+    out.entries.resize(resident_.size);
+    std::memcpy(out.ptr.data(), resident_.ptr.contents, out.ptr.size() * sizeof(std::uint64_t));
+    if (!out.entries.empty())
+      std::memcpy(out.entries.data(), resident_.entries.contents,
+                  out.entries.size() * sizeof(WQSummary<>::Entry));
+    return out;
+  }
+};
+}  // namespace
+std::unique_ptr<CudaSketch> MakeCudaSketch(bst_feature_t columns, bst_bin_t max_bin,
+                                           Span<FeatureType const> types,
+                                           Span<float const> row_weights) {
+  @autoreleasepool {
+    return std::make_unique<MetalCudaSketch>(columns, max_bin, types, row_weights);
+  }
+}
+
 }  // namespace xgboost::common::metal

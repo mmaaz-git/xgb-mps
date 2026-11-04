@@ -25,15 +25,19 @@ def test_bin_assignment_matches_cpu(metal, layout, bins, categorical):
     elif layout == "sparse":
         x[rng.random(x.shape) < .65] = 0
         x = sp.csr_matrix(x)
-    cpu_data = xgb.DMatrix(x, label=y, feature_types=ft, nthread=2)
     gpu_data = xgb.DMatrix(x, label=y, feature_types=ft, nthread=2)
     p = dict(max_bin=bins, max_depth=3, nthread=2, seed=19)
-    cpu = xgb.train(p | {"device": "cpu"}, cpu_data, 3)
     before = xgb.metal_info()
     gpu = xgb.train(p | {"device": "mps"}, gpu_data, 3)
     after = xgb.metal_info()
     assert after["binning_dispatches"] - before["binning_dispatches"] == 1
     assert after["binning_gpu_time_ns"] > before["binning_gpu_time_ns"]
+    # Bin identical cut candidates on the CPU; also check the ordinary Metal
+    # cuts against the CUDA sketch equations independently.
+    from cuda_sketch_reference import assert_cuts
+    assert_cuts(gpu_data, bins)
+    cpu_data = xgb.QuantileDMatrix(x, label=y, feature_types=ft, nthread=2, max_bin=bins, ref=gpu_data)
+    cpu = xgb.train(p | {"device": "cpu"}, cpu_data, 3)
     for actual, expected in zip(gpu_data.get_quantile_cut(), cpu_data.get_quantile_cut()):
         np.testing.assert_array_equal(actual, expected)
     np.testing.assert_allclose(gpu.predict(gpu_data), cpu.predict(cpu_data), atol=2e-5, rtol=2e-5)

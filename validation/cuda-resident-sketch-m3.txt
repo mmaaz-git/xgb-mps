@@ -1,0 +1,119 @@
+CUDA-derived resident quantile sketch on Apple M3
+Date: 2026-11-04
+Source base: 37b8371 plus the changes accompanying this record.
+
+Authority:
+  common/hist_util.cu: DeviceSketchWithHessian, ProcessWeightedBatch, SortByWeight,
+    RemoveDuplicatedCategories, RowsInEntrySpan and UnifyWeight.
+  common/hist_util.cuh: kSketchBatchNumElements (1 << 26).
+  common/quantile.cu/.cuh: SketchContainer Push, ScanInput, Prune, Merge,
+    MergePartition/MergeImpl, FixError and single-worker MakeCuts.
+  common/quantile.h: SketchEpsilon, LimitSizeLevel, final QueryCutValues.
+  No NVIDIA hardware execution. CUDA source is the algorithm authority;
+  the different CPU level-queue sketch is not the equivalence oracle.
+
+Implementation:
+  metal_cuda_sketch.cc/h: ordinary SparsePage frontend and resident interface.
+  metal_histogram.mm/.metal: GPU raw-entry ordering, row-weight gathering,
+    FP32 segmented prefixes, categorical unique/compaction, rank conversion,
+    per-column budgets, prune selection, reverse duplicate-weight accumulation,
+    parallel merge partitions, index/value uniqueness and ordered rank repair.
+  Two stable radix passes sort (feature, value). Signed zeros compare equal.
+  CSR windows retain CUDA's 64M-entry size, original row spans and base-row IDs.
+  Weighted inputs scan FP32; unweighted ranks use integer sample positions.
+  Summaries/column pointers stay GPU-owned across windows/pages. Final cuts use
+    host QueryCutValues and categorical validation/expansion, as CUDA does.
+  SimpleDMatrix and SparsePageDMatrix cut caches now track CPU vs Metal sketch
+    provenance. Initialized training requests switch algorithms correctly;
+    prediction/cut inspection and fixed QuantileDMatrix references retain cuts.
+  hist and approx both use the new path, including group/Hessian weights and
+    external pages. Ordinary MPS no longer uses CPU sorted CSC or sketch queues.
+  New completed-work counters: cuda_sketch_dispatches, cuda_sketch_batches,
+    cuda_sketch_input_entries, cuda_sketch_gpu_time_ns. Statistics ABI changed;
+    all native binaries rebuilt. CPU-only JSON provides zero counters.
+
+Explicit adaptations/limits:
+  Stable sorting ties can differ from Thrust's unspecified equal-key ordering.
+  Metal's 256-entry hierarchical FP32 scan can associate differently from CUB.
+    Public reference explicitly specifies that association; it is not a claim
+    of NVIDIA bitwise identity. Native dyadic-weight sums do not depend on it.
+  Input-summary reverse scan is serial within each column, parallel across columns.
+  Rank repair applies CUDA's equations left-to-right within each column, avoiding
+    CUDA's in-place neighboring-read/write race. Intended rank invariants hold;
+    exact scheduling equivalence to an NVIDIA launch is not claimed.
+  Raw CSR/metadata and unified group/Hessian weights still stage through host
+    memory. Allocation and size-readback synchronization remain performance work.
+  Adapter/device-array ingestion, adapter-built QDM bins, Apple GPU array interop
+    and distributed GPU sketch exchange remain open. No new benchmark was run.
+
+Native source oracle:
+  tests/cuda_sketch_reference.h: independent scalar stable merge traversal and
+    linear rank-query search; no production CPU/Metal merge/prune helper calls.
+  tests/metal_cuda_sketch_api.cc: 64 cases / 276 pushes / 1,867,178 raw entries /
+    229,976 exact summary fields. Source entries/offsets/weights remain unchanged.
+  Includes empty rows/columns, partial-row windows, base-row offsets, numerical
+    duplicates, signed zeros/subnormals, categories, zero/tiny/large/signed-zero
+    weights, +/-infinite feature values and budget=1 endpoint precedence.
+  Initial implementation passes 60 finite-value cases. Review then identified
+    that index uniqueness cannot be replaced by subtraction-based value equality
+    for infinities. Updated oracle/fixtures FAIL the pre-fix library:
+      results/test-cuda-sketch-native-v7-before.log
+      rows257/mode8/window71/bins2: Metal7.25, oracle11.25.
+    Both index and value predicates are now retained; all 64 cases pass.
+  Latest focused native log: results/test-cuda-sketch-native-v7.log, API validation on.
+
+Public checks and test-contract migration:
+  tests/cuda_sketch_reference.py: independent CUDA rank/cut equations, with an
+    explicitly declared Metal scan association. Dense/missing/CSR, categories,
+    arbitrary FP32/zero/subnormal weights, groups and external pages match exact cuts.
+  Three added cache tests: ordinary CPU->MPS->CPU->MPS (memory/external), and
+    fixed Metal-reference QDM. Same-backend continuation does not resketch.
+  Thirty existing approx ordering cases now use the CUDA sketch oracle instead
+    of CPU approx. Thirty added cases independently audit cuts AND scalar integer
+    splits/leaves for two one-round calls with changing Hessians, five layouts, both growth
+    policies and unsampled/uniform/gradient-based sampling.
+  CPU hist/objective/sampling/leaf/metric equivalence fixtures explicitly share
+    fixed QDM cuts where algorithms differ. All input families and prediction
+    tolerances retained. Binning tests keep fresh ordinary MPS matrices and use
+    their cuts as a CPU QDM reference, plus independent sketch validation.
+  Ordinary approx no longer asserts CPU-approx model identity; independent cut/
+    tree audits and unchanged same-model CPU prediction checks take its place.
+
+Additional regression found by integration:
+  A tiny split threshold produced identical trained models but Metal traversal
+    disagreed with CPU on32/1027rows (maximum difference0.3246926).
+    results/probe-sketch-bin-difference.log confirms CPU raw/QDM predictions agree,
+    while Metal and CPU traversal of the SAME model disagree.
+  xgb_predict now uses bit-preserving numeric/category comparisons, like binning
+    and SHAP. Five subnormal-threshold fixtures and one negative-subnormal category
+    fixture validate batch/leaf/inplace prediction. Original binning case passes.
+
+Validation history:
+  build v1 failed on Apple size_t vs bst_idx_t CSR offset type; corrected to the
+    actual SparsePage offset type. Build v2 passed.
+  Integration v1:183 failures were old CPU-sketch identity/counter contracts.
+  Source-oracle v2 exposed public get_quantile_cut's prepended -infinity bound
+    and external matrices' single-CSR accessor limitation; corrected the oracle,
+    not production thresholds. v3:27 sketch tests passed.
+  Focused v5:225 passed,1 skip after contract/cache updates.
+  Remainder v2:1511 passed,1 failure (the genuine traversal bug above).
+  Focused v6:258 passed; native60 cases passed.
+  Full v1:2026-11-04 12:26:19-12:30:37 UTC exit0:
+    Metal build, every rebuilt native suite/reference updater,1773 Python tests
+    (1 skip,370 warnings,93.16s), CPU-only build/API/device check all PASS.
+  Following the infinity/index-uniqueness fix, focused v7:
+    12:32:05-12:32:35 UTC exit0; native64 cases PASS;
+    258 Python tests PASS,2 warnings,19.31s.
+  FINAL FULL v2:2026-11-04 12:32:43-12:36:45 UTC exit0 (4m02s):
+    results/run-cuda-sketch-full-v2.sh
+    results/cuda-sketch-full-driver-v2.log
+    build-cuda-sketch-final-v2.log: PASS final Metal build.
+    test-cuda-sketch-full-v2.log: PASS all rebuilt native suites/reference updater,
+      including the64-case resident sketch test;1773 Python passed,1 skipped,
+      370 warnings,93.03s. Only skip is the no-GPU-host error-path test on this
+      GPU-equipped machine. GPU tests use --require-metal.
+    configure-cpu-cuda-sketch-v2.log: PASS CPU-only reconfiguration (new .cc included).
+    build-cpu-cuda-sketch-v2.log: PASS.
+    check-cpu-cuda-sketch-v2.log: PASS zero Metal counters and clear MPS error.
+    No production/test edits after this run started; documentation updated afterward.
+    No benchmark or NVIDIA hardware comparison performed.

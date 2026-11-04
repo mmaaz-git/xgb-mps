@@ -5,6 +5,9 @@ import numpy as np
 import pytest
 import xgboost as xgb
 
+# Fixed quantile cuts isolate CPU tree/objective equivalence from the distinct
+# CPU and CUDA sketch algorithms. Ordinary Metal cuts have source-oracle tests.
+
 
 def cuda_ranking_reference(metric, labels, scores, sizes, weights, exponential=True):
     """Host evaluation of rank_metric.cu formulas, not a CUDA execution oracle.
@@ -54,8 +57,8 @@ def test_ranking_training(metal, objective, method, largest):
     n = int(sizes.sum())
     x = rng.normal(size=(n, 8)).astype(np.float32)
     y = (x[:, 0] + .3 * x[:, 1] > 0).astype(np.float32)
-    d = xgb.DMatrix(x, label=y, group=sizes,
-                    weight=np.array([1, .5, 2, 3, 1.5, .25], dtype=np.float32), nthread=2)
+    d = xgb.QuantileDMatrix(x, label=y, group=sizes,
+                    weight=np.array([1, .5, 2, 3, 1.5, .25], dtype=np.float32), nthread=2, max_bin=256)
     params = dict(objective=objective, tree_method="hist", max_depth=3, nthread=2,
                   eval_metric=["ndcg@7", "map@7", "pre@7"], seed=17,
                   lambdarank_pair_method=method, lambdarank_num_pair_per_sample=8)
@@ -286,7 +289,7 @@ def test_unbiased_gradient_and_bias_updates(metal, objective, method, query_size
     rng = np.random.default_rng(913)
     x = rng.normal(size=(3 * query_size, 4)).astype(np.float32)
     labels = np.tile(np.r_[np.ones(4), np.zeros(query_size - 4)], 3).astype(np.float32)
-    d = xgb.DMatrix(x, label=labels, group=[query_size] * 3, nthread=2)
+    d = xgb.QuantileDMatrix(x, label=labels, group=[query_size] * 3, nthread=2, max_bin=256)
     params = dict(objective=objective, tree_method="hist", max_depth=3, nthread=2,
                   lambdarank_unbiased=True, lambdarank_pair_method=method,
                   lambdarank_num_pair_per_sample=8, base_score=0)
@@ -315,7 +318,7 @@ def test_mean_ranking_rounding_feedback(metal):
     y = (2 * x[:, 0] - x[:, 1] + x[:, 2] ** 2 + rng.normal(scale=.1, size=n)).astype(np.float32)
     y = np.digitize(y, [-2, -1, 0, 1, 2, 4, 6]).astype(np.float32)
     groups = np.diff(np.r_[np.arange(0, n, 128), n]).astype(np.uint32)
-    d = xgb.DMatrix(x, label=y, group=groups, nthread=8)
+    d = xgb.QuantileDMatrix(x, label=y, group=groups, nthread=8, max_bin=256)
     params = dict(tree_method="hist", objective="rank:pairwise", max_depth=6,
                   max_bin=256, nthread=8, seed=7, subsample=1.,
                   lambdarank_pair_method="mean", lambdarank_num_pair_per_sample=8)
