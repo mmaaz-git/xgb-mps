@@ -343,6 +343,16 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["split_category_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.split_category_dispatches)};
   info["split_category_nodes"] = Integer{static_cast<std::int64_t>(stats.split_category_nodes)};
+  info["interaction_reset_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.interaction_reset_dispatches)};
+  info["interaction_split_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.interaction_split_dispatches)};
+  info["interaction_query_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.interaction_query_dispatches)};
+  info["interaction_buffer_growths"] =
+      Integer{static_cast<std::int64_t>(stats.interaction_buffer_growths)};
+  info["interaction_gpu_time_ns"] =
+      Integer{static_cast<std::int64_t>(stats.interaction_gpu_time_ns)};
   info["model_weight_copy_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.model_weight_copy_dispatches)};
   info["model_category_copy_dispatches"] =
@@ -475,6 +485,11 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["split_bounds_dispatches"] = Integer{0};
   info["split_category_dispatches"] = Integer{0};
   info["split_category_nodes"] = Integer{0};
+  info["interaction_reset_dispatches"] = Integer{0};
+  info["interaction_split_dispatches"] = Integer{0};
+  info["interaction_query_dispatches"] = Integer{0};
+  info["interaction_buffer_growths"] = Integer{0};
+  info["interaction_gpu_time_ns"] = Integer{0};
   info["model_weight_copy_dispatches"] = Integer{0};
   info["model_category_copy_dispatches"] = Integer{0};
   info["model_copy_words"] = Integer{0};

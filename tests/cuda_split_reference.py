@@ -183,7 +183,9 @@ def audit_tree(tree, data, cuts, types, grad, hess, p, keep=None, selected_featu
         feature = tree["split_indices"][node]
         allowed = set(range(data.shape[1]))
         if interactions is not None and path:
-            allowed = {f for group in interactions if path.issubset(group) for f in group}
+            # CUDA constraints.cu accumulates unions along the path. CPU instead
+            # requires a group to contain the entire history; overlapping groups differ.
+            allowed = path | {f for group in interactions if path.intersection(group) for f in group}
         if left_id >= 0:
             assert feature in allowed
         best = None

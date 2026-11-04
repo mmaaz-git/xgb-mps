@@ -6348,3 +6348,71 @@ kernel void xgb_build_split_categories(
                              memory_order_relaxed);
   }
 }
+
+// CUDA interaction constraints use 64-bit bitfields. Private Metal storage uses
+// 32-bit words so unions can use native atomics; feature IDs and set semantics
+// are unchanged. No host shadow of node masks is needed.
+kernel void xgb_interaction_restore(
+    device const ulong* group_ptr [[buffer(0)]], device const uint* members [[buffer(1)]],
+    device const ulong* feature_ptr [[buffer(2)]], device const uint* groups [[buffer(3)]],
+    device atomic_uint* mask [[buffer(4)]], constant uint& feature [[buffer(5)]],
+    uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) {
+  ulong begin = feature_ptr[feature], end = feature_ptr[feature + 1];
+  if (group >= end - begin) return;
+  uint id = groups[begin + group];
+  for (ulong i = group_ptr[id] + tid; i < group_ptr[id + 1]; i += 256) {
+    uint f = members[i];
+    atomic_fetch_or_explicit(mask + f / 32, 1u << (f % 32), memory_order_relaxed);
+  }
+}
+struct InteractionSplitParams {
+  uint words, node, left, right, feature;
+};
+kernel void xgb_interaction_split(device const uint* feature_mask [[buffer(0)]],
+                                  device uint* nodes [[buffer(1)]],
+                                  constant InteractionSplitParams& p [[buffer(2)]],
+                                  uint word [[thread_position_in_grid]]) {
+  if (word >= p.words) return;
+  ulong parent = ulong(p.node) * p.words + word;
+  uint value = nodes[parent] | feature_mask[word];
+  if (word == p.feature / 32) value |= 1u << (p.feature % 32);
+  nodes[parent] = value;
+  nodes[ulong(p.left) * p.words + word] |= value;
+  nodes[ulong(p.right) * p.words + word] |= value;
+}
+struct InteractionQueryParams {
+  uint features, words, node, count, all;
+};
+kernel void xgb_interaction_input(device const uint* input [[buffer(0)]],
+                                  device atomic_uint* mask [[buffer(1)]],
+                                  constant InteractionQueryParams& p [[buffer(2)]],
+                                  device atomic_uint* error [[buffer(3)]],
+                                  uint i [[thread_position_in_grid]]) {
+  if (i >= p.count) return;
+  uint f = input[i];
+  if (f >= p.features) {
+    atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+    return;
+  }
+  atomic_fetch_or_explicit(mask + f / 32, 1u << (f % 32), memory_order_relaxed);
+}
+kernel void xgb_interaction_filter(device const uint* nodes [[buffer(0)]],
+                                   device const uint* input [[buffer(1)]],
+                                   device uint* flags [[buffer(2)]],
+                                   constant InteractionQueryParams& p [[buffer(3)]],
+                                   uint f [[thread_position_in_grid]]) {
+  if (f >= p.features) return;
+  uint bit = 1u << (f % 32);
+  flags[f] =
+      (nodes[ulong(p.node) * p.words + f / 32] & bit) != 0 && (p.all || (input[f / 32] & bit) != 0);
+}
+kernel void xgb_interaction_scatter(device const uint* flags [[buffer(0)]],
+                                    device const uint* prefix [[buffer(1)]],
+                                    device uint* output [[buffer(2)]],
+                                    device uint* count [[buffer(3)]],
+                                    constant uint& n [[buffer(4)]],
+                                    uint f [[thread_position_in_grid]]) {
+  if (f >= n) return;
+  if (flags[f]) output[prefix[f]] = f;
+  if (f == n - 1) *count = prefix[f] + flags[f];
+}

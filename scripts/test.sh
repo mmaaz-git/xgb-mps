@@ -324,5 +324,13 @@ clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp -framework Metal -framework Foundation \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_split_categories_test
 MTL_DEBUG_LAYER=1 results/metal_split_categories_test xgboost/src/common/metal_histogram.metal
+echo "Checking CUDA interaction unions, feature ordering and GPU mask reset/growth"
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_interaction_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_interaction_api_test
+MTL_DEBUG_LAYER=1 results/metal_interaction_api_test
 echo "Running training validation tests; a real GPU is required"
 .venv/bin/python -m pytest -q tests --require-metal

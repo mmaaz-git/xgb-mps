@@ -14,12 +14,13 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **categorical split bitset assembly**. Scalar and vector
-training now build one-hot/partition bitsets on Metal, using resident candidate
-results and sorted indices. Direct checks pass **864 category slots / 33,738,112
-exact words / 16 production API calls**. Final validation passes **1,545 Python
-tests**, every native suite and the CPU-only build/API check.
-[Validation](validation/split-categories-m3.txt) · [Scope](docs/CUDA_PARITY.md#categorical-split-bitset-assembly).
+Latest validated step: **CUDA feature-interaction constraints**. Scalar and vector
+training now reset, grow, update and filter GPU-owned masks on Metal, including
+CUDA's cumulative unions for overlapping groups. Native validation passes **834
+checks**; 30 new training cases cover the CPU/CUDA behavior difference and reuse.
+Final validation passes **1,575 Python tests**, every rebuilt native suite and the
+CPU-only build/API check.
+[Validation](validation/interaction-constraints-m3.txt) · [Scope](docs/CUDA_PARITY.md#cuda-feature-interaction-constraints).
 Actual NVIDIA execution equivalence remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
@@ -103,7 +104,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; both sampling methods/roots share integer state; weighted sketches still need CUDA alignment |
 | Gradient state | Shared per-tree integer gradients/scales for both sampling methods, all roots and histograms; GPU target/layout copies and bit-preserving Hessian extraction |
 | Histograms | Dense/sparse indices, external pages, scaled integer sums and shared-memory accumulation; resident integer cache retains page additions/subtractions; scalar/vector split scans read integers directly, with a binary64 view for host consumers |
-| Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly; interaction masks and tree metadata remain host |
+| Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly; interaction masks, unions and feature filtering execute on GPU; tree metadata remains host |
 | Vector model storage | Bit-preserving GPU copies for parent/child weights and category words, with GPU FP32 learning-rate scaling of new child weights; allocation/growth and metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; adapter-built QuantileDMatrix bins remain CPU |
@@ -2028,8 +2029,8 @@ counts, empty-feature roots, large target counts and many-feature selection.
 Final validation passes **1,502 Python tests (one skipped)**, every native suite
 and the CPU-only build/API check. [Validation](validation/split-finalization-m3.txt).
 
-This is still a synchronous hybrid backend. Interaction masks, staging and tree
-metadata remain on the host. Vector model copies, learning-rate scaling and
+This is still a synchronous hybrid backend. At this checkpoint, interaction masks,
+staging and tree metadata remained on the host; interaction masks are addressed below. Vector model copies, learning-rate scaling and
 category bitset assembly were subsequent gaps, addressed below. Candidate
 readbacks have not yet been removed or fused with finalization. No benchmark was run.
 
@@ -2053,7 +2054,7 @@ and the separate CPU-only build/API check. [Validation](validation/model-state-m
 This moves the CUDA copy/scale operations to Metal. Model storage is still owned
 by host vectors, with guarded shared views or staging; allocation and persistent
 GPU ownership remain unfinished. Category bitset assembly was the next gap,
-addressed below; interaction masks remain unfinished. No performance benchmark was run.
+addressed below; interaction masks are covered by the subsequent update. No performance benchmark was run.
 
 
 ### Categorical split bitset assembly
@@ -2071,7 +2072,33 @@ coverage, with whole-tree source oracles and CPU-loaded prediction checks.
 Final validation passes **1,545 Python tests (one skipped)**, every rebuilt native
 suite and the CPU-only build/API check. [Validation](validation/split-categories-m3.txt).
 
-Bitsets still return to host-owned tree metadata. Interaction masks, category
-recoding and other state operations remain unfinished. The next constraint port
-also needs CUDA algorithm alignment: overlapping interaction groups behave
-differently in the current CPU-based path. No performance benchmark was run.
+Bitsets still return to host-owned tree metadata. At this checkpoint, interaction
+masks and their CUDA algorithm alignment remained unfinished; the update below
+addresses them. Category recoding and other state operations remain. No performance
+benchmark was run.
+
+
+### CUDA feature-interaction constraints
+
+Scalar and vector trees now keep interaction masks in Metal-owned buffers. GPU
+operations reset/grow those buffers, union the groups associated with each split
+feature, propagate masks to children, and filter sampled features in ascending
+order. Root queries retain the original feature list, matching CUDA.
+
+This also fixes a CPU/CUDA algorithm difference. With groups `[[0,1],[1,2]]`,
+CUDA allows feature 2 after splits on 0 and 1; the CPU implementation excludes
+it. The Metal path now follows CUDA. Independent source references and new
+training fixtures explicitly check that difference, without changing tolerances.
+
+Focused validation passes **834 native checks and 30 public training tests**,
+including scalar `hist`/`approx`, vector trees, numeric/categorical splits, both
+growth policies, repeated trees, and resumed models with changed constraints.
+Native tests cover empty/duplicate groups, disabled/root bypasses, word and scan
+boundaries through 65,537 features, buffer growth, reset and invalid-input recovery.
+Final validation passes **1,575 Python tests (one skipped)**, every rebuilt native
+suite and the CPU-only build/API check. [Validation](validation/interaction-constraints-m3.txt).
+
+Host parsing and CSR metadata construction match CUDA's setup. Feature lists still
+return to host candidate preparation; this is not fully device-resident training.
+Monotonic-bound allocation/initialization and the other ledger gaps remain. No
+performance benchmark or NVIDIA execution comparison accompanies this step.

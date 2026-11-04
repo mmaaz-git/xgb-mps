@@ -1,0 +1,80 @@
+CUDA feature-interaction constraints on Apple M3
+Date: 2026-11-04
+Source base: fba35be plus the interaction change accompanying this record.
+
+Authority and scope:
+  tree/constraints.cu defines Configure, Reset, Query/QueryNode, group restoration
+  and child mask propagation for both scalar and vector CUDA updaters.
+  CUDA accumulates unions of groups containing split-history features; the CPU
+  class only retains groups containing the entire history. With [[0,1],[1,2]],
+  after splits 0 then 1, CUDA allows 2 and CPU does not. This change corrects the
+  previous CPU behavior in both production MPS training and host split oracles.
+  No NVIDIA execution comparison or performance benchmark was run.
+
+Implementation:
+  Host parse/CSR construction mirrors CUDA Configure. Metadata is uploaded once;
+  persistent node masks have no host shadow. GPU operations zero/reset masks,
+  copy retained masks on growth, union split-feature groups, propagate masks to
+  parent/children, construct sampled-input masks, intersect, scan and scatter.
+  Nonroot queries emit ascending unique IDs. Root and disabled queries preserve
+  the supplied list; QueryNode has no root bypass and starts empty at root.
+  Enabled empty groups retain split-history features; an empty parameter disables.
+  Private 32-bit words permit native Metal atomics (CUDA uses 64-bit words).
+  Lazy storage growth substitutes for CUDA MaxNodes preallocation; new masks are
+  zero, existing masks are preserved, and children OR in parent masks.
+  Scalar hist/approx and vector hist use this object; CPU evaluators retain their
+  original class. Mask reset occurs once per tree. Candidate preparation still
+  consumes a host feature list; commands synchronize, so full GPU ownership is
+  unfinished. Monotonic-bound initialization is a separate remaining operation.
+  Counters: interaction_reset/split/query_dispatches count completed commands,
+  interaction_buffer_growths counts completed enlargements and interaction_gpu_time_ns
+  records GPU command time. GPU error commands are counted; malformed sampled
+  IDs cannot corrupt node masks. CPU-only builds expose zero counters.
+
+Native validation: tests/metal_interaction_api.cc
+  PASS 834 checks; 30 resets, 61 splits, 282 queries and 49 buffer growths.
+  Production API with Metal API Validation; independent std::set oracle using
+  CUDA group unions, with explicit CPU-class comparison for the overlap case.
+  1/3/31/32/33/63/64/65/255/256/257/1025/65537 features, zero features separately;
+  word boundaries, groups exceeding 256 lanes, three-level prefix at 65537;
+  duplicate memberships, empty/unlisted/overlapping groups and concurrent unions;
+  shuffled/duplicate/empty query lists, root bypass, QueryNode root semantics;
+  repeated resets, node 127/128 growth, sibling isolation, OR into existing child
+  masks, equal child IDs, host input unchanged and metadata owned after creation;
+  invalid group/query features, negative nodes, parent-child aliases, zero-feature
+  splits, disabled bypass and recovery after GPU query validation failure.
+
+Public validation: tests/test_metal_interaction_constraints.py
+  PASS 30 cases in 1.11 seconds (focused final run).
+  18 strategy/method x growth x split-mode cases, 9 disabled/empty/duplicate group
+  cases, 3 model-continuation cases with changed groups. Scalar hist/approx and
+  vector hist, numeric/one-hot/partition splits, depthwise/lossguide, cache=1,
+  repeated rounds, exact dispatch counts and complete CUDA-source tree oracles.
+  Overlap fixtures require path [0,1,2] on MPS and [0,1] on CPU. Continuation changes
+  groups and requires [0,2,1]. CPU-loaded model predictions match MPS exactly.
+  Native tests cover filter ordering directly; these tests do not claim CUDA
+  column-sampling RNG equivalence.
+
+Development logs (local results/, not benchmark timings):
+  interaction-build-driver-v1.log: 10:22:21-10:22:47 UTC, exit 0.
+    build-interaction-v1.log: Metal build PASS.
+    test-interaction-existing-v1.log: 179 existing scalar/vector tests PASS, 12.45 s.
+  interaction-focused-driver-v1.log: 10:28:06-10:28:12 UTC, exit 1.
+    test-interaction-native-v1.log: all native checks PASS.
+    test-interaction-python-v1.log: 29 pass, 1 fixture error in model continuation.
+    Reapplying scalar base_score on a loaded two-target model fails upstream
+    intercept-length validation. Fixture now retains the saved intercept vector.
+    No production change or tolerance widening was needed for this failure.
+  test-interaction-python-v2.log: 30 PASS, 1.11 s.
+  run-interaction-full-v1.sh: 10:28:47-10:32:58 UTC, exit 0.
+    build-interaction-final-v1.log: final Metal build PASS.
+    test-interaction-full-v1.log: every native suite rebuilt and PASS;
+      1575 Python passed, 1 skipped, 307 warnings in 90.65 seconds.
+    build-cpu-interaction-v1.log: CPU-only build PASS.
+    check-cpu-interaction-v1.log: unavailable/zero-counters/device-error checks PASS.
+  No production/test changes after the full run; only documentation edits.
+
+Remaining scope:
+  Monotonic-bound allocation/initialization, generic metadata/category recoding,
+  CUDA sketch alignment, other algorithm gaps, persistent GPU ownership,
+  interoperability, distributed collectives and NVIDIA hardware validation.

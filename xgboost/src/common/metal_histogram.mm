@@ -14,6 +14,7 @@
 
 #include "../data/gradient_index.h"
 #include "metal_auc.h"
+#include "metal_constraints.h"
 #include "metal_data.h"
 #include "metal_gradient.h"
 #include "metal_histogram.h"
@@ -60,6 +61,8 @@ std::atomic<std::uint64_t> cuda_integer_split_dispatches{0};
 std::atomic<std::uint64_t> cuda_integer_multi_split_dispatches{0};
 std::atomic<std::uint64_t> split_finalize_dispatches{0}, split_bounds_dispatches{0};
 std::atomic<std::uint64_t> split_category_dispatches{0}, split_category_nodes{0};
+std::atomic<std::uint64_t> interaction_reset_dispatches{0}, interaction_split_dispatches{0},
+    interaction_query_dispatches{0}, interaction_buffer_growths{0}, interaction_gpu_time_ns{0};
 std::atomic<std::uint64_t> model_weight_copy_dispatches{0}, model_category_copy_dispatches{0},
     model_copy_words{0}, model_scale_dispatches{0}, model_state_gpu_time_ns{0};
 std::atomic<std::uint64_t> leaf_sum_init_dispatches{0}, leaf_sum_dispatches{0},
@@ -149,6 +152,8 @@ class Runtime {
   id<MTLComputePipelineState> split_finalize_pipeline, split_bounds_pipeline;
   id<MTLComputePipelineState> model_scale_pipeline;
   id<MTLComputePipelineState> split_category_pipeline;
+  id<MTLComputePipelineState> interaction_restore_pipeline, interaction_split_pipeline,
+      interaction_input_pipeline, interaction_filter_pipeline, interaction_scatter_pipeline;
   id<MTLComputePipelineState> dequantize_hist_pipeline, subtract_hist_pipeline,
       gather_hist_pipeline;
   id<MTLComputePipelineState> store_integer_hist_pipeline, subtract_integer_hist_pipeline,
@@ -255,6 +260,11 @@ class Runtime {
       split_bounds_pipeline = make_pipeline(@"xgb_update_split_bounds");
       model_scale_pipeline = make_pipeline(@"xgb_scale_model_weights");
       split_category_pipeline = make_pipeline(@"xgb_build_split_categories");
+      interaction_restore_pipeline = make_pipeline(@"xgb_interaction_restore");
+      interaction_split_pipeline = make_pipeline(@"xgb_interaction_split");
+      interaction_input_pipeline = make_pipeline(@"xgb_interaction_input");
+      interaction_filter_pipeline = make_pipeline(@"xgb_interaction_filter");
+      interaction_scatter_pipeline = make_pipeline(@"xgb_interaction_scatter");
       multi_split_pipeline = make_pipeline(@"xgb_evaluate_multi_splits");
       dequantize_hist_pipeline = make_pipeline(@"xgb_histogram_dequantize");
       subtract_hist_pipeline = make_pipeline(@"xgb_histogram_subtract");
@@ -1667,7 +1677,12 @@ Statistics GetStatistics() {
           model_scale_dispatches.load(std::memory_order_relaxed),
           model_state_gpu_time_ns.load(std::memory_order_relaxed),
           split_category_dispatches.load(std::memory_order_relaxed),
-          split_category_nodes.load(std::memory_order_relaxed)};
+          split_category_nodes.load(std::memory_order_relaxed),
+          interaction_reset_dispatches.load(std::memory_order_relaxed),
+          interaction_split_dispatches.load(std::memory_order_relaxed),
+          interaction_query_dispatches.load(std::memory_order_relaxed),
+          interaction_buffer_growths.load(std::memory_order_relaxed),
+          interaction_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2298,6 +2313,221 @@ id<MTLBuffer> EncodePrefixSum(Runtime& rt, id<MTLCommandBuffer> command, id<MTLB
   }
   return output;
 }
+class MetalInteractionConstraints final : public InteractionConstraints {
+  Runtime& rt_;
+  bool enabled_;
+  std::uint32_t features_, words_;
+  std::size_t capacity_{0};
+  std::vector<std::uint32_t> group_counts_;
+  id<MTLBuffer> group_ptr_, group_features_, feature_ptr_, feature_groups_;
+  id<MTLBuffer> nodes_{nil}, feature_mask_{nil}, input_mask_{nil}, input_{nil}, flags_{nil},
+      output_{nil}, count_{nil}, error_{nil};
+
+  bool Grow(id<MTLCommandBuffer> command, std::size_t required) {
+    if (required <= capacity_) return false;
+    auto capacity = std::max(required, std::max<std::size_t>(1, capacity_ * 2));
+    CHECK_LE(capacity, std::numeric_limits<std::size_t>::max() / 4 / words_);
+    auto replacement = Allocate(rt_, capacity * words_ * 4);
+    auto blit = [command blitCommandEncoder];
+    CHECK(blit);
+    [blit fillBuffer:replacement range:NSMakeRange(0, capacity * words_ * 4) value:0];
+    if (capacity_) {
+      [blit copyFromBuffer:nodes_
+               sourceOffset:0
+                   toBuffer:replacement
+          destinationOffset:0
+                       size:capacity_ * words_ * 4];
+    }
+    [blit endEncoding];
+    nodes_ = replacement;
+    capacity_ = capacity;
+    return true;
+  }
+  void Finish(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>* counter, bool grew) {
+    CompleteOperation(command, counter, &interaction_gpu_time_ns);
+    if (grew) interaction_buffer_growths.fetch_add(1, std::memory_order_relaxed);
+  }
+  std::vector<bst_feature_t> Filter(Span<bst_feature_t const> input, bst_node_t node, bool all) {
+    CHECK_GE(node, 0);
+    CHECK_LE(input.size(), std::numeric_limits<std::uint32_t>::max());
+    if (!features_) return {};
+    @autoreleasepool {
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      auto grew = Grow(command, std::size_t(node) + 1);
+      auto mask = Scratch(rt_, &input_mask_, words_ * 4ul);
+      auto source = Scratch(rt_, &input_, input.size_bytes(), input.data());
+      auto flags = Scratch(rt_, &flags_, features_ * 4ul);
+      auto output = Scratch(rt_, &output_, features_ * 4ul);
+      std::uint32_t zero = 0;
+      auto error = Scratch(rt_, &error_, 4, &zero);
+      auto count = Scratch(rt_, &count_, 4);
+      auto blit = [command blitCommandEncoder];
+      CHECK(blit);
+      [blit fillBuffer:mask range:NSMakeRange(0, words_ * 4ul) value:0];
+      [blit endEncoding];
+      struct {
+        std::uint32_t features, words, node, count, all;
+      } p{features_, words_, static_cast<std::uint32_t>(node),
+          static_cast<std::uint32_t>(input.size()), all};
+      if (!all && !input.empty()) {
+        auto e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt_.interaction_input_pipeline];
+        [e setBuffer:source offset:0 atIndex:0];
+        [e setBuffer:mask offset:0 atIndex:1];
+        [e setBytes:&p length:sizeof(p) atIndex:2];
+        [e setBuffer:error offset:0 atIndex:3];
+        [e dispatchThreads:MTLSizeMake(input.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+      }
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.interaction_filter_pipeline];
+      [e setBuffer:nodes_ offset:0 atIndex:0];
+      [e setBuffer:mask offset:0 atIndex:1];
+      [e setBuffer:flags offset:0 atIndex:2];
+      [e setBytes:&p length:sizeof(p) atIndex:3];
+      [e dispatchThreads:MTLSizeMake(features_, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      auto prefix = EncodePrefixSum(rt_, command, flags, features_);
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.interaction_scatter_pipeline];
+      [e setBuffer:flags offset:0 atIndex:0];
+      [e setBuffer:prefix offset:0 atIndex:1];
+      [e setBuffer:output offset:0 atIndex:2];
+      [e setBuffer:count offset:0 atIndex:3];
+      [e setBytes:&features_ length:sizeof(features_) atIndex:4];
+      [e dispatchThreads:MTLSizeMake(features_, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      Finish(command, &interaction_query_dispatches, grew);
+      CHECK_EQ(*static_cast<std::uint32_t const*>(error.contents), 0)
+          << "Interaction query feature is out of range";
+      auto size = *static_cast<std::uint32_t const*>(count.contents);
+      CHECK_LE(size, features_);
+      auto data = static_cast<bst_feature_t const*>(output.contents);
+      return {data, data + size};
+    }
+  }
+
+ public:
+  MetalInteractionConstraints(bst_feature_t features,
+                              std::vector<std::vector<bst_feature_t>> const& groups, bool enabled)
+      : rt_{GetRuntime()},
+        enabled_{enabled},
+        features_{features},
+        words_{static_cast<std::uint32_t>((std::uint64_t{features} + 31) / 32)} {
+    if (!enabled_) return;
+    CHECK_LE(features, std::numeric_limits<std::int32_t>::max());
+    CHECK_LE(groups.size(), std::numeric_limits<std::uint32_t>::max());
+    // CUDA Configure builds both CSR mappings on the host. Only metadata is
+    // constructed here; no allowed-feature masks or unions are computed on CPU.
+    std::vector<std::uint64_t> group_ptr{0}, feature_ptr{0};
+    std::vector<bst_feature_t> group_features, feature_groups;
+    std::vector<std::vector<std::uint32_t>> memberships(features);
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+      for (auto feature : groups[g]) {
+        CHECK_LT(feature, features);
+        group_features.push_back(feature);
+        auto& ids = memberships[feature];
+        if (ids.empty() || ids.back() != g) ids.push_back(g);
+      }
+      group_ptr.push_back(group_features.size());
+    }
+    for (auto const& ids : memberships) {
+      group_counts_.push_back(ids.size());
+      feature_groups.insert(feature_groups.end(), ids.begin(), ids.end());
+      feature_ptr.push_back(feature_groups.size());
+    }
+    @autoreleasepool {
+      group_ptr_ = Upload(rt_, group_ptr.data(), group_ptr.size() * 8);
+      group_features_ = Upload(rt_, group_features.data(), group_features.size() * 4);
+      feature_ptr_ = Upload(rt_, feature_ptr.data(), feature_ptr.size() * 8);
+      feature_groups_ = Upload(rt_, feature_groups.data(), feature_groups.size() * 4);
+    }
+  }
+  void Reset() override {
+    if (!enabled_ || !features_) return;
+    @autoreleasepool {
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      auto grew = Grow(command, 1);
+      if (!grew) {
+        auto blit = [command blitCommandEncoder];
+        CHECK(blit);
+        [blit fillBuffer:nodes_ range:NSMakeRange(0, capacity_ * words_ * 4) value:0];
+        [blit endEncoding];
+      }
+      Finish(command, &interaction_reset_dispatches, grew);
+    }
+  }
+  void Split(bst_node_t node, bst_feature_t feature, bst_node_t left, bst_node_t right) override {
+    if (!enabled_) return;
+    CHECK_GE(node, 0);
+    CHECK_GE(left, 0);
+    CHECK_GE(right, 0);
+    CHECK_NE(node, left);
+    CHECK_NE(node, right);
+    CHECK_LT(feature, features_);
+    @autoreleasepool {
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      auto grew = Grow(command, std::size_t(std::max({node, left, right})) + 1);
+      auto mask = Scratch(rt_, &feature_mask_, words_ * 4ul);
+      auto blit = [command blitCommandEncoder];
+      CHECK(blit);
+      [blit fillBuffer:mask range:NSMakeRange(0, words_ * 4ul) value:0];
+      [blit endEncoding];
+      if (group_counts_[feature]) {
+        auto e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt_.interaction_restore_pipeline];
+        [e setBuffer:group_ptr_ offset:0 atIndex:0];
+        [e setBuffer:group_features_ offset:0 atIndex:1];
+        [e setBuffer:feature_ptr_ offset:0 atIndex:2];
+        [e setBuffer:feature_groups_ offset:0 atIndex:3];
+        [e setBuffer:mask offset:0 atIndex:4];
+        [e setBytes:&feature length:sizeof(feature) atIndex:5];
+        [e dispatchThreadgroups:MTLSizeMake(group_counts_[feature], 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+      }
+      struct {
+        std::uint32_t words, node, left, right, feature;
+      } p{words_, static_cast<std::uint32_t>(node), static_cast<std::uint32_t>(left),
+          static_cast<std::uint32_t>(right), feature};
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.interaction_split_pipeline];
+      [e setBuffer:mask offset:0 atIndex:0];
+      [e setBuffer:nodes_ offset:0 atIndex:1];
+      [e setBytes:&p length:sizeof(p) atIndex:2];
+      [e dispatchThreads:MTLSizeMake(words_, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      Finish(command, &interaction_split_dispatches, grew);
+    }
+  }
+  std::vector<bst_feature_t> Query(Span<bst_feature_t const> input, bst_node_t node) override {
+    // CUDA preserves the original list, including order/duplicates, at root or
+    // when disabled. QueryNode deliberately does not use this root bypass.
+    if (!enabled_ || node == 0) {
+      if (input.empty()) return {};
+      return {input.begin(), input.end()};
+    }
+    return Filter(input, node, false);
+  }
+  std::vector<bst_feature_t> QueryNode(bst_node_t node) override {
+    return enabled_ ? Filter({}, node, true) : std::vector<bst_feature_t>{};
+  }
+};
+}  // namespace
+std::unique_ptr<InteractionConstraints> MakeInteractionConstraints(
+    bst_feature_t features, std::vector<std::vector<bst_feature_t>> const& groups, bool enabled) {
+  return std::make_unique<MetalInteractionConstraints>(features, groups, enabled);
+}
+namespace {
 struct SortShape {
   std::uint64_t rows, stride0, stride1;
   std::uint32_t targets, blocks;

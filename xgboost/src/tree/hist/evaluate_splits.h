@@ -27,10 +27,20 @@
 #include "xgboost/linalg.h"            // for Constants, Vector
 
 #if defined(XGBOOST_USE_METAL)
+#include "../../common/metal_constraints.h"
 #include "../../common/metal_split.h"
 #endif
 
 namespace xgboost::tree {
+#if defined(XGBOOST_USE_METAL)
+inline std::unique_ptr<common::metal::InteractionConstraints> MakeMetalInteractionConstraints(
+    TrainParam const& param, bst_feature_t features) {
+  if (param.interaction_constraints.empty()) return {};
+  std::vector<std::vector<bst_feature_t>> groups;
+  ParseInteractionConstraint(param.interaction_constraints, &groups);
+  return common::metal::MakeInteractionConstraints(features, groups);
+}
+#endif
 class HistEvaluator {
  private:
   struct NodeEntry {
@@ -54,6 +64,7 @@ class HistEvaluator {
   std::vector<NodeEntry> snode_;
 #if defined(XGBOOST_USE_METAL)
   std::unique_ptr<common::metal::SplitWorkspace> metal_workspace_;
+  std::unique_ptr<common::metal::InteractionConstraints> metal_constraints_;
 #endif
 
   // if sum of statistics for non-missing values in the node
@@ -306,8 +317,13 @@ class HistEvaluator {
         final_parents.emplace_back(snode_[nid].stats.GetGrad(), snode_[nid].stats.GetHess());
         final_bounds.push_back({evaluator.has_constraint ? evaluator.lower[nid] : -INFINITY,
                                 evaluator.has_constraint ? evaluator.upper[nid] : INFINITY});
-        for (auto f : features[i]->ConstHostSpan()) {
-          if (!interaction_constraints_.Query(nid, f)) continue;
+        auto sampled_features = features[i]->ConstHostSpan();
+        std::vector<bst_feature_t> allowed_features;
+        if (metal_constraints_) {
+          allowed_features = metal_constraints_->Query(sampled_features, nid);
+          sampled_features = common::Span<bst_feature_t const>{allowed_features};
+        }
+        for (auto f : sampled_features) {
           auto n = ptr[f + 1] - ptr[f];
           if (!n) continue;
           CHECK_LE(bins + n, std::numeric_limits<std::uint32_t>::max());
@@ -514,8 +530,17 @@ class HistEvaluator {
           evaluator.CalcGain(candidate.nid, *param_, candidate.split.right_sum);
     }
 
-    interaction_constraints_.Split(candidate.nid, tree[candidate.nid].SplitIndex(), left_child,
-                                   right_child);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      if (metal_constraints_)
+        metal_constraints_->Split(candidate.nid, tree[candidate.nid].SplitIndex(), left_child,
+                                  right_child);
+    } else
+#endif
+    {
+      interaction_constraints_.Split(candidate.nid, tree[candidate.nid].SplitIndex(), left_child,
+                                     right_child);
+    }
   }
 
   [[nodiscard]] auto Evaluator() const { return tree_evaluator_.GetEvaluator(); }
@@ -526,6 +551,7 @@ class HistEvaluator {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       CHECK(quantized);
+      if (metal_constraints_) metal_constraints_->Reset();
       snode_[0].quantized = *quantized;
       snode_[0].stats = root_sum;
       if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
@@ -564,7 +590,14 @@ class HistEvaluator {
         column_sampler_{std::move(sampler)},
         tree_evaluator_{*param, static_cast<bst_feature_t>(info.num_col_), DeviceOrd::CPU(), 1u,
                         ctx->IsMPS()} {
-    interaction_constraints_.Configure(*param, info.num_col_);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) {
+      metal_constraints_ = MakeMetalInteractionConstraints(*param, info.num_col_);
+    } else
+#endif
+    {
+      interaction_constraints_.Configure(*param, info.num_col_);
+    }
     column_sampler_->Init(ctx, info.num_col_, info.feature_weights, param_->colsample_bynode,
                           param_->colsample_bylevel, param_->colsample_bytree);
   }
@@ -581,6 +614,7 @@ class HistMultiEvaluator {
 
 #if defined(XGBOOST_USE_METAL)
   std::unique_ptr<common::metal::SplitWorkspace> metal_workspace_;
+  std::unique_ptr<common::metal::InteractionConstraints> metal_constraints_;
   // Exact node sums and selected child sums persist by node ID across queues.
   std::vector<GradientPairInt64> metal_node_sums_, metal_split_sums_;
   std::vector<common::metal::SplitNodeWeights> metal_split_weights_;
@@ -815,8 +849,13 @@ class HistMultiEvaluator {
               {evaluator.has_constraint ? evaluator.lower[nid * targets + t] : -INFINITY,
                evaluator.has_constraint ? evaluator.upper[nid * targets + t] : INFINITY});
         }
-        for (auto f : features[i]->ConstHostSpan()) {
-          if (!interaction_constraints_.Query(nid, f)) continue;
+        auto sampled_features = features[i]->ConstHostSpan();
+        std::vector<bst_feature_t> allowed_features;
+        if (metal_constraints_) {
+          allowed_features = metal_constraints_->Query(sampled_features, nid);
+          sampled_features = common::Span<bst_feature_t const>{allowed_features};
+        }
+        for (auto f : sampled_features) {
           auto n = ptr[f + 1] - ptr[f];
           if (!n) continue;
           CHECK_LE(bins + n * targets, std::numeric_limits<std::uint32_t>::max());
@@ -1024,6 +1063,7 @@ class HistMultiEvaluator {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       CHECK_EQ(quantized.size(), n_targets);
+      if (metal_constraints_) metal_constraints_->Reset();
       metal_node_sums_.assign(quantized.begin(), quantized.end());
       metal_split_sums_.clear();
       metal_split_weights_.clear();
@@ -1129,8 +1169,17 @@ class HistMultiEvaluator {
     tree_evaluator_.AddSplit(candidate.nid, left_child, right_child, candidate.split.SplitIndex(),
                              left_weight, right_weight);
     evaluator = tree_evaluator_.GetEvaluator();
-    interaction_constraints_.Split(candidate.nid, candidate.split.SplitIndex(), left_child,
-                                   right_child);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      if (metal_constraints_)
+        metal_constraints_->Split(candidate.nid, candidate.split.SplitIndex(), left_child,
+                                  right_child);
+    } else
+#endif
+    {
+      interaction_constraints_.Split(candidate.nid, candidate.split.SplitIndex(), left_child,
+                                     right_child);
+    }
 
     std::size_t n_nodes = p_tree->Size();
 #if defined(XGBOOST_USE_METAL)
@@ -1170,7 +1219,14 @@ class HistMultiEvaluator {
                         n_targets, ctx->IsMPS()},
         column_sampler_{std::move(sampler)},
         ctx_{ctx} {
-    interaction_constraints_.Configure(*param, info.num_col_);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) {
+      metal_constraints_ = MakeMetalInteractionConstraints(*param, info.num_col_);
+    } else
+#endif
+    {
+      interaction_constraints_.Configure(*param, info.num_col_);
+    }
     column_sampler_->Init(ctx, info.num_col_, info.feature_weights, param_->colsample_bynode,
                           param_->colsample_bylevel, param_->colsample_bytree);
   }
