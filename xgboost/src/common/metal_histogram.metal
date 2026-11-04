@@ -15,6 +15,58 @@ struct HistogramParams {
   uint rows_per_lane;
 };
 
+// CUDA EllpackAccessor geometry, independent of the host index representation.
+struct CompressedParams {
+  ulong split;
+  uint stride, bits, symbols, dense, features, padding;
+};
+inline uint xgb_ellpack_read(device const uchar* head, device const uchar* tail, ulong split,
+                             ulong index, uint bits) {
+  uint symbol = 0;
+  for (uint j = 0; j < bits; ++j) {
+    ulong bit = index * bits + j, byte = 8 + bit / 8;
+    uint value = byte < split ? head[byte] : tail[byte - split];
+    symbol = (symbol << 1) | ((value >> (7 - bit % 8)) & 1);
+  }
+  return symbol;
+}
+inline uint xgb_read_bin(device const uchar* index, ulong pos, uint width) {
+  if (width == 1) return index[pos];
+  if (width == 2) return reinterpret_cast<device const ushort*>(index)[pos];
+  return reinterpret_cast<device const uint*>(index)[pos];
+}
+inline uint xgb_ellpack_bin(device const uchar* head, device const uchar* tail,
+                            device const uint* offsets, CompressedParams p, ulong row,
+                            uint feature) {
+  ulong first = row * p.stride;
+  uint null_value = p.dense ? p.symbols : p.symbols - 1;
+  if (p.stride == p.features) {
+    uint bin = xgb_ellpack_read(head, tail, p.split, first + feature, p.bits);
+    return bin == null_value ? 0xffffffffu : bin + offsets[feature];
+  }
+  ulong lo = first, hi = first + p.stride;
+  while (lo < hi) {
+    ulong mid = lo + (hi - lo) / 2;
+    if (xgb_ellpack_read(head, tail, p.split, mid, p.bits) < offsets[feature])
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  if (lo < first + p.stride) {
+    uint bin = xgb_ellpack_read(head, tail, p.split, lo, p.bits);
+    if (bin != null_value && bin < offsets[feature + 1]) return bin;
+  }
+  return 0xffffffffu;
+}
+template <bool compressed>
+inline uint xgb_histogram_local_bin(device const uchar* index, device const ulong* rows,
+                                    device const uchar* tail, CompressedParams c,
+                                    constant HistogramParams& p, ulong row, uint feature) {
+  if (compressed) return xgb_ellpack_read(index, tail, c.split, row * c.stride + feature, c.bits);
+  ulong i = p.padding ? ulong(feature) * p.page_rows + row : rows[row] + feature;
+  return xgb_read_bin(index, i, p.bin_bytes);
+}
+
 // An exact modular 64-bit sum using universally available 32-bit atomics.
 // The two words are only read after the command buffer completes. Each low-word
 // wrap contributes exactly one carry, including for negative two's-complement
@@ -43,12 +95,13 @@ inline void add_i64(threadgroup atomic_uint* dst, long value) {
   if (high) atomic_fetch_add_explicit(dst + 1, high, memory_order_relaxed);
 }
 
-kernel void xgb_histogram(
-    device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
-    device const uint* offsets [[buffer(2)]], device const long2* gradients [[buffer(3)]],
-    device const ulong* rows [[buffer(4)]], device atomic_uint* hist [[buffer(5)]],
-    constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
-    device const ulong* row_begin [[buffer(8)]], uint tid [[thread_position_in_grid]]) {
+template <bool compressed>
+inline void xgb_histogram_impl(device const uchar* index, device const ulong* row_ptr,
+                               device const uint* offsets, device const long2* gradients,
+                               device const ulong* rows, device atomic_uint* hist,
+                               constant HistogramParams& p, device const ulong* node_ptr,
+                               device const ulong* row_begin, uint tid, device const uchar* tail,
+                               CompressedParams c) {
   if (ulong(tid) >= p.n_rows) return;
   // Upper bound handles repeated offsets from empty nodes.
   uint lo = 0, hi = p.n_nodes;
@@ -64,38 +117,61 @@ kernel void xgb_histogram(
   ulong local_row = row - p.base_rowid;
   long2 g = gradients[row];
   if (g.x == 0 && g.y == 0) return;
-  ulong begin = row_ptr[local_row];
-  ulong end = row_ptr[local_row + 1];
+  ulong begin = compressed ? 0 : row_ptr[local_row];
+  ulong end = compressed ? c.stride : row_ptr[local_row + 1];
   for (ulong i = begin; i < end; ++i) {
-    ulong pos = p.padding ? (i - begin) * p.page_rows + local_row : i;
     uint bin;
-    if (p.bin_bytes == 1) {
-      bin = uint(index[pos]);
-    } else if (p.bin_bytes == 2) {
-      bin = uint(reinterpret_cast<device const ushort*>(index)[pos]);
+    if (compressed) {
+      bin = xgb_ellpack_read(index, tail, c.split, local_row * c.stride + i, c.bits);
+      if (bin == (c.dense ? c.symbols : c.symbols - 1)) continue;
+      if (c.stride == p.n_features) bin += offsets[i];
     } else {
-      bin = reinterpret_cast<device const uint*>(index)[pos];
+      ulong pos = p.padding ? (i - begin) * p.page_rows + local_row : i;
+      if (p.bin_bytes == 1) {
+        bin = uint(index[pos]);
+      } else if (p.bin_bytes == 2) {
+        bin = uint(reinterpret_cast<device const ushort*>(index)[pos]);
+      } else {
+        bin = reinterpret_cast<device const uint*>(index)[pos];
+      }
+      if (p.dense) bin += offsets[i - begin];
     }
-    if (p.dense) bin += offsets[i - begin];
     ulong dst = (ulong(node) * p.n_bins + bin) * 4;
     add_i64(hist + dst, g.x);
     add_i64(hist + dst + 2, g.y);
   }
 }
-
-// Privatize one feature histogram per threadgroup. Multiple rows per lane amortize
-// clearing and merging the shared histogram. Each group handles exactly one
-// node, so threads never contend across nodes or features in shared memory.
-kernel void xgb_histogram_dense_shared(
+kernel void xgb_histogram(
     device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
     device const uint* offsets [[buffer(2)]], device const long2* gradients [[buffer(3)]],
     device const ulong* rows [[buffer(4)]], device atomic_uint* hist [[buffer(5)]],
     constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
-    device const ulong* row_begin [[buffer(8)]], device const ulong* block_ptr [[buffer(9)]],
-    threadgroup atomic_uint* local_hist [[threadgroup(0)]],
-    uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
-    uint3 threads [[threads_per_threadgroup]],
-    uint simd_lane [[thread_index_in_simdgroup]], uint simd_width [[threads_per_simdgroup]]) {
+    device const ulong* row_begin [[buffer(8)]], uint tid [[thread_position_in_grid]]) {
+  xgb_histogram_impl<false>(index, row_ptr, offsets, gradients, rows, hist, p, node_ptr, row_begin,
+                            tid, index, CompressedParams{});
+}
+kernel void xgb_histogram_ellpack(
+    device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
+    device const uint* offsets [[buffer(2)]], device const long2* gradients [[buffer(3)]],
+    device const ulong* rows [[buffer(4)]], device atomic_uint* hist [[buffer(5)]],
+    constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
+    device const ulong* row_begin [[buffer(8)]], device const uchar* tail [[buffer(9)]],
+    constant CompressedParams& compressed_page [[buffer(10)]],
+    uint tid [[thread_position_in_grid]]) {
+  xgb_histogram_impl<true>(index, row_ptr, offsets, gradients, rows, hist, p, node_ptr, row_begin,
+                           tid, tail, compressed_page);
+}
+
+// Privatize one feature histogram per threadgroup. Multiple rows per lane amortize
+// clearing and merging the shared histogram. Each group handles exactly one
+// node, so threads never contend across nodes or features in shared memory.
+template <bool compressed>
+inline void xgb_histogram_dense_shared_impl(
+    device const uchar* index, device const ulong* row_ptr, device const uint* offsets,
+    device const long2* gradients, device const ulong* rows, device atomic_uint* hist,
+    constant HistogramParams& p, device const ulong* node_ptr, device const ulong* row_begin,
+    device const ulong* block_ptr, threadgroup atomic_uint* local_hist, uint3 group, uint tid,
+    uint3 threads, uint simd_lane, uint simd_width, device const uchar* tail, CompressedParams c) {
   uint feature = group.y;
   // Only actual node blocks are scheduled. Empty and short nodes do not inherit
   // the largest node's grid, which wastes groups as tree branches become uneven.
@@ -120,12 +196,8 @@ kernel void xgb_histogram_dense_shared(
     for (ulong r = begin + tid; r < end; r += threads.x) {
       ulong row = rows[row_begin[node] + r - node_ptr[node]];
       ulong2 g = as_type<ulong2>(gradients[row]);
-      ulong i = p.padding ? ulong(feature) * p.page_rows + (row - p.base_rowid)
-                          : row_ptr[row - p.base_rowid] + feature;
-      uint bin;
-      if (p.bin_bytes == 1) bin = uint(index[i]);
-      else if (p.bin_bytes == 2) bin = uint(reinterpret_cast<device const ushort*>(index)[i]);
-      else bin = reinterpret_cast<device const uint*>(index)[i];
+      uint bin = xgb_histogram_local_bin<compressed>(index, row_ptr, tail, c, p, row - p.base_rowid,
+                                                     feature);
       if (bin == 0) first += g;
       else second += g;
     }
@@ -151,15 +223,8 @@ kernel void xgb_histogram_dense_shared(
     ulong row = rows[row_begin[node] + r - node_ptr[node]];
     long2 g = gradients[row];
     if (g.x == 0 && g.y == 0) continue;
-    ulong i = p.padding ? ulong(feature) * p.page_rows + (row - p.base_rowid)
-                        : row_ptr[row - p.base_rowid] + feature;
-    uint bin;
-    if (p.bin_bytes == 1)
-      bin = uint(index[i]);
-    else if (p.bin_bytes == 2)
-      bin = uint(reinterpret_cast<device const ushort*>(index)[i]);
-    else
-      bin = reinterpret_cast<device const uint*>(index)[i];
+    uint bin = xgb_histogram_local_bin<compressed>(index, row_ptr, tail, c, p, row - p.base_rowid,
+                                                   feature);
     add_i64(local_hist + bin * 4, g.x);
     add_i64(local_hist + bin * 4 + 2, g.y);
   }
@@ -174,6 +239,36 @@ kernel void xgb_histogram_dense_shared(
       add_i64(hist + dst + component * 2, sum);
     }
   }
+}
+kernel void xgb_histogram_dense_shared(
+    device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
+    device const uint* offsets [[buffer(2)]], device const long2* gradients [[buffer(3)]],
+    device const ulong* rows [[buffer(4)]], device atomic_uint* hist [[buffer(5)]],
+    constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
+    device const ulong* row_begin [[buffer(8)]], device const ulong* block_ptr [[buffer(9)]],
+    threadgroup atomic_uint* local_hist [[threadgroup(0)]],
+    uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+    uint3 threads [[threads_per_threadgroup]], uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_width [[threads_per_simdgroup]]) {
+  xgb_histogram_dense_shared_impl<false>(index, row_ptr, offsets, gradients, rows, hist, p,
+                                         node_ptr, row_begin, block_ptr, local_hist, group, tid,
+                                         threads, simd_lane, simd_width, index, CompressedParams{});
+}
+kernel void xgb_histogram_dense_shared_ellpack(
+    device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
+    device const uint* offsets [[buffer(2)]], device const long2* gradients [[buffer(3)]],
+    device const ulong* rows [[buffer(4)]], device atomic_uint* hist [[buffer(5)]],
+    constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
+    device const ulong* row_begin [[buffer(8)]], device const ulong* block_ptr [[buffer(9)]],
+    device const uchar* tail [[buffer(10)]],
+    constant CompressedParams& compressed_page [[buffer(11)]],
+    threadgroup atomic_uint* local_hist [[threadgroup(0)]],
+    uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+    uint3 threads [[threads_per_threadgroup]], uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_width [[threads_per_simdgroup]]) {
+  xgb_histogram_dense_shared_impl<true>(index, row_ptr, offsets, gradients, rows, hist, p, node_ptr,
+                                        row_begin, block_ptr, local_hist, group, tid, threads,
+                                        simd_lane, simd_width, tail, compressed_page);
 }
 
 // CUDA GradientQuantiser::ToFixedPointImpl truncates float * 2^exponent.
@@ -322,34 +417,29 @@ struct PartitionParams {
   ulong rows, base;
   uint bin_bytes, dense, nodes, blocks;
 };
-inline uint xgb_read_bin(device const uchar* index, ulong pos, uint width) {
-  if (width == 1) return index[pos];
-  if (width == 2) return reinterpret_cast<device const ushort*>(index)[pos];
-  return reinterpret_cast<device const uint*>(index)[pos];
-}
-kernel void xgb_partition_classify(
-    device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
-    device const uint* offsets [[buffer(2)]], device const float* cuts [[buffer(3)]],
-    device const ulong* rows [[buffer(4)]], device const PartitionSplit* splits [[buffer(5)]],
-    device const PartitionBlock* blocks [[buffer(6)]], device const uint* categories [[buffer(7)]],
-    device uint* ranks [[buffer(8)]], device uint* counts [[buffer(9)]],
-    device ulong* saved_rows [[buffer(10)]], constant PartitionParams& p [[buffer(11)]],
-    uint block_id [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],
-    uint simd_group [[simdgroup_index_in_threadgroup]],
-    uint simd_lane [[thread_index_in_simdgroup]]) {
-  threadgroup uint sums[8];
+
+template <bool compressed>
+inline void xgb_partition_classify_impl(
+    device const uchar* index, device const ulong* row_ptr, device const uint* offsets,
+    device const float* cuts, device const ulong* rows, device const PartitionSplit* splits,
+    device const PartitionBlock* blocks, device const uint* categories, device uint* ranks,
+    device uint* counts, device ulong* saved_rows, constant PartitionParams& p, uint block_id,
+    uint lane, uint simd_group, uint simd_lane, device const uchar* tail, CompressedParams c,
+    threadgroup uint* sums) {
   PartitionBlock block = blocks[block_id];
   PartitionSplit split = splits[block.node];
   ulong pos = block.begin + lane;
   bool valid = pos < block.end, left = false;
   if (valid) {
     ulong row = rows[pos], local = row - p.base;
-    ulong begin = row_ptr[local], end = row_ptr[local + 1];
     uint bin = 0xffffffffu, first = offsets[split.feature], last = offsets[split.feature + 1];
-    if (p.dense)
+    if (compressed)
+      bin = xgb_ellpack_bin(index, tail, offsets, c, local, split.feature);
+    else if (p.dense)
       bin = xgb_read_bin(index, ulong(split.feature) * p.rows + local, p.bin_bytes) + first;
     else {
-      ulong lo = begin, hi = end;
+      ulong end = row_ptr[local + 1];
+      ulong lo = row_ptr[local], hi = end;
       while (lo < hi) {
         ulong mid = lo + (hi - lo) / 2;
         if (xgb_read_bin(index, mid, p.bin_bytes) < first)
@@ -383,6 +473,38 @@ kernel void xgb_partition_classify(
   for (uint g = 0; g < simd_group; ++g) rank += sums[g];
   if (valid) ranks[pos] = rank | (uint(left) << 31);
   if (lane == 255) counts[block_id] = rank;
+}
+kernel void xgb_partition_classify(
+    device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
+    device const uint* offsets [[buffer(2)]], device const float* cuts [[buffer(3)]],
+    device const ulong* rows [[buffer(4)]], device const PartitionSplit* splits [[buffer(5)]],
+    device const PartitionBlock* blocks [[buffer(6)]], device const uint* categories [[buffer(7)]],
+    device uint* ranks [[buffer(8)]], device uint* counts [[buffer(9)]],
+    device ulong* saved_rows [[buffer(10)]], constant PartitionParams& p [[buffer(11)]],
+    uint block_id [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]]) {
+  threadgroup uint sums[8];
+  xgb_partition_classify_impl<false>(index, row_ptr, offsets, cuts, rows, splits, blocks,
+                                     categories, ranks, counts, saved_rows, p, block_id, lane,
+                                     simd_group, simd_lane, index, CompressedParams{}, sums);
+}
+kernel void xgb_partition_classify_ellpack(
+    device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
+    device const uint* offsets [[buffer(2)]], device const float* cuts [[buffer(3)]],
+    device const ulong* rows [[buffer(4)]], device const PartitionSplit* splits [[buffer(5)]],
+    device const PartitionBlock* blocks [[buffer(6)]], device const uint* categories [[buffer(7)]],
+    device uint* ranks [[buffer(8)]], device uint* counts [[buffer(9)]],
+    device ulong* saved_rows [[buffer(10)]], constant PartitionParams& p [[buffer(11)]],
+    device const uchar* tail [[buffer(12)]],
+    constant CompressedParams& compressed_page [[buffer(13)]],
+    uint block_id [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]]) {
+  threadgroup uint sums[8];
+  xgb_partition_classify_impl<true>(index, row_ptr, offsets, cuts, rows, splits, blocks, categories,
+                                    ranks, counts, saved_rows, p, block_id, lane, simd_group,
+                                    simd_lane, tail, compressed_page, sums);
 }
 kernel void xgb_partition_prefix_serial(device const PartitionSplit* splits [[buffer(0)]],
                                  device const uint* counts [[buffer(1)]],
@@ -7356,6 +7478,27 @@ inline bool xgb_input_missing(uint value, uint missing) {
   if ((value & 0x7fffffffu) > 0x7f800000u) return true;
   return value == missing || ((value & 0x7fffffffu) == 0 && (missing & 0x7fffffffu) == 0);
 }
+kernel void xgb_prepare_ellpack_input(
+    device const uchar* head [[buffer(0)]], device const uchar* tail [[buffer(1)]],
+    device const uint* offsets [[buffer(2)]], device const uint* cuts [[buffer(3)]],
+    device const uchar* types [[buffer(4)]], device const uint* segments [[buffer(5)]],
+    device const int* mapping [[buffer(6)]], device uint* output [[buffer(7)]],
+    device atomic_uint* unused [[buffer(8)]], constant InputParams& p [[buffer(9)]],
+    constant CompressedParams& c [[buffer(10)]], uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.rows) return;
+  ulong base = ulong(row) * p.features;
+  for (uint f = 0; f < p.features; ++f) {
+    uint value = 0x7fc00000u;
+    if (f < p.input_features) {
+      uint bin = xgb_ellpack_bin(head, tail, offsets, c, p.first_entry + row, f);
+      if (bin != 0xffffffffu) {
+        value = types[f] ? cuts[bin] : bin == offsets[f] ? 0xff800000u : cuts[bin - 1];
+        value = xgb_input_recode(value, f, segments, mapping, p);
+      }
+    }
+    output[base + f] = value;
+  }
+}
 kernel void xgb_prepare_input(
     device const uchar* data [[buffer(0)]], device const InputArray* arrays [[buffer(1)]],
     device const uint* cuts [[buffer(2)]], device const uint* cut_values [[buffer(3)]],
@@ -7478,16 +7621,7 @@ struct EllpackParams {
   ulong rows, split, row_offset;
   uint features, stride, symbols, bits, dense, width;
 };
-inline uint xgb_ellpack_read(device const uchar* head, device const uchar* tail, ulong split,
-                             ulong index, uint bits) {
-  uint symbol = 0;
-  for (uint j = 0; j < bits; ++j) {
-    ulong bit = index * bits + j, byte = 8 + bit / 8;
-    uint value = byte < split ? head[byte] : tail[byte - split];
-    symbol = (symbol << 1) | ((value >> (7 - bit % 8)) & 1);
-  }
-  return symbol;
-}
+
 inline void xgb_ellpack_write(device atomic_uint* output, ulong index, uint bits, uint symbol) {
   for (uint j = 0; j < bits; ++j) {
     if ((symbol >> (bits - 1 - j)) & 1) {

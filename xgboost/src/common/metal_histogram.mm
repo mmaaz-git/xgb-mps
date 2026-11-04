@@ -125,6 +125,8 @@ std::atomic<std::uint64_t> ellpack_pack_dispatches{0}, ellpack_copy_dispatches{0
     ellpack_debug_readback_bytes{0}, ellpack_cached_host_bytes{0}, ellpack_cached_device_bytes{0};
 std::atomic<std::uint64_t> ellpack_adapter_dispatches{0}, ellpack_adapter_values{0},
     ellpack_pack_input_bytes{0};
+std::atomic<std::uint64_t> ellpack_histogram_dispatches{0}, ellpack_partition_dispatches{0},
+    ellpack_input_dispatches{0};
 std::atomic<std::uint64_t> adapter_prepare_dispatches{0}, adapter_index_dispatches{0},
     adapter_gpu_time_ns{0}, adapter_debug_readback_bytes{0};
 std::atomic<std::uint64_t> radix_sort_dispatches{0}, quantile_dispatches{0},
@@ -263,6 +265,8 @@ class Runtime {
   id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
       ellpack_copy_pipeline, ellpack_count_pipeline, ellpack_unpack_pipeline;
   id<MTLComputePipelineState> ellpack_adapter_pipeline, ellpack_null_pipeline;
+  id<MTLComputePipelineState> ellpack_histogram_pipeline, ellpack_shared_histogram_pipeline,
+      ellpack_partition_pipeline, ellpack_input_pipeline;
   id<MTLComputePipelineState> adapter_count_pipeline, adapter_scatter_pipeline,
       adapter_offsets_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
@@ -356,6 +360,10 @@ class Runtime {
       ellpack_unpack_pipeline = make_pipeline(@"xgb_ellpack_unpack");
       ellpack_adapter_pipeline = make_pipeline(@"xgb_ellpack_adapter");
       ellpack_null_pipeline = make_pipeline(@"xgb_ellpack_null");
+      ellpack_histogram_pipeline = make_pipeline(@"xgb_histogram_ellpack");
+      ellpack_shared_histogram_pipeline = make_pipeline(@"xgb_histogram_dense_shared_ellpack");
+      ellpack_partition_pipeline = make_pipeline(@"xgb_partition_classify_ellpack");
+      ellpack_input_pipeline = make_pipeline(@"xgb_prepare_ellpack_input");
       adapter_count_pipeline = make_pipeline(@"xgb_adapter_count");
       adapter_scatter_pipeline = make_pipeline(@"xgb_adapter_scatter");
       adapter_offsets_pipeline = make_pipeline(@"xgb_adapter_offsets");
@@ -633,14 +641,34 @@ id<MTLBuffer> GatherHistograms(Runtime const& rt, Span<HistogramInput const> inp
   return output;
 }
 
+struct CompressedParams {
+  std::uint64_t split;
+  std::uint32_t stride, bits, symbols, dense, features, padding;
+};
+static_assert(sizeof(CompressedParams) == 32);
 class Page final : public QuantizedPage {
  public:
   id<MTLBuffer> index, row_ptr, offsets, cuts;
-  Page(Runtime const& rt, GHistIndexMatrix const& gidx, id<MTLBuffer> resident_index = nil,
-       id<MTLBuffer> resident_rows = nil) {
+  id<MTLBuffer> tail;
+  CompressedParams compressed{};
+  bool IsCompressed() const { return compressed.bits != 0; }
+  Page(Runtime const& rt, HistogramCuts const& values, EllpackInfo info, id<MTLBuffer> head,
+       id<MTLBuffer> tail, std::uint64_t split)
+      : index{head}, tail{tail}, compressed{split,
+                                            info.row_stride,
+                                            info.bits,
+                                            info.symbols,
+                                            std::uint32_t(info.dense),
+                                            info.features,
+                                            0} {
+    // Compressed consumers do not need restored indices, row pointers or a transpose.
+    row_ptr = Allocate(rt, 0);
+    offsets = Upload(rt, values.Ptrs().data(), values.Ptrs().size() * 4);
+    cuts = Upload(rt, values.Values().data(), values.Values().size() * 4);
+  }
+  Page(Runtime const& rt, GHistIndexMatrix const& gidx) {
     auto bytes = gidx.index.Size() * gidx.index.GetBinTypeSize();
-    auto source =
-        resident_index ? resident_index : Upload(rt, gidx.index.data<std::uint8_t>(), bytes);
+    auto source = Upload(rt, gidx.index.data<std::uint8_t>(), bytes);
     index = source;
     if (gidx.IsDense() && gidx.Size() && gidx.Features()) {
       index = Allocate(rt, bytes);
@@ -668,18 +696,14 @@ class Page final : public QuantizedPage {
         index_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                     std::memory_order_relaxed);
     }
-    row_ptr = resident_rows
-                  ? resident_rows
-                  : Upload(rt, gidx.row_ptr.data(), gidx.row_ptr.size() * sizeof(std::size_t));
+    row_ptr = Upload(rt, gidx.row_ptr.data(), gidx.row_ptr.size() * sizeof(std::size_t));
     offsets = Upload(rt, gidx.cut.Ptrs().data(), gidx.cut.Ptrs().size() * sizeof(std::uint32_t));
     cuts = Upload(rt, gidx.cut.Values().data(), gidx.cut.Values().size() * sizeof(float));
-    if (!resident_index) {
-      index_uploads.fetch_add(1, std::memory_order_relaxed);
-      index_uploaded_bytes.fetch_add(bytes + gidx.row_ptr.size() * sizeof(std::size_t) +
-                                         gidx.cut.Ptrs().size() * sizeof(std::uint32_t) +
-                                         gidx.cut.Values().size() * sizeof(float),
-                                     std::memory_order_relaxed);
-    }
+    index_uploads.fetch_add(1, std::memory_order_relaxed);
+    index_uploaded_bytes.fetch_add(bytes + gidx.row_ptr.size() * sizeof(std::size_t) +
+                                       gidx.cut.Ptrs().size() * sizeof(std::uint32_t) +
+                                       gidx.cut.Values().size() * sizeof(float),
+                                   std::memory_order_relaxed);
   }
 };
 std::shared_ptr<Page> GetPage(Runtime const& rt, GHistIndexMatrix const& gidx) {
@@ -853,7 +877,8 @@ class MetalRows final : public DeviceRows {
                static_cast<std::uint32_t>(blocks.size())};
       auto encoder = [command computeCommandEncoder];
       CHECK(encoder);
-      [encoder setComputePipelineState:rt_.partition_classify_pipeline];
+      [encoder setComputePipelineState:page->IsCompressed() ? rt_.ellpack_partition_pipeline
+                                                            : rt_.partition_classify_pipeline];
       [encoder setBuffer:page->index offset:0 atIndex:0];
       [encoder setBuffer:page->row_ptr offset:0 atIndex:1];
       [encoder setBuffer:page->offsets offset:0 atIndex:2];
@@ -866,6 +891,10 @@ class MetalRows final : public DeviceRows {
       [encoder setBuffer:counts offset:0 atIndex:9];
       [encoder setBuffer:saved_rows_ offset:0 atIndex:10];
       [encoder setBytes:&p length:sizeof(p) atIndex:11];
+      if (page->IsCompressed()) {
+        [encoder setBuffer:page->tail offset:0 atIndex:12];
+        [encoder setBytes:&page->compressed length:sizeof(page->compressed) atIndex:13];
+      }
       [encoder dispatchThreadgroups:MTLSizeMake(blocks.size(), 1, 1)
               threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [encoder endEncoding];
@@ -903,6 +932,8 @@ class MetalRows final : public DeviceRows {
       this->MarkReady();
       std::memcpy(result.data(), left.contents, result.size() * sizeof(std::uint64_t));
       partition_dispatches.fetch_add(1, std::memory_order_relaxed);
+      if (page->IsCompressed())
+        ellpack_partition_dispatches.fetch_add(1, std::memory_order_relaxed);
       return result;
     }
   }
@@ -1520,7 +1551,9 @@ class MetalHistogram final : public Histogram {
       bool use_shared = gidx.IsDense() && total_rows >= 16384 &&
                         shared_bytes <= rt_.device.maxThreadgroupMemoryLength &&
                         params.n_features <= 65535;
-      auto pipeline = use_shared ? rt_.shared_pipeline : rt_.pipeline;
+      auto pipeline = page->IsCompressed() ? (use_shared ? rt_.ellpack_shared_histogram_pipeline
+                                                         : rt_.ellpack_histogram_pipeline)
+                                           : (use_shared ? rt_.shared_pipeline : rt_.pipeline);
       [encoder setComputePipelineState:pipeline];
       [encoder setBuffer:page->index offset:0 atIndex:0];
       [encoder setBuffer:page->row_ptr offset:0 atIndex:1];
@@ -1532,6 +1565,11 @@ class MetalHistogram final : public Histogram {
       auto threads = std::min<NSUInteger>(256, pipeline.maxTotalThreadsPerThreadgroup);
       [encoder setBuffer:node_buffer offset:0 atIndex:7];
       [encoder setBuffer:row_begin_buffer offset:0 atIndex:8];
+      if (page->IsCompressed()) {
+        auto slot = use_shared ? 10u : 9u;
+        [encoder setBuffer:page->tail offset:0 atIndex:slot];
+        [encoder setBytes:&page->compressed length:sizeof(page->compressed) atIndex:slot + 1];
+      }
       if (use_shared) {
         [encoder setThreadgroupMemoryLength:shared_bytes atIndex:0];
         std::vector<std::uint64_t> block_ptr{0};
@@ -1591,6 +1629,8 @@ class MetalHistogram final : public Histogram {
       if (page_idx)
         histogram_integer_accumulation_dispatches.fetch_add(1, std::memory_order_relaxed);
       dispatches.fetch_add(1, std::memory_order_relaxed);
+      if (page->IsCompressed() && total_rows)
+        ellpack_histogram_dispatches.fetch_add(1, std::memory_order_relaxed);
       processed_rows.fetch_add(total_rows, std::memory_order_relaxed);
       if (use_shared) shared_dispatches.fetch_add(1, std::memory_order_relaxed);
       auto elapsed = command.GPUEndTime - command.GPUStartTime;
@@ -1841,7 +1881,10 @@ Statistics GetStatistics() {
           ellpack_cached_device_bytes.load(std::memory_order_relaxed),
           ellpack_adapter_dispatches.load(std::memory_order_relaxed),
           ellpack_adapter_values.load(std::memory_order_relaxed),
-          ellpack_pack_input_bytes.load(std::memory_order_relaxed)};
+          ellpack_pack_input_bytes.load(std::memory_order_relaxed),
+          ellpack_histogram_dispatches.load(std::memory_order_relaxed),
+          ellpack_partition_dispatches.load(std::memory_order_relaxed),
+          ellpack_input_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -5987,7 +6030,8 @@ struct PackedInput {
                                               bst_idx_t sketch_rows);
   std::unique_ptr<InputBatch> Finish(enc::MappingView map, Span<std::uint32_t const> cuts = {},
                                      Span<float const> cut_values = {},
-                                     Span<FeatureType const> types = {}) {
+                                     Span<FeatureType const> types = {},
+                                     Page const* compressed = nullptr) {
     auto& rt = GetRuntime();
     @autoreleasepool {
       auto output = Allocate(rt, params.rows * params.features * 4);
@@ -5996,10 +6040,12 @@ struct PackedInput {
       CHECK_LE(params.input_features, params.features);
       if (params.mapped) CHECK_EQ(map.offsets.size(), std::size_t(params.features) + 1);
       CHECK(types.empty() || types.size() >= params.input_features);
-      auto raw = Upload(rt, bytes.data(), bytes.size()),
-           descriptors = Upload(rt, arrays.data(), arrays.size() * sizeof(InputArray));
-      auto ptrs = Upload(rt, cuts.data(), cuts.size_bytes()),
-           values = Upload(rt, cut_values.data(), cut_values.size_bytes());
+      auto raw = compressed ? compressed->index : Upload(rt, bytes.data(), bytes.size());
+      auto descriptors = compressed ? compressed->tail
+                                    : Upload(rt, arrays.data(), arrays.size() * sizeof(InputArray));
+      auto ptrs = compressed ? compressed->offsets : Upload(rt, cuts.data(), cuts.size_bytes());
+      auto values =
+          compressed ? compressed->cuts : Upload(rt, cut_values.data(), cut_values.size_bytes());
       std::vector<FeatureType> numerical(types.empty() ? params.input_features : 0,
                                          FeatureType::kNumerical);
       if (types.empty()) types = numerical;
@@ -6012,7 +6058,8 @@ struct PackedInput {
       CHECK(command);
       auto e = [command computeCommandEncoder];
       CHECK(e);
-      [e setComputePipelineState:rt.input_prepare_pipeline];
+      [e setComputePipelineState:compressed ? rt.ellpack_input_pipeline
+                                            : rt.input_prepare_pipeline];
       [e setBuffer:raw offset:0 atIndex:0];
       [e setBuffer:descriptors offset:0 atIndex:1];
       [e setBuffer:ptrs offset:0 atIndex:2];
@@ -6023,10 +6070,13 @@ struct PackedInput {
       [e setBuffer:output offset:0 atIndex:7];
       [e setBuffer:error offset:0 atIndex:8];
       [e setBytes:&params length:sizeof(params) atIndex:9];
+      if (compressed)
+        [e setBytes:&compressed->compressed length:sizeof(compressed->compressed) atIndex:10];
       [e dispatchThreads:MTLSizeMake(params.rows, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
       CompleteOperation(command, &input_prepare_dispatches, &input_prepare_gpu_time_ns);
+      if (compressed) ellpack_input_dispatches.fetch_add(1, std::memory_order_relaxed);
       if (params.mapped) input_recode_dispatches.fetch_add(1, std::memory_order_relaxed);
       CHECK_EQ(*static_cast<std::uint32_t const*>(error.contents), 0)
           << "Invalid sparse prediction row or feature index.";
@@ -6067,6 +6117,13 @@ std::unique_ptr<InputBatch> PrepareInput(GHistIndexMatrix const& page,
   p.params.input_features = page.Features();
   p.params.dense = page.IsDense();
   if (!rows) return p.Finish(map);
+  if (auto cached = std::atomic_load(&page.metal_page)) {
+    auto device = std::static_pointer_cast<Page>(cached);
+    if (device->IsCompressed()) {
+      p.params.first_entry = begin;
+      return p.Finish(map, {}, {}, types, device.get());
+    }
+  }
   auto first = page.row_ptr[begin], last = page.row_ptr[begin + rows];
   CHECK_LE(first, last);
   CHECK_LE(last, page.index.Size());
@@ -6627,8 +6684,9 @@ class MetalCompressedPage final : public CompressedPage {
       for (std::size_t i = 0; i < output->hit_count.size(); ++i)
         output->hit_count[i] = static_cast<std::uint32_t const*>(hits.contents)[i];
       output->InitColumns(ctx, sparse_thresh);
-      // Training consumes the already restored GPU buffers; do not upload host bins again.
-      output->metal_page = std::make_shared<Page>(rt, *output, index, row_ptr);
+      // Retain only the compressed GPU view. Host mirrors support CPU interoperability;
+      // Metal consumers read symbols directly and need no restored GPU index/transpose.
+      output->metal_page = std::make_shared<Page>(rt, cuts, info_, head, tail, p.split);
     }
   }
   std::vector<std::uint8_t> Readback() const override {

@@ -247,6 +247,12 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ellpack_adapter_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_adapter_values)};
   info["ellpack_pack_input_bytes"] =
       Integer{static_cast<std::int64_t>(stats.ellpack_pack_input_bytes)};
+  info["ellpack_histogram_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_histogram_dispatches)};
+  info["ellpack_partition_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_partition_dispatches)};
+  info["ellpack_input_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_input_dispatches)};
   info["adapter_prepare_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.adapter_prepare_dispatches)};
   info["adapter_index_dispatches"] =
@@ -474,6 +480,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ellpack_adapter_dispatches"] = Integer{0};
   info["ellpack_adapter_values"] = Integer{0};
   info["ellpack_pack_input_bytes"] = Integer{0};
+  info["ellpack_histogram_dispatches"] = Integer{0};
+  info["ellpack_partition_dispatches"] = Integer{0};
+  info["ellpack_input_dispatches"] = Integer{0};
   info["adapter_prepare_dispatches"] = Integer{0};
   info["adapter_index_dispatches"] = Integer{0};
   info["adapter_gpu_time_ns"] = Integer{0};
