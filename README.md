@@ -14,7 +14,23 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **compressed disk caches and internal ELLPACK save/load**.
+Latest step: **ordinary external-memory host caches**.
+`DMatrix(DataIter(on_host=True))` now keeps its MPS quantized pages in Metal storage
+instead of writing a quantized disk cache. It follows CUDA's defaults: one input
+page stays private to the GPU, multiple pages use shared host storage, and ordinary
+matrices retain one cache page per input batch. The original raw CSR file remains.
+
+Host/disk selection survives CPU/MPS and max-bin changes. Constant-Hessian `approx`
+reuses its cache; variable-Hessian `approx` rebuilds it. Metadata reads avoid CPU
+bin arrays, and retained GPU pages survive cache regeneration and destruction.
+
+Focused validation passes **288 cache cases / 16,273,773 exact fields**,
+**390 public regression tests**, and **22 empty/default/error cases**. This adds
+64 native host-cache cases and 52 public cases. Full validation passes **2,366 Python
+tests, one skip**, every rebuilt native suite and the expanded CPU-only checks.
+No new benchmark. [External-host validation](validation/cuda-external-host-m3.txt).
+
+The preceding step added **compressed disk caches and internal ELLPACK save/load**.
 MPS external quantile matrices now bin directly into compressed disk pages;
 ordinary external matrices compress raw CSR into the same format. GPU traversal
 loads compressed views, and CPU bin/column arrays are created only on demand.
@@ -32,8 +48,8 @@ Full regression passes **2,314 Python tests, one skip**, every rebuilt native su
 and the CPU-only build/API checks. A final resource-scope follow-up also passes its
 targeted build and IO suite. No new benchmark was run. [Disk-format validation](validation/cuda-disk-ellpack-m3.txt).
 
-Still open in this area: ordinary external matrices' `on_host=True` compressed
-cache selection, mapped-file zero-copy, and optional Snappy compression.
+Ordinary external host-cache selection is covered above. Mapped-file zero-copy
+and optional Snappy compression remain open.
 CPU-origin external matrices retain the existing compatibility path; upstream CUDA
 rejects CPU-created external quantile matrices. Broader device/state and collective gaps remain.
 
@@ -929,7 +945,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Keep in-memory quantile matrices compressed, with one-time CPU conversion and stable concurrent CPU/GPU views.
 - [x] Compress ordinary in-memory DMatrix raw CSR directly; retain separate CPU views and cache-generation rules.
 - [x] Port compressed MPS-origin disk caches and internal ELLPACK save/load.
-- [ ] Complete ordinary external host-cache selection.
+- [x] Complete ordinary external host-cache selection.
 - [ ] Port optional Snappy cache compression.
 - [ ] Complete native device arrays and remaining metadata/state operations.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.

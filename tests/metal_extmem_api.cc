@@ -62,11 +62,12 @@ struct Input {
   }
 };
 void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats, bool weighted,
-          bool on_host = false, double ratio = std::nan(""), std::int64_t minimum = 0, bool ordinary = false) {
+          bool on_host = false, double ratio = std::nan(""), std::int64_t minimum = 0, bool ordinary = false, bool single = false) {
   constexpr std::size_t cols = 7, rows = 1029;
   std::shared_ptr<DMatrix> proxy = std::make_shared<data::DMatrixProxy>();
   Input input{static_cast<data::DMatrixProxy*>(proxy.get())};
   input.weighted = weighted;
+  if (single) input.sizes = {rows};
   input.types.assign(cols, FeatureType::kNumerical);
   if (cats) input.types[2] = FeatureType::kCategorical;
   input.values.resize(rows * cols);
@@ -126,7 +127,7 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   for (auto const& page : cpu->GetBatches<GHistIndexMatrix>(&ctx, BatchParam{})) oracle = &page;
   Check(oracle && oracle->Size() == rows, "CPU reference shape");
   auto expected_sizes = input.sizes;
-  if (on_host) {
+  if (on_host && !ordinary) {
     unsigned stride = 0, maximum = 0;
     for (std::size_t r = 0; r < rows; ++r)
       stride = std::max(stride, unsigned(oracle->row_ptr[r + 1] - oracle->row_ptr[r]));
@@ -154,7 +155,31 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   for (auto n : expected_sizes) expected_ptr.push_back(expected_ptr.back() + n);
   Check(matrix->NumBatches() == expected_sizes.size(), "Cached batch count");
   Check(matrix->BatchPtr() == expected_ptr, "Cached batch row boundaries");
-  Check(std::filesystem::is_empty(dir) == on_host, "Storage follows on_host");
+  if (ordinary && on_host) {
+    Check(std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{}) == 1,
+          "Host quantized cache creates no extra disk file");
+    for (auto const& file : std::filesystem::directory_iterator(dir))
+      Check(file.path().extension() == ".page" && file.path().string().find(".row.page") != std::string::npos,
+            "Ordinary host mode retains only its raw row file");
+    unsigned stride = 0, maximum = 0;
+    for (std::size_t r = 0; r < rows; ++r)
+      stride = std::max(stride, unsigned(oracle->row_ptr[r + 1] - oracle->row_ptr[r]));
+    for (unsigned f = 0; f < cols; ++f)
+      maximum = std::max(maximum, oracle->cut.Ptrs()[f + 1] - oracle->cut.Ptrs()[f]);
+    if (oracle->IsDense()) stride = cols;
+    auto symbols = oracle->IsDense() ? maximum : stride == cols ? maximum + 1 : oracle->cut.TotalBins() + 1;
+    std::size_t bytes = 0;
+    for (auto n : input.sizes)
+      bytes += common::CompressedBufferWriter::CalculateBufferSize(n * stride, symbols);
+    Check(after.ellpack_cached_host_bytes - before.ellpack_cached_host_bytes == (single ? 0 : bytes) &&
+              after.ellpack_cached_device_bytes - before.ellpack_cached_device_bytes == (single ? bytes : 0),
+          "CUDA single-page private and multiple-page host defaults");
+    Check(after.ellpack_io_write_pages == before.ellpack_io_write_pages &&
+              after.ellpack_io_write_bytes == before.ellpack_io_write_bytes,
+          "Host generation performs no compressed disk writes");
+  } else {
+    Check(std::filesystem::is_empty(dir) == on_host, "Storage follows on_host");
+  }
   input.closed = true;
   auto calls = input.calls;
   before = metal::GetStatistics();
@@ -259,8 +284,10 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
       for (auto const& page : matrix->GetBatches<GHistIndexMatrix>(&gpu, BatchParam{next_bins, .2}))
         Check(!page.HostReadable(), "Mutable Metal generation");
       auto end = metal::GetStatistics();
-      Check(end.ellpack_io_write_pages - start.ellpack_io_write_pages == input.sizes.size(),
-            "Regeneration rewrites every compressed disk page");
+      Check(end.ellpack_io_write_pages - start.ellpack_io_write_pages == (on_host ? 0 : input.sizes.size()),
+            "Regeneration retains selected host/disk storage");
+      if (on_host) Check(end.ellpack_cache_dispatches > start.ellpack_cache_dispatches || single,
+                         "Multiple-page host cache is rebuilt on GPU");
       Check(end.ellpack_host_materializations == start.ellpack_host_materializations,
             "Regeneration has no CPU quantized mirror");
     }
@@ -315,6 +342,12 @@ int main() {
         for (bool cats : {false, true})
           for (bool weighted : {false, true})
             Case(dir, bins, layout, cats, weighted, false, std::nan(""), 0, true);
+    for (int bins : {8, 257})
+      for (unsigned layout = 0; layout < 4; ++layout)
+        for (bool cats : {false, true})
+          for (bool weighted : {false, true})
+            for (bool single : {false, true})
+              Case(dir, bins, layout, cats, weighted, true, std::nan(""), 0, true, single);
     std::filesystem::remove(dir);
     std::printf("PASS %zu cases / %zu cached page visits / %zu exact fields\n", cases, pages,
                 fields);

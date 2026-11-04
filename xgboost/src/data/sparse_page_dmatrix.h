@@ -24,6 +24,7 @@
 
 namespace xgboost::data {
 class MetalDiskPageSource;
+class MetalPageSource;
 /**
  * @brief DMatrix used for external memory.
  *
@@ -108,7 +109,8 @@ class SparsePageDMatrix : public DMatrix {
     return std::visit([](auto &&ptr) { return static_cast<bool>(ptr); }, ellpack_page_source_);
   }
   [[nodiscard]] bool GHistIndexExists() const override {
-    return static_cast<bool>(ghist_index_source_) || static_cast<bool>(metal_disk_source_);
+    return static_cast<bool>(ghist_index_source_) || static_cast<bool>(metal_disk_source_) ||
+           static_cast<bool>(metal_page_source_);
   }
   [[nodiscard]] bool SparsePageExists() const override {
     return static_cast<bool>(sparse_page_source_);
@@ -139,6 +141,7 @@ class SparsePageDMatrix : public DMatrix {
   std::shared_ptr<SortedCSCPageSource> sorted_column_source_;
   std::shared_ptr<GradientIndexPageSource> ghist_index_source_;
   std::shared_ptr<MetalDiskPageSource> metal_disk_source_;
+  std::shared_ptr<MetalPageSource> metal_page_source_;
 };
 }  // namespace xgboost::data
 #endif  // XGBOOST_DATA_SPARSE_PAGE_DMATRIX_H_

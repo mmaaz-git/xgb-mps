@@ -33,7 +33,7 @@ def read_layout(path):
     return pages
 
 
-def make_pages(tmp_path, layout, kind):
+def make_pages(tmp_path, layout, kind, on_host=False):
     x, y = data(layout)
     if kind == "vector":
         y = np.column_stack([y, y * -.7 + .1])
@@ -44,7 +44,7 @@ def make_pages(tmp_path, layout, kind):
         return [a.iloc[b:e] if isinstance(a, pd.DataFrame) else a[b:e]
                 for b, e in zip(split[:-1], split[1:])]
     weight = (np.arange(len(x)) % 7 + 1).astype(np.float32) / 4
-    it = DiskPages(tmp_path / "cache", chunks(x), label=chunks(y), weight=chunks(weight))
+    it = DiskPages(tmp_path / "cache", chunks(x), on_host=on_host, label=chunks(y), weight=chunks(weight))
     return x, y, weight, it, split
 
 
@@ -53,8 +53,9 @@ def make_pages(tmp_path, layout, kind):
     ("hist", "scalar"), ("approx", "scalar"), ("approx_variable", "scalar"),
     ("hist", "vector"), ("hist", "dart"), ("approx_variable", "dart"),
 ])
-def test_ordinary_disk_generations(metal, tmp_path, layout, method, kind):
-    x, y, weight, it, split = make_pages(tmp_path, layout, kind)
+@pytest.mark.parametrize("on_host", [False, True])
+def test_ordinary_external_generations(metal, tmp_path, layout, method, kind, on_host):
+    x, y, weight, it, split = make_pages(tmp_path, layout, kind, on_host)
     matrix = xgb.DMatrix(it, nthread=2)
     it.closed = True
     params = dict(device="mps", tree_method="hist" if method == "hist" else "approx",
@@ -69,15 +70,21 @@ def test_ordinary_disk_generations(metal, tmp_path, layout, method, kind):
     model = xgb.train(params, matrix, 3)
     after = xgb.metal_info()
     generations = 3 if method == "approx_variable" else 1
-    assert after["ellpack_io_write_pages"] - before["ellpack_io_write_pages"] == (len(split) - 1) * generations
+    assert after["ellpack_io_write_pages"] - before["ellpack_io_write_pages"] == (0 if on_host else (len(split) - 1) * generations)
     assert after["ellpack_csr_values"] - before["ellpack_csr_values"] == matrix.num_nonmissing() * generations
     for key in ["adapter_index_dispatches", "binning_dispatches", "ellpack_pack_input_bytes", "index_uploads"]:
         assert after[key] == before[key], key
     assert_no_host(before)
     files = list(tmp_path.glob("*.gradient_index.page"))
-    assert len(files) == 1
-    pages = read_layout(files[0])
-    assert [p[:2] for p in pages] == list(zip(np.diff(split), split[:-1]))
+    if on_host:
+        assert not files
+        assert all(p.name.endswith(".row.page") for p in tmp_path.iterdir())
+        assert after["ellpack_cached_host_bytes"] > before["ellpack_cached_host_bytes"]
+        assert after["ellpack_cached_device_bytes"] == before["ellpack_cached_device_bytes"]
+    else:
+        assert len(files) == 1
+        pages = read_layout(files[0])
+        assert [p[:2] for p in pages] == list(zip(np.diff(split), split[:-1]))
     cuts = matrix.get_quantile_cut()
     if method == "hist":
         reference = xgb.QuantileDMatrix(x, y, weight=weight, ref=matrix, nthread=2, max_bin=17)
@@ -102,8 +109,9 @@ def test_ordinary_disk_generations(metal, tmp_path, layout, method, kind):
             xgb.train(params | dict(device="cpu", max_bin=bins), matrix, 2)
             start = xgb.metal_info()
             xgb.train(params | dict(max_bin=bins), matrix, 2)
-            assert xgb.metal_info()["ellpack_io_write_pages"] - start["ellpack_io_write_pages"] == len(pages)
-            read_layout(files[0])
+            assert xgb.metal_info()["ellpack_io_write_pages"] - start["ellpack_io_write_pages"] == (0 if on_host else len(split) - 1)
+            if not on_host:
+                read_layout(files[0])
             assert_no_host(start)
     del matrix, model, cpu
     gc.collect()

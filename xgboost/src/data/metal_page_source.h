@@ -68,6 +68,33 @@ class MetalPageSource : public SparsePageSourceImpl<GHistIndexMatrix, MetalCache
                   DMatrixProxy* proxy, BatchParam p, ExtMemConfig const& config,
                   std::shared_ptr<Cache> cache, common::HistogramCuts cuts,
                   ExternalDataInfo const& ext, MetaInfo* info, bool validation);
+  // Ordinary external matrices keep one compressed page per raw CSR batch.
+  MetalPageSource(Context const* ctx, float missing, BatchParam p, std::shared_ptr<Cache> cache,
+                  common::HistogramCuts cuts)
+      : Super{missing, ctx->Threads(), cuts.NumFeatures(), std::move(cache)} {
+    metal_cache_->ctx = *ctx;
+    metal_cache_->cuts = std::move(cuts);
+    metal_cache_->max_bin = p.max_bin;
+    metal_cache_->sparse_thresh = p.sparse_thresh;
+    p.n_prefetch_batches = 2;
+    this->param_ = p;
+  }
+  void Append(std::shared_ptr<common::metal::CompressedPage> input, double host_ratio) {
+    CHECK(!cache_info_->written);
+    CHECK_EQ(input->BaseRow(), batch_ptr_.back());
+    nnz_ += input->NonMissing();
+    input->Commit(host_ratio);
+    cache_info_->Push(input->SizeBytes());
+    batch_ptr_.push_back(batch_ptr_.back() + input->Rows());
+    metal_cache_->pages.push_back(std::move(input));
+    ++count_;
+  }
+  void Finalize() {
+    CHECK_GT(count_, 0);
+    this->EndIter();
+    metal_cache_->offsets = cache_info_->offset;
+    this->ResetCache(param_);
+  }
   MetalPageSource& operator++() final {
     TryLockGuard guard{this->single_threaded_};
     ++count_;

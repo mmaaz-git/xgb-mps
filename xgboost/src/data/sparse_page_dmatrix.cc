@@ -99,6 +99,7 @@ SparsePageDMatrix::~SparsePageDMatrix() {
   sorted_column_source_.reset();
   ghist_index_source_.reset();
   metal_disk_source_.reset();
+  metal_page_source_.reset();
 
   DeleteCacheFiles(cache_info_);
 }
@@ -167,16 +168,28 @@ BatchSet<GHistIndexMatrix> SparsePageDMatrix::GetGradientIndex(Context const *ct
     CHECK_GE(param.max_bin, 2);
   }
   detail::CheckEmpty(batch_param_, param);
-  auto id = MakeCache(this, ".gradient_index.page", false, cache_prefix_, &cache_info_);
+  // Empty/fixed readers use the active generation's storage, even when their
+  // CPU context differs from the context that created the cuts.
+  bool cache_written = false;
+  if (this->GHistIndexExists()) {
+    bool host = static_cast<bool>(metal_page_source_);
+    auto id = MakeCache(this, host ? ".metal-ellpack.page" : ".gradient_index.page", host,
+                        cache_prefix_, &cache_info_);
+    cache_written = cache_info_.at(id)->written;
+  }
   bool backend_changed = param.Initialized() && !param.forbid_regen && !param.for_cuts &&
                          !ctx->IsCUDA() && gradient_index_metal_ != ctx->IsMPS();
-  if (!cache_info_.at(id)->written || detail::RegenGHist(batch_param_, param) || backend_changed) {
+  if (!cache_written || detail::RegenGHist(batch_param_, param) || backend_changed) {
     // Join old prefetches before overwriting this generation's cache file.
     ghist_index_source_.reset();
     metal_disk_source_.reset();
+    metal_page_source_.reset();
     this->InitializeSparsePage(ctx);
+    bool host = ctx->IsMPS() && on_host_;
+    auto suffix = host ? ".metal-ellpack.page" : ".gradient_index.page";
+    auto id = MakeCache(this, suffix, host, cache_prefix_, &cache_info_);
     cache_info_.erase(id);
-    id = MakeCache(this, ".gradient_index.page", false, cache_prefix_, &cache_info_);
+    id = MakeCache(this, suffix, host, cache_prefix_, &cache_info_);
     LOG(INFO) << "Generating new Gradient Index.";
     auto cuts = common::SketchOnDMatrix(ctx, this, param.max_bin, param.regen, param.hess);
     CHECK_NE(cuts.Values().size(), 0);
@@ -192,16 +205,36 @@ BatchSet<GHistIndexMatrix> SparsePageDMatrix::GetGradientIndex(Context const *ct
           stride = std::max<bst_idx_t>(stride, rows[r + 1] - rows[r]);
       }
       auto layout = common::metal::MakeEllpackInfo(cuts, stride, this->IsDense());
-      auto source =
-          std::make_shared<MetalDiskPageSource>(ctx, missing_, param, cache_info_.at(id), cuts);
-      for (auto const &raw : this->GetRowBatchesImpl(ctx)) {
-        auto compressed = common::metal::MakeCompressedPage(layout, raw.Size(), raw.base_rowid);
-        compressed->PushCSR(raw, cuts, ft);
-        source->Append(*compressed);
+      auto populate = [&](auto const &source, auto append) {
+        for (auto const &raw : this->GetRowBatchesImpl(ctx)) {
+          auto compressed = common::metal::MakeCompressedPage(layout, raw.Size(), raw.base_rowid);
+          compressed->PushCSR(raw, cuts, ft);
+          append(std::move(compressed));
+        }
+        CHECK_EQ(source->NonMissing(), info_.num_nonzero_);
+        source->Finalize();
+      };
+      if (on_host_) {
+        std::vector<bst_idx_t> batch_rows;
+        for (std::size_t i = 0; i < ext_info_.n_batches; ++i)
+          batch_rows.push_back(ext_info_.base_rowids[i + 1] - ext_info_.base_rowids[i]);
+        // CUDA ordinary external matrices use the validation cache policy, with
+        // no concatenation. A single page stays private; multiple pages use host storage.
+        auto plan = common::metal::PlanEllpackCache(layout, batch_rows, true, cache_host_ratio_,
+                                                    min_cache_page_bytes_,
+                                                    common::metal::CacheWorkingSetBytes());
+        CHECK_EQ(plan.rows.size(), ext_info_.n_batches)
+            << "Page concatenation is only supported by the `ExtMemQuantileDMatrix`.";
+        auto source =
+            std::make_shared<MetalPageSource>(ctx, missing_, param, cache_info_.at(id), cuts);
+        populate(source, [&](auto page) { source->Append(std::move(page), plan.host_ratio); });
+        metal_page_source_ = std::move(source);
+      } else {
+        auto source =
+            std::make_shared<MetalDiskPageSource>(ctx, missing_, param, cache_info_.at(id), cuts);
+        populate(source, [&](auto page) { source->Append(*page); });
+        metal_disk_source_ = std::move(source);
       }
-      CHECK_EQ(source->NonMissing(), info_.num_nonzero_);
-      source->Finalize();
-      metal_disk_source_ = std::move(source);
     } else
 #endif
     {
@@ -214,7 +247,9 @@ BatchSet<GHistIndexMatrix> SparsePageDMatrix::GetGradientIndex(Context const *ct
     batch_param_ = param;
   } else {
 #if defined(XGBOOST_USE_METAL)
-    if (metal_disk_source_)
+    if (metal_page_source_)
+      metal_page_source_->Reset(ctx, param);
+    else if (metal_disk_source_)
       metal_disk_source_->Reset(ctx, param);
     else
 #endif
@@ -224,6 +259,7 @@ BatchSet<GHistIndexMatrix> SparsePageDMatrix::GetGradientIndex(Context const *ct
     }
   }
 #if defined(XGBOOST_USE_METAL)
+  if (metal_page_source_) return BatchSet{BatchIterator<GHistIndexMatrix>{metal_page_source_}};
   if (metal_disk_source_) return BatchSet{BatchIterator<GHistIndexMatrix>{metal_disk_source_}};
 #endif
   return BatchSet{BatchIterator<GHistIndexMatrix>{ghist_index_source_}};

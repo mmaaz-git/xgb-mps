@@ -70,3 +70,39 @@ try:
 finally:
     check(lib.XGDMatrixFree(proxy))
 print("CPU-only in-memory/external quantile construction accepts CPU and rejects MPS explicitly.")
+
+# Ordinary external caches remain disk-backed in a CPU-only build, including when
+# the iterator's GPU host-cache option is true. Exercise regeneration of that path.
+proxy = ctypes.c_void_p()
+check(lib.XGProxyDMatrixCreate(ctypes.byref(proxy)))
+try:
+    with tempfile.TemporaryDirectory(prefix="xgb-cpu-ordinary-") as cache_dir:
+        for on_host in [False, True]:
+            matrix = ctypes.c_void_p()
+            config = json.dumps({"nthread": 2, "missing": float("nan"), "on_host": on_host,
+                                 "cache_prefix": str(Path(cache_dir) / "ordinary")}).encode()
+            check(lib.XGDMatrixCreateFromCallback(None, proxy, reset, next_batch, config,
+                                                  ctypes.byref(matrix)))
+            booster = ctypes.c_void_p()
+            try:
+                label = (ctypes.c_float * 1)(1.)
+                check(lib.XGDMatrixSetFloatInfo(matrix, b"label", label, ctypes.c_uint64(1)))
+                handles = (ctypes.c_void_p * 1)(matrix.value)
+                check(lib.XGBoosterCreate(handles, ctypes.c_uint64(1), ctypes.byref(booster)))
+                for key, value in [(b"device", b"cpu"), (b"nthread", b"2"),
+                                   (b"tree_method", b"hist"), (b"base_score", b"0.5")]:
+                    check(lib.XGBoosterSetParam(booster, key, value))
+                for iteration, bins in enumerate([8, 17, 8]):
+                    check(lib.XGBoosterSetParam(booster, b"max_bin", str(bins).encode()))
+                    check(lib.XGBoosterUpdateOneIter(booster, iteration, matrix))
+                assert len(list(Path(cache_dir).glob("*.row.page"))) == 1
+                assert len(list(Path(cache_dir).glob("*.gradient_index.page"))) == 1
+                assert not list(Path(cache_dir).glob("*.metal-ellpack.page"))
+            finally:
+                if booster.value:
+                    check(lib.XGBoosterFree(booster))
+                check(lib.XGDMatrixFree(matrix))
+            assert not list(Path(cache_dir).iterdir())
+finally:
+    check(lib.XGDMatrixFree(proxy))
+print("CPU-only ordinary external caches train/regenerate/clean up for both host-cache options.")
