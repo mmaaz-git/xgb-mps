@@ -92,10 +92,10 @@ must be reported rather than hidden by widening test tolerances.
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
 | Prediction cache from leaf IDs | `predictor/predictor.cu` | Metal; supports strided target slices and negated sampling positions |
 | SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA; input decoding/category mapping now runs on GPU; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
-| RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; final ratio/collective transport host |
-| Multiclass error and logloss | `metric/multiclass_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; final ratio/collective transport host |
-| Quantile and expectile metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 terms, subnormal-preserving products and complete binary64 GPU reductions; final ratio/collective transport host |
-| AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and complete binary64 sums; final ratio/collective transport host |
+| RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
+| Multiclass error and logloss | `metric/multiclass_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
+| Quantile and expectile metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 terms, subnormal-preserving products and complete binary64 GPU reductions; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
+| AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and complete binary64 sums; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; collective transport remains host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
@@ -3502,4 +3502,76 @@ public prediction result plumbing and persistent dictionaries. The execution
 context still defaults generic state to CPU and must not be switched globally
 before those consumers are audited. Other CUDA operation/arithmetic audits, GPU
 collectives and cross-hardware validation remain open. No benchmark, NVIDIA
+execution or other Apple-device comparison was run.
+
+
+## Scalar metric inputs retain Metal storage
+
+CUDA authority is `metric/elementwise_metric.cu`, `multiclass_metric.cu` and
+`survival_metric.cu`: row expressions run on the GPU, the reduction returns a
+pair of binary64 scalars, and the caller performs the host collective and final
+ratio. This change preserves those formulas, cast boundaries, reduction trees,
+scalar returns and collective placement. No numerical shader changed.
+
+Scalar/pseudo-Huber Metal branches now run before eager `SetDevice(CPU)` and
+host label/prediction/weight views. Scalar/multiclass, quantile/expectile and AFT
+likelihood/interval-accuracy callers use explicit Metal spans for predictions,
+labels or survival bounds, weights and quantile/expectile levels. The associated
+`MetricSums`, `QuantileMetricSums` and survival metric encoder bind eligible
+shared storage directly with its byte offset. Read-only or unshareable host
+inputs retain a counted upload fallback. Commands remain synchronous and do not
+modify inputs. Only the existing 16-byte reduced result returns to the host;
+validation flags remain small scalar checks. The AFT objective binding path and
+its accounting are unchanged.
+
+The audit also found that the quantile/expectile Metal branches bypassed
+`CheckRowWeights`, which CPU and CUDA invoke through their shared reducer. Those
+branches now apply the same check before dispatching. In particular, one-row
+queries with a query weight for every row must be rejected even though their
+weight-array length matches the row count. Empty-worker behavior and nonpositive
+aggregate-weight errors retain their existing upstream placement.
+
+`metric_shared_input_bytes` / `metric_host_input_bytes` are appended to the native
+statistics structure and exported in the public JSON, with zeros in CPU builds.
+They count eligible payload binding bytes and fallback upload bytes for these
+scalar metric families; AUC/ranking input paths are not yet included. They exclude
+control arguments, final scalar results and validation flags. Existing
+`metric_final_readback_bytes`, dispatch/reduction counts and timing scopes remain
+unchanged. All native clients must rebuild for the enlarged statistics structure.
+
+New validation passes **587 native cases / 44,478 field checks / 110 rejected
+calls** with Metal API validation. Actual Metric evaluators cover 15 scalar,
+multiclass and ordered metric names, both survival metrics with all three AFT
+distributions, empty/single/33/257/1025 rows, scalar/multiple targets and absent,
+positive or zero weights. Well-conditioned CPU comparisons retain the 3e-6
+scaled tolerance; existing independent CUDA-source and sensitive-tail oracles
+remain the arithmetic authority. Tests require no input mirror or fallback
+staging for resident arrays, exactly 16 bytes of final result for nonempty
+calls, unchanged input access flags and no repeated vector uploads/allocations.
+GPU fills followed by CPU/MPS handoffs check updated inputs. Empty/zero-weight
+ordered metrics and malformed weights are rejected; invalid multiclass labels
+are written on GPU and rejected by GPU validation without host mirrors.
+
+Thirty-three direct binding cases compare exact result bits across offset shared
+views and independent read-only fallbacks for predictions, labels/bounds, weights
+and levels. Input payloads and guards remain unchanged, byte counters match the
+specific inputs, and final live vector gauges return to zero. **139 focused
+Python tests pass**, including four new CPU/MPS query-weight rejection cases and
+public binding-counter assertions for scalar/multiclass/ordered metrics.
+No test tolerances or arithmetic kernels were changed to obtain these results.
+
+Final full regression completed **2026-11-04 22:57:39–23:05:21 UTC** (7m42s):
+**3,325 Python tests passed, one expected skip** (623 warnings, 191.15s), all
+**88 rebuilt native check groups**, the source reference updater, and the CPU-only
+build/API/device/cache checks. Existing metric oracles passed **349 cases /
+15,628,618 exact fields**, with maximum reduction-bound ratio 0.0373374008;
+288 quantile/expectile cases covered 1,727,040 loss/weight pairs. The skip is the
+unavailable-device test on a host with an accessible GPU. No production or test
+changes followed the final build/run; documentation was finalized afterward.
+[Validation record](../validation/cuda-metal-metric-state-m3.txt).
+Remaining ownership work includes AUC/ranking metrics and ranking objectives,
+predictor/updater consumers, public result plumbing and persistent dictionaries.
+Context.Device() still defaults generic state to CPU until those dispatchers and
+consumers are migrated. Remaining CUDA operation/arithmetic audits, GPU
+collectives and cross-hardware validation are unfinished. No benchmark, NVIDIA
 execution or other Apple-device comparison was run.

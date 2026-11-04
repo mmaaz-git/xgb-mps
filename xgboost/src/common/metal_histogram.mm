@@ -119,6 +119,7 @@ std::atomic<std::uint64_t> ranking_gradient_dispatches{0}, ranking_gradient_gpu_
     ranking_pairs{0}, ranking_pair_batches{0}, ranking_bias_dispatches{0};
 std::atomic<std::uint64_t> ranking_label_dispatches{0}, ranking_label_gpu_time_ns{0},
     ranking_cache_dispatches{0}, ranking_cache_gpu_time_ns{0};
+std::atomic<std::uint64_t> metric_shared_input_bytes{0}, metric_host_input_bytes{0};
 std::atomic<std::uint64_t> float_sum_dispatches{0}, float_sum_gpu_time_ns{0};
 std::atomic<std::uint64_t> row_workspace_allocations{0}, row_workspace_reuses{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
@@ -2060,7 +2061,9 @@ Statistics GetStatistics() {
           initialization_host_output_bytes.load(std::memory_order_relaxed),
           initialization_copy_dispatches.load(std::memory_order_relaxed),
           initialization_copy_bytes.load(std::memory_order_relaxed),
-          initialization_fill_dispatches.load(std::memory_order_relaxed)};
+          initialization_fill_dispatches.load(std::memory_order_relaxed),
+          metric_shared_input_bytes.load(std::memory_order_relaxed),
+          metric_host_input_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6067,6 +6070,17 @@ void GradientSample(linalg::MatrixView<GradientPair const> split_gradients,
 }
 
 namespace {
+// Metric payloads remain device-authoritative; only the reduced scalar pair
+// crosses to the host, matching CUDA's transform_reduce return and collective.
+BorrowedMemory MetricInput(Runtime const& rt, void const* data, std::size_t bytes) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, 4);
+  if (input.buffer) metric_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  else {
+    input = {Upload(rt, data, bytes), 0};
+    metric_host_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
 struct MetricReduction {
   id<MTLBuffer> result;
   std::uint64_t passes;
@@ -6117,10 +6131,10 @@ std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predi
   @autoreleasepool {
     auto& rt = GetRuntime();
     CHECK_EQ(rt.quantile_metric_pipeline.threadExecutionWidth, 32);
-    auto pred = Upload(rt, predictions.data(), predictions.size_bytes());
-    auto label = Upload(rt, labels.data(), labels.size_bytes());
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
-    auto levels = Upload(rt, alpha.data(), alpha.size_bytes());
+    auto pred = MetricInput(rt, predictions.data(), predictions.size_bytes());
+    auto label = MetricInput(rt, labels.data(), labels.size_bytes());
+    auto weight = MetricInput(rt, weights.data(), weights.size_bytes());
+    auto levels = MetricInput(rt, alpha.data(), alpha.size_bytes());
     auto blocks = (predictions.size() + 255) / 256;
     auto partial = Allocate(rt, blocks * 2 * sizeof(double));
     struct {
@@ -6133,10 +6147,10 @@ std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predi
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.quantile_metric_pipeline];
-    [e setBuffer:pred offset:0 atIndex:0];
-    [e setBuffer:label offset:0 atIndex:1];
-    [e setBuffer:weight offset:0 atIndex:2];
-    [e setBuffer:levels offset:0 atIndex:3];
+    [e setBuffer:pred.buffer offset:pred.offset atIndex:0];
+    [e setBuffer:label.buffer offset:label.offset atIndex:1];
+    [e setBuffer:weight.buffer offset:weight.offset atIndex:2];
+    [e setBuffer:levels.buffer offset:levels.offset atIndex:3];
     [e setBuffer:partial offset:0 atIndex:4];
     [e setBytes:&p length:sizeof(p) atIndex:5];
     [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -6207,7 +6221,7 @@ SurvivalCommand EncodeSurvival(bool metric, std::uint32_t distribution, float sc
   CHECK_LE(predictions.size(), std::numeric_limits<std::uint32_t>::max());
   auto& rt = GetRuntime();
   auto input = [&](Span<float const> values) {
-    return metric ? BorrowedMemory{Upload(rt, values.data(), values.size_bytes()), 0}
+    return metric ? MetricInput(rt, values.data(), values.size_bytes())
                   : ObjectiveInput(rt, values.data(), values.size_bytes());
   };
   auto pred = input(predictions), lo = input(lower), hi = input(upper), w = input(weights);
@@ -8863,9 +8877,9 @@ std::array<double, 2> MetricSums(char const* name, Span<float const> predictions
     CHECK(command);
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
-    auto pred = Upload(rt, predictions.data(), predictions.size_bytes());
-    auto label = Upload(rt, labels.data(), labels.size_bytes());
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto pred = MetricInput(rt, predictions.data(), predictions.size_bytes());
+    auto label = MetricInput(rt, labels.data(), labels.size_bytes());
+    auto weight = MetricInput(rt, weights.data(), weights.size_bytes());
     auto groups = (labels.size() + 255) / 256;
     auto partial = Allocate(rt, groups * 2 * sizeof(double));
     std::uint32_t zero = 0;
@@ -8876,9 +8890,9 @@ std::array<double, 2> MetricSums(char const* name, Span<float const> predictions
       float parameter, reserved;
     } p{labels.size(), targets, kind, !weights.empty(), 0, parameter, 0};
     [encoder setComputePipelineState:rt.metric_pipeline];
-    [encoder setBuffer:pred offset:0 atIndex:0];
-    [encoder setBuffer:label offset:0 atIndex:1];
-    [encoder setBuffer:weight offset:0 atIndex:2];
+    [encoder setBuffer:pred.buffer offset:pred.offset atIndex:0];
+    [encoder setBuffer:label.buffer offset:label.offset atIndex:1];
+    [encoder setBuffer:weight.buffer offset:weight.offset atIndex:2];
     [encoder setBuffer:partial offset:0 atIndex:3];
     [encoder setBytes:&p length:sizeof(p) atIndex:4];
     [encoder setBuffer:invalid offset:0 atIndex:5];

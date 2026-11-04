@@ -27,6 +27,7 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_ops.h"
+#include "../common/metal_vector.h"
 #endif
 
 namespace xgboost::metric {
@@ -175,9 +176,10 @@ struct EvalMClassBase : public MetricNoCache {
       PackedReduceResult result;
 #if defined(XGBOOST_USE_METAL)
       if (ctx_->IsMPS()) {
-        auto sums = common::metal::MetricSums(this->Name(), preds.ConstHostSpan(),
-                                              info.labels.Data()->ConstHostSpan(),
-                                              info.weights_.ConstHostSpan(), nclass);
+        auto sums =
+            common::metal::MetricSums(this->Name(), common::metal::ConstDeviceSpan(preds),
+                                      common::metal::ConstDeviceSpan(*info.labels.Data()),
+                                      common::metal::ConstDeviceSpan(info.weights_), nclass);
         result = PackedReduceResult{sums[0], sums[1]};
       } else
 #endif

@@ -14,7 +14,26 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **GPU storage through initialization and stump fitting**. Means,
+Latest step: **resident scalar metric inputs**. Scalar/multiclass,
+quantile/expectile and AFT likelihood/interval-accuracy evaluators now consume
+Metal prediction, label, weight and level arrays without first requesting host
+mirrors or uploading those payloads again. CUDA's two-number reduction result,
+final ratio and host collective remain intact. Quantile/expectile metrics also
+now reject query-group weights through the same check used by CPU and CUDA.
+
+Focused validation passes **587 native cases / 44,478 field checks / 110 rejected
+calls** and **139 Python tests**, including exact binding comparisons, repeated
+calls, GPU writes, CPU/MPS handoffs and read-only input fallbacks. Full regression passes **3,325
+Python tests, one expected skip**, all **88 rebuilt native check groups**, and the
+CPU-only build/API checks.
+[Metric storage validation](validation/cuda-metal-metric-state-m3.txt).
+
+AUC/ranking metrics, ranking training, predictor/updater state, public result
+plumbing and persistent dictionaries still need ownership work. The execution
+context continues to default generic state to CPU storage. No benchmark or
+NVIDIA execution comparison was run for this step.
+
+The preceding step added **GPU storage through initialization and stump fitting**. Means,
 weighted means, medians/quantiles, class priors, initial gradients and prediction
 broadcasts now consume Metal inputs and publish results with GPU copies or fills.
 Their objective callers retain Metal storage through the GPU stages. Multiclass
@@ -29,7 +48,7 @@ fallbacks. Full regression passes **3,321 Python tests, one expected skip**, all
 [Initialization storage validation](validation/cuda-metal-initialization-state-m3.txt).
 
 This is another consumer migration, not complete training residency. Ranking,
-metrics, tree/prediction callers and public result plumbing still need work. The
+AUC/ranking metrics, tree/prediction callers and public result plumbing still need work. The
 execution context still defaults generic state to CPU storage. No benchmark or
 NVIDIA execution comparison was run for this step.
 
@@ -48,7 +67,7 @@ Full regression passes **3,321 Python tests, one expected skip**, all **86
 rebuilt native check groups**, and the CPU-only build/API checks.
 [Objective storage validation](validation/cuda-metal-objective-state-m3.txt).
 
-This closed objective-level storage gaps. Ranking, metrics, tree/prediction
+This closed objective-level storage gaps. Ranking, AUC/ranking metrics, tree/prediction
 callers and public result plumbing still need consumer
 migration and can request host mirrors. The execution context still defaults
 generic state to CPU storage. No new speedup or NVIDIA execution claim.
@@ -671,7 +690,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Objective validation / base scores | GPU logistic, gamma, squared-log, Poisson/Tweedie and multiclass label checks; checked logistic/gamma intercepts and logarithm/logit conversion, including Cox base-score conversion; device label views and owned scalar base-margin storage, with results published only after validation succeeds |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort; resident inputs and GPU result/empty-NaN publication |
 | Gradients | CUDA-source FP32/FP64 expressions for squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass and expectile; adaptive absolute-error and quantile gradients preserve source expressions, FP32 residual-root sums and binary64 weight sums; host scale-statistic collective matches upstream; explicit Metal input spans and owned gradient outputs avoid implicit objective-level host mirrors |
-| AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; gradient and transform payloads retain owned Metal storage; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU. Metric consumers still need storage migration |
+| AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; gradient and transform payloads retain owned Metal storage; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU. Scalar survival metric consumers now also use resident inputs; AUC/ranking remain separate |
 | Prediction transforms | CUDA-source sigmoid, exponential, hinge, cumulative expectile and quantile insertion sorting with preserved subnormals; multiclass softmax uses sequential binary64 sums of FP32 terms, and argmax preserves source NaN/subnormal comparisons; nonranking objective transforms retain Metal vector storage |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights; GPU raw-input decoding and category-map application |
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input conversion and row-level category mapping on GPU; raw packing/transfers remain host; approximate SHAP uses an explicit CPU fallback, as CUDA does not implement it |
@@ -682,15 +701,15 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Column sampling | CUDA-source Philox weighted draws and Thrust Feistel unweighted shuffle; GPU compaction, stable priority ordering and integer feature sorting; 24 shuffle keys and cache metadata remain host as in CUDA, while feature arrays still stage through host |
 | Grouped ranking PR-AUC | CUDA-source FP32 cast boundaries, original-order positive totals, segmented binary64 prefixes, integral arithmetic and two-row validity; GPU sorting, validation and aggregation |
 | PR-AUC | Binary, multiclass and multilabel; CUDA-source term casts, separate recall/validity totals, source integral and invalid-output rules; GPU aggregation metadata and normalization; collective transport remains host |
-| Metrics | Scalar/multiclass and quantile/expectile FP32 row terms, GPU label checks and complete binary64 GPU sums; survival likelihood/accuracy binary64 terms and sums; ranking/AUC source arithmetic as above. Final ratios and collective transport remain host |
+| Metrics | Scalar/multiclass and quantile/expectile FP32 row terms, GPU label checks and complete binary64 GPU sums; survival likelihood/accuracy binary64 terms and sums. These scalar callers and wrappers retain Metal inputs; ranking/AUC source arithmetic as above, with input ownership migration pending. Final ratios and collective transport remain host |
 
 AFT gradient evaluation is entirely on GPU, including numerically sensitive
 censored rows. `survival_cpu_corrections` and `survival_cpu_time_ns` remain in the
 statistics API for compatibility and are now always zero. Source-formula checks
 cover extreme tails; cross-library output differences are reported above.
 
-Input views and categorical recoding remain on the host. Elementwise and survival
-metric sums now finish on GPU; final ratios and collective transport remain host,
+Some generic consumers still request host views. Elementwise and survival
+metric inputs now stay on Metal and sums finish on GPU; final ratios and collective transport remain host,
 as in the corresponding CUDA call sites. Metal has no native FP64 arithmetic. Split selection uses software binary64 operations and exact
 integer scans to preserve histogram precision and CUDA candidate ordering. Tolerances and
 numerical edge cases are tested explicitly.
@@ -703,6 +722,10 @@ are process-wide, so concurrent models contribute to the same totals.
 `metric_final_readback_bytes` is 16 bytes per nonempty successful scalar,
 multiclass, quantile/expectile or survival metric call. `metric_label_dispatches`
 counts GPU multiclass validation, including calls rejected for invalid labels.
+`metric_shared_input_bytes` and `metric_host_input_bytes` count eligible bindings
+and fallback uploads for scalar/multiclass, quantile/expectile and survival metric
+inputs. They exclude final scalar results and do not yet cover AUC/ranking input
+bindings or whole-training transfers.
 `gradient_sampling_dispatches` and `gradient_sampling_gpu_time_ns` report the
 gradient-based sampler separately; they are also included in the general sampling
 counters and must not be added to those totals. `cuda_gradient_sampling_dispatches`
@@ -1249,6 +1272,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Add generic Metal vector storage and internal metadata slice/copy/stack/equality operations.
 - [x] Keep nonranking objective inputs/gradients/transforms in Metal vector storage.
 - [x] Keep initialization/statistics/stump payloads on Metal through their GPU stages.
+- [x] Keep scalar/multiclass, quantile/expectile and survival metric inputs on Metal.
 - [ ] Migrate remaining state allocations/consumers and persistent dictionary ownership.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.
 - [x] Port query maxima/counts/prefixes and reuse GPU metadata through ranking caches.

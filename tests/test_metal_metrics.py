@@ -37,6 +37,9 @@ def test_scalar_metrics(metal, metric, targets, weighted):
     assert after["metric_dispatches"] == before["metric_dispatches"] + 1
     assert after["metric_reduction_passes"] > before["metric_reduction_passes"]
     assert after["metric_final_readback_bytes"] == before["metric_final_readback_bytes"] + 16
+    assert after["metric_host_input_bytes"] == before["metric_host_input_bytes"]
+    input_bytes = prediction.nbytes + y.nbytes + (0 if weights is None else weights.nbytes)
+    assert after["metric_shared_input_bytes"] - before["metric_shared_input_bytes"] == input_bytes
     np.testing.assert_allclose(actual, expected, rtol=5e-6, atol=3e-6)
 
 @pytest.mark.parametrize("metric", ["mlogloss", "merror"])
@@ -58,6 +61,10 @@ def test_multiclass_metrics(metal, metric, classes):
     assert after["metric_dispatches"] == before["metric_dispatches"] + 1
     assert after["metric_reduction_passes"] > before["metric_reduction_passes"]
     assert after["metric_final_readback_bytes"] == before["metric_final_readback_bytes"] + 16
+    assert after["metric_host_input_bytes"] == before["metric_host_input_bytes"]
+    # DMatrix stores labels and weights as FP32, independently of NumPy input dtype.
+    input_bytes = logits.nbytes + (label.size + weights.size) * 4
+    assert after["metric_shared_input_bytes"] - before["metric_shared_input_bytes"] == input_bytes
     np.testing.assert_allclose(actual, expected, rtol=5e-6, atol=3e-6)
 
 @pytest.mark.parametrize("metric", METRICS)

@@ -442,6 +442,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.initialization_copy_bytes)};
   info["initialization_fill_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.initialization_fill_dispatches)};
+  info["metric_shared_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.metric_shared_input_bytes)};
+  info["metric_host_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.metric_host_input_bytes)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -762,6 +766,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["initialization_copy_dispatches"] = Integer{0};
   info["initialization_copy_bytes"] = Integer{0};
   info["initialization_fill_dispatches"] = Integer{0};
+  info["metric_shared_input_bytes"] = Integer{0};
+  info["metric_host_input_bytes"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};

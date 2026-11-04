@@ -35,6 +35,9 @@ def test_quantile_metrics_on_metal(metal, objective, metric, param, levels, weig
     assert after["metric_dispatches"] == before["metric_dispatches"] + 1
     assert after["metric_reduction_passes"] > before["metric_reduction_passes"]
     assert after["metric_final_readback_bytes"] == before["metric_final_readback_bytes"] + 16
+    assert after["metric_host_input_bytes"] == before["metric_host_input_bytes"]
+    input_bytes = (len(x) * levels + y.size + levels + (0 if weights is None else weights.size)) * 4
+    assert after["metric_shared_input_bytes"] - before["metric_shared_input_bytes"] == input_bytes
     np.testing.assert_allclose(actual, expected, rtol=3e-6, atol=1e-7)
     pred = gpu.predict(d).reshape(len(x), levels)
     diff = pred - y[:, None]
@@ -60,3 +63,21 @@ def test_quantile_metrics_zero_weight_error(metal, objective, param):
         model.set_param({"device": device})
         with pytest.raises(xgb.core.XGBoostError, match="Check failed"):
             model.eval(empty_weight)
+
+
+@pytest.mark.parametrize("objective,metric,param", [
+    ("reg:quantileerror", "quantile", "quantile_alpha"),
+    ("reg:expectileerror", "expectile", "expectile_alpha"),
+])
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_ordered_metrics_reject_query_weights(metal, objective, metric, param, device):
+    # One row per group makes the weight lengths valid under either convention.
+    # The row-wise metric must still reject query weights, just as CUDA does.
+    matrix = xgb.DMatrix(np.ones((3, 1), dtype=np.float32), label=[0, 1, 2],
+                         group=[1, 1, 1], weight=[1, 1, 1])
+    model = xgb.train(dict(objective=objective, eval_metric=metric, device=device,
+                           nthread=2, base_score=.5, **{param: [.1, .9]}), matrix, 0)
+    before = xgb.metal_info()
+    with pytest.raises(xgb.core.XGBoostError, match="Row-wise metric does not support query group weights"):
+        model.eval(matrix)
+    assert xgb.metal_info()["metric_dispatches"] == before["metric_dispatches"]

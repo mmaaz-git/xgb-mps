@@ -137,6 +137,8 @@ struct Statistics {
   std::uint64_t initialization_shared_input_bytes, initialization_shared_output_bytes,
       initialization_host_input_bytes, initialization_host_output_bytes,
       initialization_copy_dispatches, initialization_copy_bytes, initialization_fill_dispatches;
+  // Scalar pointwise/adaptive/survival metric input bindings; excludes final scalars.
+  std::uint64_t metric_shared_input_bytes, metric_host_input_bytes;
 };
 
 class Histogram {

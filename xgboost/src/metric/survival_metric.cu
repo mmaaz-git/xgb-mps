@@ -27,6 +27,7 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_survival.h"
+#include "../common/metal_vector.h"
 #endif
 
 using AFTParam = xgboost::common::AFTParam;
@@ -124,9 +125,11 @@ class ElementWiseSurvivalMetricsReduction {
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx->IsMPS()) {
-      auto sums = common::metal::SurvivalMetricSums(policy_.MetalDistribution(), policy_.MetalScale(),
-          policy_.MetalAccuracy(), preds.ConstHostSpan(), labels_lower_bound.ConstHostSpan(),
-          labels_upper_bound.ConstHostSpan(), weights.ConstHostSpan());
+      auto sums = common::metal::SurvivalMetricSums(
+          policy_.MetalDistribution(), policy_.MetalScale(), policy_.MetalAccuracy(),
+          common::metal::ConstDeviceSpan(preds), common::metal::ConstDeviceSpan(labels_lower_bound),
+          common::metal::ConstDeviceSpan(labels_upper_bound),
+          common::metal::ConstDeviceSpan(weights));
       return {sums[0], sums[1]};
     }
 #endif

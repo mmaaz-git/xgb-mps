@@ -36,6 +36,7 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_ops.h"
+#include "../common/metal_vector.h"
 #endif
 
 namespace xgboost::metric {
@@ -186,6 +187,20 @@ class PseudoErrorLoss : public MetricNoCache {
     xgboost_NVTX_FN_RANGE();
 
     CHECK_EQ(info.labels.Shape(0), info.num_row_);
+    float slope = this->param_.huber_slope;
+    CHECK_NE(slope, 0.0) << "slope for pseudo huber cannot be 0.";
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      CheckRowWeights(info);
+      auto sums = common::metal::MetricSums("mphe", common::metal::ConstDeviceSpan(preds),
+                                            common::metal::ConstDeviceSpan(*info.labels.Data()),
+                                            common::metal::ConstDeviceSpan(info.weights_),
+                                            info.labels.Shape(1), slope);
+      auto rc = collective::GlobalSum(ctx_, linalg::MakeVec(sums.data(), sums.size()));
+      collective::SafeColl(rc);
+      return EvalRowMAPE::GetFinal(sums[0], sums[1]);
+    }
+#endif
     auto device = ctx_->Device().IsSycl() ? DeviceOrd::CPU() : ctx_->Device();
     auto labels = info.labels.View(device);
     preds.SetDevice(device);
@@ -193,19 +208,6 @@ class PseudoErrorLoss : public MetricNoCache {
     info.weights_.SetDevice(device);
     common::OptionalWeights weights(ctx_->IsCUDA() ? info.weights_.ConstDeviceSpan()
                                                    : info.weights_.ConstHostSpan());
-    float slope = this->param_.huber_slope;
-    CHECK_NE(slope, 0.0) << "slope for pseudo huber cannot be 0.";
-#if defined(XGBOOST_USE_METAL)
-    if (ctx_->IsMPS()) {
-      CheckRowWeights(info);
-      auto sums = common::metal::MetricSums(
-          "mphe", preds.ConstHostSpan(), info.labels.Data()->ConstHostSpan(),
-          info.weights_.ConstHostSpan(), info.labels.Shape(1), slope);
-      auto rc = collective::GlobalSum(ctx_, linalg::MakeVec(sums.data(), sums.size()));
-      collective::SafeColl(rc);
-      return EvalRowMAPE::GetFinal(sums[0], sums[1]);
-    }
-#endif
     PackedReduceResult result =
         Reduce(ctx_, info, [=] XGBOOST_DEVICE(size_t i, size_t sample_id, size_t target_id) {
           float wt = weights[sample_id];
@@ -357,6 +359,21 @@ struct EvalEWiseBase : public MetricNoCache {
     if (info.labels.Size() != 0) {
       CHECK_NE(info.labels.Shape(1), 0);
     }
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      CheckRowWeights(info);
+      float parameter = 0.5f;
+      if constexpr (std::is_same_v<Policy, EvalError> || std::is_same_v<Policy, EvalTweedieNLogLik>)
+        parameter = policy_.MetalParameter();
+      auto sums = common::metal::MetricSums(this->Name(), common::metal::ConstDeviceSpan(preds),
+                                            common::metal::ConstDeviceSpan(*info.labels.Data()),
+                                            common::metal::ConstDeviceSpan(info.weights_),
+                                            info.labels.Shape(1), parameter);
+      auto rc = collective::GlobalSum(ctx_, linalg::MakeVec(sums.data(), sums.size()));
+      collective::SafeColl(rc);
+      return Policy::GetFinal(sums[0], sums[1]);
+    }
+#endif
     auto device = ctx_->Device().IsSycl() ? DeviceOrd::CPU() : ctx_->Device();
     auto labels = info.labels.View(device);
     info.weights_.SetDevice(device);
@@ -365,20 +382,6 @@ struct EvalEWiseBase : public MetricNoCache {
     preds.SetDevice(device);
     auto predts = ctx_->IsCUDA() ? preds.ConstDeviceSpan() : preds.ConstHostSpan();
 
-#if defined(XGBOOST_USE_METAL)
-    if (ctx_->IsMPS()) {
-      CheckRowWeights(info);
-      float parameter = 0.5f;
-      if constexpr (std::is_same_v<Policy, EvalError> || std::is_same_v<Policy, EvalTweedieNLogLik>)
-        parameter = policy_.MetalParameter();
-      auto sums = common::metal::MetricSums(
-          this->Name(), preds.ConstHostSpan(), info.labels.Data()->ConstHostSpan(),
-          info.weights_.ConstHostSpan(), info.labels.Shape(1), parameter);
-      auto rc = collective::GlobalSum(ctx_, linalg::MakeVec(sums.data(), sums.size()));
-      collective::SafeColl(rc);
-      return Policy::GetFinal(sums[0], sums[1]);
-    }
-#endif
     auto d_policy = policy_;
     auto result =
         Reduce(ctx_, info, [=] XGBOOST_DEVICE(size_t i, size_t sample_id, size_t target_id) {
@@ -471,9 +474,12 @@ class QuantileError : public MetricNoCache {
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
+      CheckRowWeights(info);
       auto sums = common::metal::QuantileMetricSums(
-          false, preds.ConstHostSpan(), info.labels.HostView().Values(),
-          info.weights_.ConstHostSpan(), alpha_.ConstHostSpan(), info.labels.Shape(1));
+          false, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), common::metal::ConstDeviceSpan(alpha_),
+          info.labels.Shape(1));
       auto rc = collective::GlobalSum(ctx_, linalg::MakeVec(sums.data(), sums.size()));
       collective::SafeColl(rc);
       CHECK_GT(sums[1], 0);
@@ -570,9 +576,12 @@ class ExpectileError : public MetricNoCache {
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
+      CheckRowWeights(info);
       auto sums = common::metal::QuantileMetricSums(
-          true, preds.ConstHostSpan(), info.labels.HostView().Values(),
-          info.weights_.ConstHostSpan(), alpha_.ConstHostSpan(), info.labels.Shape(1));
+          true, common::metal::ConstDeviceSpan(preds),
+          common::metal::ConstDeviceSpan(*info.labels.Data()),
+          common::metal::ConstDeviceSpan(info.weights_), common::metal::ConstDeviceSpan(alpha_),
+          info.labels.Shape(1));
       auto rc = collective::GlobalSum(ctx_, linalg::MakeVec(sums.data(), sums.size()));
       collective::SafeColl(rc);
       CHECK_GT(sums[1], 0);
