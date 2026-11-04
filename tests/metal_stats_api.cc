@@ -59,7 +59,7 @@ void CheckReductions(xgboost::Context const *cpu, xgboost::Context const *gpu) {
         sum = next;
         absolute += std::abs(double(value));
       }
-      auto compare = [&](double actual, double expected) {
+      auto compare = [&](double actual, double expected, bool float32 = false) {
         if ((std::isnan(actual) && std::isnan(expected)) || actual == expected)
           return;
         Check(std::isfinite(actual) && std::isfinite(expected),
@@ -68,7 +68,11 @@ void CheckReductions(xgboost::Context const *cpu, xgboost::Context const *gpu) {
           Check(false, "Exactly representable sum differs from CPU");
         // Wide exponent ranges change summation order. Bound the error relative
         // to input magnitudes, and check a compensated reference independently.
-        auto tolerance = 32 * std::numeric_limits<double>::epsilon() * absolute;
+        double steps = 0;
+        for (std::size_t n = rows; n > 1; n = (n + 255) / 256) steps += 8;
+        double eps = float32 ? std::numeric_limits<float>::epsilon()
+                             : std::numeric_limits<double>::epsilon();
+        auto tolerance = float32 ? steps * eps / (1 - steps * eps) * absolute : 32 * eps * absolute;
         Check(std::abs(actual - expected) <= tolerance,
               "Reduction differs beyond rounding bound");
       };
@@ -79,9 +83,10 @@ void CheckReductions(xgboost::Context const *cpu, xgboost::Context const *gpu) {
       Check(after.float_sum_dispatches - before.float_sum_dispatches ==
                 uint64_t(rows != 0),
             "Generic reduction did not dispatch on GPU");
-      compare(actual, expected);
-      if (mode < 4)
-        compare(actual, sum + correction);
+      // CUDA numeric::Reduce uses plus<float> and widens only its final result.
+      Check(actual == double(float(actual)) || std::isnan(actual), "Expected FP32 result");
+      compare(actual, expected, true);
+      if (mode < 4) compare(actual, sum + correction, true);
       common::OptionalWeights weights{input.ConstHostSpan()};
       expected = common::SumOptionalWeights(cpu, weights, rows);
       before = common::metal::GetStatistics();
@@ -95,6 +100,17 @@ void CheckReductions(xgboost::Context const *cpu, xgboost::Context const *gpu) {
       ++cases;
     }
   }
+  HostDeviceVector<float> witness(2);
+  witness.HostVector() = {1e8f, 1.f};
+  Check(common::Reduce(gpu, witness) == 1e8, "CUDA float sum must round 1e8+1");
+  Check(common::SumOptionalWeights(gpu, common::OptionalWeights{witness.ConstHostSpan()}, 2) ==
+            100000001.,
+        "Optional weights must retain their binary64 sum");
+  witness.HostVector() = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+  Check(std::isinf(common::Reduce(gpu, witness)), "CUDA float reduction must overflow here");
+  Check(std::isfinite(
+            common::SumOptionalWeights(gpu, common::OptionalWeights{witness.ConstHostSpan()}, 2)),
+        "Optional-weight binary64 sum must stay finite");
   auto before = common::metal::GetStatistics();
   Check(common::SumOptionalWeights(gpu, common::OptionalWeights{3.5f}, 11) ==
             38.5,

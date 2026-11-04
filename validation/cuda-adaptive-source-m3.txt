@@ -1,0 +1,133 @@
+CUDA-source adaptive objectives and generic reduction precision
+2026-11-04; Apple M3 / 10 GPU cores / 16 GB unified memory
+
+Scope
+-----
+Absolute-error and quantile objective expressions, residual-scale statistics,
+and common::Reduce now follow their CUDA source precision and control flow.
+No performance benchmark was run. Full CUDA parity is still incomplete.
+
+Authority and implementation
+----------------------------
+Vendored sources:
+ xgboost/src/objective/regression_obj.cu (MeanAbsoluteError)
+ xgboost/src/objective/quantile_obj.cu (QuantileRegression)
+ xgboost/src/common/numeric.cu
+ xgboost/src/common/optional_weight.cu and optional_weight.cc
+ xgboost/src/common/device_helpers.cuh (dh::Reduce)
+
+Important correction: numeric.cu returns double but supplies thrust::plus<float>
+to dh::Reduce. Each addition is FP32. The final result is returned as double.
+The double initial value does not override the explicitly float binary operator.
+The inspected pinned CCCL accumulator type derives from the operator's result;
+transparent cuda::std::plus with a double initial value instead yields double.
+The latter is used by SumOptionalWeights. Default optional weights are computed
+as n_samples * float(default_weight), also a float product before widening.
+
+Metal common::Reduce now calls SumFloat32. It uses recursive 256-input GPU sums,
+then returns the FP32 value as double. The generic API preserves dh::Reduce's
+outer batch size INT32_MAX/2 (1,073,741,823), including FP32 host aggregation.
+Optional-weight array sums retain the existing binary64 GPU reducer.
+Absolute-error's initial explicit weight reduction consequently changes to FP32,
+as required by its call to common::Reduce. No CPU execution was changed.
+
+Adaptive scales now use FP32 root terms and FP32 sums; weights reduce separately
+in binary64. Recursive GPU reduction produces targets+1 double statistics.
+They pass through GlobalSum using a CPU context, as in CUDA, before GPU scale
+application and gradient calculation. Empty workers participate, then return
+without dispatching. The new empty setup initially retained a labels.size()/rows
+division; code review caught and fixed it before API testing. Distributed MPS
+Learner training remains rejected. These tests exercise objectives directly,
+not distributed trees or GPU collective transport.
+
+Absolute gradients retain hypotf(delta,residual), norm>0 ? delta/norm : 1,
+(w*residual)*curvature and w*curvature. Hypot uses software binary64 squares and
+Newton square root, then one FP32 rounding. Infinity dominates NaN, as in CUDA.
+Quantile retains FP32 smoothing-scale multiplication/division, tanhf, continuous
+ratio at zero, fmaxf curvature floor, source product order and early zero output.
+Tanh uses binary64 exp/expm1-style evaluation before FP32 rounding, preserving
+small and subnormal inputs. Every row's gradient remains on GPU.
+No CPU correction path or new host per-row calculation was introduced.
+
+Validation
+----------
+1. tests/build_objective_reference.py now also extracts the actual adaptive
+   objective lambda bodies and quantile constants. It rebinds views and math
+   callbacks, retaining expressions, casts, branches and product order.
+   Generated source hashes are recorded in results/cuda_objective_reference_generated.h.
+
+2. tests/metal_adaptive_source.mm checks production kernels:
+   - 1,000,800 independent hypot/tanh primitive fields, including random bit
+     patterns, neighboring magnitudes, saturation, subnormals, NaNs and infinities.
+     Oracle: host binary64 hypot/tanh rounded to FP32, one-ULP acceptance ceiling.
+     Observed maximum: 0 FP32 ULP for both primitives.
+   - 12 cases / 2,359,332 fields: extracted source composition plus actual primitive
+     arguments, two objectives, 65,537 elements per case, independent target scales,
+     zero/subnormal/large weights, random full-bit inputs and exceptional scales.
+     Composition matches exactly after independently checked GPU math results are
+     substituted into the extracted host source. NaNs compare by classification,
+     signed zeros by equality. This separates source-order errors from libm errors.
+
+3. tests/metal_adaptive_api.cc plus tests/run_adaptive_collective.py call real
+   ObjFunction::GetGradient with MPS and CPU contexts. Integer roots and integer
+   or power-of-two weights make local root sums exactly representable in FP32.
+   An independent reference totals all workers' data without copying the GPU
+   reduction algorithm. Each pair is checked against that global reference and
+   the original CPU objective (3e-6 * max(1,abs(expected)) per finite field).
+   Includes zero/tiny weights, one/three targets, empty/all-empty partitions,
+   multiple nonempty workers and 65,537-row recursive reductions.
+   Additional two-row cases distinguish FP32 root overflow from binary64 weights.
+   World 1: 68 cases / 8,421,648 fields.
+   World 2: 48+48 cases / 32,896+98,560 fields.
+   World 3: 48+48+48 cases / 32,896+98,560+131,328 fields.
+   Total: 308 worker calls / 8,815,888 fields; 38,792 output pairs distinguish
+   global from worker-local scales. Empty workers dispatch no objective/scale work.
+   Initial test compilation failed because Context::UpdateAllowUnknown needs an
+   explicit Args type; corrected the fixture. Focused v2 passed at 15:23:57 UTC.
+
+4. Existing adaptive checks pass unchanged tolerances:
+   180 cases / 1,260 residual scales / 452,592 gradient pairs.
+   Existing quantile/expectile metric checks: 288 cases / 1,727,040 pairs.
+   Existing common statistics checks: 63 reduction cases / 14,982,576 values,
+   plus 56 median/mean cases. Two-term precision fixtures assert generic
+   Reduce({1e8,1}) == 1e8 versus SumOptionalWeights == 100000001, and distinguish
+   overflowing FLT_MAX+FLT_MAX from its finite binary64 optional-weight sum.
+   Wide-exponent generic-reduction checks now use the FP32 forward-error bound
+   gamma_k * sum(abs(inputs)), k=8 per recursive pass, eps=FLT_EPSILON, instead
+   of the previous binary64 bound. Exact integer/subnormal/nonfinite checks
+   remain strict; optional-weight checks retain the binary64 bound. Ordinary
+   objective and training CPU-comparison tolerances are unchanged.
+   Focused Python: 83 passed in 3.18 s, at 15:16:15 UTC.
+   Focused source/math suite passed at 15:19:11 UTC.
+
+Limits
+------
+Metal's FP32 tree has a different association from architecture-dependent CUB.
+The generic multi-billion-element batch boundary has not been capacity-tested
+on this 16-GB machine. Adaptive fused reductions use the full local-input tree;
+inputs crossing CUDA's outer batch boundary remain an association-validation
+limit. Default-weight count rounding above 2^24 follows the source cast, but
+is not validated by a correspondingly large adaptive allocation in this suite.
+The mathematical references establish source-expression/primitive behavior on
+this Mac, not NVIDIA libdevice identity, compiler-contraction behavior or
+cross-Apple equivalence. No new performance claim is made.
+
+Full regression PASS, 15:24:25–15:29:25 UTC, FULL_EXIT=0 (5 minutes):
+ Metal build and every rebuilt native suite/reference updater passed.
+ Python: 1,856 passed / 1 skipped / 371 warnings, 95.70 seconds.
+ CPU-only configure/build/API/device check passed; Metal reports unavailable
+ and device=mps raises the expected clear error.
+ No production/test changes after the full run started; documentation only.
+ git diff --check passed.
+Local logs:
+ results/build-adaptive-source-v1.log
+ results/test-adaptive-source-focused-v1.log
+ results/test-adaptive-math-focused-v1.log
+ results/build-adaptive-empty-v1.log
+ results/test-adaptive-api-focused-v1.log and -v2.log
+ results/adaptive-source-full-driver-v1.log
+ results/build-adaptive-source-final-v1.log
+ results/test-adaptive-source-full-v1.log
+ results/configure-cpu-adaptive-source-v1.log
+ results/build-cpu-adaptive-source-v1.log
+ results/check-cpu-adaptive-source-v1.log

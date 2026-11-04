@@ -119,7 +119,7 @@ class QuantileRegression : public ObjFunction {
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::AdaptiveGradients(common::metal::AdaptiveObjective::kQuantile,
+      common::metal::AdaptiveGradients(ctx_, common::metal::AdaptiveObjective::kQuantile,
                                        preds.ConstHostSpan(), info.labels.HostView().Values(),
                                        info.weights_.ConstHostSpan(), n_targets,
                                        alpha_.ConstHostSpan(), out_gpair->HostView().Values());

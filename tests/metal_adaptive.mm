@@ -154,6 +154,8 @@ int main(int argc, char** argv) {
       };
       auto reduce = pipeline(@"xgb_residual_scale_reduce"),
            finish = pipeline(@"xgb_residual_scale_finish"),
+           stats_reduce = pipeline(@"xgb_residual_stats_reduce"),
+           apply = pipeline(@"xgb_residual_scale_apply"),
            gradient = pipeline(@"xgb_adaptive_objective");
       auto queue = [device newCommandQueue];
       auto upload = [&](void const* data, size_t bytes) {
@@ -189,6 +191,7 @@ int main(int argc, char** argv) {
                    weight = upload(weights.data(), weights.size() * 4),
                    levels = upload(alpha.data(), alpha.size() * 4);
               auto partial = upload(nullptr, p.blocks * targets * 16),
+                   statistics = upload(nullptr, (targets + 1) * 8),
                    scale = upload(nullptr, targets * 4),
                    output = upload(nullptr, predictions.size() * 8);
               auto command = [queue commandBuffer];
@@ -202,9 +205,31 @@ int main(int argc, char** argv) {
               [e dispatchThreadgroups:MTLSizeMake(p.blocks, targets, 1)
                   threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
               [e endEncoding];
+              while (p.blocks > 1) {
+                auto blocks = (p.blocks + 255) / 256;
+                auto next = upload(nullptr, blocks * targets * 16);
+                e = [command computeCommandEncoder];
+                [e setComputePipelineState:stats_reduce];
+                [e setBuffer:partial offset:0 atIndex:0];
+                [e setBuffer:next offset:0 atIndex:1];
+                [e setBytes:&p length:sizeof(p) atIndex:2];
+                [e dispatchThreadgroups:MTLSizeMake(blocks, targets, 1)
+                    threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                [e endEncoding];
+                partial = next;
+                p.blocks = blocks;
+              }
               e = [command computeCommandEncoder];
               [e setComputePipelineState:finish];
               [e setBuffer:partial offset:0 atIndex:0];
+              [e setBuffer:statistics offset:0 atIndex:1];
+              [e setBytes:&p length:sizeof(p) atIndex:2];
+              [e dispatchThreads:MTLSizeMake(targets, 1, 1)
+                  threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+              [e endEncoding];
+              e = [command computeCommandEncoder];
+              [e setComputePipelineState:apply];
+              [e setBuffer:statistics offset:0 atIndex:0];
               [e setBuffer:scale offset:0 atIndex:1];
               [e setBytes:&p length:sizeof(p) atIndex:2];
               [e dispatchThreads:MTLSizeMake(targets, 1, 1)

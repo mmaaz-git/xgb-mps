@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "xgboost/base.h"
+#include "xgboost/context.h"
 #include "xgboost/linalg.h"
 #include "xgboost/span.h"
 
@@ -52,9 +53,10 @@ enum class BaseScoreTransform : std::uint32_t {
 };
 // Invalid checked intercepts return false without modifying any host value.
 bool BaseScoreToMargin(BaseScoreTransform transform, Span<float> values);
-void AdaptiveGradients(AdaptiveObjective objective, Span<float const> predictions,
-                       Span<float const> labels, Span<float const> weights, std::uint32_t targets,
-                       Span<float const> alpha, Span<GradientPair> output);
+void AdaptiveGradients(Context const* ctx, AdaptiveObjective objective,
+                       Span<float const> predictions, Span<float const> labels,
+                       Span<float const> weights, std::uint32_t targets, Span<float const> alpha,
+                       Span<GradientPair> output);
 std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predictions,
                                          Span<float const> labels, Span<float const> weights,
                                          Span<float const> alpha, std::uint32_t targets);

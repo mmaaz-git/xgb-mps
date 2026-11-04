@@ -14,23 +14,28 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **regression, hinge and expectile gradients now preserve CUDA's
-source arithmetic**, alongside sigmoid, exponential, hinge, expectile and
-quantile prediction transforms. Squared-log Hessians retain the source's
-binary64 denominator and division; hinge retains its binary64 label expression
-and comparison. Shared arithmetic preserves subnormal values and source NaN
-handling.
+Latest step: **absolute-error and quantile gradients now preserve CUDA's source
+arithmetic**, including subnormal values, hypot/tanh edge cases and weight order.
+Residual roots now sum in FP32, while optional weights sum in binary64, matching
+the distinct CUDA reducers. Small scale statistics pass through the same host
+collective used upstream, including on empty workers; scale application and
+row gradients run on GPU. Full distributed MPS training remains disabled.
 
-New extracted-source checks pass **624 cases / 14,305,782 fields**, including
-**25,205 squared-log denominator witnesses**, **6,089 hinge witnesses** and
-**545,836 subnormal fields**. Fifteen public transform cases cover CPU comparison,
-tiny/extreme margins and model reload. The reference substitutes explicitly
-rounded math primitives into vendored expressions; actual NVIDIA execution
-remains unverified. Extreme stress cases retain documented CPU-math differences
-from signaling NaNs and cancellation with very large weights; ordinary training
-comparisons keep their existing tolerances. Full regression passes **1,856
-Python tests**, every rebuilt native suite and the CPU-only build/check.
-[Objective arithmetic validation](validation/cuda-objective-arithmetic-m3.txt).
+New checks pass **2,359,332 source-expression fields**, **1,000,800 math fields**
+and **308 production objective calls / 8,815,888 result checks** across one, two
+and three local workers. The worker fixtures verify global aggregation, empty
+partitions and recursive reductions. These establish source and CPU-reference
+agreement for the tested cases; they do not establish NVIDIA/libdevice identity.
+Full regression passes **1,856 Python tests**, every rebuilt native suite and
+the CPU-only build/check.
+[Adaptive-objective validation](validation/cuda-adaptive-source-m3.txt).
+
+The preceding regression, hinge and expectile step preserves CUDA's source
+arithmetic and prediction transforms. Squared-log Hessians retain their binary64
+denominator; hinge retains its binary64 label expression. Its extracted-source
+checks cover **624 cases / 14,305,782 fields**. Extreme stress cases retain
+explicit CPU-math differences; ordinary training comparisons keep their existing
+tolerances. [Objective arithmetic validation](validation/cuda-objective-arithmetic-m3.txt).
 
 The preceding multiclass step aligned softmax with CUDA's sequential binary64
 sum of FP32 terms and removed repeated class scans. Argmax preserves source
@@ -167,12 +172,12 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Root statistics / stump fitting | All scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; final root weights run on GPU; vector cover sums targets in binary64 before FP32 conversion; objective stump fitting retains its separate binary64 GPU reduction |
 | Reduced-gradient leaf fitting | Original value scales → float sampling replay → per-row integer conversion → integer leaf/page sums; binary64 view for regularized/clipped final weights; host tree receives completed leaves |
 | Linear coordinate descent | GPU FP32 sums, CUDA residual/Hessian rules and original selector snapshots; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
-| Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
+| Generic sums | CUDA-source FP32 generic reductions with final double return; optional-weight reductions use binary64; scalar default weights need no array dispatch |
 | Means | GPU scalar FP32 terms and accumulation; per-target sample and weighted sample means use binary64 terms/reductions; parallel association can differ from CUB |
 | Objective initialization | GPU multiclass packed class-weight histogram, normalization/logarithm/centering, expectile initial gradients/Hessians and absolute-error target-mean broadcast; quantile vector normalization also runs on GPU; generic allocation/state remain host |
 | Objective validation / base scores | GPU logistic, gamma, squared-log, Poisson/Tweedie and multiclass label checks; checked logistic/gamma intercepts and logarithm/logit conversion, including Cox base-score conversion |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
-| Gradients | CUDA-source FP32/FP64 expressions for squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass and expectile; adaptive absolute-error and quantile gradients have GPU residual scales but still need a source-arithmetic audit |
+| Gradients | CUDA-source FP32/FP64 expressions for squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass and expectile; adaptive absolute-error and quantile gradients preserve source expressions, FP32 residual-root sums and binary64 weight sums; host scale-statistic collective matches upstream |
 | AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU |
 | Prediction transforms | CUDA-source sigmoid, exponential, hinge, cumulative expectile and quantile insertion sorting with preserved subnormals; multiclass softmax uses sequential binary64 sums of FP32 terms, and argmax preserves source NaN/subnormal comparisons |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
@@ -500,6 +505,11 @@ On Apple M3, validated through 2026-11-04:
   independent CPU mathematical references.
 - Native adaptive objectives: **180 cases / 1,260 residual scales / 452,592 gradient
   pairs**, covering zero/tiny weights, multiple targets and response scales.
+  New extracted-source checks cover **2,359,332 fields**, with **1,000,800**
+  independently checked hypot/tanh fields (maximum observed error: zero FP32 ULP).
+  Production objective tests cover **308 worker calls / 8,815,888 result checks**,
+  including empty/global partitions, 65,537-row recursive reductions and FP32
+  overflow distinguished from binary64 optional-weight sums.
 - Native quantile/expectile metrics: **288 cases / 1,727,040 loss/weight pairs**,
   including multi-label layouts, extreme weights and FP32 subnormals. Rare
   underflowing metric products use software arithmetic to preserve CPU results.
@@ -576,9 +586,11 @@ training speedup yet.
 | Quantile / 1,000,000 | 0.856 s | 0.970 s | 0.88× |
 
 [Absolute-error results](validation/benchmark-absolute-v3-m3.json) and
-[quantile results](validation/benchmark-quantile-v3-m3.json). Checked exact integer
-reductions accelerate common residual scales and metric sums, with software
-binary64 retained for wide exponent ranges. In the preceding
+[quantile results](validation/benchmark-quantile-v3-m3.json). These measurements
+predate the CUDA-source adaptive-objective correction: residual roots now
+accumulate in FP32 and gradients use subnormal-preserving math. The old checked
+integer/binary64 residual reductions do not describe the current implementation;
+no new performance measurement has been made for it. In the preceding
 [absolute-error run](validation/benchmark-absolute-v2-m3.json) and [preceding quantile run](validation/benchmark-quantile-v2-m3.json),
 at one million rows objective GPU time fell from 0.083 to 0.052 s for absolute error and from 0.068 to 0.055 s for
 quantile; end-to-end Metal training fell from 0.999 to 0.882 s and from 1.164 to

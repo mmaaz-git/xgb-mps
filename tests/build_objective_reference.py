@@ -25,7 +25,9 @@ def primitives(text):
                      ("common::Sqr(", "xgboost::common::Sqr("),
                      ("std::log1p(", "Math::Log1p("), ("std::exp(", "Math::Exp("),
                      ("expf(", "Math::Exp("), ("std::sqrt(", "Math::Sqrt("),
-                     ("std::pow(", "Math::Pow("), ("fmaxf(", "Math::FMax(")]:
+                     ("std::pow(", "Math::Pow("), ("fmaxf(", "Math::FMax("),
+                     ("hypotf(", "Math::Hypot("), ("tanhf(", "Math::Tanh("),
+                     ("sqrtf(", "Math::Sqrt("), ("fabsf(", "std::abs(")]:
         text = text.replace(old, new)
     return text
 
@@ -83,6 +85,26 @@ def main():
         expr = expr.replace("gpair(i, j)", "result").replace("weights[i]", "sample_weights[i]")
         parts.append(f"case {kind}: {{\n" + primitives(expr) + "\nreturn result;\n}")
     parts += ["} return result; }"]
+    constants = re.findall(r"constexpr float k(?:SmoothingScale|MinSurrogateRatio)\{[^}]+\};", quantile)
+    assert len(constants) == 2
+    parts += ["static " + c for c in constants]
+    parts.append("""static GradientPair Adaptive(unsigned kind, float p, float y, float delta, float w, float a) {
+      auto predt = [&](std::size_t, std::size_t) { return p; };
+      auto labels = [&](std::size_t, std::size_t) { return y; };
+      float scale_view[]{delta}, weight[]{w}, alpha[]{a};
+      std::size_t i=0,j=0;
+      GradientPair result;
+      if (kind == 0) {""")
+    for name, source in [("MeanAbsoluteError", regression), ("QuantileRegression", quantile)]:
+        start = source.index("class " + name + " :")
+        match = re.search(r"XGBOOST_DEVICE\(std::size_t i, std::size_t j\) mutable", source[start:])
+        assert match, name
+        expr = body(source, start + match.start())[1:-1]
+        expr = expr.replace("gpair(i, j)", "result").replace("return;", "return result;")
+        parts.append(primitives(expr))
+        if name == "MeanAbsoluteError":
+            parts.append("} else {")
+    parts.append("} return result; }")
     # The quantile transform's loop itself is source, including NaN barriers.
     start = quantile.index("void PredTransform(")
     start = quantile.index("XGBOOST_DEVICE(std::size_t row", start)

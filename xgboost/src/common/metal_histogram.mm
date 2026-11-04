@@ -14,6 +14,7 @@
 #include <random>
 #include <vector>
 
+#include "../collective/aggregator.h"
 #include "../data/gradient_index.h"
 #include "metal_auc.h"
 #include "metal_constraints.h"
@@ -238,6 +239,8 @@ class Runtime {
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
   id<MTLComputePipelineState> shared_pipeline, gradient_bounds_pipeline, gradient_scale_pipeline;
+  id<MTLComputePipelineState> residual_stats_pipeline, residual_apply_pipeline,
+      float32_sum_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
@@ -313,6 +316,9 @@ class Runtime {
       store_integer_hist_pipeline = make_pipeline(@"xgb_histogram_store_integer");
       subtract_integer_hist_pipeline = make_pipeline(@"xgb_histogram_subtract_integer");
       sum_integer_hist_pipeline = make_pipeline(@"xgb_histogram_sum_integer");
+      residual_stats_pipeline = make_pipeline(@"xgb_residual_stats_reduce");
+      residual_apply_pipeline = make_pipeline(@"xgb_residual_scale_apply");
+      float32_sum_pipeline = make_pipeline(@"xgb_float32_sum");
       residual_reduce_pipeline = make_pipeline(@"xgb_residual_scale_reduce");
       residual_finish_pipeline = make_pipeline(@"xgb_residual_scale_finish");
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
@@ -2269,6 +2275,40 @@ double Sum(Span<float const> values) {
                                       std::memory_order_relaxed);
     return static_cast<GradientPairPrecise const*>(result.contents)->GetGrad();
   }
+}
+
+double SumFloat32(Span<float const> values) {
+  if (values.empty()) return 0.;
+  // Match dh::Reduce's outer batch boundary and FP32 host aggregation.
+  constexpr std::size_t kLimit = std::numeric_limits<std::int32_t>::max() / 2;
+  float aggregate = 0.f;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    for (std::size_t offset = 0; offset < values.size(); offset += kLimit) {
+      std::uint64_t n = std::min(kLimit, values.size() - offset);
+      auto input = Upload(rt, values.data() + offset, n * sizeof(float));
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      do {
+        auto blocks = (n + 255) / 256;
+        auto output = Allocate(rt, blocks * sizeof(float));
+        auto e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt.float32_sum_pipeline];
+        [e setBuffer:input offset:0 atIndex:0];
+        [e setBuffer:output offset:0 atIndex:1];
+        [e setBytes:&n length:sizeof(n) atIndex:2];
+        [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+        input = output;
+        n = blocks;
+      } while (n > 1);
+      CompleteOperation(command, &float_sum_dispatches, &float_sum_gpu_time_ns);
+      aggregate += *static_cast<float const*>(input.contents);
+    }
+  }
+  return aggregate;
 }
 
 void VectorArithmetic(VectorOp op, linalg::VectorView<float> values, double parameter) {
@@ -5222,24 +5262,26 @@ void SurvivalTransform(bool to_margin, Span<float> values) {
   }
 }
 
-void AdaptiveGradients(AdaptiveObjective objective, Span<float const> predictions,
-                       Span<float const> labels, Span<float const> weights, std::uint32_t targets,
-                       Span<float const> alpha, Span<GradientPair> output) {
+void AdaptiveGradients(Context const* ctx, AdaptiveObjective objective,
+                       Span<float const> predictions, Span<float const> labels,
+                       Span<float const> weights, std::uint32_t targets, Span<float const> alpha,
+                       Span<GradientPair> output) {
   CHECK_GT(targets, 0);
   CHECK_EQ(predictions.size() % targets, 0);
   CHECK_EQ(predictions.size(), output.size());
   CHECK_LE(predictions.size(), std::numeric_limits<std::uint32_t>::max());
   auto rows = predictions.size() / targets;
-  if (!rows) return;
+
   CHECK(weights.empty() || weights.size() == rows);
   CHECK(labels.size() == rows || labels.size() == predictions.size());
+  CHECK(ctx);
   if (objective == AdaptiveObjective::kQuantile) CHECK_EQ(alpha.size(), targets);
   struct {
     std::uint64_t rows;
     std::uint32_t targets, label_targets, weighted, kind, blocks, padding;
   } p{rows,
       targets,
-      static_cast<std::uint32_t>(labels.size() / rows),
+      static_cast<std::uint32_t>(rows ? labels.size() / rows : 1),
       !weights.empty(),
       static_cast<std::uint32_t>(objective),
       static_cast<std::uint32_t>((rows + 255) / 256),
@@ -5251,25 +5293,63 @@ void AdaptiveGradients(AdaptiveObjective objective, Span<float const> prediction
     auto label = Upload(rt, labels.data(), labels.size_bytes());
     auto weight = Upload(rt, weights.data(), weights.size_bytes());
     auto levels = Upload(rt, alpha.data(), alpha.size_bytes());
-    auto partial = Allocate(rt, std::size_t(p.blocks) * targets * 2 * sizeof(std::uint64_t));
+    std::vector<double> statistics(targets + 1, 0.);
+    if (rows) {
+      auto partial = Allocate(rt, std::size_t(p.blocks) * targets * 2 * sizeof(std::uint64_t));
+      auto stats = Allocate(rt, statistics.size() * sizeof(double));
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.residual_reduce_pipeline];
+      [e setBuffer:pred offset:0 atIndex:0];
+      [e setBuffer:label offset:0 atIndex:1];
+      [e setBuffer:weight offset:0 atIndex:2];
+      [e setBuffer:partial offset:0 atIndex:3];
+      [e setBytes:&p length:sizeof(p) atIndex:4];
+      [e dispatchThreadgroups:MTLSizeMake(p.blocks, targets, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      while (p.blocks > 1) {
+        auto blocks = (p.blocks + 255) / 256;
+        auto next = Allocate(rt, std::size_t(blocks) * targets * 2 * sizeof(std::uint64_t));
+        e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt.residual_stats_pipeline];
+        [e setBuffer:partial offset:0 atIndex:0];
+        [e setBuffer:next offset:0 atIndex:1];
+        [e setBytes:&p length:sizeof(p) atIndex:2];
+        [e dispatchThreadgroups:MTLSizeMake(blocks, targets, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+        partial = next;
+        p.blocks = blocks;
+      }
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.residual_finish_pipeline];
+      [e setBuffer:partial offset:0 atIndex:0];
+      [e setBuffer:stats offset:0 atIndex:1];
+      [e setBytes:&p length:sizeof(p) atIndex:2];
+      [e dispatchThreads:MTLSizeMake(targets, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &residual_scale_dispatches);
+      std::memcpy(statistics.data(), stats.contents, statistics.size() * sizeof(double));
+    }
+    // Upstream CUDA also communicates these small statistics through a CPU
+    // context. Empty workers must participate before returning.
+    auto cpu_ctx = ctx->MakeCPU();
+    collective::SafeColl(
+        collective::GlobalSum(&cpu_ctx, linalg::MakeVec(statistics.data(), statistics.size())));
+    if (!rows) return;
+    auto stats = Upload(rt, statistics.data(), statistics.size() * sizeof(double));
     auto scale = Allocate(rt, targets * sizeof(float)), out = Allocate(rt, output.size_bytes());
     auto command = [rt.queue commandBuffer];
     CHECK(command);
     auto e = [command computeCommandEncoder];
     CHECK(e);
-    [e setComputePipelineState:rt.residual_reduce_pipeline];
-    [e setBuffer:pred offset:0 atIndex:0];
-    [e setBuffer:label offset:0 atIndex:1];
-    [e setBuffer:weight offset:0 atIndex:2];
-    [e setBuffer:partial offset:0 atIndex:3];
-    [e setBytes:&p length:sizeof(p) atIndex:4];
-    [e dispatchThreadgroups:MTLSizeMake(p.blocks, targets, 1)
-        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-    [e endEncoding];
-    e = [command computeCommandEncoder];
-    CHECK(e);
-    [e setComputePipelineState:rt.residual_finish_pipeline];
-    [e setBuffer:partial offset:0 atIndex:0];
+    [e setComputePipelineState:rt.residual_apply_pipeline];
+    [e setBuffer:stats offset:0 atIndex:0];
     [e setBuffer:scale offset:0 atIndex:1];
     [e setBytes:&p length:sizeof(p) atIndex:2];
     [e dispatchThreads:MTLSizeMake(targets, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
@@ -5288,7 +5368,6 @@ void AdaptiveGradients(AdaptiveObjective objective, Span<float const> prediction
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     CompleteOperation(command, &objective_dispatches);
-    residual_scale_dispatches.fetch_add(1, std::memory_order_relaxed);
     std::memcpy(output.data(), out.contents, output.size_bytes());
   }
 }

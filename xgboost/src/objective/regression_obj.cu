@@ -1036,7 +1036,7 @@ class MeanAbsoluteError : public ObjFunction {
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      common::metal::AdaptiveGradients(common::metal::AdaptiveObjective::kAbsolute,
+      common::metal::AdaptiveGradients(ctx_, common::metal::AdaptiveObjective::kAbsolute,
                                        preds.ConstHostSpan(), info.labels.HostView().Values(),
                                        info.weights_.ConstHostSpan(), n_targets, {},
                                        out_gpair->HostView().Values());

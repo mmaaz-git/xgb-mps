@@ -14,6 +14,8 @@ class HistogramBuffer;
 // association can differ from CUB/CPU. Sample means use binary64 terms.
 enum class MeanKind : std::uint32_t { kFloat32, kSample, kWeightedSample };
 double Sum(Span<float const> values);
+// CUDA numeric::Reduce uses plus<float>; its FP32 result is returned as double.
+double SumFloat32(Span<float const> values);
 void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float const> weights,
           linalg::VectorView<float> output);
 void SumGradients(linalg::MatrixView<GradientPair const> gradients,

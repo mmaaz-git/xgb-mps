@@ -80,7 +80,7 @@ must be reported rather than hidden by widening test tolerances.
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, multiclass packed class priors and normalization/log/centering, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; multiclass softmax follows source sequential binary64 accumulation of FP32 terms and argmax handles source NaN/subnormal comparisons; identity transforms require no dispatch |
 | Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; expectile's host margin loop matches upstream host execution |
-| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; generic initialization/state work remains CPU |
+| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal source-expression gradients, FP32 residual-root sums, binary64 optional-weight sums and quantile prediction sorting; upstream host scale-statistic collective restored for empty/nonempty workers; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; generic initialization/state work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Other initialization/state work still requires porting/audit |
@@ -230,6 +230,57 @@ execution remain unverified; performance has not been benchmarked. Full
 regression passes **1,856 Python tests, one skip**, every rebuilt native suite
 and the CPU-only build/device check (2026-11-04, 14:59:14–15:03:58 UTC).
 [Validation record](../validation/cuda-objective-arithmetic-m3.txt).
+
+## Adaptive objectives and generic reduction precision
+
+The absolute-error and quantile objective branches now preserve the vendored
+CUDA expressions: FP32 residual subtraction, sqrt(abs(residual)), row weighting,
+hypot/tanh, ordered comparisons and left-associated products. Software-backed
+math preserves subnormals. Hypot returns infinity if either argument is infinite,
+including when the other is NaN. Quantile keeps its zero-scale/zero-weight early
+return, continuous ratio at zero and source fmaxf curvature floor.
+
+A return type of double does not imply binary64 accumulation here.
+`numeric.cu::Reduce` passes `thrust::plus<float>` to `dh::Reduce`: it adds in FP32
+and widens the final result. `optional_weight.cu::SumOptionalWeights` instead
+passes transparent `cuda::std::plus` with a double initial value and accumulates
+in binary64. The new Metal generic reducer and adaptive root sums preserve this
+distinction. Default optional weights retain the source FP32 count product.
+Two-term fixtures distinguish both precision loss (`1e8 + 1`) and FP32 overflow
+from a binary64 weight sum. This also corrects absolute-error initialization's
+use of the generic reducer; other optional-weight callers keep binary64 sums.
+
+Each adaptive call reduces its statistics completely on GPU, copies only the
+`targets + 1` double statistics to the host collective, then computes scales and
+gradients on GPU. This matches CUDA's explicit CPU-context GlobalSum. Empty
+workers participate before returning and dispatch no kernels. The independent
+Learner guard still rejects distributed MPS training: this change restores
+objective behavior and does not implement GPU collectives or distributed trees.
+
+The extracted-source reference rebinds the actual objective lambda bodies and
+substitutes only math primitives. Tests check 2,359,332 source-composition fields
+exactly (NaNs by class, signed zeros by equality). A separate 1,000,800-field
+hypot/tanh corpus compares against host binary64 libm rounded to FP32, with a
+one-ULP ceiling and a maximum observed error of zero. Actual objective calls use
+exactly representable root/weight sums, an independent global-data reference and
+the original CPU objectives at an unchanged 3e-6 scaled tolerance. One/two/three
+local worker runs cover 308 calls / 8,815,888 checks, including empty workers,
+zero/tiny weights, multiple targets and 65,537-row recursive sums. There are
+38,792 output pairs that distinguish global from worker-local scales.
+
+Metal uses a recursive 256-input FP32 reduction tree. Its association is not CUB's
+architecture-dependent association. Wide-exponent generic-reduction tests now
+use the FP32 forward-error bound instead of the old, incorrect binary64 bound;
+exact-integer/subnormal/nonfinite cases and binary64 optional-weight checks stay
+strict. The generic reducer preserves CUDA's outer 1,073,741,823-element batch
+boundary, but that capacity has not been exercised on this machine. The adaptive
+fused reduction uses its own tree over the complete local input; huge inputs
+crossing CUDA's batch boundary remain an association-validation limit.
+NVIDIA libdevice results, compiler contraction, cross-Apple execution and current
+performance remain unmeasured. No CPU correction or relaxed ordinary-training
+tolerance was introduced. Full regression passed **1,856 Python tests, one skip**,
+every rebuilt native suite and the CPU-only build/check (2026-11-04,
+15:24:25–15:29:25 UTC). [Validation](../validation/cuda-adaptive-source-m3.txt).
 
 ## Multiclass gradient and transform arithmetic
 

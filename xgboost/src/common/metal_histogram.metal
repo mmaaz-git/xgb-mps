@@ -1638,78 +1638,6 @@ kernel void xgb_histogram_sum(device const ulong2* histogram [[buffer(0)]],
   output[0] = ulong2(g.bits, h.bits);
 }
 
-kernel void xgb_residual_scale_reduce(
-    device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
-    device const float* weights [[buffer(2)]], device ulong2* partial [[buffer(3)]],
-    constant AdaptiveParams& p [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
-    uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]],
-    uint simd [[simdgroup_index_in_threadgroup]]) {
-  ulong row = ulong(group.x) * 256 + tid;
-  uint target = group.y;
-  XGBDouble root{0}, weight{0};
-  if (row < p.rows) {
-    float residual = predictions[row * p.targets + target] -
-                     labels[row * p.label_targets + (p.label_targets == 1 ? 0 : target)];
-    float w = p.weighted ? weights[row] : 1.0f;
-    root = xgb_dfrom_float(w * sqrt(abs(residual)));
-    weight = xgb_dfrom_float(w);
-  }
-  threadgroup int4 bounds[8];
-  threadgroup ulong2 sums[8];
-  ulong2 total = xgb_reduce_double_pair(root, weight, bounds, sums, lane, simd);
-  if (simd == 0 && lane == 0) partial[ulong(group.x) * p.targets + target] = total;
-}
-kernel void xgb_residual_scale_finish(device const ulong2* partial [[buffer(0)]],
-                                      device float* scales [[buffer(1)]],
-                                      constant AdaptiveParams& p [[buffer(2)]],
-                                      uint target [[thread_position_in_grid]]) {
-  XGBDouble root{0}, weight{0};
-  for (uint block = 0; block < p.blocks; ++block) {
-    ulong2 value = partial[ulong(block) * p.targets + target];
-    root = xgb_dadd(root, {value.x});
-    weight = xgb_dadd(weight, {value.y});
-  }
-  // common::CloseTo uses the double literal 1e-6, rather than an FP32 threshold.
-  if (xgb_dlt({weight.bits & ~kDoubleSign}, {0x3eb0c6f7a0b5ed8dul}))
-    scales[target] = 0.0f;
-  else {
-    XGBDouble mean = xgb_ddiv(root, weight);
-    scales[target] = xgb_dto_float(xgb_dmul(mean, mean));
-  }
-}
-inline float xgb_hypot(float x, float y) {
-  float hi = max(abs(x), abs(y)), lo = min(abs(x), abs(y));
-  if (hi == 0.0f || isinf(hi)) return hi;
-  float ratio = lo / hi;
-  return hi * sqrt(1.0f + ratio * ratio);
-}
-kernel void xgb_adaptive_objective(
-    device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
-    device const float* weights [[buffer(2)]], device const float* scales [[buffer(3)]],
-    device const float* alpha [[buffer(4)]], device float2* output [[buffer(5)]],
-    constant AdaptiveParams& p [[buffer(6)]], uint tid [[thread_position_in_grid]]) {
-  ulong row = tid / p.targets;
-  uint target = tid % p.targets;
-  float residual =
-      predictions[tid] - labels[row * p.label_targets + (p.label_targets == 1 ? 0 : target)];
-  float scale = scales[target], w = p.weighted ? weights[row] : 1.0f;
-  if (p.kind == 0) {
-    float norm = xgb_hypot(scale, residual), curvature = norm > 0.0f ? scale / norm : 1.0f;
-    output[tid] = float2(w * residual * curvature, w * curvature);
-  } else {
-    if (!(scale > 0.0f) || w == 0.0f) {
-      output[tid] = float2(0);
-      return;
-    }
-    float x = residual / (0.04f * scale), t = tanh(x);
-    float ratio = x == 0.0f ? 1.0f : t / x;
-    ratio = max(ratio, 3e-4f);
-    float gradient = 0.5f * scale * (t + 1.0f - 2.0f * alpha[target]);
-    float hessian = (0.5f / 0.04f) * ratio;
-    output[tid] = float2(w * gradient, w * hessian);
-  }
-}
-
 // Metal arithmetic can flush FP32 subnormals. Preserve CPU rounding only for
 // the rare underflow cases; ordinary metric values retain native FP32 math.
 inline float xgb_fmul_preserve(float a, float b) {
@@ -3272,6 +3200,42 @@ inline F Sigmoid(F x) {
 inline F SoftPlus(F x) {
   return x > From(0.f) ? x + Log1p(Exp(-x)) : Log1p(Exp(x));
 }
+// FP32 hypot/tanh primitives use binary64 internals, then round once. This
+// preserves subnormals; it is not a promise of NVIDIA libdevice bit identity.
+inline D SqrtWide(D value) {
+  int exponent;
+  ulong significand;
+  xgb_dunpack(value.bits, exponent, significand);
+  exponent -= 1023;
+  int half_exponent = (exponent - (exponent & 1)) / 2;
+  D m{(ulong(1023 + (exponent & 1)) << 52) | (significand & kDoubleFrac)};
+  D root = xgb_survival::From(sqrt(xgb_dto_float(m)));
+  root = (root + m / root) * xgb_survival::half_value;
+  root = (root + m / root) * xgb_survival::half_value;
+  return root * D{ulong(half_exponent + 1023) << 52};
+}
+inline F Hypot(F x, F y) {
+  F ax = Abs(x), ay = Abs(y);
+  if (ax.bits == 0x7f800000u || ay.bits == 0x7f800000u) return F{0x7f800000u};
+  if (IsNaN(x) || IsNaN(y)) return F{0x7fc00000u};
+  if (!ax.bits) return ay;
+  if (!ay.bits) return ax;
+  D a = Wide(ax), b = Wide(ay);
+  // Squared FP32 inputs fit in binary64, even at either end of the FP32 range.
+  return Narrow(SqrtWide(a * a + b * b));
+}
+inline F Tanh(F x) {
+  F ax = Abs(x);
+  if (IsNaN(x) || !ax.bits) return x;
+  if (ax > From(10.f)) return F{0x3f800000u | (x.bits & 0x80000000u)};
+  D t = Wide(ax) * xgb_survival::two, em1;
+  if (ax < From(.25f))
+    em1 = t * xgb_survival::Polynomial(t, xgb_survival::exp_coeff + 1, 18);
+  else
+    em1 = xgb_survival::Exp(t) - xgb_survival::one;
+  F result = Narrow(em1 / (em1 + xgb_survival::two));
+  return F{result.bits | (x.bits & 0x80000000u)};
+}
 }  // namespace xgb_objective_math
 
 // Preserve the CUDA source's FP32 expressions, explicit FP64 promotions and
@@ -3529,6 +3493,112 @@ inline uint xgb_reduce_float32(uint value, threadgroup uint* shared, uint tid) {
   }
   return shared[0];
 }
+// numeric.cu::Reduce returns double but adds with thrust::plus<float>.
+kernel void xgb_float32_sum(device const uint* input [[buffer(0)]],
+                             device uint* output [[buffer(1)]], constant ulong& n [[buffer(2)]],
+                             uint group [[threadgroup_position_in_grid]],
+                             uint tid [[thread_index_in_threadgroup]]) {
+  ulong row = ulong(group) * 256 + tid;
+  threadgroup uint shared[256];
+  uint value = row < n ? input[row] : 0u;
+  value = xgb_reduce_float32(value, shared, tid);
+  if (!tid) output[group] = value;
+}
+
+// Roots accumulate in FP32; optional weights accumulate separately in binary64.
+kernel void xgb_residual_scale_reduce(
+    device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
+    device const float* weights [[buffer(2)]], device ulong2* partial [[buffer(3)]],
+    constant AdaptiveParams& p [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+    uint simd [[simdgroup_index_in_threadgroup]]) {
+  using namespace xgb_objective_math;
+  ulong row = ulong(group.x) * 256 + tid;
+  uint root = 0;
+  D weight = xgb_survival::zero;
+  if (row < p.rows) {
+    F residual = From(predictions[row * p.targets + group.y]) -
+                 From(labels[row * p.label_targets + (p.label_targets == 1 ? 0 : group.y)]);
+    F w = p.weighted ? From(weights[row]) : From(1.f);
+    root = (w * Sqrt(Abs(residual))).bits;
+    weight = Wide(w);
+  }
+  threadgroup uint roots[256];
+  root = xgb_reduce_float32(root, roots, tid);
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(xgb_survival::zero, weight, bounds, sums, lane, simd);
+  if (!tid) partial[ulong(group.x) * p.targets + group.y] = ulong2(Wide(F{root}).bits, total.y);
+}
+kernel void xgb_residual_stats_reduce(
+    device const ulong2* input [[buffer(0)]], device ulong2* output [[buffer(1)]],
+    constant AdaptiveParams& p [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+    uint simd [[simdgroup_index_in_threadgroup]]) {
+  using namespace xgb_objective_math;
+  ulong index = ulong(group.x) * 256 + tid;
+  ulong2 value = index < p.blocks ? input[index * p.targets + group.y] : ulong2(0);
+  threadgroup uint roots[256];
+  uint root = xgb_reduce_float32(Narrow(D{value.x}).bits, roots, tid);
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(xgb_survival::zero, D{value.y}, bounds, sums, lane, simd);
+  if (!tid) output[ulong(group.x) * p.targets + group.y] = ulong2(Wide(F{root}).bits, total.y);
+}
+kernel void xgb_residual_scale_finish(device const ulong2* partial [[buffer(0)]],
+                                      device ulong* statistics [[buffer(1)]],
+                                      constant AdaptiveParams& p [[buffer(2)]],
+                                      uint target [[thread_position_in_grid]]) {
+  if (target >= p.targets) return;
+  statistics[target] = partial[target].x;
+  // SumOptionalWeights returns n_samples * float(default_weight) when empty.
+  if (!target) statistics[p.targets] = p.weighted ? partial[0].y : xgb_dfrom_float(float(p.rows)).bits;
+}
+kernel void xgb_residual_scale_apply(device const ulong* statistics [[buffer(0)]],
+                                     device float* scales [[buffer(1)]],
+                                     constant AdaptiveParams& p [[buffer(2)]],
+                                     uint target [[thread_position_in_grid]]) {
+  if (target >= p.targets) return;
+  XGBDouble weight{statistics[p.targets]}, root{statistics[target]};
+  if (xgb_dlt({weight.bits & ~kDoubleSign}, {0x3eb0c6f7a0b5ed8dul}))
+    scales[target] = 0.f;
+  else {
+    XGBDouble mean = xgb_ddiv(root, weight);
+    scales[target] = xgb_dto_float(xgb_dmul(mean, mean));
+  }
+}
+kernel void xgb_adaptive_objective(
+    device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
+    device const float* weights [[buffer(2)]], device const float* scales [[buffer(3)]],
+    device const float* alpha [[buffer(4)]], device float2* output [[buffer(5)]],
+    constant AdaptiveParams& p [[buffer(6)]], uint tid [[thread_position_in_grid]]) {
+  using namespace xgb_objective_math;
+  ulong row = tid / p.targets;
+  if (row >= p.rows) return;
+  uint target = tid % p.targets;
+  F residual = From(predictions[tid]) -
+      From(labels[row * p.label_targets + (p.label_targets == 1 ? 0 : target)]);
+  F scale = From(scales[target]), w = p.weighted ? From(weights[row]) : From(1.f);
+  F zero = From(0.f), one = From(1.f), g, h;
+  if (p.kind == 0) {
+    F norm = Hypot(scale, residual), curvature = norm > zero ? scale / norm : one;
+    g = (w * residual) * curvature;
+    h = w * curvature;
+  } else {
+    if (!(scale > zero) || w == zero) {
+      output[tid] = float2(0);
+      return;
+    }
+    F x = residual / (From(.04f) * scale), t = Tanh(x);
+    F ratio = FMax(x == zero ? one : t / x, From(3e-4f));
+    F grad = (From(.5f) * scale) * ((t + one) - From(2.f) * From(alpha[target]));
+    F hess = (From(.5f) / From(.04f)) * ratio;
+    g = w * grad;
+    h = w * hess;
+  }
+  output[tid] = float2(as_type<float>(g.bits), as_type<float>(h.bits));
+}
+
 struct VectorArithmeticParams {
   ulong count, stride, parameter;
   uint op, padding;

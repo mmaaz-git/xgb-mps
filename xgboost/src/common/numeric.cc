@@ -18,7 +18,7 @@ double Reduce(Context const* ctx, HostDeviceVector<float> const& values) {
   // The additive identity also avoids requesting zero OpenMP threads on CPU.
   if (values.Empty()) return 0.0;
 #if defined(XGBOOST_USE_METAL)
-  if (ctx->IsMPS()) return metal::Sum(values.ConstHostSpan());
+  if (ctx->IsMPS()) return metal::SumFloat32(values.ConstHostSpan());
 #endif
   if (ctx->IsCUDA()) {
     return cuda_impl::Reduce(ctx, values);
