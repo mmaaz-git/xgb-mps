@@ -204,10 +204,28 @@ float CalculateThreshold(common::Span<float const> sorted_rag, common::Span<floa
 
 void Sampler::Sample(Context const* ctx, linalg::MatrixView<GradientPair> out) {
   CHECK(out.Contiguous());
+#if defined(XGBOOST_USE_METAL)
+  quantized_.reset();
+  if (ctx->IsMPS() && (sampling_method_ == TrainParam::kUniform || subsample_ >= 1.f)) {
+    // GPUHistMakerDevice::Reset: original gradients -> quantizer -> integers ->
+    // sample. Histogram builders and all roots retain these exact integers.
+    quantized_ = common::metal::MakeQuantizedGradients(out);
+    is_sampling_ = subsample_ < 1.f;
+    if (is_sampling_) {
+      initial_seed_ = ctx->Rng()();  // CUDA also draws a seed for an empty input.
+      quantized_->SampleUniform(subsample_, static_cast<std::uint32_t>(initial_seed_));
+      quantized_->ApplySampling(out);
+    }
+    return;
+  }
+#endif
   std::size_t n_samples = out.Shape(0);
   std::size_t sample_rows = static_cast<std::size_t>(n_samples * subsample_);
   if (sample_rows >= n_samples || n_samples == 0) {
     is_sampling_ = false;
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) quantized_ = common::metal::MakeQuantizedGradients(out);
+#endif
     return;
   }
   is_sampling_ = true;
@@ -221,7 +239,11 @@ void Sampler::Sample(Context const* ctx, linalg::MatrixView<GradientPair> out) {
 #if defined(XGBOOST_USE_METAL)
       static_assert(kDefaultMvsLambda == 0.1f);
       if (ctx->IsMPS()) {
+        // Remaining CUDA alignment gap: gradient-based sampling still uses the
+        // earlier float algorithm. Share its quantized result with roots/hists;
+        // moving this sampler BEFORE quantization would preserve the wrong order.
         common::metal::GradientSample(out, out, sample_rows, initial_seed_, ctx->Threads());
+        quantized_ = common::metal::MakeQuantizedGradients(out);
         break;
       }
 #endif
@@ -247,6 +269,13 @@ void Sampler::ApplySampling(Context const* ctx, linalg::MatrixView<GradientPair 
   CHECK_EQ(split_gpair.Shape(0), value_gpair->Shape(0));
   switch (sampling_method_) {
     case TrainParam::kUniform: {
+#if defined(XGBOOST_USE_METAL)
+      if (ctx->IsMPS()) {
+        CHECK(quantized_);
+        quantized_->ApplySampling(value_gpair->HostView());
+        break;
+      }
+#endif
       UniformSample(ctx, value_gpair->HostView(), subsample_, initial_seed_);
       break;
     }

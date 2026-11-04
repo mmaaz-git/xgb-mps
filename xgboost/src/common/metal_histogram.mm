@@ -64,6 +64,8 @@ std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches
     column_sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
+std::atomic<std::uint64_t> quantized_gradient_sum_dispatches{0},
+    cuda_uniform_sampling_dispatches{0};
 std::atomic<std::uint64_t> histogram_integer_store_dispatches{0},
     histogram_integer_accumulation_dispatches{0}, histogram_integer_subtraction_dispatches{0},
     histogram_integer_sum_dispatches{0};
@@ -157,6 +159,8 @@ class Runtime {
   id<MTLComputePipelineState> uniform_sampling_pipeline, sketch_finalize_pipeline;
   id<MTLComputePipelineState> sketch_weight_pipeline, sketch_sorted_pipeline, sketch_update_pipeline;
   id<MTLComputePipelineState> gradient_state_pipeline;
+  id<MTLComputePipelineState> quantized_sum_pipeline, quantized_sum_finish_pipeline,
+      cuda_uniform_integer_pipeline, cuda_uniform_replay_pipeline;
   id<MTLComputePipelineState> expectile_init_pipeline, broadcast_targets_pipeline;
   id<MTLComputePipelineState> label_validation_pipeline;
   id<MTLComputePipelineState> base_score_pipeline, shap_pipeline;
@@ -261,6 +265,10 @@ class Runtime {
       column_output_pipeline = make_pipeline(@"xgb_column_output");
       column_sample_small_pipeline = make_pipeline(@"xgb_column_sample_small");
 
+      quantized_sum_pipeline = make_pipeline(@"xgb_quantized_sum");
+      quantized_sum_finish_pipeline = make_pipeline(@"xgb_quantized_sum_finish");
+      cuda_uniform_integer_pipeline = make_pipeline(@"xgb_cuda_uniform_integer");
+      cuda_uniform_replay_pipeline = make_pipeline(@"xgb_cuda_uniform_replay");
       gradient_bounds_pipeline = make_pipeline(@"xgb_gradient_bounds");
       gradient_scale_pipeline = make_pipeline(@"xgb_gradient_scale");
       gradient_sum_pipeline = make_pipeline(@"xgb_gradient_sum_reduce");
@@ -902,14 +910,22 @@ class MetalRows final : public DeviceRows {
   }
 };
 
-class MetalHistogram final : public Histogram {
-  Runtime& rt_;
-  id<MTLCommandQueue> queue_;
-  id<MTLBuffer> gradients_, raw_gradients_, histogram_buffer_, row_buffer_, node_buffer_,
-      block_buffer_, gradient_partial_, gradient_bounds_, gradient_scale_;
-  bool gradients_ready_{false};
+template <typename T>
+void CheckGradientView(linalg::MatrixView<T> view, bool output);
 
-  std::size_t UploadGradients(Span<GradientPair const> gradients, id<MTLCommandBuffer> command) {
+class MetalQuantizedColumn {
+  Runtime& rt_;
+  id<MTLBuffer> raw_gradients_, gradient_partial_, gradient_bounds_;
+
+ public:
+  id<MTLBuffer> gradients_, gradient_scale_;
+  explicit MetalQuantizedColumn(Runtime& rt) : rt_{rt} {}
+  void ReleaseScratch() {
+    raw_gradients_ = nil;
+    gradient_partial_ = nil;
+    gradient_bounds_ = nil;
+  }
+  std::size_t Encode(Span<GradientPair const> gradients, id<MTLCommandBuffer> command) {
     CHECK_LE(gradients.size(), std::numeric_limits<std::uint32_t>::max());
     if (!gradients_ || gradients_.length < gradients.size() * sizeof(QuantizedPair))
       gradients_ = Allocate(rt_, gradients.size() * sizeof(QuantizedPair));
@@ -974,6 +990,176 @@ class MetalHistogram final : public Histogram {
     [encoder endEncoding];
     return shared_bytes;
   }
+};
+
+struct CudaUniformParams {
+  std::uint64_t rows, stride0, stride1;
+  std::uint32_t targets, seed;
+  float probability;
+  std::uint32_t padding;
+};
+static_assert(sizeof(CudaUniformParams) == 40);
+
+class MetalQuantizedGradients final : public QuantizedGradients {
+  Runtime& rt_;
+  std::size_t rows_;
+  float probability_{1.f};
+  std::uint32_t seed_{0};
+  bool sampled_{false};
+
+ public:
+  std::vector<std::unique_ptr<MetalQuantizedColumn>> columns;
+  explicit MetalQuantizedGradients(linalg::MatrixView<GradientPair const> gradients)
+      : rt_{GetRuntime()}, rows_{gradients.Shape(0)} {
+    CheckGradientView(gradients, false);
+    CHECK_LE(rows_, std::numeric_limits<std::uint32_t>::max());
+    CHECK_GT(gradients.Shape(1), 0);
+    CHECK_LE(gradients.Shape(1), 65535);
+    // Quantization is per target. A GPU layout copy handles C order, padding and
+    // broadcasts; its temporary raw floats never own the persistent tree state.
+    linalg::Matrix<GradientPair> contiguous;
+    if (gradients.Stride(0) != 1) {
+      contiguous =
+          linalg::Matrix<GradientPair>{gradients.Shape(), DeviceOrd::CPU(), linalg::Order::kF};
+      CopyGradients(gradients, contiguous.HostView());
+      gradients = contiguous.HostView();
+    }
+    auto command = [rt_.queue commandBuffer];
+    CHECK(command);
+    std::size_t shared_bytes = 0;
+    for (std::size_t t = 0; t < gradients.Shape(1); ++t) {
+      auto column = std::make_unique<MetalQuantizedColumn>(rt_);
+      shared_bytes +=
+          column->Encode(gradients.Slice(linalg::All(), t).Values().subspan(0, rows_), command);
+      columns.push_back(std::move(column));
+    }
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    for (auto const& column : columns) {
+      CHECK(static_cast<GradientScale const*>(column->gradient_scale_.contents)->valid)
+          << "Metal histograms require finite gradients and Hessians.";
+      column->ReleaseScratch();
+    }
+    gradient_bound_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
+    quantization_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
+    histogram_shared_gradient_bytes.fetch_add(shared_bytes, std::memory_order_relaxed);
+  }
+  std::size_t Rows() const override { return rows_; }
+  std::size_t Targets() const override { return columns.size(); }
+  void Sum(linalg::VectorView<GradientPairPrecise> output) const override {
+    CHECK_EQ(output.Size(), columns.size());
+    @autoreleasepool {
+      std::uint64_t n = rows_, blocks = (n + 255) / 256;
+      auto partial = Allocate(rt_, blocks * sizeof(QuantizedPair));
+      auto result = Allocate(rt_, columns.size() * sizeof(GradientPairPrecise));
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      for (std::size_t t = 0; t < columns.size(); ++t) {
+        auto const& column = *columns[t];
+        auto e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt_.quantized_sum_pipeline];
+        [e setBuffer:column.gradients_ offset:0 atIndex:0];
+        [e setBuffer:partial offset:0 atIndex:1];
+        [e setBytes:&n length:sizeof(n) atIndex:2];
+        if (blocks)
+          [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+        e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt_.quantized_sum_finish_pipeline];
+        [e setBuffer:partial offset:0 atIndex:0];
+        [e setBuffer:result offset:t * sizeof(GradientPairPrecise) atIndex:1];
+        [e setBytes:&blocks length:sizeof(blocks) atIndex:2];
+        [e setBuffer:column.gradient_scale_ offset:0 atIndex:3];
+        [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+      }
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      auto values = static_cast<GradientPairPrecise const*>(result.contents);
+      for (std::size_t t = 0; t < columns.size(); ++t) output(t) = values[t];
+      gradient_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
+      quantized_gradient_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
+      auto elapsed = command.GPUEndTime - command.GPUStartTime;
+      if (elapsed > 0)
+        gradient_sum_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                           std::memory_order_relaxed);
+    }
+  }
+  void SampleUniform(float probability, std::uint32_t seed) override {
+    CHECK(!sampled_) << "Quantized gradients can be sampled only once per tree.";
+    CHECK_GE(probability, 0.f);
+    CHECK_LE(probability, 1.f);
+    probability_ = probability;
+    seed_ = seed;
+    sampled_ = true;
+    if (!rows_ || probability == 1.f) return;
+    @autoreleasepool {
+      CudaUniformParams p{rows_, 0, 0, 0, seed, probability, 0};
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      for (auto const& column : columns) {
+        auto e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt_.cuda_uniform_integer_pipeline];
+        [e setBuffer:column->gradients_ offset:0 atIndex:0];
+        [e setBytes:&p length:sizeof(p) atIndex:1];
+        [e dispatchThreads:MTLSizeMake(rows_, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+      }
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
+      cuda_uniform_sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
+      auto elapsed = command.GPUEndTime - command.GPUStartTime;
+      if (elapsed > 0)
+        sampling_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                       std::memory_order_relaxed);
+    }
+  }
+  void ApplySampling(linalg::MatrixView<GradientPair> values) const override {
+    CHECK_EQ(values.Shape(0), rows_);
+    CheckGradientView(values, true);
+    if (!rows_ || probability_ == 1.f) return;
+    @autoreleasepool {
+      // Snapshot staging also preserves the caller's padding and offset guards.
+      auto span = values.Values();
+      auto data = Upload(rt_, span.data(), span.size_bytes());
+      CudaUniformParams p{rows_,
+                          values.Stride(0),
+                          values.Stride(1),
+                          static_cast<std::uint32_t>(values.Shape(1)),
+                          seed_,
+                          probability_,
+                          0};
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.cuda_uniform_replay_pipeline];
+      [e setBuffer:data offset:0 atIndex:0];
+      [e setBytes:&p length:sizeof(p) atIndex:1];
+      [e dispatchThreads:MTLSizeMake(rows_, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      std::memcpy(span.data(), data.contents, span.size_bytes());
+    }
+  }
+};
+
+class MetalHistogram final : public Histogram {
+  Runtime& rt_;
+  id<MTLCommandQueue> queue_;
+  id<MTLBuffer> histogram_buffer_, row_buffer_, node_buffer_, block_buffer_;
+  std::shared_ptr<MetalQuantizedGradients const> gradients_;
+  bst_target_t target_{0};
 
  public:
   MetalHistogram() : rt_{GetRuntime()} {
@@ -981,7 +1167,17 @@ class MetalHistogram final : public Histogram {
     CHECK(queue_) << "Metal command queue creation failed.";
   }
 
-  void Reset() override { gradients_ready_ = false; }
+  void Reset() override {
+    gradients_.reset();
+    target_ = 0;
+  }
+  void BindQuantized(std::shared_ptr<QuantizedGradients const> gradients,
+                     bst_target_t target) override {
+    CHECK(gradients);
+    CHECK_LT(target, gradients->Targets());
+    gradients_ = std::static_pointer_cast<MetalQuantizedGradients const>(std::move(gradients));
+    target_ = target;
+  }
 
   void Build(std::size_t page_idx, GHistIndexMatrix const& gidx, RowSetCollection const& rows,
              std::vector<bst_node_t> const& nodes, Span<GradientPair const> gradients,
@@ -990,6 +1186,13 @@ class MetalHistogram final : public Histogram {
       CHECK_EQ(nodes.size(), output.size());
       CHECK_LE(nodes.size(), std::numeric_limits<std::uint32_t>::max());
       auto staging_start = Clock::now();
+      if (!gradients_) {
+        this->BindQuantized(MakeQuantizedGradients(linalg::MakeTensorView(
+                                DeviceOrd::CPU(), gradients, gradients.size(), 1)),
+                            0);
+      }
+      CHECK_EQ(gradients_->Rows(), gradients.size());
+      auto const& quantized = *gradients_->columns[target_];
       auto page = GetPage(rt_, gidx);
       std::vector<std::uint64_t> node_ptr{0};
       std::size_t max_node_rows = 0;
@@ -1045,8 +1248,6 @@ class MetalHistogram final : public Histogram {
                     // fragmented branches need smaller groups for memory locality.
                     max_node_rows > gidx.Size() / 4 ? 32u : 8u};
 
-      bool quantized = !gradients_ready_;
-      auto shared_gradient_bytes = quantized ? this->UploadGradients(gradients, command) : 0;
       id<MTLBlitCommandEncoder> clear = [command blitCommandEncoder];
       CHECK(clear) << "Metal blit encoder allocation failed.";
       [clear fillBuffer:histogram range:NSMakeRange(0, bytes) value:0];
@@ -1066,7 +1267,7 @@ class MetalHistogram final : public Histogram {
       [encoder setBuffer:page->index offset:0 atIndex:0];
       [encoder setBuffer:page->row_ptr offset:0 atIndex:1];
       [encoder setBuffer:page->offsets offset:0 atIndex:2];
-      [encoder setBuffer:gradients_ offset:0 atIndex:3];
+      [encoder setBuffer:quantized.gradients_ offset:0 atIndex:3];
       [encoder setBuffer:row_buffer offset:0 atIndex:4];
       [encoder setBuffer:histogram offset:0 atIndex:5];
       [encoder setBytes:&params length:sizeof(params) atIndex:6];
@@ -1094,7 +1295,7 @@ class MetalHistogram final : public Histogram {
       [encoder endEncoding];
       CHECK(storage);
       auto shared = static_cast<MetalHistogramBuffer*>(storage);
-      shared->UseQuantization(gradient_scale_);
+      shared->UseQuantization(quantized.gradient_scale_);
       std::vector<std::uint64_t> output_offsets;
       for (auto out : output) output_offsets.push_back(out.data() - storage->Data().data());
       auto offset_buffer =
@@ -1111,7 +1312,7 @@ class MetalHistogram final : public Histogram {
       [encoder setBuffer:shared->buffer offset:0 atIndex:1];
       [encoder setBuffer:offset_buffer offset:0 atIndex:2];
       [encoder setBytes:&dequantize length:sizeof(dequantize) atIndex:3];
-      [encoder setBuffer:gradient_scale_ offset:0 atIndex:4];
+      [encoder setBuffer:quantized.gradient_scale_ offset:0 atIndex:4];
       [encoder setBuffer:shared->integers offset:0 atIndex:5];
       [encoder dispatchThreads:MTLSizeMake(dequantize.count, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -1127,14 +1328,6 @@ class MetalHistogram final : public Histogram {
         resident_histogram_dispatches.fetch_add(1, std::memory_order_relaxed);
       }
       wait_time_ns.fetch_add(Elapsed(wait_start), std::memory_order_relaxed);
-      if (quantized) {
-        CHECK(static_cast<GradientScale const*>(gradient_scale_.contents)->valid)
-            << "Metal histograms require finite gradients and Hessians.";
-        gradient_bound_dispatches.fetch_add(1, std::memory_order_relaxed);
-        quantization_dispatches.fetch_add(1, std::memory_order_relaxed);
-        histogram_shared_gradient_bytes.fetch_add(shared_gradient_bytes, std::memory_order_relaxed);
-        gradients_ready_ = true;
-      }
       histogram_conversion_dispatches.fetch_add(1, std::memory_order_relaxed);
       histogram_integer_store_dispatches.fetch_add(1, std::memory_order_relaxed);
       if (page_idx)
@@ -1149,6 +1342,13 @@ class MetalHistogram final : public Histogram {
   }
 };
 }  // namespace
+
+std::shared_ptr<QuantizedGradients> MakeQuantizedGradients(
+    linalg::MatrixView<GradientPair const> gradients) {
+  @autoreleasepool {
+    return std::make_shared<MetalQuantizedGradients>(gradients);
+  }
+}
 
 std::unique_ptr<SplitWorkspace> MakeSplitWorkspace() {
   return std::make_unique<MetalSplitWorkspace>();
@@ -1320,7 +1520,9 @@ Statistics GetStatistics() {
           histogram_integer_store_dispatches.load(std::memory_order_relaxed),
           histogram_integer_accumulation_dispatches.load(std::memory_order_relaxed),
           histogram_integer_subtraction_dispatches.load(std::memory_order_relaxed),
-          histogram_integer_sum_dispatches.load(std::memory_order_relaxed)};
+          histogram_integer_sum_dispatches.load(std::memory_order_relaxed),
+          quantized_gradient_sum_dispatches.load(std::memory_order_relaxed),
+          cuda_uniform_sampling_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {

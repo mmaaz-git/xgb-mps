@@ -1,10 +1,30 @@
 /** Copyright 2026, XGBoost Contributors */
 #pragma once
 
+#include <cstdint>
+#include <memory>
+
 #include "xgboost/base.h"
 #include "xgboost/linalg.h"
 
 namespace xgboost::common::metal {
+// Per-tree, GPU-owned integer gradients and their original per-target scales.
+// Histogram builders retain this state explicitly. Floating-point replay is for
+// row-position bookkeeping/value gradients, never an input to re-quantization.
+class QuantizedGradients {
+ public:
+  virtual ~QuantizedGradients() = default;
+  virtual std::size_t Rows() const = 0;
+  virtual std::size_t Targets() const = 0;
+  virtual void Sum(linalg::VectorView<GradientPairPrecise> output) const = 0;
+  // CUDA's <cuda/std/random> branch (Philox4x64), with one draw per row.
+  // Mutates the integer gradients exactly once; replay can be called repeatedly.
+  virtual void SampleUniform(float probability, std::uint32_t seed) = 0;
+  virtual void ApplySampling(linalg::MatrixView<GradientPair> values) const = 0;
+};
+std::shared_ptr<QuantizedGradients> MakeQuantizedGradients(
+    linalg::MatrixView<GradientPair const> gradients);
+
 // Synchronous bit-preserving layout copies and Hessian extraction. Inputs can
 // broadcast; output elements must be disjoint. Aliases use snapshot semantics.
 // Guarded shared host views are used when eligible, with copied staging otherwise.

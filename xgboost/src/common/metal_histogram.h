@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "hist_util.h"
+#include "metal_gradient.h"
 #include "metal_storage.h"
 #include "row_set.h"
 #include "xgboost/base.h"
@@ -74,6 +75,7 @@ struct Statistics {
       gradient_state_staging_bytes;
   std::uint64_t histogram_integer_store_dispatches, histogram_integer_accumulation_dispatches,
       histogram_integer_subtraction_dispatches, histogram_integer_sum_dispatches;
+  std::uint64_t quantized_gradient_sum_dispatches, cuda_uniform_sampling_dispatches;
 };
 
 class Histogram {
@@ -81,6 +83,8 @@ class Histogram {
   virtual ~Histogram() = default;
   // Invalidate uploaded data and gradients at each tree boundary.
   virtual void Reset() = 0;
+  virtual void BindQuantized(std::shared_ptr<QuantizedGradients const> gradients,
+                             bst_target_t target) = 0;
   virtual void Build(std::size_t page_idx, GHistIndexMatrix const& gidx,
                      RowSetCollection const& rows, std::vector<bst_node_t> const& nodes,
                      Span<GradientPair const> gradients, std::vector<GHistRow> const& output,

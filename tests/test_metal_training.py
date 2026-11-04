@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 import xgboost as xgb
+from cuda_uniform_reference import UniformSquaredError
 
 @pytest.mark.parametrize("layout", ["dense", "missing", "sparse"])
 @pytest.mark.parametrize("growth", ["depthwise", "lossguide"])
@@ -17,8 +18,9 @@ def test_resident_rows_and_page_cache(metal, layout, growth):
         x = sp.csr_matrix(x)
     d = xgb.DMatrix(x, label=y)
     p = dict(tree_method="hist", max_depth=5, max_leaves=17, grow_policy=growth,
-             max_bin=33, nthread=2, subsample=0.7, seed=23)
-    cpu = xgb.train(p | {"device": "cpu"}, d, 7)
+             max_bin=33, nthread=2, subsample=0.7, seed=23, base_score=0., seed_per_iteration=True)
+    cpu = xgb.train(p | {"device": "cpu", "subsample": 1.}, d, 7,
+                    obj=UniformSquaredError(p))
     before = xgb.metal_info()
     gpu = xgb.train(p | {"device": "mps"}, d, 7)
     after = xgb.metal_info()

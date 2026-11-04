@@ -100,7 +100,7 @@ def test_integer_cache_preserves_cancellation(metal, external, exponent, tmp_pat
                       data, 1, obj=lambda p, d: (grad.copy(), hess.copy()))
     after = xgb.metal_info()
     assert after["histogram_integer_store_dispatches"] > before["histogram_integer_store_dispatches"]
-    assert after["histogram_integer_sum_dispatches"] > before["histogram_integer_sum_dispatches"]
+    assert after["quantized_gradient_sum_dispatches"] > before["quantized_gradient_sum_dispatches"]
     if external:
         assert after["histogram_integer_accumulation_dispatches"] > before["histogram_integer_accumulation_dispatches"]
     # CUDA quantization represents these dyadic inputs exactly. The cancellation

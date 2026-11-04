@@ -162,6 +162,10 @@ void UpdateTree(common::Monitor *monitor, linalg::MatrixView<GradientPair const>
  *        each target.
  */
 class MultiTargetHistBuilder {
+#if defined(XGBOOST_USE_METAL)
+  std::shared_ptr<common::metal::QuantizedGradients const> quantized_;
+#endif
+
  private:
   common::Monitor *monitor_{nullptr};
   TrainParam const *param_{nullptr};
@@ -178,6 +182,12 @@ class MultiTargetHistBuilder {
   DMatrix const *p_last_fmat_{nullptr};
 
  public:
+#if defined(XGBOOST_USE_METAL)
+  void SetQuantized(std::shared_ptr<common::metal::QuantizedGradients const> gradients) {
+    quantized_ = std::move(gradients);
+  }
+#endif
+
   void UpdatePosition(DMatrix *p_fmat, RegTree const *p_tree,
                       std::vector<MultiExpandEntry> const &applied) {
     monitor_->Start(__func__);
@@ -222,6 +232,9 @@ class MultiTargetHistBuilder {
     }
     histogram_builder_->Reset(ctx_, n_total_bins, n_targets, HistBatch(param_),
                               collective::IsDistributed(), hist_param_);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) histogram_builder_->BindQuantized(quantized_);
+#endif
 
     evaluator_ =
         std::make_unique<HistMultiEvaluator>(ctx_, p_fmat->Info(), param_, n_targets, col_sampler_);
@@ -240,7 +253,7 @@ class MultiTargetHistBuilder {
     auto root_sum = linalg::Empty<GradientPairPrecise>(ctx_, n_targets);
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS())
-      common::metal::SumGradients(gpair, root_sum.HostView());
+      quantized_->Sum(root_sum.HostView());
     else
 #endif
       cpu_impl::SumGradients(ctx_, gpair, root_sum.HostView());
@@ -455,6 +468,10 @@ class MultiTargetHistBuilder {
  * @brief Tree updater for single-target trees.
  */
 class HistUpdater {
+#if defined(XGBOOST_USE_METAL)
+  std::shared_ptr<common::metal::QuantizedGradients const> quantized_;
+#endif
+
  private:
   common::Monitor *monitor_;
   TrainParam const *param_;
@@ -472,6 +489,12 @@ class HistUpdater {
   Context const *ctx_{nullptr};
 
  public:
+#if defined(XGBOOST_USE_METAL)
+  void SetQuantized(std::shared_ptr<common::metal::QuantizedGradients const> gradients) {
+    quantized_ = std::move(gradients);
+  }
+#endif
+
   explicit HistUpdater(Context const *ctx, std::shared_ptr<common::ColumnSampler> column_sampler,
                        TrainParam const *param, HistMakerTrainParam const *hist_param,
                        DMatrix const *fmat, common::Monitor *monitor)
@@ -507,6 +530,9 @@ class HistUpdater {
     partitioner_.resize(page_idx);
     histogram_builder_->Reset(ctx_, n_total_bins, 1, HistBatch(param_), collective::IsDistributed(),
                               hist_param_);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) histogram_builder_->BindQuantized(quantized_);
+#endif
     evaluator_ = std::make_unique<HistEvaluator>(ctx_, this->param_, fmat->Info(), col_sampler_);
     p_last_tree_ = p_tree;
     monitor_->Stop(__func__);
@@ -537,7 +563,12 @@ class HistUpdater {
 
     {
       GradientPairPrecise grad_stat;
-      if (p_fmat->IsDense() && !collective::IsDistributed()) {
+#if defined(XGBOOST_USE_METAL)
+      if (ctx_->IsMPS()) {
+        quantized_->Sum(linalg::MakeVec(&grad_stat, 1));
+      } else
+#endif
+          if (p_fmat->IsDense() && !collective::IsDistributed()) {
         /**
          * Specialized code for dense data: For dense data (with no missing value), the sum
          * of gradient histogram is equal to snode[nid]
@@ -548,13 +579,6 @@ class HistUpdater {
         std::uint32_t const ibegin = row_ptr[0];
         std::uint32_t const iend = row_ptr[1];
         auto hist = this->histogram_builder_->Histogram(0)[RegTree::kRoot];
-#if defined(XGBOOST_USE_METAL)
-        if (ctx_->IsMPS()) {
-          auto const &cache = histogram_builder_->Histogram(0);
-          grad_stat = common::metal::SumHistogram(
-              cache.MetalBuffer(), cache.Offset(RegTree::kRoot) + ibegin, iend - ibegin);
-        } else
-#endif
         {
           auto begin = hist.data();
           for (std::uint32_t i = ibegin; i < iend; ++i) {
@@ -563,11 +587,6 @@ class HistUpdater {
           }
         }
       } else {
-#if defined(XGBOOST_USE_METAL)
-        if (ctx_->IsMPS()) {
-          common::metal::SumGradients(gpair, linalg::MakeVec(&grad_stat, 1));
-        } else
-#endif
         {
           auto gpair_h = gpair.Slice(linalg::All(), 0).Values();
           for (auto const &grad : gpair_h) {
@@ -703,6 +722,14 @@ class QuantileHistMaker : public TreeUpdater {
         }
       }
       sampler.Sample(ctx_, h_sample_out);
+#if defined(XGBOOST_USE_METAL)
+      if (ctx_->IsMPS()) {
+        if ((*tree_it)->IsMultiTarget())
+          p_mtimpl_->SetQuantized(sampler.Quantized());
+        else
+          p_impl_->SetQuantized(sampler.Quantized());
+      }
+#endif
       auto *h_out_position = &out_position[tree_it - trees.begin()];
       if ((*tree_it)->IsMultiTarget()) {
         UpdateTree<MultiExpandEntry>(&monitor_, h_sample_out, p_mtimpl_.get(), p_fmat, param,

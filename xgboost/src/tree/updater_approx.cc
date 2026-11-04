@@ -58,6 +58,10 @@ auto BatchSpec(TrainParam const &p, common::Span<float> hess) {
 }  // anonymous namespace
 
 class GlobalApproxBuilder {
+#if defined(XGBOOST_USE_METAL)
+  std::shared_ptr<common::metal::QuantizedGradients const> quantized_;
+#endif
+
  protected:
   TrainParam const *param_;
   HistMakerTrainParam const *hist_param_{nullptr};
@@ -76,6 +80,12 @@ class GlobalApproxBuilder {
   common::HistogramCuts feature_values_{0};
 
  public:
+#if defined(XGBOOST_USE_METAL)
+  void SetQuantized(std::shared_ptr<common::metal::QuantizedGradients const> gradients) {
+    quantized_ = std::move(gradients);
+  }
+#endif
+
   void InitData(DMatrix* p_fmat, RegTree const* p_tree, common::Span<float> hess, bool regenerate) {
     monitor_->Start(__func__);
 
@@ -97,6 +107,9 @@ class GlobalApproxBuilder {
 
     histogram_builder_.Reset(ctx_, n_total_bins, p_tree->NumTargets(), BatchSpec(*param_, hess),
                              collective::IsDistributed(), hist_param_);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) histogram_builder_.BindQuantized(quantized_);
+#endif
     monitor_->Stop(__func__);
   }
 
@@ -110,8 +123,7 @@ class GlobalApproxBuilder {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       GradientPairPrecise sum;
-      common::metal::SumGradients(linalg::MakeTensorView(ctx_, gpair, gpair.size(), 1),
-                                  linalg::MakeVec(&sum, 1));
+      quantized_->Sum(linalg::MakeVec(&sum, 1));
       root_sum = GradStats{sum};
     } else
 #endif
@@ -324,11 +336,14 @@ class GlobalApproxUpdater : public TreeUpdater {
       for (std::size_t t = 0; t < trees.size(); ++t) {
         // GPUHistMakerDevice::Reset samples and initializes column sampling for
         // EACH tree, in that order. CPU approx shares both across a forest.
-        // The sampler and sketch algorithms themselves still need CUDA alignment.
-        linalg::Matrix<GradientPair> sampled;
-        InitData(*param, gpair, &sampled);
+        // Weighted sketch and gradient-based sampling still need CUDA alignment.
+        auto sampled = linalg::Empty<GradientPair>(ctx_, gpair->Size(), 1);
+        common::metal::CopyGradients(gpair->HostView(), sampled.HostView());
+        cpu_impl::Sampler sampler{*param};
+        sampler.Sample(ctx_, sampled.HostView());
         pimpl_ = std::make_unique<GlobalApproxBuilder>(param, &hist_param_, m->Info(), ctx_,
                                                        column_sampler_, task_, &monitor_);
+        pimpl_->SetQuantized(sampler.Quantized());
         pimpl_->UpdateTree(m, sampled.Data()->ConstHostVector(), hess, trees[t], &out_position[t],
                            false);
         hist_param_.CheckTreesSynchronized(ctx_, trees[t]);

@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 import xgboost as xgb
+from cuda_uniform_reference import UniformSquaredError
 
 
 def matrices(layout, kind, tmp_path):
@@ -170,8 +171,15 @@ def test_approx_empty_and_zero_sampling(metal, rows, sampling, subsample):
 def test_hist_gradient_layout_copies(metal, options, tmp_path):
     data, objective, _ = matrices("missing", "multitarget", tmp_path)
     params = dict(tree_method="hist", nthread=2, max_depth=2, max_bin=17,
-                  seed=37, subsample=.7, **objective, **options)
-    cpu = xgb.train(params | {"device": "cpu"}, data["cpu"], 3)
+                  seed=37, subsample=.7, seed_per_iteration=True, **objective, **options)
+    if options.get("num_parallel_tree", 1) > 1:
+        # Isolate forest layout copies here. A separate fixed-gradient forest
+        # test verifies per-tree CUDA masks and unmodified original gradients.
+        params["subsample"] = 1.
+        cpu = xgb.train(params | {"device": "cpu"}, data["cpu"], 3)
+    else:
+        cpu = xgb.train(params | {"device": "cpu", "subsample": 1.}, data["cpu"], 3,
+                        obj=UniformSquaredError(params))
     before = xgb.metal_info()
     gpu = xgb.train(params | {"device": "mps"}, data["mps"], 3)
     after = xgb.metal_info()

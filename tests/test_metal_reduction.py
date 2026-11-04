@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 import xgboost as xgb
+from cuda_uniform_reference import UniformSquaredError
 
 
 @pytest.mark.parametrize("layout", ["dense", "missing", "sparse"])
@@ -21,12 +22,13 @@ def test_root_reductions_execute_on_gpu(metal, layout, targets, strategy):
     weights[::13] = 0
     d = xgb.DMatrix(x, label=y, weight=weights)
     p = dict(tree_method="hist", nthread=2, multi_strategy=strategy, base_score=0,
-             max_depth=4, max_bin=31, subsample=0.63, seed=29)
-    cpu = xgb.train(p | {"device": "cpu"}, d, 5)
+             max_depth=4, max_bin=31, subsample=0.63, seed=29, seed_per_iteration=True)
+    cpu = xgb.train(p | {"device": "cpu", "subsample": 1.}, d, 5,
+                    obj=UniformSquaredError(p))
     before = xgb.metal_info()
     gpu = xgb.train(p | {"device": "mps"}, d, 5)
     after = xgb.metal_info()
-    assert after["gradient_sum_dispatches"] - before["gradient_sum_dispatches"] == (
+    assert after["quantized_gradient_sum_dispatches"] - before["quantized_gradient_sum_dispatches"] == (
         5 * (targets if strategy == "one_output_per_tree" else 1)
     )
     assert after["stump_dispatches"] == before["stump_dispatches"]

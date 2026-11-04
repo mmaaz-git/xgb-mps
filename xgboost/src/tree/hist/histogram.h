@@ -87,6 +87,14 @@ class HistogramBuilder {
 #endif
   }
 
+#if defined(XGBOOST_USE_METAL)
+  void BindQuantized(std::shared_ptr<common::metal::QuantizedGradients const> gradients,
+                     bst_target_t target) {
+    CHECK(metal_);
+    metal_->BindQuantized(std::move(gradients), target);
+  }
+#endif
+
   template <bool any_missing>
   void BuildLocalHistograms(common::BlockedSpace2d const &space, GHistIndexMatrix const &gidx,
                             std::vector<bst_node_t> const &nodes_to_build,
@@ -180,8 +188,8 @@ class HistogramBuilder {
         // including empty row sets; later pages accumulate into integer storage.
         output.push_back(hist);
       }
-      metal_->Build(page_idx, gidx, row_set_collection, nodes_to_build, gpair.Values(), output,
-                    hist_.MetalBuffer());
+      metal_->Build(page_idx, gidx, row_set_collection, nodes_to_build,
+                    gpair.Values().subspan(0, gpair.Size()), output, hist_.MetalBuffer());
       monitor_.Stop(__func__);
       return;
     }
@@ -483,6 +491,14 @@ class MultiHistogramBuilder {
   [[nodiscard]] auto &Histogram(bst_target_t t) { return target_builders_[t].Histogram(); }
   // Number of targets for histogram building (may differ from tree.NumTargets() for reduced grad)
   [[nodiscard]] bst_target_t NumTargets() const { return target_builders_.size(); }
+#if defined(XGBOOST_USE_METAL)
+  void BindQuantized(std::shared_ptr<common::metal::QuantizedGradients const> gradients) {
+    CHECK(gradients);
+    CHECK_EQ(target_builders_.size(), gradients->Targets());
+    for (bst_target_t t = 0; t < target_builders_.size(); ++t)
+      target_builders_[t].BindQuantized(gradients, t);
+  }
+#endif
 
   void Reset(Context const *ctx, bst_bin_t total_bins, bst_target_t n_targets, BatchParam const &p,
              bool is_distributed, HistMakerTrainParam const *param) {

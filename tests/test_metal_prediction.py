@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 import xgboost as xgb
+from cuda_uniform_reference import UniformSquaredError
 
 
 def metal_copy(model):
@@ -95,8 +96,10 @@ def test_gpu_leaf_cache_update(metal, strategy):
     x = rng.normal(size=(1031, 5)).astype(np.float32)
     y = np.column_stack([x[:, 0], -x[:, 1], x[:, 2] ** 2])
     d = xgb.DMatrix(x, label=y)
-    p = dict(nthread=2, max_depth=3, multi_strategy=strategy, subsample=0.7)
-    expected = xgb.train(p | {"device": "cpu"}, d, 5).predict(d)
+    p = dict(nthread=2, max_depth=3, multi_strategy=strategy, subsample=0.7,
+             base_score=0., seed_per_iteration=True)
+    expected = xgb.train(p | {"device": "cpu", "subsample": 1.}, d, 5,
+                         obj=UniformSquaredError(p)).predict(d)
     before = xgb.metal_info()["leaf_update_dispatches"]
     actual = xgb.train(p | {"device": "mps"}, d, 5).predict(d)
     assert xgb.metal_info()["leaf_update_dispatches"] > before

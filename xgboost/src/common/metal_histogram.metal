@@ -5357,3 +5357,83 @@ kernel void xgb_gradient_state(device const uint2* input [[buffer(0)]],
   if (p.hessian) output[out] = pair.y;
   else { output[out * 2] = pair.x; output[out * 2 + 1] = pair.y; }
 }
+
+// Shared integer training state: all root layouts reduce the same sampled
+// fixed-point values used to build histograms. Addition uses unsigned bits to
+// make intermediate wraparound well-defined; final signed sums fit the bound.
+kernel void xgb_quantized_sum(device const ulong2* input [[buffer(0)]],
+                              device ulong2* partial [[buffer(1)]], constant ulong& n [[buffer(2)]],
+                              uint group [[threadgroup_position_in_grid]],
+                              uint tid [[thread_index_in_threadgroup]]) {
+  threadgroup ulong2 sums[256];
+  ulong row = ulong(group) * 256 + tid;
+  sums[tid] = row < n ? input[row] : ulong2(0);
+  for (uint width = 128; width; width >>= 1) {
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < width) sums[tid] += sums[tid + width];
+  }
+  if (!tid) partial[group] = sums[0];
+}
+kernel void xgb_quantized_sum_finish(device const ulong2* partial [[buffer(0)]],
+                                     device ulong2* output [[buffer(1)]],
+                                     constant ulong& blocks [[buffer(2)]],
+                                     device const GradientScale& scale [[buffer(3)]],
+                                     uint tid [[thread_index_in_threadgroup]]) {
+  threadgroup ulong2 sums[256];
+  ulong2 sum(0);
+  for (ulong b = tid; b < blocks; b += 256) sum += partial[b];
+  sums[tid] = sum;
+  for (uint width = 128; width; width >>= 1) {
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < width) sums[tid] += sums[tid + width];
+  }
+  if (!tid)
+    output[0] = ulong2(xgb_scaled_integer(sums[0].x, -scale.grad_exponent),
+                       xgb_scaled_integer(sums[0].y, -scale.hess_exponent));
+}
+
+// CUDA RandomWeight's <cuda/std/random> branch: Philox4x64-10 seeded with
+// uint32(seed), discard(row), then uniform_real_distribution<float>.
+// Algorithm/configuration reference: NVIDIA/cccl 3d0d040ac0dc5907daf2a0731edb378e5562099d,
+// libcudacxx/include/cuda/std/__random/{philox_engine,generate_canonical}.h.
+// The legacy Thrust engine is a different, deliberately unclaimed stream.
+inline ulong xgb_cuda_philox(uint seed, ulong row) {
+  ulong4 counter(row / 4, 0, 0, 0);
+  ulong2 key(seed, 0);
+  for (uint round = 0; round < 10; ++round) {
+    ulong low0, low2;
+    ulong high0 = xgb_mul_high(counter.z, 0xca5a826395121157ul, low0);
+    ulong high2 = xgb_mul_high(counter.x, 0xd2e7470ee14c6c93ul, low2);
+    counter = ulong4(high0 ^ key.x ^ counter.y, low0, high2 ^ key.y ^ counter.w, low2);
+    key += ulong2(0x9e3779b97f4a7c15ul, 0xbb67ae8584caa73bul);
+  }
+  return counter[uint(row % 4)];
+}
+inline float xgb_cuda_random_weight(uint seed, ulong row) {
+  // generate_canonical<float> consumes one 64-bit word and rounds it to float
+  // BEFORE dividing by 2^64. This can round up to exactly 1, as in CCCL.
+  ulong word = xgb_cuda_philox(seed, row);
+  return as_type<float>(xgb_positive_float_bits(word, 0)) * 0x1p-64f;
+}
+struct CudaUniformParams {
+  ulong rows, stride0, stride1;
+  uint targets, seed;
+  float probability;
+  uint padding;
+};
+inline bool xgb_cuda_uniform_selected(constant CudaUniformParams& p, ulong row) {
+  return p.probability >= 1.f ||
+         (p.probability > 0.f && xgb_cuda_random_weight(p.seed, row) <= p.probability);
+}
+kernel void xgb_cuda_uniform_integer(device ulong2* gradients [[buffer(0)]],
+                                     constant CudaUniformParams& p [[buffer(1)]],
+                                     uint row [[thread_position_in_grid]]) {
+  if (ulong(row) < p.rows && !xgb_cuda_uniform_selected(p, row)) gradients[row] = ulong2(0);
+}
+kernel void xgb_cuda_uniform_replay(device uint2* values [[buffer(0)]],
+                                    constant CudaUniformParams& p [[buffer(1)]],
+                                    uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.rows || xgb_cuda_uniform_selected(p, row)) return;
+  for (uint t = 0; t < p.targets; ++t)
+    values[ulong(row) * p.stride0 + ulong(t) * p.stride1] = uint2(0);
+}

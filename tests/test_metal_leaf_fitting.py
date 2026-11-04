@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 import xgboost as xgb
+from cuda_uniform_reference import UniformSquaredError
 from xgboost.objective import TreeObjective
 
 
@@ -57,7 +58,7 @@ def test_gpu_reduced_leaf_fitting(metal, layout, sampling, subsample, regulariza
     data = dataset(layout, tmp_path)
     params = dict(nthread=2, max_depth=3, max_bin=33, base_score=[0., 0., 0.], eta=.3,
                   multi_strategy="multi_output_tree", subsample=subsample,
-                  sampling_method=sampling, seed=71, debug_synchronize=True)
+                  sampling_method=sampling, seed=71, debug_synchronize=True, seed_per_iteration=True)
     if regularization == "none":
         params.update(reg_lambda=0.)
     elif regularization == "penalties":
@@ -66,7 +67,13 @@ def test_gpu_reduced_leaf_fitting(metal, layout, sampling, subsample, regulariza
         params.update(reg_alpha=.3, max_delta_step=.125)
     elif regularization == "root_only":
         params.update(min_child_weight=1e9, reg_lambda=.1)
-    cpu = xgb.train(params | {"device": "cpu"}, data, 3, obj=Reduced())
+    cpu_params = params | {"device": "cpu"}
+    def cpu_objective(rounds_before=0):
+        return (UniformSquaredError(params, Reduced(), rounds_before=rounds_before)
+                if sampling == "uniform" else Reduced())
+    if sampling == "uniform":
+        cpu_params["subsample"] = 1.
+    cpu = xgb.train(cpu_params, data, 3, obj=cpu_objective())
     before = xgb.metal_info()
     gpu = xgb.train(params | {"device": "mps"}, data, 3, obj=Reduced())
     after = xgb.metal_info()
@@ -82,7 +89,7 @@ def test_gpu_reduced_leaf_fitting(metal, layout, sampling, subsample, regulariza
     # Reload both sides from the same format so RNG configuration has the same
     # lifecycle; a live booster and a saved model do not carry identical state.
     cpu_raw, gpu_raw = cpu.save_raw(), gpu.save_raw()
-    cpu = xgb.train(params | {"device": "cpu"}, data, 1, obj=Reduced(), xgb_model=cpu_raw)
+    cpu = xgb.train(cpu_params, data, 1, obj=cpu_objective(3), xgb_model=cpu_raw)
     gpu = xgb.train(params | {"device": "mps"}, data, 1, obj=Reduced(), xgb_model=gpu_raw)
     np.testing.assert_allclose(gpu.predict(data), cpu.predict(data), atol=2e-5, rtol=2e-5)
 

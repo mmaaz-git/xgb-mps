@@ -25,8 +25,10 @@ def test_gpu_split_selection(metal, strategy, layout, constraints, tmp_path):
     if layout != "numeric":
         types[0] = "c"
     d = xgb.DMatrix(x, label=y, weight=w, feature_types=types)
+    # Row RNGs intentionally differ. Isolate splits/column sampling here;
+    # test_metal_sampling supplies explicit CUDA row masks for sampled training.
     p = dict(tree_method="hist", multi_strategy=strategy, max_depth=4,
-             max_bin=33, nthread=2, seed=7, subsample=0.8,
+             max_bin=33, nthread=2, seed=7, subsample=1.,
              colsample_bytree=0.9, colsample_bylevel=0.9,
              max_cat_to_onehot=16 if layout == "categorical_onehot" else 2,
              max_cat_threshold=6)

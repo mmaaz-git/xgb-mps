@@ -20,6 +20,10 @@
 #include "xgboost/linalg.h"     // for TensorView
 #include "xgboost/span.h"       // for Span
 
+#if defined(XGBOOST_USE_METAL)
+#include "../../common/metal_gradient.h"
+#endif
+
 namespace xgboost::tree {
 struct RandomReplace {
  public:
@@ -95,11 +99,17 @@ class Sampler {
       : sampling_method_{param.sampling_method}, subsample_{param.subsample} {}
 
   void Sample(Context const* ctx, linalg::MatrixView<GradientPair> out);
+#if defined(XGBOOST_USE_METAL)
+  auto const& Quantized() const { return quantized_; }
+#endif
   /** Replay sampling on the value gradient using the original, unsampled split gradient. */
   void ApplySampling(Context const* ctx, linalg::MatrixView<GradientPair const> split_gpair,
                      linalg::Matrix<GradientPair>* value_gpair) const;
 
  private:
+#if defined(XGBOOST_USE_METAL)
+  std::shared_ptr<common::metal::QuantizedGradients> quantized_;
+#endif
   int sampling_method_{TrainParam::kUniform};
   float subsample_{1.0f};
   bool is_sampling_{false};

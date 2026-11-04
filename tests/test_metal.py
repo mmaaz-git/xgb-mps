@@ -114,7 +114,7 @@ def test_quantile_matrix_and_bin_widths(metal, max_bin):
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("extra", [
-    {"subsample": 0.7, "colsample_bytree": 0.7},
+    {"colsample_bytree": 0.7},  # CUDA row masks are checked in test_metal_sampling.
     {"grow_policy": "lossguide", "max_leaves": 12, "max_depth": 0},
     {"monotone_constraints": "(1,-1,0,0,0,0,0,0,0,0,0,0)"},
     {"interaction_constraints": "[[0,1,2],[3,4,5],[6,7,8,9,10,11]]"},
