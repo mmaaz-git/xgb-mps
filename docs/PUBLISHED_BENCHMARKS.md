@@ -89,3 +89,32 @@ Datasets: [HIGGS, D. Whiteson (2014)](https://doi.org/10.24432/C5V312) and
 [Covertype, J. Blackard (1998)](https://doi.org/10.24432/C50K5N), distributed by UCI
 under CC BY 4.0. Dataset files stay in the ignored local cache; this repository
 contains provenance, commands and results.
+
+## Initial M3 measurements
+
+These use the backend at commit `989ee7a`, before the low-bin histogram change.
+
+| Workload | CPU training | MPS training | CPU / MPS | Validation |
+| --- | ---: | ---: | ---: | --- |
+| Full HIGGS, **100 rounds**, one paired pilot | 23.168 s | 24.579 s | 0.943× | All 500,000 test margins pass; maximum difference `9.54e-7` |
+| Full Covertype, **500 rounds**, median of three pairs | 30.194 s | 92.504 s | 0.326× | Seven margins fail strict comparison; all predicted classes agree |
+
+The HIGGS pilot has the full 10.5M/500K split, but fewer rounds than the published
+benchmark. Its CPU/MPS accuracy is 0.741512 and every reported test-error value
+agrees. The initial three Covertype pairs give the same numerical comparison:
+seven of 929,624 margins differ beyond tolerance, maximum difference 0.126695 and
+RMS 0.000238. All differences are in output class 6. All 116,203 predicted classes
+agree, accuracy is 0.894564, and test log loss differs by `1.12e-8`. This is a
+strict-equivalence failure even though classification quality is unchanged.
+
+Raw [HIGGS pilot](../validation/published-higgs-100-baseline-m3.json),
+[Covertype runs](../validation/published-covtype-500-baseline-m3.json), and
+[two-round integration check](../validation/published-covtype-smoke-m3.json)
+include all timings, counters, evaluation histories, memory snapshots and clocks.
+No CUDA-scale training gain has been reproduced in these initial runs.
+
+The HIGGS pilot spends 9.22 s in histogram GPU commands and 4.69 s in partition
+commands, versus 0.29 s in split evaluation. The first full Covertype run spends
+35.20 s in histogram commands and 8.80 s in split evaluation. GPU command times
+are diagnostic components, not separate training timings; wait time overlaps
+GPU execution and must not be added to it.

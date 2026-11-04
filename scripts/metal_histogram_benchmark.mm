@@ -3,6 +3,8 @@
 //   -framework Metal -framework Foundation -o results/metal_histogram_benchmark
 // results/metal_histogram_benchmark xgboost/src/common/metal_histogram.metal >
 // results/histogram.json
+// Optional comparison: pass candidate.metal baseline.metal bins_per_feature.
+// This alternates both kernels and checks every sum against the same CPU oracle.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <algorithm>
@@ -29,7 +31,8 @@ void Check(bool ok, char const* message) {
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
-      Check(argc == 2, "Pass production Metal source");
+      Check(argc == 2 || argc == 4, "Pass candidate shader [baseline shader bins_per_feature]");
+      bool compare = argc == 4;
       auto device = MTLCreateSystemDefaultDevice();
       Check(device != nil, "No Metal GPU");
       std::ifstream file(argv[1]);
@@ -44,25 +47,44 @@ int main(int argc, char** argv) {
       auto function = [library newFunctionWithName:@"xgb_histogram_dense_shared"];
       auto pipeline = [device newComputePipelineStateWithFunction:function error:&error];
       Check(pipeline != nil, "Missing histogram pipeline");
+      id<MTLComputePipelineState> baseline_pipeline = nil;
+      if (compare) {
+        std::ifstream baseline_file(argv[2]);
+        Check(baseline_file.good(), "Missing baseline shader");
+        std::string baseline_source{std::istreambuf_iterator<char>(baseline_file), {}};
+        auto baseline_library =
+            [device newLibraryWithSource:[NSString stringWithUTF8String:baseline_source.c_str()]
+                                 options:options
+                                   error:&error];
+        if (!baseline_library) throw std::runtime_error(error.localizedDescription.UTF8String);
+        auto baseline_function =
+            [baseline_library newFunctionWithName:@"xgb_histogram_dense_shared"];
+        baseline_pipeline = [device newComputePipelineStateWithFunction:baseline_function
+                                                                  error:&error];
+        Check(baseline_pipeline != nil, "Missing baseline histogram pipeline");
+      }
       auto queue = [device newCommandQueue];
       auto upload = [&](void const* data, size_t bytes) {
         return [device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];
       };
       constexpr uint64_t n = 1000000;
-      constexpr uint32_t features = 32, bins = 256 * features;
+      constexpr uint32_t features = 32;
+      uint32_t per_feature = compare ? std::stoi(argv[3]) : 256;
+      Check(per_feature >= 1 && per_feature <= 256, "This benchmark uses 8-bit indices");
+      uint32_t bins = per_feature * features;
       std::mt19937 rng(123);
       std::vector<uint8_t> indices(n * features);
       std::vector<Pair> gradients(n);
       std::vector<uint64_t> rowptr(n + 1);
       std::vector<uint32_t> offsets(features + 1);
-      for (auto& index : indices) index = rng() % 256;
+      for (auto& index : indices) index = rng() % per_feature;
       for (uint64_t r = 0; r < n; ++r) {
         gradients[r] = {(int64_t(rng() % (1u << 24)) - (1 << 23)) * (int64_t(1) << 16), int64_t(1)
                                                                                             << 40};
         rowptr[r] = r * features;
       }
       rowptr[n] = n * features;
-      for (uint32_t f = 0; f <= features; ++f) offsets[f] = f * 256;
+      for (uint32_t f = 0; f <= features; ++f) offsets[f] = f * per_feature;
       auto index = upload(indices.data(), indices.size()),
            gradient = upload(gradients.data(), gradients.size() * sizeof(Pair)),
            ptr = upload(rowptr.data(), rowptr.size() * sizeof(uint64_t)),
@@ -83,7 +105,8 @@ int main(int argc, char** argv) {
         std::vector<Pair> reference(size_t(nodes) * bins, {0, 0});
         for (uint64_t r = 0; r < n; ++r)
           for (uint32_t f = 0; f < features; ++f) {
-            auto& sum = reference[size_t(membership[r]) * bins + f * 256 + indices[f * n + r]];
+            auto& sum =
+                reference[size_t(membership[r]) * bins + f * per_feature + indices[f * n + r]];
             sum.g += gradients[r].g;
             sum.h += gradients[r].h;
           }
@@ -91,11 +114,13 @@ int main(int argc, char** argv) {
              boundaries = upload(node_ptr.data(), node_ptr.size() * sizeof(uint64_t));
         auto output = [device newBufferWithLength:reference.size() * sizeof(Pair)
                                           options:MTLResourceStorageModeShared];
-        std::vector<uint32_t> choices{1, 8, 16, 32, 64};
+        std::vector<uint32_t> choices =
+            compare ? std::vector<uint32_t>{8, 32, 8, 32} : std::vector<uint32_t>{1, 8, 16, 32, 64};
         std::vector<std::vector<double>> gpu_times(choices.size());
         // One warmup for each geometry, followed by shuffled alternating trials.
         for (int repeat = -1; repeat < 5; ++repeat) {
-          std::vector<size_t> order{0, 1, 2, 3, 4};
+          std::vector<size_t> order =
+              compare ? std::vector<size_t>{0, 1, 2, 3} : std::vector<size_t>{0, 1, 2, 3, 4};
           std::shuffle(order.begin(), order.end(), rng);
           for (auto choice : order) {
             auto rows_per_lane = choices[choice];
@@ -111,7 +136,7 @@ int main(int argc, char** argv) {
             [clear fillBuffer:output range:NSMakeRange(0, output.length) value:0];
             [clear endEncoding];
             auto e = [command computeCommandEncoder];
-            [e setComputePipelineState:pipeline];
+            [e setComputePipelineState:compare && choice < 2 ? baseline_pipeline : pipeline];
             [e setBuffer:index offset:0 atIndex:0];
             [e setBuffer:ptr offset:0 atIndex:1];
             [e setBuffer:offset offset:0 atIndex:2];
@@ -122,7 +147,7 @@ int main(int argc, char** argv) {
             [e setBuffer:boundaries offset:0 atIndex:7];
             [e setBuffer:boundaries offset:0 atIndex:8];
             [e setBuffer:blocks offset:0 atIndex:9];
-            [e setThreadgroupMemoryLength:256 * sizeof(Pair) atIndex:0];
+            [e setThreadgroupMemoryLength:per_feature * sizeof(Pair) atIndex:0];
             [e dispatchThreadgroups:MTLSizeMake(block_ptr.back(), features, 1)
                 threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
             [e endEncoding];
@@ -140,7 +165,9 @@ int main(int argc, char** argv) {
                layout == 0 ? "root" : (layout < 4 ? "balanced" : "skewed"), nodes);
         for (size_t c = 0; c < choices.size(); ++c) {
           if (c) printf(",");
-          printf("{\"rows_per_lane\":%u,\"gpu_seconds\":[", choices[c]);
+          printf(
+              "{\"variant\":\"%s\",\"bins_per_feature\":%u,\"rows_per_lane\":%u,\"gpu_seconds\":[",
+              compare ? (c < 2 ? "baseline" : "candidate") : "current", per_feature, choices[c]);
           for (size_t r = 0; r < gpu_times[c].size(); ++r)
             printf("%s%.9f", r ? "," : "", gpu_times[c][r]);
           printf("]}");

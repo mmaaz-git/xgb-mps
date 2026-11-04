@@ -1,0 +1,55 @@
+[
+  {
+    "tree": 2702,
+    "round": 338,
+    "class": 6,
+    "fields": [
+      "internal_thresholds"
+    ],
+    "cpu_nodes": 117,
+    "mps_nodes": 117
+  },
+  {
+    "tree": 2977,
+    "round": 373,
+    "class": 1,
+    "fields": [
+      "internal_thresholds"
+    ],
+    "cpu_nodes": 121,
+    "mps_nodes": 121
+  },
+  {
+    "tree": 3310,
+    "round": 414,
+    "class": 6,
+    "fields": [
+      "internal_thresholds"
+    ],
+    "cpu_nodes": 73,
+    "mps_nodes": 73
+  },
+  {
+    "tree": 3822,
+    "round": 478,
+    "class": 6,
+    "fields": [
+      "left_children",
+      "right_children",
+      "split_indices",
+      "internal_thresholds"
+    ],
+    "cpu_nodes": 93,
+    "mps_nodes": 93
+  },
+  {
+    "tree": 3994,
+    "round": 500,
+    "class": 2,
+    "fields": [
+      "default_left"
+    ],
+    "cpu_nodes": 115,
+    "mps_nodes": 115
+  }
+]

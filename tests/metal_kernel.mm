@@ -71,10 +71,11 @@ int main(int argc, char **argv) {
               for (bool contention : {false, true}) {
                 for (uint32_t rows_per_lane :
                      shared ? std::vector<uint32_t>{1, 8, 32, 64} : std::vector<uint32_t>{8}) {
-                  for (uint32_t mode : {0u, 1u, 2u}) {
+                  for (uint32_t mode : {0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u}) {
                     uint64_t n = shared ? 16385 : 4097;
                     constexpr uint32_t features = 7, nodes = 3;
-                    uint32_t per_feature = width == 1 ? 17 : 513;
+                    uint32_t per_feature =
+                        mode >= 3 ? (mode % 2 == 1 ? 1 : 2) : (width == 1 ? 17 : 513);
                     uint32_t bins = per_feature * features;
                     std::mt19937 rng(71);
                     std::vector<uint8_t> indices;
@@ -91,7 +92,7 @@ int main(int argc, char **argv) {
                       auto signed_value = static_cast<int64_t>(rng()) - (int64_t{1} << 31);
                       Pair g{signed_value * (int64_t{1} << 17) + int64_t(r % 11),
                              (int64_t{1} << 35) + int64_t(rng())};
-                      if (mode == 1) {
+                      if (mode == 1 || mode == 5 || mode == 6) {
                         switch (r % 8) {
                           case 0:
                             g = {0, 0};
@@ -118,10 +119,11 @@ int main(int argc, char **argv) {
                             g = {1, 0};
                             break;
                         }
-                      } else if (mode == 2)
+                      } else if (mode == 2 || mode >= 7)
                         g = {0, 0};
                       gradients[r + base] = g;
-                      uint32_t node = mode == 1 ? (r < 32 ? 2 : 0) : r % nodes;
+                      uint32_t node =
+                          (mode == 1 || mode == 5 || mode == 6) ? (r < 32 ? 2 : 0) : r % nodes;
                       rows.push_back({r + base, node, 0});
                       for (uint32_t f = 0; f < features; ++f) {
                         if (!dense && (r % 13 == 0 || rng() % 3 == 0)) continue;

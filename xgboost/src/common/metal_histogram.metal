@@ -94,7 +94,8 @@ kernel void xgb_histogram_dense_shared(
     device const ulong* row_begin [[buffer(8)]], device const ulong* block_ptr [[buffer(9)]],
     threadgroup atomic_uint* local_hist [[threadgroup(0)]],
     uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
-    uint3 threads [[threads_per_threadgroup]]) {
+    uint3 threads [[threads_per_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]], uint simd_width [[threads_per_simdgroup]]) {
   uint feature = group.y;
   // Only actual node blocks are scheduled. Empty and short nodes do not inherit
   // the largest node's grid, which wastes groups as tree branches become uneven.
@@ -112,6 +113,37 @@ kernel void xgb_histogram_dense_shared(
   if (begin >= end) return;  // Uniform across the threadgroup, before any barrier.
   uint feature_offset = offsets[feature];
   uint bins = offsets[feature + 1] - feature_offset;
+  if (bins <= 2) {
+    // Accumulate in registers before the SIMD reduction. Every lane reaches
+    // the collective, including lanes with no rows in the partial last block.
+    ulong2 first = 0, second = 0;
+    for (ulong r = begin + tid; r < end; r += threads.x) {
+      ulong row = rows[row_begin[node] + r - node_ptr[node]];
+      ulong2 g = as_type<ulong2>(gradients[row]);
+      ulong i = p.padding ? ulong(feature) * p.page_rows + (row - p.base_rowid)
+                          : row_ptr[row - p.base_rowid] + feature;
+      uint bin;
+      if (p.bin_bytes == 1) bin = uint(index[i]);
+      else if (p.bin_bytes == 2) bin = uint(reinterpret_cast<device const ushort*>(index)[i]);
+      else bin = reinterpret_cast<device const uint*>(index)[i];
+      if (bin == 0) first += g;
+      else second += g;
+    }
+    for (uint delta = simd_width / 2; delta != 0; delta >>= 1) {
+      first += as_type<ulong2>(simd_shuffle_down(as_type<uint4>(first), delta));
+      second += as_type<ulong2>(simd_shuffle_down(as_type<uint4>(second), delta));
+    }
+    if (simd_lane == 0) {
+      ulong dst = (ulong(node) * p.n_bins + feature_offset) * 4;
+      add_i64(hist + dst, as_type<long>(first.x));
+      add_i64(hist + dst + 2, as_type<long>(first.y));
+      if (bins == 2) {
+        add_i64(hist + dst + 4, as_type<long>(second.x));
+        add_i64(hist + dst + 6, as_type<long>(second.y));
+      }
+    }
+    return;
+  }
   for (uint i = tid; i < bins * 4; i += threads.x)
     atomic_store_explicit(local_hist + i, 0, memory_order_relaxed);
   threadgroup_barrier(mem_flags::mem_threadgroup);

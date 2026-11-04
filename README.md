@@ -105,7 +105,7 @@ On Apple M3, 2026-11-03:
 - Python: **583 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
-- Native histograms: **192 cases**, with every bin compared exactly to independent
+- Native histograms: **576 cases**, with every bin compared exactly to independent
   CPU integer sums. Covers dense/sparse indices, 8/16/32-bit storage, page offsets,
   high contention, negative values, carries, zero words, sampled-out rows and
   workgroup sizes of 1/8/32/64 rows per lane.
@@ -1107,3 +1107,26 @@ are not individually included. The [before](validation/profile-ranking-unbiased-
 and [after](validation/profile-ranking-unbiased-v3.log) profiles identified the
 pair kernel as the main bottleneck. Instrumented runs are separate from the wall
 timings above.
+
+
+### Published CUDA workload replays and binary-column histograms
+
+The [published benchmark notes](docs/PUBLISHED_BENCHMARKS.md) document NVIDIA's
+4.15× single-P100 HIGGS result and the later eight-V100 benchmarks, including
+source-code settings and discrepancies between the paper and its example results.
+New scripts download/cache UCI data and run isolated CPU/MPS workers with fresh
+matrices, alternating order, progress logs, clock checks and strict test-margin
+comparisons. Both DMatrix setup and training time are recorded separately.
+
+The initial **10.5-million-row HIGGS, 100-round pilot** takes **23.168 s CPU /
+24.579 s MPS (0.94×)** and passes all prediction checks. The full **500-round
+Covertype workload** takes **30.194 s / 92.504 s (0.33×)**, medians of three pairs.
+All predicted test classes agree, but seven output margins fail strict comparison;
+the reports retain that failure. Large CUDA-style training gains are still absent.
+
+One- and two-bin dense features now accumulate exact integer gradients in registers
+and reduce within SIMD groups before global atomic updates. This reduces contention
+on binary columns. Validation passes **576 native histogram cases**, all other
+native suites and **583 Python tests (one skipped)** under Metal API Validation.
+The end-to-end performance of this change is being measured against the published
+workloads; isolated kernel gains are not presented as training gains.
