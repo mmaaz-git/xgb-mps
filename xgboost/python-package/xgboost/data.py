@@ -1547,12 +1547,15 @@ def dispatch_meta_backend(
     matrix: "DMatrix", data: DataType, name: str, dtype: Optional[NumpyDType] = None
 ) -> None:
     """Dispatch for meta info."""
-    if is_metal(data):
-        raise TypeError(
-            "Native Metal metadata import is not implemented yet; supply host metadata."
-        )
     handle = matrix.handle
     assert handle is not None
+    if is_metal(data):
+        tensor = transform_metal(data, metadata=True)
+        _validate_meta_shape(tensor, name)
+        _check_call(
+            _LIB.XGDMatrixSetInfoFromMetal(handle, c_str(name), tensor.descriptor)
+        )
+        return
     _validate_meta_shape(data, name)
     if data is None:
         return

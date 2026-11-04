@@ -102,7 +102,7 @@ class MetalData:
     Generic Metal DLPack providers must finish their writes before exporting.
     """
 
-    def __init__(self, data: Any) -> None:
+    def __init__(self, data: Any, *, metadata: bool = False) -> None:
         if type(data).__name__ == "PyCapsule":
             capsule = data
         else:
@@ -115,15 +115,22 @@ class MetalData:
         tensor = managed.tensor
         if tensor.device.kind != 8 or tensor.device.index != 0:
             raise BufferError("Expected a Metal DLPack tensor on device 0.")
-        if tensor.ndim != 2 or not tensor.shape:
-            raise ValueError("Metal feature input must be two-dimensional.")
-        shape = tuple(tensor.shape[i] for i in range(2))
-        if shape[0] < 0 or shape[1] <= 0:
+        valid_dim = tensor.ndim in (0, 1, 2) if metadata else tensor.ndim == 2
+        if not valid_dim or (tensor.ndim and not tensor.shape):
+            raise ValueError(
+                "Metal metadata must have at most two dimensions."
+                if metadata
+                else "Metal feature input must be two-dimensional."
+            )
+        shape = tuple(tensor.shape[i] for i in range(tensor.ndim))
+        if any(size < 0 for size in shape) or (not metadata and shape[1] == 0):
             raise ValueError("Invalid Metal tensor shape.")
         strides = (
-            tuple(tensor.strides[i] for i in range(2))
+            tuple(tensor.strides[i] for i in range(tensor.ndim))
             if tensor.strides
-            else (shape[1], 1)
+            else (
+                () if tensor.ndim == 0 else (1,) if tensor.ndim == 1 else (shape[1], 1)
+            )
         )
         self.shape = shape
         self._descriptor = json.dumps(
@@ -162,5 +169,5 @@ class MetalData:
         return self._descriptor
 
 
-def transform(data: Any) -> MetalData:
-    return data if isinstance(data, MetalData) else MetalData(data)
+def transform(data: Any, *, metadata: bool = False) -> MetalData:
+    return data if isinstance(data, MetalData) else MetalData(data, metadata=metadata)

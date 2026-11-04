@@ -11,12 +11,14 @@
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <random>
 #include <vector>
 
 #include "../collective/aggregator.h"
 #include "../data/adapter.h"
 #include "../data/gradient_index.h"
+#include "../data/metainfo.h"
 #include "compressed_iterator.h"
 #include "io.h"
 #include "metal_adapter.h"
@@ -32,6 +34,7 @@
 #include "metal_linalg.h"
 #include "metal_linear.h"
 #include "metal_memory.h"
+#include "metal_metadata.h"
 #include "metal_model.h"
 #include "metal_ops.h"
 #include "metal_predictor.h"
@@ -138,6 +141,9 @@ std::atomic<std::uint64_t> snappy_compress_dispatches{0}, snappy_decompress_disp
 std::atomic<std::uint64_t> tensor_imports{0}, tensor_copy_dispatches{0}, tensor_copied_bytes{0},
     tensor_adapter_windows{0}, tensor_prediction_windows{0}, tensor_gpu_time_ns{0},
     input_staging_bytes{0};
+std::atomic<std::uint64_t> metadata_copy_dispatches{0}, metadata_convert_dispatches{0},
+    metadata_validate_dispatches{0}, metadata_qid_dispatches{0}, metadata_values{0},
+    metadata_shared_output_bytes{0}, metadata_host_copy_bytes{0}, metadata_gpu_time_ns{0};
 std::atomic<std::uint64_t> ellpack_csr_dispatches{0}, ellpack_csr_values{0}, ellpack_csr_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
     ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
@@ -276,6 +282,8 @@ class Runtime {
   id<MTLComputePipelineState> category_iota_pipeline, category_merge_pipeline,
       category_extract_pipeline, category_validate_pipeline, category_recode_pipeline;
   id<MTLComputePipelineState> input_prepare_pipeline;
+  id<MTLComputePipelineState> metadata_convert_pipeline, metadata_validate_pipeline,
+      metadata_qid_mark_pipeline, metadata_qid_starts_pipeline, metadata_qid_counts_pipeline;
   id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
       ellpack_copy_pipeline, ellpack_count_pipeline, ellpack_unpack_pipeline;
   id<MTLComputePipelineState> ellpack_adapter_pipeline, ellpack_null_pipeline, ellpack_csr_pipeline;
@@ -368,6 +376,11 @@ class Runtime {
       category_validate_pipeline = make_pipeline(@"xgb_category_validate");
       category_recode_pipeline = make_pipeline(@"xgb_category_recode");
       input_prepare_pipeline = make_pipeline(@"xgb_prepare_input");
+      metadata_convert_pipeline = make_pipeline(@"xgb_metadata_convert");
+      metadata_validate_pipeline = make_pipeline(@"xgb_metadata_validate");
+      metadata_qid_mark_pipeline = make_pipeline(@"xgb_metadata_qid_mark");
+      metadata_qid_starts_pipeline = make_pipeline(@"xgb_metadata_qid_starts");
+      metadata_qid_counts_pipeline = make_pipeline(@"xgb_metadata_qid_counts");
       ellpack_symbols_pipeline = make_pipeline(@"xgb_ellpack_symbols");
       ellpack_pack_pipeline = make_pipeline(@"xgb_ellpack_pack");
       ellpack_copy_pipeline = make_pipeline(@"xgb_ellpack_copy");
@@ -1931,7 +1944,15 @@ Statistics GetStatistics() {
           tensor_adapter_windows.load(std::memory_order_relaxed),
           tensor_prediction_windows.load(std::memory_order_relaxed),
           tensor_gpu_time_ns.load(std::memory_order_relaxed),
-          input_staging_bytes.load(std::memory_order_relaxed)};
+          input_staging_bytes.load(std::memory_order_relaxed),
+          metadata_copy_dispatches.load(std::memory_order_relaxed),
+          metadata_convert_dispatches.load(std::memory_order_relaxed),
+          metadata_validate_dispatches.load(std::memory_order_relaxed),
+          metadata_qid_dispatches.load(std::memory_order_relaxed),
+          metadata_values.load(std::memory_order_relaxed),
+          metadata_shared_output_bytes.load(std::memory_order_relaxed),
+          metadata_host_copy_bytes.load(std::memory_order_relaxed),
+          metadata_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6022,19 +6043,21 @@ class MetalTensor final : public Tensor {
   InputArray array;
   bst_idx_t rows;
   bst_feature_t columns;
-  explicit MetalTensor(StringView descriptor) {
+  explicit MetalTensor(StringView descriptor, bool metadata = false) {
     @autoreleasepool {
       auto json = Json::Load(descriptor);
       CHECK_EQ(get<Integer const>(json["device_type"]), 8);
       CHECK_EQ(get<Integer const>(json["device_id"]), 0);
       auto const& shape = get<Array const>(json["shape"]);
       auto const& strides = get<Array const>(json["strides"]);
-      CHECK_EQ(shape.size(), 2) << "Metal feature input must be two-dimensional.";
-      CHECK_EQ(strides.size(), 2);
-      auto r = get<Integer const>(shape[0]), c = get<Integer const>(shape[1]);
+      CHECK((metadata && shape.size() < 2) || shape.size() == 2)
+          << "Metal feature input must be two-dimensional; metadata may also be a scalar/vector.";
+      CHECK_EQ(strides.size(), shape.size());
+      auto r = shape.empty() ? std::int64_t{1} : get<Integer const>(shape[0]);
+      auto c = shape.size() < 2 ? std::int64_t{1} : get<Integer const>(shape[1]);
       CHECK_GE(r, 0);
       CHECK_LE(r, std::numeric_limits<std::uint32_t>::max());
-      CHECK_GT(c, 0);
+      CHECK_GE(c, metadata ? 0 : 1);
       CHECK_LE(c, std::numeric_limits<bst_feature_t>::max());
       rows = r;
       columns = c;
@@ -6052,8 +6075,8 @@ class MetalTensor final : public Tensor {
       }
       using Wide = __int128;
       auto item = bits / 8;
-      Wide rs = Wide(get<Integer const>(strides[0])) * item;
-      Wide cs = Wide(get<Integer const>(strides[1])) * item;
+      Wide rs = shape.empty() ? item : Wide(get<Integer const>(strides[0])) * item;
+      Wide cs = shape.size() < 2 ? item : Wide(get<Integer const>(strides[1])) * item;
       CHECK(rs >= std::numeric_limits<std::int64_t>::min() && rs <= std::numeric_limits<std::int64_t>::max());
       CHECK(cs >= std::numeric_limits<std::int64_t>::min() && cs <= std::numeric_limits<std::int64_t>::max());
       array.row_stride = rs;
@@ -6064,7 +6087,7 @@ class MetalTensor final : public Tensor {
       CHECK_GE(handle, 0);
       CHECK_EQ(offset % item, 0);
       auto& rt = GetRuntime();
-      if (!rows) {
+      if (!rows || !columns) {
         buffer = Allocate(rt, 0);
       } else {
         CHECK_NE(handle, 0) << "Nonempty Metal tensor has a null buffer.";
@@ -6478,6 +6501,162 @@ std::unique_ptr<AdapterInput> PrepareAdapterImpl(Adapter const& adapter, float m
 }  // namespace
 std::shared_ptr<Tensor> ImportTensor(StringView descriptor) {
   return std::make_shared<MetalTensor>(descriptor);
+}
+void SetMetadata(MetaInfo* info, StringView field, StringView descriptor) {
+  auto kind = static_cast<std::uint32_t>(data::MapMetaField(field, true));
+  MetalTensor input{descriptor, true};
+  if (kind != 0 && kind != 2) {
+    CHECK(input.rows == 1 || input.columns == 1) << "Metadata field requires a vector.";
+  }
+  if (kind == 6) {
+    // Match CUDA CopyGroupInfoImpl (including its binary16 conversion path).
+    CHECK(input.array.type != 1 && input.array.type != 2) << "Expected integer for group info.";
+  }
+  auto count = input.rows * input.columns;
+  auto& rt = GetRuntime();
+  CHECK_LT(count, std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(count + 1, rt.device.maxBufferLength / sizeof(std::uint32_t));
+  struct { std::uint64_t count; std::uint32_t columns, kind; } p{count, input.columns, kind};
+  static_assert(sizeof(p) == 16);
+  auto encode = [&](id<MTLCommandBuffer> command, BorrowedMemory output, id<MTLBuffer> status) {
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.metadata_convert_pipeline];
+    [e setBuffer:input.buffer offset:0 atIndex:0];
+    [e setBuffer:output.buffer offset:output.offset atIndex:1];
+    [e setBuffer:status offset:0 atIndex:2];
+    [e setBytes:&input.array length:sizeof(input.array) atIndex:3];
+    [e setBytes:&p length:sizeof(p) atIndex:4];
+    [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+  };
+  metadata_values.fetch_add(count, std::memory_order_relaxed);
+  if (kind < 6) {
+    Span<float> output;
+    if (kind == 0 || kind == 2) {
+      auto target = kind == 0 ? &info->labels : &info->base_margin_;
+      // CUDA preserves array shape here; only the CPU setter calls ReshapeInfo.
+      target->Reshape(input.rows, input.columns);
+      output = target->Data()->HostSpan();
+    } else {
+      auto target = kind == 1 ? &info->weights_ : kind == 3 ? &info->labels_lower_bound_
+                    : kind == 4 ? &info->labels_upper_bound_ : &info->feature_weights;
+      target->Resize(count);
+      output = target->HostSpan();
+    }
+    if (!count) return;
+    @autoreleasepool {
+      auto out = TryBorrowMemory(rt.device, output.data(), output.size_bytes(), alignof(float));
+      bool shared = out.buffer != nil;
+      if (!shared) out = {Allocate(rt, output.size_bytes()), 0};
+      std::uint32_t zero = 0;
+      auto status = Upload(rt, &zero, sizeof(zero));
+      auto command = [rt.queue commandBuffer];
+      bool copy = input.array.type == 1 &&
+          (input.rows <= 1 || input.array.row_stride == std::int64_t(input.columns) * 4) &&
+          (input.columns <= 1 || input.array.column_stride == 4);
+      if (copy) {
+        auto e = [command blitCommandEncoder];
+        CHECK(e);
+        [e copyFromBuffer:input.buffer sourceOffset:input.array.offset toBuffer:out.buffer
+           destinationOffset:out.offset size:output.size_bytes()];
+        [e endEncoding];
+      } else {
+        encode(command, out, status);
+      }
+      bool validate = kind == 0 || kind == 1 || kind == 5;
+      if (validate) {
+        auto e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt.metadata_validate_pipeline];
+        [e setBuffer:out.buffer offset:out.offset atIndex:0];
+        [e setBuffer:status offset:0 atIndex:1];
+        [e setBytes:&p length:sizeof(p) atIndex:2];
+        [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+      }
+      CompleteOperation(command, copy ? &metadata_copy_dispatches : &metadata_convert_dispatches,
+                        &metadata_gpu_time_ns);
+      if (validate) metadata_validate_dispatches.fetch_add(1, std::memory_order_relaxed);
+      if (!shared) std::memcpy(output.data(), out.buffer.contents, output.size_bytes());
+      (shared ? metadata_shared_output_bytes : metadata_host_copy_bytes)
+          .fetch_add(output.size_bytes(), std::memory_order_relaxed);
+      CHECK_EQ(*static_cast<std::uint32_t const*>(status.contents), 0)
+          << (kind == 0 ? "Label contains NaN, infinity or a value too large."
+              : kind == 1 ? "Weights must be positive values."
+                          : "Feature weight must be greater than 0.");
+    }
+    return;
+  }
+  if (!count) {
+    info->group_ptr_.assign(1, 0);
+    return;
+  }
+  @autoreleasepool {
+    auto n = static_cast<std::uint32_t>(count);
+    std::uint32_t zeros[3]{};
+    auto status = Upload(rt, zeros, sizeof(zeros));
+    auto ids = Allocate(rt, count * 4);
+    auto command = [rt.queue commandBuffer];
+    encode(command, {ids, 0}, status);
+    id<MTLBuffer> starts{nil};
+    if (kind == 7) {
+      auto flags = Allocate(rt, count * 4);
+      auto e = [command computeCommandEncoder];
+      [e setComputePipelineState:rt.metadata_qid_mark_pipeline];
+      [e setBuffer:ids offset:0 atIndex:0];
+      [e setBuffer:flags offset:0 atIndex:1];
+      [e setBuffer:status offset:0 atIndex:2];
+      [e setBytes:&n length:sizeof(n) atIndex:3];
+      [e dispatchThreads:MTLSizeMake(n, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      auto prefix = EncodePrefixSum(rt, command, flags, n);
+      starts = Allocate(rt, (count + 1) * 4);
+      e = [command computeCommandEncoder];
+      [e setComputePipelineState:rt.metadata_qid_starts_pipeline];
+      [e setBuffer:flags offset:0 atIndex:0];
+      [e setBuffer:prefix offset:0 atIndex:1];
+      [e setBuffer:starts offset:0 atIndex:2];
+      [e setBuffer:status offset:0 atIndex:3];
+      [e setBytes:&n length:sizeof(n) atIndex:4];
+      [e dispatchThreads:MTLSizeMake(n, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    CompleteOperation(command, &metadata_convert_dispatches, &metadata_gpu_time_ns);
+    auto checked = static_cast<std::uint32_t const*>(status.contents);
+    CHECK_EQ(checked[0], 0) << "Metal group/qid floating conversion requires a finite, uint32-representable truncated value.";
+    if (kind == 6) {
+      // CUDA also keeps group_ptr_ on host and performs this prefix sum there.
+      info->group_ptr_.resize(count + 1);
+      info->group_ptr_[0] = 0;
+      std::memcpy(info->group_ptr_.data() + 1, ids.contents, count * 4);
+      metadata_host_copy_bytes.fetch_add(count * 4, std::memory_order_relaxed);
+      std::partial_sum(info->group_ptr_.begin(), info->group_ptr_.end(), info->group_ptr_.begin());
+    } else {
+      metadata_qid_dispatches.fetch_add(1, std::memory_order_relaxed);
+      CHECK_EQ(checked[1], 0) << "`qid` must be sorted in increasing order along with data.";
+      std::uint32_t runs = checked[2];
+      CHECK_GT(runs, 0);
+      CHECK_LE(runs, count);
+      auto counts = Allocate(rt, (std::size_t(runs) + 1) * 4);
+      command = [rt.queue commandBuffer];
+      auto e = [command computeCommandEncoder];
+      [e setComputePipelineState:rt.metadata_qid_counts_pipeline];
+      [e setBuffer:starts offset:0 atIndex:0];
+      [e setBuffer:counts offset:0 atIndex:1];
+      [e setBytes:&runs length:sizeof(runs) atIndex:2];
+      [e dispatchThreads:MTLSizeMake(std::size_t(runs) + 1, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      // CUDA RLE counts are cumulatively scanned on GPU before host publication.
+      auto prefix = EncodePrefixSum(rt, command, counts, runs + 1);
+      CompleteOperation(command, &metadata_qid_dispatches, &metadata_gpu_time_ns);
+      info->group_ptr_.resize(std::size_t(runs) + 1);
+      std::memcpy(info->group_ptr_.data(), prefix.contents, info->group_ptr_.size() * 4);
+      metadata_host_copy_bytes.fetch_add(info->group_ptr_.size() * 4, std::memory_order_relaxed);
+    }
+    data::ValidateQueryGroup(info->group_ptr_);
+  }
 }
 std::unique_ptr<AdapterInput> PrepareAdapter(Tensor const& source, float missing,
                                             bst_idx_t begin, bst_idx_t count,

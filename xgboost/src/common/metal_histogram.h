@@ -112,6 +112,9 @@ struct Statistics {
       snappy_gpu_time_ns;
   std::uint64_t tensor_imports, tensor_copy_dispatches, tensor_copied_bytes, tensor_adapter_windows,
       tensor_prediction_windows, tensor_gpu_time_ns, input_staging_bytes;
+  std::uint64_t metadata_copy_dispatches, metadata_convert_dispatches, metadata_validate_dispatches,
+      metadata_qid_dispatches, metadata_values, metadata_shared_output_bytes,
+      metadata_host_copy_bytes, metadata_gpu_time_ns;
 };
 
 class Histogram {

@@ -7472,6 +7472,80 @@ inline uint xgb_input_float(device const uchar* data, InputArray a, ulong row, u
   float value = (a.type < 8) ? float(as_type<long>(bits)) : float(bits);
   return as_type<uint>(value);
 }
+// Metadata uses CUDA's typed casts, not feature missing-value substitution.
+struct MetadataParams { ulong count; uint columns, kind; };
+inline uint xgb_metadata_uint(device const uchar* data, InputArray a, ulong row, ulong column,
+                               device atomic_uint* status) {
+  if (a.type >= 4) return uint(xgb_input_uint(data, a, row, column));
+  // Avoid Metal FTZ and float->integer saturation differences. Truncation is
+  // specified only when the resulting integer is representable by uint32.
+  ulong bits;
+  uint fraction_bits, exponent_bits, bias;
+  if (a.type == 2) {
+    auto p = data + long(a.offset) + long(row) * a.row_stride + long(column) * a.column_stride;
+    bits = *reinterpret_cast<device const ulong*>(p);
+    fraction_bits = 52; exponent_bits = 11; bias = 1023;
+  } else {
+    bits = xgb_input_float(data, a, row, column);
+    fraction_bits = 23; exponent_bits = 8; bias = 127;
+  }
+  ulong exponent_mask = (1ul << exponent_bits) - 1;
+  uint exponent = uint((bits >> fraction_bits) & exponent_mask);
+  bool negative = bits >> (fraction_bits + exponent_bits);
+  int power = int(exponent) - int(bias);
+  if (exponent == exponent_mask || power >= 32 || (negative && power >= 0)) {
+    atomic_store_explicit(status, 1u, memory_order_relaxed);
+    return 0;
+  }
+  if (power < 0) return 0;
+  ulong significand = (bits & ((1ul << fraction_bits) - 1)) | (1ul << fraction_bits);
+  return power <= int(fraction_bits) ? uint(significand >> (fraction_bits - uint(power)))
+                                     : uint(significand << (uint(power) - fraction_bits));
+}
+kernel void xgb_metadata_convert(
+    device const uchar* source [[buffer(0)]], device uint* output [[buffer(1)]],
+    device atomic_uint* status [[buffer(2)]], constant InputArray& a [[buffer(3)]],
+    constant MetadataParams& p [[buffer(4)]], uint i [[thread_position_in_grid]]) {
+  if (ulong(i) >= p.count) return;
+  ulong row = i / p.columns, column = i % p.columns;
+  output[i] = p.kind < 6 ? xgb_input_float(source, a, row, column)
+                         : xgb_metadata_uint(source, a, row, column, status);
+}
+kernel void xgb_metadata_validate(
+    device const uint* values [[buffer(0)]], device atomic_uint* status [[buffer(1)]],
+    constant MetadataParams& p [[buffer(2)]], uint i [[thread_position_in_grid]]) {
+  if (ulong(i) >= p.count) return;
+  uint bits = values[i], magnitude = bits & 0x7fffffffu;
+  bool invalid = magnitude >= 0x7f800000u;
+  // CUDA accepts both signed zeros and rejects negative subnormals as weights.
+  if (p.kind != 0) invalid |= (bits >> 31) && magnitude != 0;
+  if (invalid) atomic_store_explicit(status, 1u, memory_order_relaxed);
+}
+kernel void xgb_metadata_qid_mark(
+    device const uint* ids [[buffer(0)]], device uint* flags [[buffer(1)]],
+    device atomic_uint* status [[buffer(2)]], constant uint& count [[buffer(3)]],
+    uint i [[thread_position_in_grid]]) {
+  if (i >= count) return;
+  flags[i] = i == 0 || ids[i] != ids[i - 1];
+  if (i && ids[i] < ids[i - 1]) atomic_store_explicit(status + 1, 1u, memory_order_relaxed);
+}
+kernel void xgb_metadata_qid_starts(
+    device const uint* flags [[buffer(0)]], device const uint* prefix [[buffer(1)]],
+    device uint* starts [[buffer(2)]], device uint* status [[buffer(3)]],
+    constant uint& count [[buffer(4)]], uint i [[thread_position_in_grid]]) {
+  if (i >= count) return;
+  if (flags[i]) starts[prefix[i]] = i;
+  if (i + 1 == count) {
+    uint runs = prefix[i] + flags[i];
+    starts[runs] = count;
+    status[2] = runs;
+  }
+}
+kernel void xgb_metadata_qid_counts(
+    device const uint* starts [[buffer(0)]], device uint* counts [[buffer(1)]],
+    constant uint& runs [[buffer(2)]], uint i [[thread_position_in_grid]]) {
+  if (i <= runs) counts[i] = i == runs ? 0u : starts[i + 1] - starts[i];
+}
 inline uint xgb_input_recode(uint value, uint f, device const uint* segments,
                              device const int* mapping, constant InputParams& p) {
   if (!p.mapped || segments[f] == segments[f + 1]) return value;

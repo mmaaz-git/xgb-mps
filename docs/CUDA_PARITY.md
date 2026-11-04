@@ -48,8 +48,9 @@ work, not accepted substitutes for CUDA behavior:
   QuantileDMatrix and both ExtMemQuantileDMatrix cache modes use the GPU adapter
   frontend. Optional Snappy compute cache compression is now implemented under
   the existing native opt-in. Native Metal DLPack feature tensors now feed
-  in-memory/external quantile construction and inplace prediction; native
-  metadata/ordinary-matrix input and distributed sketch collectives remain open. Scan association,
+  in-memory/external quantile construction and inplace prediction. Native metadata
+  imports are implemented below; ordinary-matrix input and distributed sketch
+  collectives remain open. Scan association,
   sorting ties and rank-repair scheduling are explicitly bounded validation limits.
 - Interaction constraints now follow CUDA's cumulative group unions and ascending
   nonroot queries, with explicit overlapping-group tests; the former CPU history
@@ -81,7 +82,7 @@ must be reported rather than hidden by widening test tolerances.
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly from resident sorted indices; GPU-owned interaction masks and monotonic bounds, group unions, ascending feature filtering, bound initialization/growth; candidate staging and tree metadata remain host |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; columns use modern CUDA Philox weighted priorities and Thrust Feistel shuffle with GPU compaction/ordering; shuffle key setup and cache metadata remain host as in CUDA, while feature arrays still stage through host |
-| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, multiclass packed class priors and normalization/log/centering, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
+| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, multiclass packed class priors and normalization/log/centering, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; native metadata import validation also runs on Metal; host-input validation, general metadata ownership and other initialization work remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; multiclass softmax follows source sequential binary64 accumulation of FP32 terms and argmax handles source NaN/subnormal comparisons; identity transforms require no dispatch |
 | Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; expectile's host margin loop matches upstream host execution |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal source-expression gradients, FP32 residual-root sums, binary64 optional-weight sums and quantile prediction sorting; upstream host scale-statistic collective restored for empty/nonempty workers; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; generic initialization/state work remains CPU |
@@ -98,15 +99,15 @@ must be reported rather than hidden by widening test tolerances.
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; collective transport remains host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
-| Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add host dense/columnar and native Metal tensor ingestion, resident sketches and bins; native metadata and distributed sketch collectives remain open |
+| Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add host dense/columnar and native Metal tensor ingestion, resident sketches and bins; native metadata conversion/validation is supported; distributed sketch collectives remain open |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Ordinary in-memory DMatrix now compresses raw CSR directly with separate lazy CPU views and cache-generation tracking. MPS-origin external disk caches now store/read compressed pages; internal quantile cuts+ELLPACK save/load is implemented. Ordinary external on_host selection now uses CUDA single-/multiple-page defaults. Optional Snappy compute compression/decompression now follows the native fallback opt-in, sparse eligibility and forced-prefetch rules. Mapped-file zero-copy remains open; CPU-origin external matrices retain their existing compatibility path |
-| Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Prediction/SHAP row-level mapping and raw-input preparation now run on GPU; explicit MPS QuantileDMatrix training adapters also recode on GPU; dictionary storage/copies and general metadata remain host |
+| Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `data/data.cu`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Prediction/SHAP row-level mapping and raw-input preparation now run on GPU; explicit MPS QuantileDMatrix training adapters also recode on GPU; native metadata typed conversion, label/weight predicates and query-ID RLE/scan now run on GPU; final group boundaries, dictionary storage/copies and general metadata ownership/manipulation remain host |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
-| CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack feature tensors feed quantile constructors, iterators and inplace prediction through owned GPU snapshots; real PyTorch/MLX, strides, half and capsule lifetimes are tested. Native ordinary DMatrix, metadata/custom-gradient imports, GPU outputs and portable producer stream handshakes remain open. NVIDIA-specific interfaces cannot consume Metal memory |
+| CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack feature tensors feed quantile constructors, iterators and inplace prediction through owned GPU snapshots; real PyTorch/MLX, strides, half and capsule lifetimes are tested. Native metadata imports now use Metal conversion/validation/grouping. Ordinary DMatrix feature input, custom-gradient imports, GPU outputs and portable producer stream handshakes remain open. NVIDIA-specific interfaces cannot consume Metal memory |
 | CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Shared-memory Metal runtime, guarded host-memory views for ordinary gradients, quantization and leaf assignment, model-local row workspaces, reused command queue and histogram buffers; persistent end-to-end device ownership and asynchronous scheduling missing |
 
 Paths in the table are relative to `xgboost/src` and denote starting points, not
@@ -2837,8 +2838,79 @@ runtime alongside Homebrew reproduced a worker-thread crash; this is documented
 and the test launcher configures the shared runtime. Arbitrary mixed-runtime
 packaging is not fixed by the Metal import code.
 
-Remaining interoperability work: native ordinary `DMatrix` input, metadata
-(labels/weights/base margins/groups), custom-gradient imports, GPU outputs and
+Metadata imports are implemented in the next section. Remaining interoperability
+work includes native ordinary `DMatrix` input, custom-gradient imports, GPU outputs and
 broader device ownership. Native sparse/columnar device adapters and a portable
 producer queue protocol also remain open. No new performance benchmark, NVIDIA
 comparison or other Apple-device validation was performed.
+
+## Native Metal metadata conversion, validation and query groups
+
+`XGDMatrixSetInfoFromMetal` and Python metadata dispatch now accept Metal DLPack
+labels, weights, base margins, survival bounds, feature weights, group sizes and
+query IDs. The implementation authority is `data/data.cu`: `CopyTensorInfoImpl`,
+`CopyGroupInfoImpl`, `CopyQidImpl` and `MetaInfo::SetInfoFromCUDA`, plus the shared
+`LabelsCheck`/`WeightsCheck` predicates. This ports native metadata import
+operations; generic metadata storage, append/gather and other state manipulation
+remain separate unfinished work.
+
+Imports retain the previous native-buffer bounds, ownership and producer
+completion rules. Metadata also accepts scalars and empty matrix dimensions.
+Labels/base margins preserve CUDA's supplied shape, filling missing dimensions
+with ones. They do not apply the CPU setter's sample-count-based reshape.
+Vector fields accept vector-shaped data; Python retains its existing public
+shape checks. Single-batch quantile construction retains a managed export so a
+caller-supplied metadata capsule is consumed once across iterator passes.
+
+Contiguous FP32 input uses a GPU blit; other supported dtypes/strides use typed
+GPU conversion into FP32. Label validation rejects nonfinite converted values.
+Weight and feature-weight validation also reject negative values, including
+negative subnormals; both signed zeros are legal. Bounds and base margins have
+no such import-time finite-value predicate, matching CUDA. Validation occurs
+after the copy, so invalid float metadata may already be stored when an error
+is raised, as in the source CUDA setter.
+
+The destination keeps the existing `MetaInfo` allocation. Safe synchronous
+shared-buffer views allow GPU writes directly into it; otherwise a GPU buffer
+and counted host copy provide the fallback. No input payload is converted through
+NumPy or a CPU element loop. This does not claim private end-to-end GPU metadata
+ownership. Eight new counters expose GPU copies, conversions, validations, QID
+commands, element counts, shared output bytes, host payload copies and GPU time.
+CPU builds report zero and reject the new entry point explicitly.
+
+Group sizes follow CUDA's integer conversion and host prefix sum, retaining zero
+sizes and overflow validation. FP32/FP64 group-size inputs reject; binary16 follows
+the source's accepted conversion branch. Query IDs convert to uint32 before
+sortedness checks, so wide integer IDs follow CUDA's narrowing behavior. Metal
+then marks runs, scans flags, emits run lengths and scans their counts on GPU,
+publishing only final group boundaries to the host. Binary64-to-integer
+conversion avoids intermediate FP32 narrowing. Unsorted IDs leave existing
+groups intact. Empty IDs produce `[0]` without reproducing an unsigned launch-size
+underflow. Nonfinite/out-of-range floating-to-integer inputs reject explicitly;
+the corresponding out-of-domain C++ casts are not a verified NVIDIA behavior.
+
+Focused validation passes **332 metadata Python cases**, plus all **93 native
+feature-input regressions**. Tests use real PyTorch 2.15.0 and MLX 0.32.4 inputs
+for every metadata field, six producer dtypes, vectors/columns/slices/broadcasts,
+scalars, versioned capsules, empty data and constructor/iterator reuse. Native
+tests pass **322 cases / 1,011,267 field checks / 24 rejected inputs**, covering
+private/shared buffers, every integer width, negative strides, all half bit
+patterns, signed zeros/subnormals/nonfinites and GPU scan tile boundaries through
+65,537 IDs. CPU scalar casts and independently enumerated groups are the oracles.
+
+Regression, multiclass, multi-target, ranking and AFT fits match host-metadata
+Metal fits exactly. CPU fits using native versus host metadata serialize
+identically. CPU evaluation margins agree exactly with the fitted Metal model;
+multiclass probabilities use `rtol=2e-7, atol=2e-8` after observing four one-ULP
+differences among 771 probabilities (maximum absolute difference 1.49e-8).
+The tolerance is confined to that CPU/GPU softmax comparison. External host/disk
+iterators preserve imported labels/weights after source release and clean up
+their caches. [Validation record](../validation/cuda-metal-metadata-m3.txt).
+Final regression passes **2,791 Python tests, one skip**, every rebuilt native
+suite/reference updater and the CPU-only build/API checks (2026-11-04,
+20:26:46Z–20:33:48Z). No production or test changes followed that final build/run.
+
+No new benchmark, NVIDIA execution or other Apple-device comparison was run.
+Native ordinary feature matrices, custom gradients, GPU output tensors, general
+metadata/state manipulation and ownership, remaining CUDA arithmetic audits and
+GPU collectives remain open.

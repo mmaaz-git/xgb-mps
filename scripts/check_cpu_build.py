@@ -41,6 +41,8 @@ check(lib.XGBoosterCreate(None, ctypes.c_uint64(0), ctypes.byref(booster)))
 try:
     assert lib.XGProxyDMatrixSetDataMetal(proxy, b"{}") != 0
     assert b"USE_METAL=ON" in lib.XGBGetLastError()
+    assert lib.XGDMatrixSetInfoFromMetal(proxy, b"label", b"{}") != 0
+    assert b"USE_METAL=ON" in lib.XGBGetLastError()
     assert lib.XGBoosterPredictFromMetal(booster, b"{}", b"{}", None, None, None, None) != 0
     assert b"USE_METAL=ON" in lib.XGBGetLastError()
 finally:

@@ -88,6 +88,12 @@ XGB_DLL int XGBMetalInfo(char const **out);
  * Import copies the addressed byte span to owned GPU storage before returning.
  */
 XGB_DLL int XGProxyDMatrixSetDataMetal(DMatrixHandle handle, char const *data);
+/** Import metadata from a native Metal descriptor. The same lifetime/completion
+ * rules apply; shape may have zero, one or two dimensions. Field names match
+ * XGDMatrixSetInfoFromInterface. Conversion and validation execute on GPU;
+ * metadata remains accessible through the existing host result APIs.
+ */
+XGB_DLL int XGDMatrixSetInfoFromMetal(DMatrixHandle handle, char const *field, char const *data);
 /** Inplace prediction from the same native descriptor. Requires device=mps;
  * configuration/output follow XGBoosterPredictFromDense, including host results.
  */

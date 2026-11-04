@@ -14,7 +14,26 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **native PyTorch/MLX Metal feature tensors and float16 input**.
+Latest step: **native Metal metadata imports**. PyTorch/MLX labels, weights,
+base margins, survival bounds, feature weights and ranking groups/query IDs now
+enter through GPU conversion and validation. Query IDs use GPU run-length
+encoding and prefix scans; final group boundaries remain host-side as in CUDA.
+Scalar, vector and matrix inputs preserve CUDA's shape and dtype rules.
+
+Focused validation passes **425 Python tests** (332 metadata and 93 feature-input
+regressions) and **322 native cases / 1,011,267 field checks / 24 rejected inputs**.
+CPU models trained with imported GPU metadata serialize identically to models
+trained with host metadata. Native/host-input Metal fits agree exactly; CPU
+multiclass output comparison allows measured FP32 softmax rounding while margins
+remain exact. Full regression passes **2,791 Python tests, one skip**, every
+rebuilt native suite and the CPU-only build/API checks.
+[Metadata validation](validation/cuda-metal-metadata-m3.txt).
+
+Float metadata uses shared GPU destination views where eligible, with an explicit
+counted copy fallback. General metadata allocation, concatenation/slicing and
+broader device-state ownership still need work. No new benchmark.
+
+The preceding step added **native PyTorch/MLX Metal feature tensors and float16 input**.
 `QuantileDMatrix`, both external quantile cache modes and `inplace_predict` now
 accept Metal DLPack inputs. Strided views are copied into owned GPU storage and
 decoded on the GPU, without staging feature values through NumPy or CPU arrays.
@@ -24,8 +43,8 @@ legacy/versioned capsule ownership and all 65,536 float16 bit patterns.
 Focused validation passes **93 Python tests** and **105 native cases / 145,567
 field checks / nine rejected descriptors**. Full regression passes **2,459 Python
 tests, one skip**, every rebuilt native suite and the CPU-only build/API checks.
-Native metadata, ordinary `DMatrix`
-input and GPU output tensors remain open; prediction results still return NumPy.
+Native metadata imports are covered above. Ordinary `DMatrix` feature input and
+GPU output tensors remain open; prediction results still return NumPy.
 PyTorch coexistence requires a single OpenMP runtime, configured below.
 No new benchmark. [Tensor validation](validation/cuda-metal-tensor-m3.txt).
 
@@ -280,8 +299,9 @@ The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
-The major remaining areas are native ordinary-matrix input, GPU metadata and
-gradient/output tensor interoperability, remaining initialization/state operations,
+The major remaining areas are native ordinary-matrix input, custom-gradient/output
+tensor interoperability, general metadata/state ownership and manipulation,
+remaining initialization/state operations,
 CUDA algorithm alignment and distributed collectives. Compressed disk caches,
 internal ELLPACK save/load and optional Snappy compute compression are implemented.
 Sensitive AFT tails and some
@@ -354,8 +374,8 @@ model = xgb.train({"device": "mps", "tree_method": "hist", "max_bin": 256}, trai
 
 Construction device is independent of booster device. Omitting it selects MPS
 for native Metal feature tensors and CPU for host arrays. Dense/columnar host
-and native Metal `DataIter` batches are supported. Native sparse adapters and
-GPU metadata import remain open; CPU quantized views are materialized on demand.
+and native Metal `DataIter` batches are supported, including native metadata.
+Native sparse adapters remain open; CPU quantized views are materialized on demand.
 
 Native feature inputs use the producer's Metal DLPack export:
 
@@ -368,8 +388,8 @@ uv pip install --python .venv/bin/python 'torch==2.15.0' 'mlx==0.32.4'
 import torch
 
 X_gpu = torch.randn(1000, 32, device="mps", dtype=torch.float16)
-y_host = torch.randn(1000).numpy()
-train = xgb.QuantileDMatrix(X_gpu, y_host, max_bin=256)
+y_gpu = torch.randn(1000, device="mps")
+train = xgb.QuantileDMatrix(X_gpu, y_gpu, max_bin=256)
 model = xgb.train({"device": "mps", "max_bin": 256}, train)
 prediction = model.inplace_predict(X_gpu)  # NumPy output
 ```
@@ -378,8 +398,9 @@ MLX GPU arrays work through the same interface. The Python bridge completes
 known PyTorch/MLX producer work before each import; generic Metal providers must
 supply ready buffers. Imports make owned GPU snapshots rather than retaining
 mutable feature storage. A DLPack capsule is consumed once; an iterator should
-return its producer tensor on each callback. Labels, weights and base margins
-must currently be host arrays. Float16/32/64, integer widths and bool are supported
+return its producer tensor on each callback. Labels, weights, base margins,
+survival bounds, feature weights and group/qid metadata may be native tensors
+or host arrays. Float16/32/64, integer widths and bool are supported
 by the native interface, subject to each producer's dtype support.
 
 Set `DYLD_LIBRARY_PATH` above **before starting Python** when using PyTorch with
@@ -441,7 +462,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Host dense/columnar and native Metal quantile inputs feed resident sketches; distributed sketches remain open |
 | Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Model dictionary copies, persistent storage and row-level map application remain host |
 | Quantized data cache | Ordinary in-memory DMatrix pages use raw CSR-to-ELLPACK compression. Quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly; CPU access explicitly materializes host mirrors. Compressed disk storage, internal ELLPACK save/load and optional native Snappy compression are implemented |
-| Native Apple feature tensors | Metal DLPack inputs for in-memory/external quantile matrices and inplace prediction; strided GPU snapshots, half decoding and PyTorch/MLX synchronization. Metadata imports, ordinary DMatrix input and GPU outputs remain open |
+| Native Apple feature tensors | Metal DLPack inputs for in-memory/external quantile matrices and inplace prediction; strided GPU snapshots, half decoding and PyTorch/MLX synchronization. Ordinary DMatrix feature input and GPU outputs remain open |
+| Native metadata imports | GPU typed copies/conversion and CUDA label/weight predicates; GPU query-ID RLE/prefix scans. Scalars, vectors, matrices, empty/strided data and half supported. Final group boundaries and group-size prefix sums remain host as in CUDA; general allocation/slicing/concatenation remain host |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
 | Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; scalar/vector split statistics retain integers |

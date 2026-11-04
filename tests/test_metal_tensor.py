@@ -284,8 +284,8 @@ def test_tensor_errors(metal, name):
         xgb.QuantileDMatrix(raw[:, 0])
     with pytest.raises(TypeError, match="require QuantileDMatrix"):
         xgb.DMatrix(raw)
-    with pytest.raises(TypeError, match="metadata"):
-        xgb.QuantileDMatrix(raw, raw[:, 0])
+    q = xgb.QuantileDMatrix(raw, raw[:, 0], nthread=2)
+    np.testing.assert_array_equal(q.get_label(), np.ones(11, dtype=np.float32))
     complex_data = producer(name, np.ones((11, 3), dtype=np.complex64))
     with pytest.raises(xgb.core.XGBoostError, match="dtype"):
         xgb.QuantileDMatrix(complex_data)

@@ -53,6 +53,7 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_histogram.h"
+#include "../common/metal_metadata.h"
 #endif
 
 using namespace xgboost;  // NOLINT(*);
@@ -281,6 +282,20 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.tensor_prediction_windows)};
   info["tensor_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.tensor_gpu_time_ns)};
   info["input_staging_bytes"] = Integer{static_cast<std::int64_t>(stats.input_staging_bytes)};
+  info["metadata_copy_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.metadata_copy_dispatches)};
+  info["metadata_convert_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.metadata_convert_dispatches)};
+  info["metadata_validate_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.metadata_validate_dispatches)};
+  info["metadata_qid_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.metadata_qid_dispatches)};
+  info["metadata_values"] = Integer{static_cast<std::int64_t>(stats.metadata_values)};
+  info["metadata_shared_output_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.metadata_shared_output_bytes)};
+  info["metadata_host_copy_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.metadata_host_copy_bytes)};
+  info["metadata_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.metadata_gpu_time_ns)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -541,6 +556,14 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["tensor_prediction_windows"] = Integer{0};
   info["tensor_gpu_time_ns"] = Integer{0};
   info["input_staging_bytes"] = Integer{0};
+  info["metadata_copy_dispatches"] = Integer{0};
+  info["metadata_convert_dispatches"] = Integer{0};
+  info["metadata_validate_dispatches"] = Integer{0};
+  info["metadata_qid_dispatches"] = Integer{0};
+  info["metadata_values"] = Integer{0};
+  info["metadata_shared_output_bytes"] = Integer{0};
+  info["metadata_host_copy_bytes"] = Integer{0};
+  info["metadata_gpu_time_ns"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};
@@ -1164,6 +1187,20 @@ XGB_DLL int XGDMatrixSetInfoFromInterface(DMatrixHandle handle, char const *fiel
   xgboost_CHECK_C_ARG_PTR(field);
   auto const &p_fmat = *static_cast<std::shared_ptr<DMatrix> *>(handle);
   p_fmat->SetInfo(field, interface_c_str);
+  API_END();
+}
+
+XGB_DLL int XGDMatrixSetInfoFromMetal(DMatrixHandle handle, char const *field, char const *data) {
+  API_BEGIN();
+  CHECK_HANDLE();
+  xgboost_CHECK_C_ARG_PTR(field);
+  xgboost_CHECK_C_ARG_PTR(data);
+#if defined(XGBOOST_USE_METAL)
+  auto const &matrix = *static_cast<std::shared_ptr<DMatrix> *>(handle);
+  common::metal::SetMetadata(&matrix->Info(), StringView{field}, StringView{data});
+#else
+  LOG(FATAL) << "Metal metadata input requires XGBoost built with USE_METAL=ON.";
+#endif
   API_END();
 }
 

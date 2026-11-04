@@ -1636,6 +1636,12 @@ class QuantileDMatrix(DMatrix, _RefMixIn):
         from ._metal import transform as transform_metal
         from .data import _is_dlpack, _transform_dlpack
 
+        # A single-batch iterator consumes metadata more than once. Retain one
+        # managed export so a caller-supplied DLPack capsule is consumed once.
+        meta = {
+            name: transform_metal(value, metadata=True) if is_metal(value) else value
+            for name, value in meta.items()
+        }
         if is_metal(data):
             data = transform_metal(data)
         elif _is_dlpack(data):

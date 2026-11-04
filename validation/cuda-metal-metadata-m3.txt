@@ -1,0 +1,108 @@
+Native Metal metadata conversion, validation and query groups
+============================================================
+Date: 2026-11-04
+Host: Apple M3 MacBook Air, 8 CPU cores / 10 GPU cores / 16 GB unified memory.
+Baseline: 358651766a41af0941d03a63b03098b68f95e737 (native feature tensors).
+Python 3.13.5; PyTorch 2.15.0; MLX / MLX-Metal 0.32.4.
+One Homebrew OpenMP runtime selected via DYLD_LIBRARY_PATH before Python.
+
+Operation scope and authority
+-----------------------------
+Vendored data/data.cu: CopyTensorInfoImpl, CopyGroupInfoImpl, CopyQidImpl,
+MetaInfo::SetInfoFromCUDA. Shared predicates are in data/metainfo.h; metadata
+shape extraction is defined in data/array_interface.h. These local CUDA sources
+define placement, order, predicates, dtypes and shapes. No NVIDIA execution.
+
+New XGDMatrixSetInfoFromMetal frontend supports label, weight, base_margin,
+label_lower_bound, label_upper_bound, feature_weights, group and qid. Python
+supports real Metal tensors plus legacy/versioned DLPack capsules, with retained
+exports across single-batch quantile iterator passes. Scalars/vectors/matrices,
+empty dimensions, offsets, signed/broadcast strides and supported native dtypes
+retain the native tensor snapshot/lifetime/completion contract.
+
+Float metadata: contiguous FP32 GPU blit or typed GPU conversion to FP32.
+Labels reject nonfinite converted results; weights/feature weights additionally
+reject negatives (including negative subnormals), while both zeros are legal.
+Bounds/base margins retain CUDA's unvalidated nonfinite import behavior.
+Labels/base margins preserve supplied shape instead of CPU sample-count reshape.
+CUDA copies before validation; invalid float data may already have been stored.
+Safe shared views permit GPU writes into the existing MetaInfo allocation; a
+counted copy fallback handles destinations that cannot be safely shared. This
+does not add generic private GPU ownership to HostDeviceVector/linalg metadata.
+
+Groups: GPU integer conversion, then CUDA's host group-size prefix sum and
+overflow check. Zero-sized groups remain legal. FP32/64 sizes reject; binary16
+uses the source's accepted typed conversion branch. Query IDs first narrow to
+uint32, then check sortedness, encode runs and cumulatively scan run counts on
+GPU; final boundaries are host-owned as in CUDA. Binary64 ID conversion uses its
+original bits, avoiding FP32 rounding. Unsorted IDs preserve existing groups.
+Empty IDs produce [0] safely. Nonfinite/unrepresentable floating integer casts
+reject explicitly; undefined C++ conversion results are not an NVIDIA parity claim.
+
+Eight counters: metadata_copy_dispatches, metadata_convert_dispatches,
+metadata_validate_dispatches, metadata_qid_dispatches, metadata_values,
+metadata_shared_output_bytes, metadata_host_copy_bytes, metadata_gpu_time_ns.
+Host-copy count is payload only; small status/run-count reads are not included.
+CPU-only counters are zero and the new entry point rejects clearly. Every native
+statistics-ABI caller must be rebuilt.
+
+Focused native validation
+-------------------------
+PASS 322 cases / 1,011,267 field checks / 24 rejected inputs.
+Log: results/metadata-native-v1.log; Metal API validation enabled.
+- Independent CPU scalar conversions for float32/64 and all signed/unsigned
+  integer widths, shared/private buffers, negative/broadcast strides and offsets.
+- GPU overwrite/release of source after import does not alter metadata.
+- All 65,536 binary16 patterns in both storage modes, compared with CPU __fp16;
+  exact finite/infinite/zero bits and NaN classification.
+- Scalar FP32 patterns verify exact blit bits and source validation behavior:
+  signed zeros, positive/negative subnormals, finite extrema, infinities and NaNs.
+- Independent RLE group boundaries for 0/1/2/255/256/257/65536/65537 IDs, single
+  groups, all-distinct IDs and 11-row groups; uint32, uint64 and binary64 input.
+- Wide integer narrowing, binary64 fractional values near 2^31/2^32, invalid
+  float casts, group-prefix overflow and empty matrix/vector contracts.
+- 588,416 bytes written through shared float destinations; 3,452,712 payload
+  bytes copied to host for ranking group output. No CPU feature-input staging.
+
+Focused Python validation
+-------------------------
+PASS 425 tests in 19.68 seconds (332 new metadata + 93 feature regressions).
+Driver: results/run-metadata-focused-v2.sh; log results/metadata-python-v2.log.
+Start/end: 2026-11-04T20:24:57Z -> 20:25:22Z; FOCUSED_EXIT=0.
+- Real PyTorch and MLX: six fields x six dtypes x four layouts x two producers.
+- Matrix/capsule lifetime, source mutation/release, scalar/empty input,
+  validation errors, signed zeros, group sizes, QID casting/order and vector shape.
+- Regression, multiclass, multi-target, ranking and AFT fits exactly match
+  host-metadata Metal fits. Inplace base margins also use native metadata.
+- CPU training with native versus host metadata produces byte-identical models
+  for all five objective/model fixtures and both producers.
+- CPU evaluation of fitted Metal models has exact raw margins. Four of 771
+  multiclass probabilities differed by one FP32 ULP (max abs 1.49e-8), so only
+  that CPU/GPU softmax check uses rtol=2e-7, atol=2e-8. Other equality checks remain
+  exact. The initial overly strict softmax check failed twice (328 other passes);
+  margin equality and byte-identical CPU models were added before final validation.
+- External host/disk cache iterators retain native labels/weights after callback
+  and source destruction, train/predict correctly and remove their cache files.
+
+Final full regression
+---------------------
+PASS 2026-11-04T20:26:46Z -> 20:33:48Z (7 minutes 2 seconds), FULL_EXIT=0.
+- Final Metal build completes; every native executable/reference updater rebuilt
+  and passed, including the metadata and feature-tensor suites under API validation.
+- Python: 2,791 passed, 1 skipped, 388 warnings in 148.38 seconds.
+- CPU-only build/API/device/cache checks pass, including explicit rejection by
+  XGDMatrixSetInfoFromMetal and zero values for all new counters.
+- Changed Python files pass ruff F/I and format checks; git diff --check clean.
+- No production or test changes after the final build/run; docs finalized after it.
+
+Driver: results/run-metadata-full-v1.sh; tmux xgb-metadata-full-v1 (finished).
+Logs: results/metadata-full-driver-v1.log, build-metadata-final-v1.log,
+test-metadata-full-v1.log, configure-cpu-metadata-v1.log,
+build-cpu-metadata-v1.log, check-cpu-metadata-v1.log.
+
+Scope still open
+----------------
+Native ordinary feature matrices, custom gradient imports, GPU outputs,
+generic metadata allocation/slicing/concatenation and broader device ownership,
+remaining CUDA arithmetic audits, GPU collectives and cross-hardware validation.
+No new benchmark or NVIDIA/cross-Apple-device execution in this step.
