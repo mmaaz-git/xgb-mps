@@ -271,6 +271,14 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["linear_residual_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.linear_residual_dispatches)};
   info["linear_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.linear_gpu_time_ns)};
+  info["sketch_weight_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.sketch_weight_dispatches)};
+  info["sketch_sorted_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.sketch_sorted_dispatches)};
+  info["sketch_update_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.sketch_update_dispatches)};
+  info["sketch_ingest_gpu_time_ns"] =
+      Integer{static_cast<std::int64_t>(stats.sketch_ingest_gpu_time_ns)};
   info["shap_dispatches"] = Integer{static_cast<std::int64_t>(stats.shap_dispatches)};
   info["shap_interaction_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.shap_interaction_dispatches)};
@@ -379,6 +387,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["linear_gradient_dispatches"] = Integer{0};
   info["linear_residual_dispatches"] = Integer{0};
   info["linear_gpu_time_ns"] = Integer{0};
+  info["sketch_weight_dispatches"] = Integer{0};
+  info["sketch_sorted_dispatches"] = Integer{0};
+  info["sketch_update_dispatches"] = Integer{0};
+  info["sketch_ingest_gpu_time_ns"] = Integer{0};
   info["shap_dispatches"] = Integer{0};
   info["shap_interaction_dispatches"] = Integer{0};
   info["shap_gpu_time_ns"] = Integer{0};

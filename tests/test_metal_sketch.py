@@ -43,6 +43,8 @@ def test_sketch_finalization(metal, layout, weights, categorical):
     assert after["sketch_finalize_dispatches"] == before["sketch_finalize_dispatches"] + 1
     assert after["sketch_finalize_columns"] == before["sketch_finalize_columns"] + types.count("q")
     assert after["sketch_finalize_gpu_time_ns"] > before["sketch_finalize_gpu_time_ns"]
+    assert after["sketch_update_dispatches"] > before["sketch_update_dispatches"]
+    assert after["sketch_ingest_gpu_time_ns"] > before["sketch_ingest_gpu_time_ns"]
     for actual, expected in zip(data["mps"].get_quantile_cut(), data["cpu"].get_quantile_cut()):
         np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
     np.testing.assert_allclose(gpu.predict(data["mps"]), cpu.predict(data["cpu"]), rtol=2e-5, atol=2e-5)
@@ -55,9 +57,11 @@ def test_sketch_finalization(metal, layout, weights, categorical):
 def test_categorical_only_sketch(metal):
     data = xgb.DMatrix(np.arange(30).reshape(10, 3) % 5, label=np.arange(10),
                        feature_types=["c"] * 3, nthread=2)
-    before = xgb.metal_info()["sketch_finalize_dispatches"]
+    before = xgb.metal_info()
     xgb.train(dict(device="mps", max_depth=2, nthread=2), data, 2)
-    assert xgb.metal_info()["sketch_finalize_dispatches"] == before
+    after = xgb.metal_info()
+    assert after["sketch_finalize_dispatches"] == before["sketch_finalize_dispatches"]
+    assert after["sketch_update_dispatches"] == before["sketch_update_dispatches"]
 
 
 def test_group_weighted_sketch(metal):
@@ -68,7 +72,9 @@ def test_group_weighted_sketch(metal):
     params = dict(objective="rank:pairwise", max_depth=2, max_bin=17, nthread=2, seed=31)
     matrices = {d: xgb.DMatrix(x, label=labels, group=[1024] * 8, weight=weights, nthread=2)
                 for d in ["cpu", "mps"]}
+    before = xgb.metal_info()["sketch_weight_dispatches"]
     models = {d: xgb.train(params | {"device": d}, matrices[d], 2) for d in matrices}
+    assert xgb.metal_info()["sketch_weight_dispatches"] == before + 1
     for actual, expected in zip(matrices["mps"].get_quantile_cut(), matrices["cpu"].get_quantile_cut()):
         np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
     np.testing.assert_allclose(models["mps"].predict(matrices["mps"]),

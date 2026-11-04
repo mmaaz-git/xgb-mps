@@ -212,6 +212,14 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_sketch_api_test
 MTL_DEBUG_LAYER=1 results/metal_sketch_api_test
+echo "Checking sketch weights, sorted ingestion and streaming compaction against CPU"
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_sketch_ingest_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_sketch_ingest_api_test
+MTL_DEBUG_LAYER=1 results/metal_sketch_ingest_api_test
 echo "Checking SHAP against independent one-split values, guards and aliases"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

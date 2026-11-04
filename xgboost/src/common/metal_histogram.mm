@@ -45,6 +45,8 @@ std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> gradient_sampling_dispatches{0}, gradient_sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> sketch_finalize_dispatches{0}, sketch_finalize_columns{0},
     sketch_finalize_gpu_time_ns{0};
+std::atomic<std::uint64_t> sketch_weight_dispatches{0}, sketch_sorted_dispatches{0},
+    sketch_update_dispatches{0}, sketch_ingest_gpu_time_ns{0};
 std::atomic<std::uint64_t> expectile_init_dispatches{0}, prediction_init_dispatches{0},
     initialization_gpu_time_ns{0};
 std::atomic<std::uint64_t> label_validation_dispatches{0}, label_validation_gpu_time_ns{0};
@@ -144,6 +146,7 @@ class Runtime {
       ranking_bias_dispatch_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline, sketch_finalize_pipeline;
+  id<MTLComputePipelineState> sketch_weight_pipeline, sketch_sorted_pipeline, sketch_update_pipeline;
   id<MTLComputePipelineState> expectile_init_pipeline, broadcast_targets_pipeline;
   id<MTLComputePipelineState> label_validation_pipeline;
   id<MTLComputePipelineState> base_score_pipeline, shap_pipeline;
@@ -223,6 +226,9 @@ class Runtime {
       quantile_metric_pipeline = make_pipeline(@"xgb_quantile_metric");
       uniform_sampling_pipeline = make_pipeline(@"xgb_uniform_sample");
       sketch_finalize_pipeline = make_pipeline(@"xgb_sketch_finalize");
+      sketch_weight_pipeline = make_pipeline(@"xgb_sketch_weights");
+      sketch_sorted_pipeline = make_pipeline(@"xgb_sketch_sorted");
+      sketch_update_pipeline = make_pipeline(@"xgb_sketch_update");
       expectile_init_pipeline = make_pipeline(@"xgb_expectile_init");
       broadcast_targets_pipeline = make_pipeline(@"xgb_broadcast_targets");
       label_validation_pipeline = make_pipeline(@"xgb_validate_labels");
@@ -1240,7 +1246,11 @@ Statistics GetStatistics() {
           leaf_fitting_gpu_time_ns.load(std::memory_order_relaxed),
           linear_gradient_dispatches.load(std::memory_order_relaxed),
           linear_residual_dispatches.load(std::memory_order_relaxed),
-          linear_gpu_time_ns.load(std::memory_order_relaxed)};
+          linear_gpu_time_ns.load(std::memory_order_relaxed),
+          sketch_weight_dispatches.load(std::memory_order_relaxed),
+          sketch_sorted_dispatches.load(std::memory_order_relaxed),
+          sketch_update_dispatches.load(std::memory_order_relaxed),
+          sketch_ingest_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -3006,6 +3016,211 @@ std::vector<WQSummaryContainer> FinalizeSketches(Span<SketchFinalization const> 
                                             std::memory_order_relaxed);
   }
   return result;
+}
+
+std::vector<float> MakeSketchWeights(std::size_t rows, Span<float const> hessians,
+                                     Span<float const> weights, Span<bst_group_t const> groups) {
+  CHECK(hessians.empty() || hessians.size() == rows);
+  if (!groups.empty()) {
+    CHECK_GE(groups.size(), 2);
+    CHECK_EQ(groups.front(), 0);
+    CHECK_EQ(groups.back(), rows);
+    CHECK(std::is_sorted(groups.begin(), groups.end()));
+    CHECK(weights.empty() || weights.size() == groups.size() - 1);
+  } else {
+    CHECK(weights.empty() || weights.size() == rows);
+  }
+  CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(groups.size(), std::numeric_limits<std::uint32_t>::max());
+  std::vector<float> result(rows);
+  if (!rows) return result;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto h = Upload(rt, hessians.data(), hessians.size_bytes());
+    auto w = Upload(rt, weights.data(), weights.size_bytes());
+    auto g = Upload(rt, groups.data(), groups.size_bytes());
+    auto out = Allocate(rt, rows * sizeof(float));
+    struct {
+      std::uint32_t hessian, weighted, groups, padding;
+    } p{!hessians.empty(), !weights.empty(), static_cast<std::uint32_t>(groups.size()), 0};
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.sketch_weight_pipeline];
+    [e setBuffer:h offset:0 atIndex:0];
+    [e setBuffer:w offset:0 atIndex:1];
+    [e setBuffer:g offset:0 atIndex:2];
+    [e setBuffer:out offset:0 atIndex:3];
+    [e setBytes:&p length:sizeof(p) atIndex:4];
+    [e dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &sketch_weight_dispatches, &sketch_ingest_gpu_time_ns);
+    std::memcpy(result.data(), out.contents, rows * sizeof(float));
+  }
+  return result;
+}
+
+std::vector<SortedSketchResult> MakeSortedSketches(Span<SortedSketchColumn const> columns,
+                                                   Span<float const> weights) {
+  CHECK_LE(columns.size(), std::numeric_limits<std::uint32_t>::max());
+  std::vector<SortedSketchResult> results(columns.size());
+  if (columns.empty()) return results;
+  struct Task {
+    std::uint64_t begin, count, output;
+    std::uint32_t budget, padding;
+  };
+  static_assert(sizeof(Task) == 32);
+  std::vector<Task> tasks;
+  std::vector<::xgboost::Entry> entries;
+  std::size_t capacity = 0;
+  for (auto const& column : columns) {
+    CHECK_GT(column.budget, 0);
+    CHECK_LT(column.budget, std::numeric_limits<std::uint32_t>::max());
+    CHECK_LE(column.entries.size(), std::numeric_limits<std::uint32_t>::max());
+    for (std::size_t i = 0; i < column.entries.size(); ++i) {
+      auto const& entry = column.entries[i];
+      CHECK_LT(entry.index, weights.size());
+      CHECK(!std::isnan(entry.fvalue));
+      if (i) CHECK_LE(column.entries[i - 1].fvalue, entry.fvalue);
+    }
+    auto n = std::min(column.entries.size(), column.budget + 1);
+    CHECK_LE(n, std::numeric_limits<std::size_t>::max() - capacity);
+    tasks.push_back({entries.size(), column.entries.size(), capacity,
+                     static_cast<std::uint32_t>(column.budget), 0});
+    entries.insert(entries.end(), column.entries.begin(), column.entries.end());
+    capacity += n;
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    CHECK_LE(capacity, rt.device.maxBufferLength / sizeof(WQSummary<>::Entry));
+    auto input = Upload(rt, entries.data(), entries.size() * sizeof(::xgboost::Entry));
+    auto w = Upload(rt, weights.data(), weights.size_bytes());
+    auto metadata = Upload(rt, tasks.data(), tasks.size() * sizeof(Task));
+    auto output = Allocate(rt, capacity * sizeof(WQSummary<>::Entry));
+    auto sizes = Allocate(rt, columns.size() * 2 * sizeof(std::uint64_t));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.sketch_sorted_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:w offset:0 atIndex:1];
+    [e setBuffer:metadata offset:0 atIndex:2];
+    [e setBuffer:output offset:0 atIndex:3];
+    [e setBuffer:sizes offset:0 atIndex:4];
+    [e dispatchThreads:MTLSizeMake(columns.size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &sketch_sorted_dispatches, &sketch_ingest_gpu_time_ns);
+    auto counts = static_cast<std::uint64_t const*>(sizes.contents);
+    auto data = static_cast<WQSummary<>::Entry const*>(output.contents);
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+      auto count = counts[2 * i];
+      CHECK_LE(count, std::min(columns[i].entries.size(), columns[i].budget + 1));
+      CHECK_LE(counts[2 * i + 1], columns[i].entries.size());
+      results[i].num_elements = counts[2 * i + 1];
+      auto& summary = results[i].summary;
+      summary.Reserve(count);
+      if (count)
+        std::memcpy(summary.space.data(), data + tasks[i].output,
+                    count * sizeof(WQSummary<>::Entry));
+      summary.SetSize(count);
+    }
+  }
+  return results;
+}
+
+std::vector<SketchUpdateResult> UpdateSketches(Span<SketchUpdate const> columns) {
+  using Entry = WQSummary<>::Entry;
+  CHECK_LE(columns.size(), std::numeric_limits<std::uint32_t>::max());
+  std::vector<SketchUpdateResult> results(columns.size());
+  if (columns.empty()) return results;
+  struct Level {
+    std::uint64_t begin, size;
+  };
+  struct Task {
+    std::uint64_t levels, incoming, workspace, output, sizes;
+    std::uint32_t nlevels, count, limit, padding;
+  };
+  static_assert(sizeof(Task) == 56);
+  std::vector<Entry> entries;
+  std::vector<Level> levels;
+  std::vector<Task> tasks;
+  std::size_t work_size = 0, output_size = 0, sizes_count = 0;
+  for (auto const& column : columns) {
+    CHECK_GT(column.limit, 0);
+    CHECK_LE(column.limit, std::numeric_limits<std::uint32_t>::max() / 2);
+    CHECK_LT(column.levels.size(), std::numeric_limits<std::uint32_t>::max());
+    CHECK_LE(column.incoming.size(), std::numeric_limits<std::uint32_t>::max());
+    auto begin = levels.size();
+    for (auto const& level : column.levels) {
+      CHECK_LE(level.Size(), column.limit);
+      levels.push_back({entries.size(), level.Size()});
+      auto source = level.Entries();
+      entries.insert(entries.end(), source.begin(), source.end());
+    }
+    tasks.push_back({begin, entries.size(), work_size, output_size, sizes_count,
+                     static_cast<std::uint32_t>(column.levels.size()),
+                     static_cast<std::uint32_t>(column.incoming.size()),
+                     static_cast<std::uint32_t>(column.limit), 0});
+    entries.insert(entries.end(), column.incoming.begin(), column.incoming.end());
+    auto n = column.levels.size() + 1;
+    CHECK_LE(n, (std::numeric_limits<std::size_t>::max() - output_size) / column.limit);
+    CHECK_LE(column.limit * 3, std::numeric_limits<std::size_t>::max() - work_size);
+    output_size += n * column.limit;
+    work_size += 3 * column.limit;
+    sizes_count += n + 2;  // level sizes, used level count and final carry level
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    CHECK_LE(work_size, rt.device.maxBufferLength / sizeof(Entry));
+    CHECK_LE(output_size, rt.device.maxBufferLength / sizeof(Entry));
+    auto input = Upload(rt, entries.data(), entries.size() * sizeof(Entry));
+    auto offsets = Upload(rt, levels.data(), levels.size() * sizeof(Level));
+    auto metadata = Upload(rt, tasks.data(), tasks.size() * sizeof(Task));
+    auto scratch = Allocate(rt, work_size * sizeof(Entry));
+    auto output = Allocate(rt, output_size * sizeof(Entry));
+    auto sizes = Allocate(rt, sizes_count * sizeof(std::uint32_t));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.sketch_update_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:offsets offset:0 atIndex:1];
+    [e setBuffer:metadata offset:0 atIndex:2];
+    [e setBuffer:scratch offset:0 atIndex:3];
+    [e setBuffer:output offset:0 atIndex:4];
+    [e setBuffer:sizes offset:0 atIndex:5];
+    [e dispatchThreads:MTLSizeMake(columns.size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &sketch_update_dispatches, &sketch_ingest_gpu_time_ns);
+    auto counts = static_cast<std::uint32_t const*>(sizes.contents);
+    auto data = static_cast<Entry const*>(output.contents);
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+      auto const& task = tasks[i];
+      auto used = counts[task.sizes + task.nlevels + 1];
+      auto carry = counts[task.sizes + task.nlevels + 2];
+      CHECK_GE(used, task.nlevels);
+      CHECK_LE(used, task.nlevels + 1);
+      CHECK_LT(carry, used);
+      results[i].carry_level = carry;
+      results[i].levels.resize(used);
+      for (std::size_t l = 0; l < used; ++l) {
+        auto count = counts[task.sizes + l];
+        CHECK_LE(count, task.limit);
+        auto& summary = results[i].levels[l];
+        summary.Reserve(count);
+        if (count)
+          std::memcpy(summary.space.data(), data + task.output + l * task.limit,
+                      count * sizeof(Entry));
+        summary.SetSize(count);
+      }
+    }
+  }
+  return results;
 }
 
 void InitFeatureSet(Span<bst_feature_t> features) {

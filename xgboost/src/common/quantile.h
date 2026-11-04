@@ -574,7 +574,7 @@ class WQuantileSketch {
   using Entry = typename WQSummary<>::Entry;
   using SummaryContainer = WQSummaryContainer;
   WQuantileSketch() = default;
-  WQuantileSketch(size_t maxn, double eps) {
+  WQuantileSketch(size_t maxn, double eps, bool use_metal = false) : use_metal_{use_metal} {
     limit_size_ = LimitSizeLevel(maxn, eps);
     inqueue_ = Queue<>(limit_size_ * 2);
     data_.clear();
@@ -650,6 +650,12 @@ class WQuantileSketch {
   /*! \brief push up a prepared summary */
   void PushSummary(WQSummaryContainer *summary) {
     CHECK(summary);
+#if defined(XGBOOST_USE_METAL)
+    if (use_metal_) {
+      this->PushSummaryMetal(summary);
+      return;
+    }
+#endif
     summary->Reserve(limit_size_ * 2);
     size_t l = 0;
     // Level-wise merge/prune with carry propagation.
@@ -677,6 +683,11 @@ class WQuantileSketch {
   }
 
  public:
+  // An already summarized column carries its nonzero source count separately.
+  void PushSummary(WQSummaryContainer *summary, std::size_t num_elements) {
+    num_elements_ += num_elements;
+    this->PushSummary(summary);
+  }
   // Flush before exposing levels for batched device finalization. The views
   // remain valid until this sketch is modified again.
   void PrepareSummary() {
@@ -718,6 +729,10 @@ class WQuantileSketch {
   }
 
  private:
+  bool use_metal_{false};
+#if defined(XGBOOST_USE_METAL)
+  void PushSummaryMetal(WQSummaryContainer *summary);
+#endif
   // initialize level space to at least nlevel
   void LazyInitLevel(size_t nlevel) {
     if (level_.size() >= nlevel) return;
@@ -860,6 +875,7 @@ class HostSketchContainer {
   std::vector<bst_idx_t> columns_size_;
   bst_bin_t max_bins_;
   bool use_group_ind_{false};
+  bool use_metal_{false};
   int32_t n_threads_;
   bool has_categorical_{false};
   Monitor monitor_;

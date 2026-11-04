@@ -17,7 +17,7 @@ measurements, including regressions, remain available.
 | CUDA subsystem | Principal upstream source | Metal status |
 | --- | --- | --- |
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
-| Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` is rejected for MPS; Hessian-weighted resketching and the corresponding GPU training path remain unimplemented |
+| Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` is still rejected for MPS; Hessian weighting and sorted-column summary kernels now exist, but the approximate updater's remaining GPU operations/integration and source value sorting are unfinished |
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | Implemented with a different bounded fixed-point scheme; GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales remain in GPU buffers; eligible raw gradients are read through guarded shared host views |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host interaction masks and tree updates |
@@ -40,7 +40,7 @@ measurements, including regressions, remain available.
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and tied-score trapezoids on Metal; per-output normalization and aggregation remain host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and stable continuous integration on Metal; final per-output degeneracy checks and aggregation remain host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses GPU label validation, stable score order, segmented binary64 prefixes, continuous PR integration, valid-query checks and aggregation |
-| Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Final numeric sketch level merging, rank repair and pruning use Metal; ingestion, queue sorting and streaming compaction remain CPU. Final cut materialization is host-side in both the CUDA and Metal implementations. Numeric/categorical bin assignment and hit counts for SparsePage-backed matrices use Metal; adapter-built QuantileDMatrix bins remain CPU |
+| Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Group/Hessian weighting, sorted-column weighted summaries, streaming level compaction, final numeric merging, rank repair and pruning use Metal. Row ingestion/queue folding, value sorting and category collection remain CPU. Final cut materialization is host-side in both CUDA and Metal. SparsePage bin assignment and hit counts use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU bias/feature gradient reductions and residual updates with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
@@ -288,9 +288,10 @@ performs independent binary searches and removes repeated selected entries with
 SIMD prefix counts. GPU checks require monotonic search keys and a finite,
 nonnegative rank range; irregular summaries use the original serial GPU pruning.
 
-This is partial sketch coverage. CPU ingestion still builds and sorts queues,
-flushes them into levels and performs streaming compaction. The GPU stage copies
-those levels into Metal buffers and reads back completed summaries. Final cut
+This is partial sketch coverage. CPU row ingestion still builds and sorts queues
+and forms their weighted summaries. Streaming level compaction now runs on Metal,
+as described below. Finalization copies retained levels into Metal buffers and
+reads back completed summaries. Final cut
 materialization remains on the host; the vendored CUDA
 `SketchContainer::MakeCuts` also copies summaries back and materializes cuts on
 the host, so that step is not itself missing CUDA parity. Category collection
@@ -310,6 +311,53 @@ dispatch numeric sketch work. See [validation](../validation/sketch-finalization
 `sketch_finalize_gpu_time_ns` expose completed work. The GPU duration excludes
 host ingestion, staging, waiting and cut materialization; it cannot be used as
 an end-to-end preprocessing time or speedup.
+
+## Sketch weights, sorted summaries and streaming compaction
+
+MPS sketch construction now expands group weights and multiplies row/group weights
+by Hessians on Metal. It preserves the CPU's FP32 product, subnormal results and
+signed zeros. Repeated group boundaries are supported through GPU upper-bound
+lookup. Plain row weights need no transformation; implicit unit weights need no
+array in the row-queue path. The sorted-column path creates its full weight array
+on the GPU because the CPU reference requires explicit per-row weights.
+
+Sorted-column ingestion computes nonzero source counts, unique-value counts,
+weighted ranks and retained entries on Metal. Ordered software binary64 sums
+and the CPU's FP32 rounding of interior selection goals preserve the original
+`SetPruneSorted` behavior. Empty columns, sufficient budgets, zero weights and
+the final endpoint have distinct reference behavior that is tested explicitly.
+The kernel receives already sorted columns; sorting the source values still
+requires porting. This path is integrated into `HostSketchContainer::PushColPage`
+and tested through production cut creation, but public `tree_method=approx`
+remains rejected pending its remaining GPU integration.
+
+Every MPS numeric sketch queue flush now sends its incoming summary and retained
+levels to Metal. The GPU prunes to the level limit, merges/repairs ranks, clears
+consumed levels and carries oversized results upward until they fit. Untouched
+higher levels retain their contents. The completed levels return to existing
+host storage, and finalization continues through the existing GPU finalizer.
+The implementation handles streaming compaction for both row-queue summaries and
+sorted-column summaries. Row collection, consecutive-value folding, queue sorting
+and queue-to-summary formation remain CPU work, as does category collection.
+Host metadata, allocation and staging remain; this is not a claim of complete
+device-resident sketch state or complete preprocessing coverage.
+
+Native checks compare actual GPU weights, sorted summaries and every retained
+streaming level with upstream CPU arithmetic, including million-row inputs.
+Finite fields compare by bits and NaNs by classification. Tests also cover
+independent budgets and carry propagation in a batched command, source
+preservation, invalid metadata, and production cut creation across three pages
+with grouped weights, Hessians, empty columns and categories. The public sketch
+tests retain exact CPU cut-bit comparisons and require streaming GPU dispatches;
+grouped training also requires a weight-expansion dispatch. No tolerance was
+loosened and no performance experiment accompanies this update.
+
+`sketch_weight_dispatches`, `sketch_sorted_dispatches` and
+`sketch_update_dispatches` count completed commands. `sketch_ingest_gpu_time_ns`
+measures their GPU time, separately from finalization and excluding host queue
+work/staging. Empty command batches do not dispatch; an empty incoming summary
+can still dispatch a level update against retained state. The runtime checks
+32-bit row/task/count limits, level capacities and Metal buffer-size limits.
 
 ## Objective-specific initialization
 

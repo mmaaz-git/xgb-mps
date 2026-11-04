@@ -28,6 +28,7 @@ HostSketchContainer::HostSketchContainer(Context const *ctx, bst_bin_t max_bin,
       columns_size_{std::move(columns_size)},
       max_bins_{max_bin},
       use_group_ind_{use_group},
+      use_metal_{ctx->IsMPS()},
       n_threads_{ctx->Threads()} {
   monitor_.Init(__func__);
   CHECK_GE(max_bin, 2) << error::InvalidMaxBin();
@@ -39,10 +40,25 @@ HostSketchContainer::HostSketchContainer(Context const *ctx, bst_bin_t max_bin,
   ParallelFor(sketches_.size(), n_threads_, Sched::Auto(), [&](auto i) {
     auto eps = SketchEpsilon(max_bins_, columns_size_[i]);
     if (!IsCat(this->feature_types_, i)) {
-      sketches_[i] = WQSketch{columns_size_[i], eps};
+      sketches_[i] = WQSketch{columns_size_[i], eps, use_metal_};
     }
   });
 }
+
+#if defined(XGBOOST_USE_METAL)
+void WQuantileSketch::PushSummaryMetal(WQSummaryContainer* summary) {
+  metal::SketchUpdate input{level_, summary->Entries(), limit_size_};
+  auto result = metal::UpdateSketches({&input, 1});
+  auto& updated = result.front();
+  this->LazyInitLevel(updated.levels.size());
+  for (std::size_t l = 0; l < updated.levels.size(); ++l) {
+    level_[l].CopyFrom(updated.levels[l]);
+  }
+  auto const& carried = updated.levels[updated.carry_level];
+  summary->Reserve(carried.Size());
+  summary->CopyFrom(carried);
+}
+#endif
 
 namespace {
 // Function to merge hessian and sample weights
@@ -341,7 +357,24 @@ void HostSketchContainer::PushRowPage(SparsePage const &page, MetaInfo const &in
   CHECK_EQ(sketches_.size(), n_columns);
 
   // glue these conditions using ternary operator to avoid making data copies.
-  auto const &weights =
+#if defined(XGBOOST_USE_METAL)
+  if (use_metal_) {
+    auto weights =
+        (!hessian.empty() || (use_group_ind_ && !info.weights_.Empty()))
+            ? metal::MakeSketchWeights(info.num_row_, hessian, info.weights_.ConstHostSpan(),
+                                       use_group_ind_ ? Span<bst_group_t const>{info.group_ptr_}
+                                                      : Span<bst_group_t const>{})
+            : std::vector<float>{};
+    auto view = weights.empty() ? info.weights_.ConstHostSpan() : Span<float const>{weights};
+    CHECK(view.empty() || view.size() == info.num_row_);
+    auto batch = data::SparsePageAdapterBatch{page.GetView()};
+    this->PushRowPageImpl(batch, page.base_rowid, OptionalWeights{view}, page.data.Size(),
+                          info.num_col_, is_dense, [](auto) { return true; });
+    monitor_.Stop(__func__);
+    return;
+  }
+#endif
+  auto const& weights =
       hessian.empty() ? (use_group_ind_ ? detail::UnrollGroupWeights(info)  // use group weight
                                         : info.weights_.HostVector())       // use sample weight
                       : MergeWeights(info, hessian, use_group_ind_,
@@ -614,8 +647,33 @@ HistogramCuts HostSketchContainer::MakeCuts(Context const *ctx, MetaInfo const &
 void HostSketchContainer::PushColPage(SparsePage const &page, MetaInfo const &info,
                                       Span<float const> hessian) {
   monitor_.Start(__func__);
+#if defined(XGBOOST_USE_METAL)
+  if (use_metal_) {
+    auto weights = metal::MakeSketchWeights(
+        info.num_row_, hessian, info.weights_.ConstHostSpan(),
+        use_group_ind_ ? Span<bst_group_t const>{info.group_ptr_} : Span<bst_group_t const>{});
+    auto view = page.GetView();
+    std::vector<metal::SortedSketchColumn> columns;
+    std::vector<std::size_t> features;
+    for (std::size_t f = 0; f < view.Size(); ++f) {
+      if (IsCat(feature_types_, f)) {
+        for (auto c : view[f]) categories_[f].emplace(c.fvalue);
+      } else {
+        columns.push_back({view[f], static_cast<std::size_t>(max_bins_)});
+        features.push_back(f);
+      }
+    }
+    auto summaries = metal::MakeSortedSketches(columns, weights);
+    for (std::size_t i = 0; i < features.size(); ++i) {
+      if (!columns[i].entries.empty())
+        sketches_[features[i]].PushSummary(&summaries[i].summary, summaries[i].num_elements);
+    }
+    monitor_.Stop(__func__);
+    return;
+  }
+#endif
   // glue these conditions using ternary operator to avoid making data copies.
-  auto const &weights =
+  auto const& weights =
       hessian.empty() ? (use_group_ind_ ? detail::UnrollGroupWeights(info)  // use group weight
                                         : info.weights_.HostVector())       // use sample weight
                       : MergeWeights(info, hessian, use_group_ind_,

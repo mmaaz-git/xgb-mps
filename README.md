@@ -27,8 +27,9 @@ row partitioning, scalar/vector split evaluation, root-gradient sums, stump
 fitting, reduced-gradient leaf refitting, linear coordinate descent, means,
 stable column/grouped sorting, ROC/PR-AUC, ranking metrics,
 gradient-based row sampling, uniform/weighted column sampling and quantile/median
-estimation on Metal. Numeric sketch finalization also runs on Metal; sketch ingestion,
-queue sorting and several specialized features still run on the CPU. Histogram conversion,
+estimation on Metal. Sketch weighting, sorted-column summaries, streaming level
+compaction and numeric finalization also run on Metal; row queues, value sorting
+and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
 
@@ -87,7 +88,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps interaction masks |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; adapter-built QuantileDMatrix bins remain CPU |
-| Feature sketches | GPU final merging, rank-bound repair and pruning of numeric sketch levels; ingestion, queue sorting and streaming compaction remain CPU; final cut materialization remains host, as in the CUDA implementation |
+| Feature sketches | GPU group/Hessian weighting, sorted-column weighted summaries, streaming level compaction and final numeric merging/pruning; row queues and value sorting remain CPU; final cut materialization remains host, as in CUDA |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
 | Gradient-based sampling | GPU norms, stable sorting, CPU-ordered FP32 prefixes, threshold selection, random draws and gradient rescaling; includes strided multi-target replay and zero budgets; host chooses the per-tree seed |
@@ -139,6 +140,11 @@ The corresponding `ranking_pr_auc_*` counters are subsets of PR-AUC and metric t
 `sketch_finalize_dispatches`, `sketch_finalize_columns` and
 `sketch_finalize_gpu_time_ns` report final numeric sketch processing, excluding
 host ingestion, staging and final cut materialization.
+`sketch_weight_dispatches`, `sketch_sorted_dispatches` and
+`sketch_update_dispatches` report weighting, sorted-column summaries and streaming
+compaction. `sketch_ingest_gpu_time_ns` covers these commands, excluding host
+queue construction/sorting, allocation and staging. The sorted-column path is
+validated internally; public `tree_method="approx"` is still disabled.
 `expectile_init_dispatches` and `prediction_init_dispatches` expose the new
 objective-specific initialization work. Their combined GPU duration is reported
 by `initialization_gpu_time_ns`, separately from ordinary objective GPU time.
@@ -258,6 +264,11 @@ On Apple M3, 2026-11-03:
   zero/tiny/overflowing weights, rank repair and empty/tiny pruning budgets.
   Public tests require identical cut bits for dense, sparse, missing-value,
   weighted, grouped, categorical and external-page inputs.
+- Sketch weighting/ingestion/compaction: **48 weight cases, 211 sorted columns,
+  24 streamed sketches, 32 batched level updates and 8 production container cases**.
+  Includes million-row input and exact CPU summary/cut comparisons; finite fields
+  compare by bits, NaNs by classification. Public sketch tests require the new
+  GPU dispatches while retaining their existing exact cut-bit checks.
 - Exact FP32 division: **5,830,328 inputs** match CPU arithmetic, including random
   bit patterns, all exponent pairs, pruning denominators and subnormal rounding
   ties; NaNs are checked by classification. This replaces software binary64
@@ -478,6 +489,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port uniform/weighted column sampling, with CPU-compatible random streams.
 - [ ] Port remaining training-state updates.
 - [x] Port final numeric sketch level merging and pruning.
+- [x] Port sketch weighting, sorted-column summaries and streaming level compaction.
 - [x] Port exact SHAP contributions and interactions.
 - [x] Port CUDA coordinate-descent operations for linear training.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
@@ -1710,3 +1722,23 @@ Coverage and correctness remain the priority; no new performance measurements
 were run. Sketch ingestion/preprocessing, `approx` training, sensitive AFT
 corrections, generic state/metadata operations, device interoperability and
 distributed execution still need work. Full CUDA parity is not complete.
+
+
+### Sketch weighting and streaming compaction coverage update
+
+Metal now computes group/Hessian weights, weighted summaries of sorted numeric
+columns, and streaming level merges/pruning/carry propagation. The existing GPU
+finalizer consumes those retained levels. Row collection, queue sorting and
+queue-to-summary formation still run on CPU, as does category collection. The
+sorted-column implementation is validated through production cut creation; the
+public `approx` updater still needs its remaining GPU integration.
+
+The [validation record](validation/sketch-ingestion-m3.txt) includes **1,066 Python
+tests passing (one skipped)** and all native suites. New native checks cover
+**48 weight cases, 211 sorted columns, 24 streamed sketches, 32 batched updates
+and 8 three-page container cases**. Public sketch tests preserve exact CPU cut
+bits and now assert the new completed-operation counters. Performance experiments
+remain deferred; state allocation and staging costs are not optimized here.
+The independent CPU-only build/check also passes. After restoring the original
+row-weight size check, the final native ingestion suite and all 27 public sketch
+tests were rechecked successfully.

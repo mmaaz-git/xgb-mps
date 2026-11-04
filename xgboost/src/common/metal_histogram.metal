@@ -5156,3 +5156,132 @@ kernel void xgb_linear_residual(device const LinearEntry* entries [[buffer(0)]],
   } while (!p.bias && i < p.count && entries[p.begin + i].row == row);
   gradients[at] = pair;
 }
+
+struct SketchWeightParams { uint hessian, weighted, groups, padding; };
+kernel void xgb_sketch_weights(device const float* hessian [[buffer(0)]],
+                               device const float* weights [[buffer(1)]],
+                               device const uint* groups [[buffer(2)]],
+                               device float* output [[buffer(3)]],
+                               constant SketchWeightParams& p [[buffer(4)]],
+                               uint row [[thread_position_in_grid]]) {
+  uint index = row;
+  if (p.groups && p.weighted) {
+    uint lo = 0, hi = p.groups;
+    while (lo < hi) {
+      uint mid = lo + (hi - lo) / 2;
+      if (groups[mid] <= row) lo = mid + 1;
+      else hi = mid;
+    }
+    index = lo - 1;
+  }
+  float w = p.weighted ? weights[index] : 1.f;
+  output[row] = p.hessian ? xgb_fmul_preserve(hessian[row], w) : w;
+}
+
+struct SketchValue { uint row; float value; };
+struct SketchSortedTask { ulong begin, count, output; uint budget, padding; };
+inline float4 xgb_sketch_rank_entry(XGBDouble rmin, XGBDouble wmin, float value) {
+  return float4(xgb_dto_float(rmin), xgb_dto_float(xgb_dadd(rmin, wmin)),
+                xgb_dto_float(wmin), value);
+}
+inline bool xgb_sketch_double_ge(XGBDouble a, XGBDouble b) {
+  return (a.bits & ~kDoubleSign) <= kDoubleInf && (b.bits & ~kDoubleSign) <= kDoubleInf &&
+         (xgb_dlt(b, a) || xgb_deq(a, b));
+}
+kernel void xgb_sketch_sorted(device const SketchValue* values [[buffer(0)]],
+                              device const float* weights [[buffer(1)]],
+                              device const SketchSortedTask* tasks [[buffer(2)]],
+                              device float4* output [[buffer(3)]],
+                              device ulong2* sizes [[buffer(4)]],
+                              uint column [[thread_position_in_grid]]) {
+  auto p = tasks[column];
+  auto input = values + p.begin;
+  auto out = output + p.output;
+  XGBDouble total{0}, rmin{0}, wmin{0}, next_goal = xgb_dfrom_float(-1.f);
+  uint unique = 0, written = 0;
+  ulong elements = 0;
+  for (ulong i = 0; i < p.count; ++i) {
+    if (!i || !xgb_sketch_equal(input[i - 1].value, input[i].value)) ++unique;
+    float w = weights[input[i].row];
+    elements += (as_type<uint>(w) & 0x7fffffffu) != 0;
+    total = xgb_dadd(total, xgb_dfrom_float(w));
+  }
+  float last = 0.f;
+  for (ulong i = 0; i < p.count; ++i) {
+    float value = input[i].value;
+    XGBDouble weight = xgb_dfrom_float(weights[input[i].row]);
+    if (unique <= p.budget) {
+      if (!i) { last = value; wmin = weight; continue; }
+      if (xgb_sketch_equal(last, value)) { wmin = xgb_dadd(wmin, weight); continue; }
+      out[written++] = xgb_sketch_rank_entry(rmin, wmin, last);
+      rmin = xgb_dadd(rmin, wmin);
+      wmin = weight;
+      last = value;
+      continue;
+    }
+    // Preserve the CPU's sentinel and goal rounding, including FP32 conversion
+    // of each new interior goal after binary64 multiplication/division.
+    if (xgb_deq(next_goal, xgb_dfrom_float(-1.f))) {
+      next_goal = {0}; last = value; wmin = weight; continue;
+    }
+    if (!xgb_sketch_equal(last, value)) {
+      XGBDouble rmax = xgb_dadd(rmin, wmin);
+      if (xgb_sketch_double_ge(rmax, next_goal) && written != p.budget) {
+        if (!written || xgb_sketch_less(out[written - 1].w, last))
+          out[written++] = xgb_sketch_rank_entry(rmin, wmin, last);
+        if (written == p.budget) {
+          next_goal = xgb_dadd(xgb_dmul(total, xgb_dfrom_float(2.f)), xgb_dfrom_float(1e-5f));
+        } else {
+          XGBDouble goal = xgb_ddiv(xgb_dmul({xgb_scaled_integer(written, 0)}, total),
+                                    {xgb_scaled_integer(p.budget, 0)});
+          next_goal = xgb_dfrom_float(xgb_dto_float(goal));
+        }
+      }
+      rmin = rmax;
+      wmin = weight;
+      last = value;
+    } else {
+      wmin = xgb_dadd(wmin, weight);
+    }
+  }
+  if (p.count && (unique <= p.budget || !written || xgb_sketch_less(out[written - 1].w, last)))
+    out[written++] = xgb_sketch_rank_entry(rmin, wmin, last);
+  sizes[column] = ulong2(written, elements);
+}
+
+struct SketchUpdateTask {
+  ulong levels, incoming, workspace, output, sizes;
+  uint nlevels, count, limit, padding;
+};
+kernel void xgb_sketch_update(device const float4* input [[buffer(0)]],
+                              device const ulong2* levels [[buffer(1)]],
+                              device const SketchUpdateTask* tasks [[buffer(2)]],
+                              device float4* scratch [[buffer(3)]],
+                              device float4* output [[buffer(4)]],
+                              device uint* sizes [[buffer(5)]],
+                              uint column [[thread_position_in_grid]]) {
+  auto p = tasks[column];
+  auto a = scratch + p.workspace;
+  auto b = a + p.limit;  // a holds limit entries; b holds at most 2*limit.
+  auto out = output + p.output;
+  auto counts = sizes + p.sizes;
+  for (uint l = 0; l < p.nlevels; ++l) {
+    auto old = levels[p.levels + l];
+    counts[l] = uint(old.y);
+    for (uint i = 0; i < old.y; ++i) out[ulong(l) * p.limit + i] = input[old.x + i];
+  }
+  counts[p.nlevels] = 0;
+  uint count = xgb_sketch_prune(input + p.incoming, p.count, p.limit, a), l = 0;
+  while (true) {
+    ulong2 old = l < p.nlevels ? levels[p.levels + l] : ulong2(0);
+    count = xgb_sketch_merge(a, count, input + old.x, uint(old.y), b);
+    counts[l] = 0;
+    if (count <= p.limit) break;
+    count = xgb_sketch_prune(b, count, p.limit, a);
+    ++l;
+  }
+  for (uint i = 0; i < count; ++i) out[ulong(l) * p.limit + i] = b[i];
+  counts[l] = count;
+  counts[p.nlevels + 1] = max(p.nlevels, l + 1);
+  counts[p.nlevels + 2] = l;
+}

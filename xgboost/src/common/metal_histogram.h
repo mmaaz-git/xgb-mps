@@ -67,6 +67,8 @@ struct Statistics {
   std::uint64_t leaf_sum_init_dispatches, leaf_sum_dispatches, leaf_weight_dispatches,
       leaf_fitting_gpu_time_ns;
   std::uint64_t linear_gradient_dispatches, linear_residual_dispatches, linear_gpu_time_ns;
+  std::uint64_t sketch_weight_dispatches, sketch_sorted_dispatches, sketch_update_dispatches,
+      sketch_ingest_gpu_time_ns;
 };
 
 class Histogram {
