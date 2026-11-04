@@ -4075,6 +4075,46 @@ struct RankingPRParams {
   uint groups, weighted;
 };
 
+// metric/auc.h::CalcDeltaPRAUC, preserving CUDA's binary64 operation order.
+// Classification PR retains its stabilized helper above for now.
+inline XGBDouble xgb_cuda_pr_integral(XGBDouble fp0, XGBDouble fp1, XGBDouble tp0, XGBDouble tp1,
+                                      XGBDouble total) {
+  using namespace xgb_survival;
+  D previous = tp0 / total, recall = tp1 / total, a, b;
+  if (!IsNaN(tp0) && !IsNaN(tp1) && xgb_deq(tp0, tp1)) {
+    a = one;
+    b = zero;
+  } else {
+    D h = (fp1 - fp0) / (tp1 - tp0);
+    a = h + one;
+    b = (fp0 - h * tp0) / total;
+  }
+  if (!xgb_dzero(b))
+    return (recall - previous - (b / a) * (Log(a * recall + b) - Log(a * previous + b))) / a;
+  return (recall - previous) / a;
+}
+
+// CUDA computes recall denominators from the original row order independently
+// of the sorted prefix scan. Only the positive total is consumed by the integral.
+kernel void xgb_ranking_pr_totals(
+    device const float* labels [[buffer(0)]], device const float* weights [[buffer(1)]],
+    device const uint* groups [[buffer(2)]], device ulong* totals [[buffer(3)]],
+    constant RankingPRParams& p [[buffer(4)]], uint block [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
+  uint group = block * 8 + simd;
+  if (group >= p.groups) return;
+  using namespace xgb_survival;
+  float weight = p.weighted ? weights[group] : 1.f;
+  D sum = zero;
+  for (ulong row = ulong(groups[group]) + lane; row < groups[group + 1]; row += 32)
+    sum = sum + From(xgb_fmul_preserve(labels[row * p.label_stride], weight));
+  for (uint distance = 16; distance; distance >>= 1) {
+    D other = xgb_shuffle_down_double(sum, distance);
+    if (lane + distance < 32) sum = sum + other;
+  }
+  if (!lane) totals[group] = sum.bits;
+}
+
 kernel void xgb_ranking_pr_counts(
     device const uint2* sorted [[buffer(0)]], device const uint* predictions [[buffer(1)]],
     device const float* labels [[buffer(2)]], device const float* weights [[buffer(3)]],
@@ -4099,22 +4139,15 @@ kernel void xgb_ranking_pr_counts(
   float label = labels[ulong(source) * p.label_stride];
   float weight = p.weighted ? weights[group] : 1.f;
   uint label_bits = as_type<uint>(label), label_magnitude = label_bits & 0x7fffffffu;
-  uint weight_bits = as_type<uint>(weight), weight_magnitude = weight_bits & 0x7fffffffu;
+  // The CUDA range predicate admits NaNs; the final FP*TP validity test rejects
+  // their queries. No extra host/CPU-specific weight or query-positivity flags.
   if (label_magnitude <= 0x7f800000u &&
       (((label_bits & 0x80000000u) && label_magnitude) ||
-       (!(label_bits & 0x80000000u) && label_bits > as_type<uint>(1.f)))) {
-    atomic_fetch_or_explicit(flags + p.groups, 1u, memory_order_relaxed);
-    atomic_fetch_or_explicit(flags + group, 2u, memory_order_relaxed);
-  }
-  // CPU's range predicate admits NaN labels; their query's PR score is invalid.
-  if (label_magnitude > 0x7f800000u || weight_magnitude >= 0x7f800000u ||
-      ((weight_bits & 0x80000000u) && weight_magnitude))
-    atomic_fetch_or_explicit(flags + group, 2u, memory_order_relaxed);
-  float negative = xgb_fmul_preserve(xgb_fsub_preserve(1.f, label), weight);
-  uint negative_bits = as_type<uint>(negative);
-  if (!(negative_bits & 0x80000000u) && negative_bits && negative_bits < 0x7f800000u)
-    atomic_fetch_or_explicit(flags + group, 1u, memory_order_relaxed);
-  D fp = row == groups[group] ? (one - From(label)) * From(weight) : From(negative);
+       (!(label_bits & 0x80000000u) && label_bits > as_type<uint>(1.f))))
+    atomic_fetch_or_explicit(flags, 1u, memory_order_relaxed);
+  // CUDA's literal 1.0 makes subtraction/multiplication binary64, followed by
+  // ONE conversion to float. Every row uses this rule, including the first.
+  D fp = From(xgb_dto_float((one - From(label)) * From(weight)));
   D tp = From(xgb_fmul_preserve(label, weight));
   counts[row] = ulong2(fp.bits, tp.bits);
 }
@@ -4177,13 +4210,13 @@ kernel void xgb_ranking_pr_area(device const uint* keys [[buffer(0)]],
                                 device const ulong2* prefix [[buffer(1)]],
                                 device const uint* ids [[buffer(2)]],
                                 device const uint* groups [[buffer(3)]],
-                                device const uint* flags [[buffer(4)]],
+                                device const ulong* totals [[buffer(4)]],
                                 device ulong* area [[buffer(5)]],
                                 uint row [[thread_position_in_grid]]) {
   using namespace xgb_survival;
   uint group = ids[row], begin = groups[group], end = groups[group + 1];
-  D total{prefix[end - 1].y}, value = zero;
-  if (flags[group] == 1 && total > zero && (row + 1 == end || keys[row] != keys[row + 1])) {
+  D total{totals[group]}, value = zero;
+  if (row + 1 == end || keys[row] != keys[row + 1]) {
     uint first = row, key = keys[row];
     if (row > begin && keys[row - 1] == key) {
       uint low = begin, high = row;
@@ -4197,20 +4230,19 @@ kernel void xgb_ranking_pr_area(device const uint* keys [[buffer(0)]],
       first = low;
     }
     ulong2 prev = first == begin ? ulong2(0) : prefix[first - 1], last = prefix[row];
-    value = xgb_pr_integral(D{prev.x}, D{last.x}, D{prev.y}, D{last.y}, total);
+    value = xgb_cuda_pr_integral(D{prev.x}, D{last.x}, D{prev.y}, D{last.y}, total);
   }
   area[row] = value.bits;
 }
 
 kernel void xgb_ranking_pr_score(
     device const ulong* area [[buffer(0)]], device const ulong2* prefix [[buffer(1)]],
-    device const uint* groups [[buffer(2)]], device const uint* flags [[buffer(3)]],
-    device ulong2* partial [[buffer(4)]], uint group [[threadgroup_position_in_grid]],
-    uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]],
-    uint simd [[simdgroup_index_in_threadgroup]]) {
+    device const uint* groups [[buffer(2)]], device ulong2* partial [[buffer(3)]],
+    uint group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
   using namespace xgb_survival;
   ulong begin = groups[group], end = groups[group + 1];
-  bool valid = begin < end && flags[group] == 1 && D{prefix[end - 1].y} > zero;
+  bool valid = end - begin >= 2 && (D{prefix[end - 1].x} * D{prefix[end - 1].y}) > zero;
   if (!valid) {
     if (!tid) partial[group] = ulong2(0);
     return;

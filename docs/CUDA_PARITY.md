@@ -51,7 +51,7 @@ work, not accepted substitutes for CUDA behavior:
   execution remain unverified; they are not cross-device bitwise guarantees.
 - Precision/NDCG/MAP now follow CUDA-source arithmetic and degenerate-query
   weighting. Parallel scan/reduction association remains architecture-dependent;
-  grouped ROC/PR scoring still needs its separate CUDA-source audit.
+  grouped ROC and classification AUC still need their remaining CUDA-source audits.
 - Scalar split enumeration now follows CUDA's exclusive numeric scan and strict
   missing-direction comparison; vector scans now preserve CUDA inclusive scans,
   double chunk argmax and FP32 updates. Other reduction order, quantile statistics
@@ -87,7 +87,7 @@ must be reported rather than hidden by widening test tolerances.
 | AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and binary64 block sums; small final host reduction |
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and tied-score trapezoids on Metal; per-output normalization and aggregation remain host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and stable continuous integration on Metal; final per-output degeneracy checks and aggregation remain host |
-| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses GPU label validation, stable score order, segmented binary64 prefixes, continuous PR integration, valid-query checks and aggregation |
+| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Group/Hessian weighting, sorted-column weighted summaries, streaming level compaction, final numeric merging, rank repair and pruning use Metal. Row ingestion/queue folding, value sorting and category collection remain CPU. Final cut materialization is host-side in both CUDA and Metal. SparsePage bin assignment and hit counts use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
@@ -233,26 +233,50 @@ Input arrays remain staged and host-owned. Only the aggregate score/valid count
 normally returns to the host; optional native-test diagnostics expose per-query
 results. The public metric retains distributed/final ratio handling on the host.
 
-Grouped PR-AUC uses stable prediction sorting and recursive segmented binary64
-scans. Query IDs accompany block totals so carries stop at every query boundary,
-including empty queries and boundaries inside SIMD groups or recursive scan
-blocks. The GPU preserves FP32 label/weight products and CPU's binary64 first
-negative term. A separate query flag checks positivity of the original FP32
-negative terms, so underflow cannot incorrectly make a degenerate query valid.
-Range validation executes on GPU, including negative subnormal labels. Invalid
-queries contribute neither score nor valid count; zero-weight PR queries remain
-invalid, unlike the CPU's zero-weight grouped ROC convention.
+Grouped PR-AUC now follows `metric/auc.cu::RankingPRAUC` and
+`RankingPRAUCImpl`. Every false-positive term is computed in binary64 as
+`(1.0 - double(label)) * double(weight)` and then rounded **once to FP32** before
+binary64 prefix accumulation. Positive terms retain FP32 `label * weight`.
+A separate GPU reduction obtains recall denominators from the original row order;
+sorted prefixes no longer supply those denominators. This replaces the earlier
+CPU first-term special case and FP32 subtraction on later rows.
 
-The continuous PR integral uses the same stable `log1p`-equivalent formulation
-as the existing Metal classification metric. Native production tests cover 14.2
-million rows, query weights spanning large exponent ranges, fractional labels,
-subnormal products, nonfinite/degenerate queries, strides and three scan levels.
-The observed maximum difference from CPU/independent integral references is
-`9.1e-15`; the comparison tolerance is `2e-12` absolute/relative. This is tested
-agreement rather than a universal bitwise guarantee. Scores/valid counts are
-aggregated on GPU; the public metric keeps the final host ratio. Arrays still
-stage through host-owned storage.
+The GPU integral now uses `metric/auc.h::CalcDeltaPRAUC`'s divisions and
+difference-of-logarithms sequence, replacing the stabilized integral formerly
+shared with classification PR. Validity follows CUDA's final `FP * TP > 0` and
+**at least two documents** rule. A one-row query with a fractional label is excluded,
+although CPU accepts it. Zero-weight queries remain invalid. GPU range checks
+reject invalid relevance labels, including negative subnormals; NaN label queries
+are excluded by the arithmetic validity test. Public metadata already rejects
+nonfinite/negative weights; direct native calls also test their CUDA-formula
+behavior without adding CPU-specific validity rules.
 
+Stable sorting, actual FP/TP scans, original-order positive totals, integration,
+query validation and aggregation execute within one Metal command. The existing
+`ranking_pr_auc_dispatches` counter counts completed commands; no statistics ABI
+changed. Arrays still stage through host-owned storage, and the public metric
+retains the final host/distributed ratio. Empty queries safely contribute zero
+score and valid count. That is an explicit extension: vendored CUDA code uses
+`LastOf` on groups and compact `reduce_by_key` totals without guarding empty groups;
+this port does not reproduce invalid indexing or shifted total slots.
+
+Native validation passes **16 edge/cast checks** plus **297 production cases /
+14,198,354 rows / 4,660 query results**, with a CUDA-source host oracle, retained
+compatible CPU checks and an independent `log1p` integral. Maximum observed
+absolute reference difference is `7.883e-15`; the original `2e-12` absolute/relative
+tolerance is unchanged. Cases include million-row queries, three scan levels,
+strides, empty groups, ties, fractional/subnormal labels, extreme weights,
+nonfinite native inputs and six GPU label-validation errors. All **53 public
+grouped-AUC cases** pass, including 21 new PR cases and model reload checks. Full
+validation passes **1,640 Python tests (one skipped)**, every rebuilt native suite
+and the CPU-only build/API check.
+[Validation record](../validation/cuda-ranking-pr-m3.txt).
+
+These tests establish source-formula agreement for the tested inputs, not NVIDIA
+execution equivalence. CUB associations, NVCC contraction, libdevice logarithms
+and severe cancellation can differ. Classification PR still retains its older
+stabilized integral and CPU-style term formation pending a separate source-alignment
+change; grouped ROC also needs its source/rounding evidence completed.
 
 NDCG cache initialization uses software-binary64 logarithms for discounts and
 parallel ideal-gain sums. Native tests compare 3.55 million discounts and include

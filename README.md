@@ -14,13 +14,13 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **CUDA-source ranking metrics**. Precision, NDCG and MAP
-now follow CUDA's arithmetic order and empty-query weighting rules. MAP scans
-actual labels in parallel on the GPU. Final validation passes **1,619 Python tests
-(one skipped)**, every rebuilt native suite and the CPU-only build/API check.
-Ranking checks include 101 public cases, 896 native formula cases and 15 exact
-edge/order checks.
-[Validation](validation/cuda-ranking-metrics-m3.txt) · [Scope](docs/CUDA_PARITY.md#ranking-metric-numerical-behavior).
+Latest validated step: **CUDA-source grouped PR-AUC**. Metal now follows CUDA's
+false-positive rounding, original-order recall totals, integral arithmetic and
+query-validity rules. Final validation passes **1,640 Python tests (one skipped)**,
+every rebuilt native suite and the CPU-only build/API check. Grouped PR coverage
+includes 297 native cases over 14.2 million rows, 16 edge/cast checks and 53 public
+grouped-AUC tests.
+[Validation](validation/cuda-ranking-pr-m3.txt) · [Scope](docs/CUDA_PARITY.md#ranking-metric-numerical-behavior).
 Actual NVIDIA execution equivalence remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
@@ -131,7 +131,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior |
 | Column sampling | GPU feature initialization, CPU-compatible MT19937 draws, uniform/weighted selection, stable priority ordering and integer feature sorting; tree/level/node caches remain host |
-| Grouped ranking PR-AUC | GPU label validation, stable prediction ordering, segmented binary64 prefixes, continuous PR integration, degenerate-query handling and aggregation |
+| Grouped ranking PR-AUC | CUDA-source FP32 cast boundaries, original-order positive totals, segmented binary64 prefixes, integral arithmetic and two-row validity; GPU sorting, validation and aggregation |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision with CUDA-source arithmetic/fallbacks; GPU label validation and NDCG cache initialization |
 
@@ -373,11 +373,12 @@ On Apple M3, 2026-11-03:
   all exponent ranges, logarithm table boundaries, logistic clamping, objective
   API integration, empty vectors and rejected inputs remaining unchanged.
 - Grouped ranking PR-AUC: **297 production cases / 14,198,354 rows / 4,660 query
-  results**, checked against CPU and independent continuous-integral references.
+  results**, plus 16 edge/cast checks against CUDA-source formulas and an independent
+  continuous-integral reference; compatible CPU checks retained.
   Includes irregular/empty queries, recursive scan carries, widely differing query
   weights, fractional/subnormal labels, degenerate queries, strided storage and
   six GPU label-validation errors. Maximum observed reference difference is
-  `9.1e-15`; tiny tied-score cases also receive relative-accuracy checks.
+  `7.883e-15`; tiny tied-score cases also receive relative-accuracy checks.
 - Native objectives: **20 cases / 131,968 gradient pairs** compared against
   independent CPU mathematical references.
 - Native adaptive objectives: **180 cases / 1,260 residual scales / 452,592 gradient
@@ -562,6 +563,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Implement Metal coordinate-descent reductions and residual updates.
 - [x] Align linear FP32 arithmetic and selector snapshots with CUDA source.
 - [x] Align precision/NDCG/MAP arithmetic, prefixes and degenerate-query weighting with CUDA source.
+- [x] Align grouped PR-AUC term rounding, recall totals, integral and query validity with CUDA source.
 - [ ] Align sketch algorithms and column/ranking streams with CUDA.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
@@ -2178,3 +2180,24 @@ we document the current Metal behavior without claiming NVIDIA bitwise equivalen
 Full validation passes **1,619 Python tests (one skipped)**, every rebuilt native
 suite and the CPU-only build/API check. Grouped AUC, ranking gradients/RNG and the
 other coverage-ledger gaps remain separate work. No performance benchmark or NVIDIA execution comparison was run.
+
+
+### CUDA grouped PR-AUC alignment
+
+Grouped PR-AUC now rounds every false-positive term once after binary64 subtraction
+and multiplication, reduces recall totals separately in original row order, and
+uses CUDA's integral arithmetic. Queries require at least two documents and a
+positive final FP/TP product. These changes remove earlier CPU-specific rounding
+and single-row behavior. Sorting, totals, prefixes, integration and aggregation
+remain on the GPU in one command.
+
+Tests pass **297 native cases over 14.2 million rows**, **16 exact edge/cast and
+nonfinite checks**, and **53 public grouped-AUC cases**, including 21 new cases.
+The independent integral and CUDA-source oracle agree within the unchanged
+`2e-12` tolerance. Empty queries remain a safe extension of CUDA's unguarded
+indexing; hardware reduction/logarithm equivalence is still unverified.
+[Validation](validation/cuda-ranking-pr-m3.txt).
+
+Final validation passes **1,640 Python tests (one skipped)**, every rebuilt native
+suite and the CPU-only build/API check. Classification AUC arithmetic, grouped ROC
+source evidence and other ledger gaps remain. No performance benchmark or NVIDIA execution comparison was run.

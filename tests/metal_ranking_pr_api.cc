@@ -1,4 +1,4 @@
-// Grouped PR against the production CPU curve and independent log1p integration.
+// Grouped PR against CUDA-source formulas and independent log1p integration.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -40,6 +40,75 @@ void Close(double actual, double expected) {
   }
   maximum_difference = std::max(maximum_difference, std::abs(actual - expected));
 }
+// Host source oracle for metric/auc.cu RankingPRAUC/RankingPRAUCImpl. Reduction
+// association is serial here; it does not emulate a CUB architecture or libdevice.
+common::metal::RankingAUCSums CudaReference(std::vector<float> const& predictions,
+                                            std::vector<float> const& labels, float weight) {
+  if (labels.size() < 2) return {0, 0};  // Empty-query safety extension as well.
+  double total = 0;
+  for (float y : labels) total += y * weight;
+  std::vector<size_t> order(labels.size());
+  std::iota(order.begin(), order.end(), 0);
+  std::stable_sort(order.begin(), order.end(),
+                   [&](size_t a, size_t b) { return predictions[a] > predictions[b]; });
+  double fp = 0, tp = 0, fp_prev = 0, tp_prev = 0, area = 0;
+  for (size_t i = 0; i < order.size(); ++i) {
+    float label = labels[order[i]];
+    float negative = (1.0 - double(label)) * double(weight), positive = label * weight;
+    fp += negative;
+    tp += positive;
+    if (i + 1 < order.size() && predictions[order[i]] == predictions[order[i + 1]]) continue;
+    double previous = tp_prev / total, recall = tp / total;
+    double h = tp == tp_prev ? 0 : (fp - fp_prev) / (tp - tp_prev);
+    double a = h + 1, b = tp == tp_prev ? 0 : (fp_prev - h * tp_prev) / total;
+    area += b != 0 ? (recall - previous -
+                      b / a * (std::log(a * recall + b) - std::log(a * previous + b))) /
+                         a
+                   : (recall - previous) / a;
+    fp_prev = fp;
+    tp_prev = tp;
+  }
+  return fp * tp > 0 ? common::metal::RankingAUCSums{area, 1} : common::metal::RankingAUCSums{0, 0};
+}
+void CudaEdgeRules() {
+  std::vector<float> predictions{0}, labels{.5f};
+  std::vector<bst_group_t> groups{0, 1};
+  auto result = common::metal::RankingPRAUC(linalg::MakeVec(predictions), linalg::MakeVec(labels),
+                                            groups, {});
+  Check(result.valid_groups == 0 && result.area == 0,
+        "CUDA grouped PR excludes one-row queries, including fractional labels");
+  size_t checked = 1;
+  // All tied predictions need one interval: no log/reduction-tree ambiguity.
+  for (float label : {.25f, .1f, std::nextafter(1.f, 0.f), 1e-30f}) {
+    for (float weight : {.7f, 1.f, std::numeric_limits<float>::denorm_min()}) {
+      predictions = {0, 0};
+      labels = {label, label};
+      groups = {0, 2};
+      std::vector<float> weights{weight};
+      auto expected = CudaReference(predictions, labels, weight);
+      result = common::metal::RankingPRAUC(linalg::MakeVec(predictions), linalg::MakeVec(labels),
+                                           groups, weights);
+      Check(result.valid_groups == expected.valid_groups && result.area == expected.area,
+            "CUDA grouped PR must round every FP term once after binary64 arithmetic");
+      ++checked;
+    }
+  }
+  // Nonfinite/negative weights are rejected by public metadata. The direct API
+  // still follows CUDA's arithmetic and FP*TP validity rather than extra flags.
+  for (float weight : {INFINITY, NAN, -1.f}) {
+    predictions = {0, 0};
+    labels = {.25f, .75f};
+    groups = {0, 2};
+    std::vector<float> weights{weight};
+    auto expected = CudaReference(predictions, labels, weight);
+    result = common::metal::RankingPRAUC(linalg::MakeVec(predictions), linalg::MakeVec(labels),
+                                         groups, weights);
+    Check(result.valid_groups == expected.valid_groups, "CUDA grouped PR FP*TP validity");
+    Close(result.area, expected.area);
+    ++checked;
+  }
+  std::printf("PASS %zu CUDA grouped PR edge/cast cases\n", checked);
+}
 double Reference(std::vector<float> const& predictions, std::vector<float> const& labels,
                  float weight) {
   // Independent continuous precision/recall integral using log1p, not the CPU
@@ -47,9 +116,10 @@ double Reference(std::vector<float> const& predictions, std::vector<float> const
   long double total = 0, negative = 0;
   for (float y : labels) {
     total += y * weight;
-    negative += (1.f - y) * weight;
+    negative += float((1.0 - double(y)) * double(weight));
   }
-  if (!(total > 0) || !(negative > 0) || !std::isfinite(total) || !std::isfinite(negative))
+  if (labels.size() < 2 || !(total > 0) || !(negative > 0) || !std::isfinite(total) ||
+      !std::isfinite(negative))
     return NAN;
   std::vector<size_t> order(labels.size());
   std::iota(order.begin(), order.end(), 0);
@@ -62,7 +132,7 @@ double Reference(std::vector<float> const& predictions, std::vector<float> const
     long double df = 0, dt = 0;
     for (size_t i = begin; i < end; ++i) {
       float label = labels[order[i]];
-      df += i == 0 ? (1.0 - label) * weight : (1.f - label) * weight;
+      df += float((1.0 - double(label)) * double(weight));
       dt += label * weight;
     }
     if (dt > 0) {
@@ -162,22 +232,27 @@ void Case(std::vector<uint32_t> const& lengths, int layout, int mode) {
       y[i] = labels(groups[g] + i);
     }
     float w = weights.empty() ? 1 : weights[g];
-    double expected =
-        std::get<2>(metric::BinaryPRAUC(&cpu, p, linalg::MakeVec(y), common::OptionalWeights{w}));
-    bool is_valid = !std::isnan(expected);
+    auto expected = CudaReference(p, y, w);
     current += " group=" + std::to_string(g);
-    Close(out[g].valid_groups, is_valid);
-    Close(out[g].area, is_valid ? expected : 0);
+    Close(out[g].valid_groups, expected.valid_groups);
+    Close(out[g].area, expected.area);
+    // Binary labels and finite nonnegative weights have compatible CPU term
+    // arithmetic. Keep those independent production comparisons unchanged.
+    if (w >= 0 && std::isfinite(w) &&
+        std::all_of(y.begin(), y.end(), [](float v) { return v == 0 || v == 1; })) {
+      double cpu_value =
+          std::get<2>(metric::BinaryPRAUC(&cpu, p, linalg::MakeVec(y), common::OptionalWeights{w}));
+      Close(out[g].valid_groups, !std::isnan(cpu_value));
+      Close(out[g].area, std::isnan(cpu_value) ? 0 : cpu_value);
+    }
     auto reference = Reference(p, y, w);
-    Close(out[g].area, std::isnan(reference) ? 0 : reference);
-    if (mode == 11 && !p.empty()) {
+    if (expected.valid_groups && std::isfinite(reference)) Close(out[g].area, reference);
+    if (mode == 11 && p.size() >= 2) {
       double exact = double(1e-30f) / (1 + double(1e-30f));
       Check(std::abs(out[g].area / exact - 1) < 2e-12, "Tiny tied-score PR lost relative accuracy");
     }
-    if (is_valid) {
-      sum += expected;
-      ++valid;
-    }
+    sum += expected.area;
+    valid += expected.valid_groups;
     ++checked_groups;
   }
   Close(actual.area, sum);
@@ -212,6 +287,7 @@ void InvalidLabels() {
 
 int main() {
   try {
+    CudaEdgeRules();
     for (uint32_t n : {0u, 1u, 31u, 255u, 256u, 257u, 4097u, 65537u})
       for (int layout = 0; layout < 3; ++layout)
         for (int mode = 0; mode < 12; ++mode)
@@ -223,7 +299,8 @@ int main() {
     Case({0, 0, 0}, 0, 0);
     InvalidLabels();
     std::printf(
-        "PASS %zu production grouped PR cases / %zu rows / %zu query results; max CPU/reference "
+        "PASS %zu production grouped PR cases / %zu rows / %zu query results; max "
+        "CUDA-source/integral "
         "absolute difference %.9g\n",
         cases, checked_rows, checked_groups, maximum_difference);
     return 0;

@@ -1,0 +1,78 @@
+CUDA-source grouped PR-AUC on Apple M3
+Date: 2026-11-04
+Source base: dc64e19 plus the grouped PR alignment accompanying this record.
+
+Authority:
+  metric/auc.cu RankingPRAUC, RankingPRAUCImpl, SegmentedFPTP, SegmentedReduceAUC;
+  metric/auc.h detail::CalcDeltaPRAUC; data/data.cc weight/label metadata validation.
+
+Changes:
+  Every negative term is float((1.0-double(label))*double(weight)), THEN promoted
+  to binary64 for accumulation. No CPU first-row exception or FP32 subtraction.
+  Positive terms are float(label*weight), then promoted. Independent original-row
+  GPU positive totals supply recall denominators instead of sorted prefixes.
+  Integral follows CUDA's divisions, slope/intercept and difference-of-logarithms
+  sequence. Classification retains the old stabilized helper for now.
+  Query validity: n_documents>=2 AND final_FP*final_TP>0. One-row soft queries
+  excluded; no CPU-specific positivity/nonfinite flags. Only global label-range
+  error flag remains. NaN-label queries fail final arithmetic validity naturally.
+  Original totals, stable sort, segmented prefixes, interval scoring and final
+  aggregation share one command; readback remains aggregate/optional query results
+  and label flag. Existing counters reused; no stats or public ABI change.
+
+Before/after:
+  results/test-ranking-pr-cuda-before-v1.log FAILED on dc64e19 old library:
+  "CUDA grouped PR excludes one-row queries, including fractional labels".
+  Corrected implementation passes that test and all retained applicable checks.
+
+Native tests/metal_ranking_pr_api.cc (Metal API Validation enabled):
+  PASS 16 edge/cast checks: one-row exclusion, 12 all-tie exact source arithmetic
+  fixtures over fractional/near-one/tiny labels and normal/subnormal weights,
+  three direct nonfinite/negative-weight source cases (NaN classified).
+  Public metadata rejects nonfinite/negative weights; this is native-only coverage.
+  PASS 297 production cases / 14,198,354 rows / 4,660 per-query results.
+  New host CUDA-source oracle; compatible production CPU checks retained for
+  binary labels and finite nonnegative weights. Independent log1p integral uses
+  updated source FP32 term casts. Existing 2e-12 absolute/relative bound unchanged.
+  Maximum absolute difference across all references: 7.88258347e-15.
+  Million-row/three-level prefix scans, empty/short/irregular queries, strides1/3/7,
+  stable ties, FP32 subnormals, extreme weights, NaNs/Inf direct inputs, input/output
+  guards and six label rejection errors retained. Tiny tied-score relative check
+  unchanged for queries satisfying CUDA's >=2 rule.
+
+Public tests/test_metal_ranking_auc.py:
+  PASS 53 cases, 9 expected warnings in 1.65s; 21 cases added.
+  Six single-row soft-query cases prove CPU accepts while CUDA/MPS excludes.
+  One exact false-positive rounding fixture (.25 labels, .7f weight, tied scores)
+  distinguishes CPU by >1e-10. Twelve fractional queries exercise 257/65537-row
+  prefixes, ties, normal/subnormal/large weights, empty and one-row groups,
+  independent source calculations, GPU counters and model reload. Two zero-negative
+  mass cases confirm invalid scores. Existing binary-label CPU comparisons intact.
+
+Scope/limits:
+  Empty queries safely score zero with valid_count0. This extends vendored CUDA:
+  LastOf can address an empty group's preceding row, and compact reduce_by_key
+  totals do not preserve empty slots. Undefined/out-of-range indexing is not copied.
+  CUDA reduction association, NVCC contraction, libdevice logs and cross-Apple
+  behavior remain unverified. Source-formula tests are NOT actual NVIDIA execution.
+  Independent integral uses binary64 (Apple arm64 long double is binary64).
+  Severe cancellation may differ from the stabilized classification integral.
+  Source CUDA/CPU files and public metadata rules unchanged. Classification AUC,
+  grouped ROC evidence, gradients/RNG and remaining ledger operations remain open.
+  No performance benchmark run; full CUDA parity is NOT complete.
+
+Focused validation:
+  results/run-ranking-pr-cuda-focused-v1.sh 11:15:09-11:15:19 UTC exit0.
+  results/build-ranking-pr-cuda-v1.log PASS.
+  results/test-ranking-pr-cuda-native-v1.log PASS.
+  results/test-ranking-pr-cuda-python-v1.log PASS53 in1.65s.
+
+Full regression:
+  results/run-ranking-pr-cuda-full-v1.sh 11:16:52-11:21:00 UTC exit0.
+  results/build-ranking-pr-cuda-final-v1.log PASS.
+  results/test-ranking-pr-cuda-full-v1.log: every native suite and test-only
+  reference plugin rebuilt and passed; 1640 Python passed, 1 skipped, 371 warnings
+  in 96.02s. No production/test edits after this run; documentation updates only.
+  results/build-cpu-ranking-pr-cuda-v1.log PASS.
+  results/check-cpu-ranking-pr-cuda-v1.log PASS: unavailable/zero counters and
+  clear device=mps error in CPU-only build.

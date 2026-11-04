@@ -201,8 +201,9 @@ class Runtime {
       gradient_sampling_threshold_pipeline, gradient_sampling_apply_pipeline;
   id<MTLComputePipelineState> ranking_roc_init_pipeline, ranking_roc_merge_pipeline,
       ranking_roc_score_pipeline;
-  id<MTLComputePipelineState> ranking_pr_counts_pipeline, ranking_pr_area_pipeline,
-      ranking_pr_score_pipeline, prefix_segmented_pair_pipeline, prefix_segmented_pair_add_pipeline;
+  id<MTLComputePipelineState> ranking_pr_counts_pipeline, ranking_pr_totals_pipeline,
+      ranking_pr_area_pipeline, ranking_pr_score_pipeline, prefix_segmented_pair_pipeline,
+      prefix_segmented_pair_add_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
   id<MTLComputePipelineState> shared_pipeline, gradient_bounds_pipeline, gradient_scale_pipeline;
@@ -374,6 +375,7 @@ class Runtime {
       ranking_roc_merge_pipeline = make_pipeline(@"xgb_ranking_roc_merge");
       ranking_roc_score_pipeline = make_pipeline(@"xgb_ranking_roc_score");
       ranking_pr_counts_pipeline = make_pipeline(@"xgb_ranking_pr_counts");
+      ranking_pr_totals_pipeline = make_pipeline(@"xgb_ranking_pr_totals");
       ranking_pr_area_pipeline = make_pipeline(@"xgb_ranking_pr_area");
       ranking_pr_score_pipeline = make_pipeline(@"xgb_ranking_pr_score");
       prefix_segmented_pair_pipeline = make_pipeline(@"xgb_prefix_segmented_pair");
@@ -3765,7 +3767,8 @@ RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
     auto keys = Allocate(rt, predictions.Size() * sizeof(std::uint32_t));
     auto counts = Allocate(rt, predictions.Size() * 2 * sizeof(double));
     auto areas = Allocate(rt, predictions.Size() * sizeof(double));
-    auto flags = Allocate(rt, (n_groups + 1) * sizeof(std::uint32_t));
+    auto flags = Allocate(rt, sizeof(std::uint32_t));
+    auto totals = Allocate(rt, n_groups * sizeof(double));
     auto partial = Allocate(rt, n_groups * sizeof(RankingAUCSums));
     auto output = Allocate(rt, sizeof(RankingAUCSums));
     auto command = [rt.queue commandBuffer];
@@ -3780,6 +3783,17 @@ RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
     } p{predictions.Size(), predictions.Stride(0), labels.Stride(0),
         static_cast<std::uint32_t>(n_groups), static_cast<std::uint32_t>(!weights.empty())};
     static_assert(sizeof(p) == 32);
+    auto total_encoder = [command computeCommandEncoder];
+    CHECK(total_encoder);
+    [total_encoder setComputePipelineState:rt.ranking_pr_totals_pipeline];
+    [total_encoder setBuffer:response offset:0 atIndex:0];
+    [total_encoder setBuffer:weight offset:0 atIndex:1];
+    [total_encoder setBuffer:offsets offset:0 atIndex:2];
+    [total_encoder setBuffer:totals offset:0 atIndex:3];
+    [total_encoder setBytes:&p length:sizeof(p) atIndex:4];
+    [total_encoder dispatchThreadgroups:MTLSizeMake((n_groups + 7) / 8, 1, 1)
+                  threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [total_encoder endEncoding];
     GroupOrder order{Allocate(rt, 16), false};
     id<MTLBuffer> prefix = Allocate(rt, 16);
     if (p.rows) {
@@ -3808,7 +3822,7 @@ RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
       [e setBuffer:prefix offset:0 atIndex:1];
       [e setBuffer:ids offset:0 atIndex:2];
       [e setBuffer:offsets offset:0 atIndex:3];
-      [e setBuffer:flags offset:0 atIndex:4];
+      [e setBuffer:totals offset:0 atIndex:4];
       [e setBuffer:areas offset:0 atIndex:5];
       [e dispatchThreads:MTLSizeMake(p.rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
@@ -3819,8 +3833,7 @@ RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
     [e setBuffer:areas offset:0 atIndex:0];
     [e setBuffer:prefix offset:0 atIndex:1];
     [e setBuffer:offsets offset:0 atIndex:2];
-    [e setBuffer:flags offset:0 atIndex:3];
-    [e setBuffer:partial offset:0 atIndex:4];
+    [e setBuffer:partial offset:0 atIndex:3];
     [e dispatchThreadgroups:MTLSizeMake(n_groups, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
@@ -3847,7 +3860,7 @@ RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
       pr_auc_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
       metric_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
     }
-    CHECK_EQ(static_cast<std::uint32_t const*>(flags.contents)[n_groups], 0)
+    CHECK_EQ(static_cast<std::uint32_t const*>(flags.contents)[0], 0)
         << "PR-AUC supports only binary relevance for learning to rank.";
     if (!individual.empty())
       std::memcpy(individual.data(), partial.contents, individual.size_bytes());
