@@ -130,7 +130,8 @@ class Runtime {
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> column_iota_pipeline, column_rng_pipeline, column_keys_pipeline,
-      column_select_pipeline, column_sort_small_pipeline, column_output_pipeline;
+      column_select_pipeline, column_sort_small_pipeline, column_output_pipeline,
+      column_sample_small_pipeline;
   id<MTLComputePipelineState> gradient_sampling_norm_pipeline, gradient_sampling_prefix_pipeline,
       gradient_sampling_threshold_pipeline, gradient_sampling_apply_pipeline;
   id<MTLComputePipelineState> ranking_roc_init_pipeline, ranking_roc_merge_pipeline,
@@ -207,6 +208,7 @@ class Runtime {
       column_select_pipeline = make_pipeline(@"xgb_column_select");
       column_sort_small_pipeline = make_pipeline(@"xgb_column_sort_small");
       column_output_pipeline = make_pipeline(@"xgb_column_output");
+      column_sample_small_pipeline = make_pipeline(@"xgb_column_sample_small");
 
       gradient_maximum_pipeline = make_pipeline(@"xgb_gradient_maximum");
       gradient_scale_pipeline = make_pipeline(@"xgb_gradient_scale");
@@ -2634,11 +2636,13 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
     auto& rt = GetRuntime();
     auto input = Upload(rt, features.data(), features.size_bytes());
     auto weight = Upload(rt, weights.data(), weights.size_bytes());
-    auto indices = Allocate(rt, features.size_bytes());
+    bool fused =
+        features.size() <= 2048 && rt.device.maxThreadgroupMemoryLength >= 2048 * 8 + 624 * 4;
+    auto indices = fused ? nil : Allocate(rt, features.size_bytes());
     auto random = Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
     auto scores = Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
     auto invalid = Allocate(rt, sizeof(std::uint32_t));
-    auto records = Allocate(rt, selected.size() * 2 * sizeof(std::uint32_t));
+    auto records = fused ? nil : Allocate(rt, selected.size() * 2 * sizeof(std::uint32_t));
     auto output = Allocate(rt, selected.size_bytes());
     struct {
       std::uint32_t rows, selected, seed, weighted;
@@ -2652,6 +2656,40 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
     CHECK(clear);
     [clear fillBuffer:invalid range:NSMakeRange(0, invalid.length) value:0];
     [clear endEncoding];
+    auto finish = [&] {
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      CHECK_EQ(*static_cast<std::uint32_t const*>(invalid.contents), 0)
+          << "Feature index exceeds weights";
+      std::memcpy(selected.data(), output.contents, selected.size_bytes());
+      if (!uniforms.empty()) std::memcpy(uniforms.data(), random.contents, uniforms.size_bytes());
+      if (!keys.empty()) std::memcpy(keys.data(), scores.contents, keys.size_bytes());
+      column_sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
+      auto elapsed = command.GPUEndTime - command.GPUStartTime;
+      if (elapsed > 0)
+        column_sampling_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                              std::memory_order_relaxed);
+    };
+    if (fused) {
+      std::uint32_t width = 2;
+      while (width < p.rows) width <<= 1;
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.column_sample_small_pipeline];
+      [e setBuffer:input offset:0 atIndex:0];
+      [e setBuffer:weight offset:0 atIndex:1];
+      [e setBuffer:random offset:0 atIndex:2];
+      [e setBuffer:scores offset:0 atIndex:3];
+      [e setBuffer:invalid offset:0 atIndex:4];
+      [e setBuffer:output offset:0 atIndex:5];
+      [e setBytes:&p length:sizeof(p) atIndex:6];
+      [e setThreadgroupMemoryLength:width * 8 atIndex:0];
+      [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      finish();
+      return;
+    }
     if (!p.weighted) {
       auto e = [command computeCommandEncoder];
       CHECK(e);
@@ -2720,19 +2758,7 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
     [e setBuffer:output offset:0 atIndex:1];
     [e dispatchThreads:MTLSizeMake(p.selected, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
-    [command commit];
-    [command waitUntilCompleted];
-    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-    CHECK_EQ(*static_cast<std::uint32_t const*>(invalid.contents), 0)
-        << "Feature index exceeds weights";
-    std::memcpy(selected.data(), output.contents, selected.size_bytes());
-    if (!uniforms.empty()) std::memcpy(uniforms.data(), random.contents, uniforms.size_bytes());
-    if (!keys.empty()) std::memcpy(keys.data(), scores.contents, keys.size_bytes());
-    column_sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
-    auto elapsed = command.GPUEndTime - command.GPUStartTime;
-    if (elapsed > 0)
-      column_sampling_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
-                                            std::memory_order_relaxed);
+    finish();
   }
 }
 

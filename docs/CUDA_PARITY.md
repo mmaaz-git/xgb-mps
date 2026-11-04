@@ -239,8 +239,10 @@ uniform-integer draws. Uniform selection uses forward Fisher-Yates and stops
 when its selected prefix is fixed; unused local-generator draws cannot affect
 later samples. Weighted sampling gathers feature weights, applies the CPU's
 `1e-6` floor, computes `log(u)/weight`, stably orders priorities and sorts selected
-integer IDs. Small selections use a cooperative sorting network; large selections
-use integer radix sorting, preserving IDs above the exact-integer range of FP32.
+integer IDs. Candidate sets of at most 2,048 columns use a fused kernel with cooperative
+sorting, subject to available threadgroup memory. Larger sets use separate GPU
+stages, with integer radix sorting for large selections. Both paths preserve IDs
+above the exact-integer range of FP32.
 
 Weighted score ties are sensitive to libm rounding. A sampling-specific table
 and cubic logarithm matches the tested Apple CPU rounding; generic binary64 log
@@ -251,7 +253,7 @@ range-reduction boundaries, zero and one with zero observed mismatches. This is 
 local Apple libc++/libm compatibility result, not a guarantee about other library
 versions or every possible weighted priority.
 
-Native checks cover 467 cases, 3,218,105 selected IDs and 4,499,703 exact random
+Native checks cover 530 cases, 3,275,463 selected IDs and 4,610,295 exact random
 draws, including million-feature samples and the production sampler hierarchy.
 Inputs and output guards, weight-index bounds, parent RNG consumption, cached
 levels and GPU dispatch counts are checked. Public tests cover scalar/vector trees,

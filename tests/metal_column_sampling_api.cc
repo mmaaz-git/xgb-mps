@@ -143,8 +143,8 @@ void Hierarchy(std::uint32_t n, float tree, float level, float node, bool weight
 
 int main() {
   try {
-    for (std::uint32_t n : {1u, 2u, 3u, 31u, 32u, 33u, 255u, 256u, 257u, 623u, 624u, 625u, 4095u,
-                            4096u, 4097u, 65537u}) {
+    for (std::uint32_t n : {1u, 2u, 3u, 31u, 32u, 33u, 255u, 256u, 257u, 623u, 624u, 625u, 2047u,
+                            2048u, 2049u, 4095u, 4096u, 4097u, 65537u}) {
       for (int mode = 0; mode < 7; ++mode) {
         Case(n, 1, 0, mode);
         Case(n, std::max(1u, n / 3), 7, mode);

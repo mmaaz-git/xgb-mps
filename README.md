@@ -198,8 +198,8 @@ On Apple M3, 2026-11-03:
   **500,002,500,003 pairs**, testing 64-bit counts without a quadratic CPU run.
   Covers label/score ties, padded strides, zero/tiny/large weights, infinities/NaNs
   in scores, short queries, weight-square overflow errors and output guards.
-- Column sampling: **467 native cases / 3,218,105 selected feature IDs /
-  4,499,703 random draws**, exactly matching CPU; weighted priorities also match
+- Column sampling: **530 native cases / 3,275,463 selected feature IDs /
+  4,610,295 random draws**, exactly matching CPU; weighted priorities also match
   bit for bit, including constructed ties. Production hierarchy/cache behavior,
   parent RNG state and guards are checked. A separate **8,086,019-input** logarithm
   check has zero CPU mismatches on this M3.
@@ -1387,3 +1387,31 @@ will be published separately from this coverage update.
 [Validation report](validation/column-sampling-m3.txt): **673 Python tests passed,
 one skipped**, all native suites passed with Metal API Validation, and the
 independent CPU-only build passed its compatibility checks.
+
+Column-sampled training before the fused-kernel optimization (eight CPU threads,
+20 depth-6 rounds, three alternating CPU/MPS pairs, including fresh matrix
+construction and quantization):
+
+| Workload | Column sampling rates: tree / level / node | CPU | MPS | CPU / MPS |
+| --- | --- | ---: | ---: | ---: |
+| 1M rows × 128 features, uniform | 0.8 / 0.8 / 0.8 | 3.430 s | 4.001 s | 0.86× |
+| 100K rows × 2,048 features, weighted | 0.8 / 0.8 / 0.5 | 7.508 s | 7.800 s | 0.96× |
+
+Both have zero CPU/MPS prediction difference. The [million-row report](validation/benchmark-column-million-v1-m3.json)
+and [wide report](validation/benchmark-column-wide-v1-m3.json) retain all timings,
+clock checks and counters. Each run completes 1,400 or 1,356 column samples,
+respectively. Their median column-sampling GPU time is 59.1 ms / 353.4 ms; these
+intervals exclude host staging and synchronization. Peak process RSS is 3.18 GB /
+5.33 GB. System-wide swap usage is about 18–21 GiB and cannot be attributed solely
+to the benchmark. Results describe this session, not an isolated hardware limit.
+
+The common case of at most 2,048 candidate columns now fuses random generation,
+weighted priority ordering, selection and final ID sorting into one compute
+kernel, removing intermediate permutation/sort buffers and separate encoders.
+The larger-column path remains GPU-based. Native tests exercise both sides of
+that boundary; all selected IDs, random draws and weighted scores still match CPU
+exactly in the tested cases.
+
+The [fused-path validation](validation/column-sampling-fused-m3.txt) passes all
+**673 Python tests (one skipped)** and native suites with Metal API Validation,
+plus the unchanged CPU-only build checks.
