@@ -8,6 +8,9 @@
 #include "../common/timer.h"
 #include "coordinate_common.h"
 #include "xgboost/json.h"
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_linear.h"
+#endif
 
 namespace xgboost::linear {
 
@@ -49,6 +52,12 @@ class CoordinateUpdater : public LinearUpdater {
               double sum_instance_weight) override {
     auto gpair = in_gpair->Data();
     tparam_.DenormalizePenalties(sum_instance_weight);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      UpdateMetal(in_gpair, p_fmat, model);
+      return;
+    }
+#endif
     auto ngroup = model->learner_model_param->num_output_group;
     // update bias
     for (decltype(ngroup) group_idx = 0; group_idx < ngroup; ++group_idx) {
@@ -90,6 +99,52 @@ class CoordinateUpdater : public LinearUpdater {
   }
 
  private:
+#if defined(XGBOOST_USE_METAL)
+  void UpdateMetal(linalg::Matrix<GradientPair>* in_gpair, DMatrix* data,
+                   gbm::GBLinearModel* model) {
+    CHECK(data->SingleColBlock()) << "Metal coordinate descent requires a single CSC block.";
+    CHECK(in_gpair->HostView().CContiguous());
+    auto groups = model->learner_model_param->num_output_group;
+    auto rows = static_cast<std::size_t>(data->Info().num_row_);
+    auto batches = data->GetBatches<CSCPage>(ctx_);
+    auto const& page = *batches.begin();
+    auto state = common::metal::MakeLinearState(rows, groups, page.offset.ConstHostSpan(),
+                                                page.data.ConstHostSpan(),
+                                                in_gpair->Data()->ConstHostSpan());
+    auto host = in_gpair->Data()->HostSpan();
+    for (bst_target_t group = 0; group < groups; ++group) {
+      auto sum = state->Gradient(-1, group);
+      auto delta = static_cast<float>(tparam_.learning_rate *
+                                      CoordinateDeltaBias(sum.GetGrad(), sum.GetHess()));
+      model->Bias()[group] += delta;
+      state->UpdateResidual(-1, group, delta);
+    }
+    // Host feature selectors are also used by CUDA. Unlike a stale snapshot,
+    // this view includes completed GPU bias/residual changes as the CPU expects.
+    state->CopyGradients(host);
+    selector_->Setup(ctx_, *model, in_gpair->Data()->ConstHostVector(), data,
+                     tparam_.reg_alpha_denorm, tparam_.reg_lambda_denorm, cparam_.top_k);
+    for (bst_target_t group = 0; group < groups; ++group) {
+      for (bst_feature_t i = 0; i < model->learner_model_param->num_feature; ++i) {
+        if (tparam_.feature_selector == kGreedy) state->CopyGradients(host);
+        auto feature =
+            selector_->NextFeature(ctx_, i, *model, group, in_gpair->Data()->ConstHostVector(),
+                                   data, tparam_.reg_alpha_denorm, tparam_.reg_lambda_denorm);
+        if (feature < 0) break;
+        auto sum = state->Gradient(feature, group);
+        auto& weight = (*model)[feature][group];
+        auto delta = static_cast<float>(tparam_.learning_rate *
+                                        CoordinateDelta(sum.GetGrad(), sum.GetHess(), weight,
+                                                        tparam_.reg_alpha_denorm,
+                                                        tparam_.reg_lambda_denorm));
+        weight += delta;
+        state->UpdateResidual(feature, group, delta);
+      }
+    }
+    state->CopyGradients(host);
+  }
+#endif
+
   CoordinateParam cparam_;
   // training parameter
   LinearTrainParam tparam_;

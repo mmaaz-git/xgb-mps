@@ -18,6 +18,7 @@
 #include "metal_histogram.h"
 #include "metal_memory.h"
 #include "metal_leaf.h"
+#include "metal_linear.h"
 #include "metal_ops.h"
 #include "metal_predictor.h"
 #include "metal_quantile.h"
@@ -49,6 +50,8 @@ std::atomic<std::uint64_t> expectile_init_dispatches{0}, prediction_init_dispatc
 std::atomic<std::uint64_t> label_validation_dispatches{0}, label_validation_gpu_time_ns{0};
 std::atomic<std::uint64_t> leaf_sum_init_dispatches{0}, leaf_sum_dispatches{0},
     leaf_weight_dispatches{0}, leaf_fitting_gpu_time_ns{0};
+std::atomic<std::uint64_t> linear_gradient_dispatches{0}, linear_residual_dispatches{0},
+    linear_gpu_time_ns{0};
 std::atomic<std::uint64_t> shap_dispatches{0}, shap_interaction_dispatches{0}, shap_gpu_time_ns{0};
 std::atomic<std::uint64_t> base_score_dispatches{0}, base_score_gpu_time_ns{0};
 std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches{0},
@@ -144,6 +147,7 @@ class Runtime {
   id<MTLComputePipelineState> expectile_init_pipeline, broadcast_targets_pipeline;
   id<MTLComputePipelineState> label_validation_pipeline;
   id<MTLComputePipelineState> base_score_pipeline, shap_pipeline;
+  id<MTLComputePipelineState> linear_gradient_pipeline, linear_residual_pipeline;
   id<MTLComputePipelineState> leaf_sum_pipeline, leaf_sum_finish_pipeline, leaf_weight_pipeline;
   id<MTLComputePipelineState> column_iota_pipeline, column_rng_pipeline, column_keys_pipeline,
       column_select_pipeline, column_sort_small_pipeline, column_output_pipeline,
@@ -224,6 +228,8 @@ class Runtime {
       label_validation_pipeline = make_pipeline(@"xgb_validate_labels");
       base_score_pipeline = make_pipeline(@"xgb_base_score");
       shap_pipeline = make_pipeline(@"xgb_shap");
+      linear_gradient_pipeline = make_pipeline(@"xgb_linear_gradient");
+      linear_residual_pipeline = make_pipeline(@"xgb_linear_residual");
       leaf_sum_pipeline = make_pipeline(@"xgb_leaf_sum");
       leaf_sum_finish_pipeline = make_pipeline(@"xgb_leaf_sum_finish");
       leaf_weight_pipeline = make_pipeline(@"xgb_leaf_weight");
@@ -1231,7 +1237,10 @@ Statistics GetStatistics() {
           leaf_sum_init_dispatches.load(std::memory_order_relaxed),
           leaf_sum_dispatches.load(std::memory_order_relaxed),
           leaf_weight_dispatches.load(std::memory_order_relaxed),
-          leaf_fitting_gpu_time_ns.load(std::memory_order_relaxed)};
+          leaf_fitting_gpu_time_ns.load(std::memory_order_relaxed),
+          linear_gradient_dispatches.load(std::memory_order_relaxed),
+          linear_residual_dispatches.load(std::memory_order_relaxed),
+          linear_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1248,6 +1257,121 @@ void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>*
 }  // namespace
 std::unique_ptr<LeafSums> MakeLeafSums(std::size_t leaves, std::size_t targets) {
   return std::make_unique<MetalLeafSums>(leaves, targets);
+}
+
+namespace {
+class MetalLinearState final : public LinearState {
+  Runtime& rt_{GetRuntime()};
+  id<MTLBuffer> entries_, gradients_;
+  std::vector<std::size_t> offsets_;
+  std::size_t rows_;
+  std::uint32_t groups_;
+  struct Params {
+    std::uint64_t begin, count;
+    std::uint32_t groups, group, bias;
+    float delta;
+  };
+  Params Parameters(std::int32_t feature, std::uint32_t group, float delta = 0) const {
+    CHECK_GE(feature, -1);
+    CHECK_LT(group, groups_);
+    if (feature == -1) return {0, rows_, groups_, group, 1, delta};
+    CHECK_LT(static_cast<std::size_t>(feature) + 1, offsets_.size());
+    return {offsets_[feature], offsets_[feature + 1] - offsets_[feature], groups_, group, 0, delta};
+  }
+
+ public:
+  MetalLinearState(std::size_t rows, std::uint32_t groups, Span<bst_idx_t const> offsets,
+                   Span<Entry const> entries, Span<GradientPair const> gradients)
+      : offsets_{offsets.begin(), offsets.end()}, rows_{rows}, groups_{groups} {
+    static_assert(sizeof(Entry) == 8 && sizeof(GradientPair) == 8 && sizeof(Params) == 32);
+    CHECK_GT(groups, 0);
+    CHECK(!offsets.empty());
+    CHECK_LE(offsets.size() - 1, std::numeric_limits<std::int32_t>::max());
+    CHECK_LE(rows, std::numeric_limits<std::size_t>::max() / groups);
+    CHECK_EQ(gradients.size(), rows * groups);
+    CHECK_EQ(offsets.front(), 0);
+    CHECK_EQ(offsets.back(), entries.size());
+    for (std::size_t f = 0; f + 1 < offsets.size(); ++f) {
+      CHECK_LE(offsets[f], offsets[f + 1]);
+      CHECK_LE(offsets[f + 1], entries.size());
+      for (auto i = offsets[f]; i < offsets[f + 1]; ++i) {
+        CHECK_LT(entries[i].index, rows);
+        if (i != offsets[f]) CHECK_LE(entries[i - 1].index, entries[i].index);
+      }
+    }
+    @autoreleasepool {
+      entries_ = Upload(rt_, entries.data(), entries.size_bytes());
+      gradients_ = Upload(rt_, gradients.data(), gradients.size_bytes());
+    }
+  }
+  GradientPairPrecise Gradient(std::int32_t feature, std::uint32_t group) override {
+    auto p = Parameters(feature, group);
+    if (!p.count) return {};
+    auto blocks = (p.count + 255) / 256;
+    CHECK_LE(blocks, std::numeric_limits<std::uint32_t>::max());
+    CHECK_LE(blocks, rt_.device.maxBufferLength / sizeof(GradientPairPrecise));
+    @autoreleasepool {
+      auto partial = Allocate(rt_, blocks * sizeof(GradientPairPrecise));
+      auto result = Allocate(rt_, sizeof(GradientPairPrecise));
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.linear_gradient_pipeline];
+      [e setBuffer:entries_ offset:0 atIndex:0];
+      [e setBuffer:gradients_ offset:0 atIndex:1];
+      [e setBuffer:partial offset:0 atIndex:2];
+      [e setBytes:&p length:sizeof(p) atIndex:3];
+      [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      // Reuse the binary64 pair final reduction; this is independent of the
+      // generic/root-gradient dispatch counters.
+      struct {
+        std::uint64_t rows, stride0, stride1;
+        std::uint32_t targets, blocks;
+      } finish{p.count, 0, 0, 1, static_cast<std::uint32_t>(blocks)};
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.gradient_sum_finish_pipeline];
+      [e setBuffer:partial offset:0 atIndex:0];
+      [e setBuffer:result offset:0 atIndex:1];
+      [e setBytes:&finish length:sizeof(finish) atIndex:2];
+      [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &linear_gradient_dispatches, &linear_gpu_time_ns);
+      return *static_cast<GradientPairPrecise const*>(result.contents);
+    }
+  }
+  void UpdateResidual(std::int32_t feature, std::uint32_t group, float delta) override {
+    auto p = Parameters(feature, group, delta);
+    if (!p.count || delta == 0.f) return;
+    CHECK_LE(p.count, std::numeric_limits<std::uint32_t>::max());
+    @autoreleasepool {
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.linear_residual_pipeline];
+      [e setBuffer:entries_ offset:0 atIndex:0];
+      [e setBuffer:gradients_ offset:0 atIndex:1];
+      [e setBytes:&p length:sizeof(p) atIndex:2];
+      [e dispatchThreads:MTLSizeMake(p.count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &linear_residual_dispatches, &linear_gpu_time_ns);
+    }
+  }
+  void CopyGradients(Span<GradientPair> output) const override {
+    CHECK_EQ(output.size(), rows_ * groups_);
+    if (!output.empty()) std::memcpy(output.data(), gradients_.contents, output.size_bytes());
+  }
+};
+}  // namespace
+std::unique_ptr<LinearState> MakeLinearState(std::size_t rows, std::uint32_t groups,
+                                             Span<bst_idx_t const> offsets,
+                                             Span<Entry const> entries,
+                                             Span<GradientPair const> gradients) {
+  return std::make_unique<MetalLinearState>(rows, groups, offsets, entries, gradients);
 }
 
 Objective ObjectiveFromName(char const* name) {

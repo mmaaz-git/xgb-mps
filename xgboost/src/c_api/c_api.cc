@@ -266,6 +266,11 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["leaf_weight_dispatches"] = Integer{static_cast<std::int64_t>(stats.leaf_weight_dispatches)};
   info["leaf_fitting_gpu_time_ns"] =
       Integer{static_cast<std::int64_t>(stats.leaf_fitting_gpu_time_ns)};
+  info["linear_gradient_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.linear_gradient_dispatches)};
+  info["linear_residual_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.linear_residual_dispatches)};
+  info["linear_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.linear_gpu_time_ns)};
   info["shap_dispatches"] = Integer{static_cast<std::int64_t>(stats.shap_dispatches)};
   info["shap_interaction_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.shap_interaction_dispatches)};
@@ -371,6 +376,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["leaf_sum_dispatches"] = Integer{0};
   info["leaf_weight_dispatches"] = Integer{0};
   info["leaf_fitting_gpu_time_ns"] = Integer{0};
+  info["linear_gradient_dispatches"] = Integer{0};
+  info["linear_residual_dispatches"] = Integer{0};
+  info["linear_gpu_time_ns"] = Integer{0};
   info["shap_dispatches"] = Integer{0};
   info["shap_interaction_dispatches"] = Integer{0};
   info["shap_gpu_time_ns"] = Integer{0};

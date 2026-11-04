@@ -12,7 +12,7 @@ still a mixture of GPU operations and CPU work. Passing tests cover implemented
 paths, not every CUDA operation.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
-remaining objective initialization and training-state operations, linear boosting,
+remaining objective initialization and training-state operations,
 GPU `approx` training, categorical/metadata operations, Apple GPU array
 interoperability and distributed collectives. AFT still has CPU corrections;
 some long-run ranking and Covertype comparisons have numerical differences.
@@ -24,7 +24,8 @@ The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, SHAP contributions/interactions, prediction-cache
 updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums, stump
-fitting, reduced-gradient leaf refitting, means, stable column/grouped sorting, ROC/PR-AUC, ranking metrics,
+fitting, reduced-gradient leaf refitting, linear coordinate descent, means,
+stable column/grouped sorting, ROC/PR-AUC, ranking metrics,
 gradient-based row sampling, uniform/weighted column sampling and quantile/median
 estimation on Metal. Numeric sketch finalization also runs on Metal; sketch ingestion,
 queue sorting and several specialized features still run on the CPU. Histogram conversion,
@@ -69,7 +70,11 @@ model.fit(X, y)
 prediction = model.predict(X)
 ```
 
-Explicit updater selection, `exact`/`approx` tree methods, linear boosters, and
+Linear GPU training uses `booster="gblinear", updater="coord_descent", device="mps"`.
+Its default `shotgun` updater remains on the host, as it does with CUDA. The
+vendored upstream version deprecates `gblinear`, but this port supports it.
+
+Explicit tree updater selection, `exact`/`approx` tree methods and
 distributed training are rejected for `mps`. Inaccessible Metal devices produce an
 error. Other features may use CPU implementations as recorded in the coverage ledger;
 selecting `mps` does not imply that every stage runs on the GPU.
@@ -89,6 +94,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Gradient quantization | GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales stay on GPU |
 | Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights |
 | Reduced-gradient leaf fitting | GPU segmented binary64 sums over resident row IDs, accumulation across external pages, regularized/clipped final weights; existing host tree receives the completed leaf values |
+| Linear coordinate descent | GPU bias/feature gradient sums and residual updates; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
 | Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
 | Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; other objective-specific initialization work remains CPU |
 | Objective initialization | GPU expectile initial gradients/Hessians and absolute-error target-mean broadcast; small final base-score adjustments remain host, as in CUDA |
@@ -149,6 +155,9 @@ report GPU clearing, per-page leaf reductions and final weight calculation.
 `leaf_fitting_gpu_time_ns` covers those stages separately from root sums, histogram
 work and row partitioning; source sharing/staging and final host tree updates are
 excluded.
+`linear_gradient_dispatches` and `linear_residual_dispatches` count completed
+coordinate-descent reductions and updates; `linear_gpu_time_ns` measures those
+commands. Host feature selection, scalar model updates and staging are excluded.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
@@ -164,7 +173,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **931 passed, 1 skipped**. The skip requires a machine without an
+- Python: **1,066 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
@@ -259,6 +268,12 @@ On Apple M3, 2026-11-03:
   empty leaves, subnormals, large/nonfinite values, L1/L2 penalties, clipping,
   bounds and guards. **66 public tests** cover training and saved-model
   continuation across dense, missing, sparse and external-page inputs.
+- Linear coordinate descent: **49 native cases / 4,118,809 source gradient
+  pairs**, 3,159 exact sum fields and 148,277,124 residual field comparisons.
+  Finite residuals match CPU bits, including signed zeros; NaNs use classification.
+  Covers empty/million-row inputs, duplicate CSC rows, subnormals, nonfinite
+  values, negative Hessians and guards. **136 public cases** cover all five selectors,
+  dense/missing/sparse data, multiple outputs, penalties and model continuation.
 - SHAP: **576 native cases / 424,350,144 output values**, including zero entries,
   compared with independent one-feature Shapley values; maximum absolute error
   `2.39e-7`. Checks include guards, overlapping storage, empty inputs and batch
@@ -463,7 +478,9 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port uniform/weighted column sampling, with CPU-compatible random streams.
 - [ ] Port remaining training-state updates.
 - [x] Port final numeric sketch level merging and pruning.
-- [ ] Port quantile construction, remaining objectives/metrics, SHAP and linear training.
+- [x] Port exact SHAP contributions and interactions.
+- [x] Port CUDA coordinate-descent operations for linear training.
+- [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.
 - [ ] Reach complete CUDA-operation coverage and competitive training performance.
@@ -1669,3 +1686,27 @@ weight results match CPU exactly; exceptional values are checked separately.
 Sampling, zero/empty leaves, strided inputs, external pages, L1/L2 penalties,
 clipping and saved-model continuation are covered. No performance benchmark was
 added. Linear coordinate descent remains a major missing CUDA operation.
+
+
+### Linear coordinate descent coverage update
+
+The bias/feature gradient reductions and residual updates used by CUDA's linear
+coordinate updater now run on Metal. Use
+`booster="gblinear", updater="coord_descent", device="mps"`. All five feature
+selectors are supported. Selectors, scalar weight updates, CSC preparation and
+linear prediction remain host work, matching CUDA's placement. The default
+`shotgun` algorithm also remains host. The numerical reference is CPU, including
+updated residuals for greedy/thrifty selection; CUDA intermediate bits can differ.
+
+[Validation](validation/linear-coordinate-m3.txt): **1,066 Python tests pass (one
+skipped)**, all native suites pass, and the separate CPU-only build/check passes.
+New coverage includes 136 public cases and 49 native cases using 4,118,809 source
+gradient pairs, with Metal API Validation enabled for the native linear tests.
+The tests cover selectors, multiple outputs, missing/sparse inputs, L1/L2
+penalties, saved-model continuation, million-row reductions, duplicate CSC rows,
+exceptional arithmetic and buffer guards.
+
+Coverage and correctness remain the priority; no new performance measurements
+were run. Sketch ingestion/preprocessing, `approx` training, sensitive AFT
+corrections, generic state/metadata operations, device interoperability and
+distributed execution still need work. Full CUDA parity is not complete.

@@ -5101,3 +5101,58 @@ kernel void xgb_leaf_weight(device const ulong2* sums [[buffer(0)]],
   }
   output[index] = xgb_fmul_preserve(value, p.eta);
 }
+
+struct LinearEntry { uint row; float value; };
+struct LinearParams { ulong begin, count; uint groups, group, bias; float delta; };
+kernel void xgb_linear_gradient(device const LinearEntry* entries [[buffer(0)]],
+                                device const uint2* gradients [[buffer(1)]],
+                                device ulong2* partial [[buffer(2)]],
+                                constant LinearParams& p [[buffer(3)]],
+                                uint block [[threadgroup_position_in_grid]],
+                                uint tid [[thread_index_in_threadgroup]],
+                                uint lane [[thread_index_in_simdgroup]],
+                                uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong i = ulong(block) * 256 + tid;
+  XGBDouble g{0}, h{0};
+  if (i < p.count) {
+    ulong row = p.bias ? i : ulong(entries[p.begin + i].row);
+    uint2 pair = gradients[row * p.groups + p.group];
+    bool valid = p.bias ? xgb_valid_label(pair.y, 4, 0) : !xgb_float_less(pair.y, 0u);
+    if (valid) {
+      float grad = as_type<float>(pair.x), hess = as_type<float>(pair.y);
+      if (!p.bias) {
+        float value = entries[p.begin + i].value;
+        grad = xgb_fmul_preserve(grad, value);
+        hess = xgb_fmul_preserve(xgb_fmul_preserve(hess, value), value);
+      }
+      g = xgb_dfrom_float(grad);
+      h = xgb_dfrom_float(hess);
+    }
+  }
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 total = xgb_reduce_double_pair(g, h, bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) partial[block] = total;
+}
+kernel void xgb_linear_residual(device const LinearEntry* entries [[buffer(0)]],
+                                device uint2* gradients [[buffer(1)]],
+                                constant LinearParams& p [[buffer(2)]],
+                                uint index [[thread_position_in_grid]]) {
+  ulong i = ulong(index), row = p.bias ? i : ulong(entries[p.begin + i].row);
+  // Sorted CSC can contain duplicate row entries. One thread processes a run
+  // in input order, avoiding concurrent writes to the same gradient pair.
+  if (!p.bias && i && entries[p.begin + i - 1].row == row) return;
+  ulong at = row * p.groups + p.group;
+  uint2 pair = gradients[at];
+  if (xgb_float_less(pair.y, 0u)) return;
+  do {
+    float h = as_type<float>(pair.y);
+    float product = p.bias ? h : xgb_fmul_preserve(h, entries[p.begin + i].value);
+    float delta = xgb_fmul_preserve(product, p.delta);
+    pair.x = as_type<uint>(xgb_fadd_preserve(as_type<float>(pair.x), delta));
+    // GradientPair::operator+= also adds +0 to the Hessian (including -0 inputs).
+    pair.y = as_type<uint>(xgb_fadd_preserve(h, 0.f));
+    ++i;
+  } while (!p.bias && i < p.count && entries[p.begin + i].row == row);
+  gradients[at] = pair;
+}
