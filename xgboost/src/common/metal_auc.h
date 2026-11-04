@@ -32,8 +32,10 @@ void MultiAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<fl
               Span<float const> weights, bool multiclass, bool is_roc, Span<double> output);
 double NormalizeAUC(Span<double const> summaries);
 // Ranking ROC counts every pair in stable descending-label order, including
-// equal labels. Group weights are squared in FP32 before pair scoring, as on CPU.
-// Labels must not contain NaNs. Optional diagnostics expose each group's sum/count.
+// equal labels. CUDA pair terms use FP32 differences and squared query weights.
+// Overflowing squares return NaN scores; zero/NaN squares return zero. Queries
+// shorter than three rows give zero score/count. Labels must not contain NaNs.
+// Optional diagnostics expose each group's sum/count.
 RankingAUCSums RankingROCAUC(linalg::VectorView<float const> predictions,
                              linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
                              Span<float const> weights, Span<RankingAUCSums> individual = {});

@@ -3016,10 +3016,9 @@ RankingAUCSums RankingROCAUC(linalg::VectorView<float const> predictions,
     }
     if (!individual.empty())
       std::memcpy(individual.data(), partial.contents, individual.size_bytes());
-    auto result = *static_cast<RankingAUCSums const*>(output.contents);
-    CHECK_LE(result.area, result.valid_groups * (1.0 + kRtEps))
-        << "Invalid ranking ROC-AUC (group-weight square may have overflowed).";
-    return result;
+    // Like cuda_impl::RankingAUC, preserve NaN from overflowing squared weights.
+    // The shared metric finalizer checks finite scores after collective aggregation.
+    return *static_cast<RankingAUCSums const*>(output.contents);
   }
 }
 

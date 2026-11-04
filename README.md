@@ -14,14 +14,16 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **CUDA-source classification AUC and GPU normalization**.
-ROC/PR terms, recall totals and degenerate outputs now follow CUDA; multi-output
-normalization and weighted averaging run on Metal. Focused validation passes 486
-native cases per curve type, 25 normalization/metadata cases and 97 public tests.
-Full regression passes **1,666 Python tests**, every rebuilt native suite and the
-CPU-only build check. Extreme-weight PR now reproduces CUDA's less accurate
-integral arithmetic, documented with explicit regression cases.
-[Validation](validation/cuda-classification-auc-m3.txt) · [Scope](docs/CUDA_PARITY.md#classification-auc-arithmetic-and-normalization).
+Latest step: **grouped ROC CUDA-source edge behavior**. Finite query weights whose
+FP32 square overflows now return a NaN metric, as CUDA's source does, instead of
+throwing the CPU-specific error. Validation passes 390 added native query cases
+and all 73 public grouped AUC tests. Full regression passes **1,686 Python tests**,
+every native suite and the CPU-only build check.
+[Validation](validation/cuda-grouped-roc-m3.txt) · [Scope](docs/CUDA_PARITY.md#grouped-roc-cuda-source-contract).
+The preceding classification AUC step moved multi-output normalization and
+weighted averaging onto Metal and passed 1,666 Python tests plus all native suites.
+Extreme-weight PR follows CUDA's less accurate integral arithmetic, explicitly
+documented in its [validation record](validation/cuda-classification-auc-m3.txt).
 Actual NVIDIA execution equivalence remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
@@ -320,7 +322,11 @@ On Apple M3, 2026-11-03:
   reference. Three additional million-row analytic cases each represent
   **500,002,500,003 pairs**, testing 64-bit counts without a quadratic CPU run.
   Covers label/score ties, padded strides, zero/tiny/large weights, infinities/NaNs
-  in scores, short queries, weight-square overflow errors and output guards.
+  in scores, short queries and output guards. **390 additional source-contract
+  queries**, plus an overflow fixture, cover **2,168,663 enumerated pairs**, NaN and overflowing squared weights,
+  subnormal half-weight rounding and GPU counters. Finite squared-weight overflow
+  now returns NaN, matching CUDA source. All **73 public grouped AUC tests** pass.
+  [CUDA-source validation](validation/cuda-grouped-roc-m3.txt).
 - Column sampling: **530 native cases / 3,275,463 selected feature IDs /
   4,610,295 random draws**, exactly matching CPU; weighted priorities also match
   bit for bit, including constructed ties. Production hierarchy/cache behavior,
@@ -1471,6 +1477,9 @@ without enumerating the quadratic pair matrix. Equal labels retain input order;
 short queries, zero weights, squared-weight underflow/overflow and exceptional
 prediction values retain the tested CPU behavior. Grouped PR-AUC remains CPU.
 
+Later CUDA-source alignment changes the overflow case from an error to NaN;
+see [the current contract](docs/CUDA_PARITY.md#grouped-roc-cuda-source-contract).
+
 All **616 Python tests (one skipped)** and native suites pass, including
 [272 grouped ROC cases](validation/ranking-roc-m3.txt) against upstream CPU and
 234 million independently enumerated reference pairs. Three million-row analytic
@@ -2235,3 +2244,27 @@ the complete build-and-test run finished successfully in 4 minutes 14 seconds.
 
 Grouped ROC source evidence, remaining CUDA algorithms, ownership, interoperability
 and GPU collectives remain open. No performance benchmark was run.
+
+### Grouped ROC CUDA-source alignment
+
+Grouped ROC retains CUDA's stable label ordering, FP32 score differences and
+squared query-weight terms. The existing GPU merge counter computes the same
+concordant/tied-pair counts without enumerating every pair. This changes the
+floating-point summation association, so exact NVIDIA rounding is not claimed.
+
+Finite weights such as `1e30` overflow when squared. MPS now returns a NaN metric
+with the shared upstream warning, matching CUDA source; CPU continues to throw.
+Private native NaN-weight inputs now produce zero scores with a valid-query count,
+as CUDA's positive-weight branch specifies. Public metadata validation is unchanged.
+
+Validation adds **390 query cases / 2,168,663 independently enumerated pairs** and
+20 public tests, retaining all 272 existing native cases, the three million-row
+analytic cases, CPU checks where applicable and the original `2e-12` tolerance.
+All **73 public grouped AUC tests** pass. Full regression passes **1,686 Python
+tests, one skip**, every native suite and the CPU-only build/device check. The
+Python suite took 96.70 seconds; the complete run finished in 4 minutes 11 seconds.
+Empty/one-row query slots remain safely zeroed: CUDA's temporary result allocation
+does not initialize slots with no pairs. That undefined behavior is not reproduced.
+The million-row cases also exceed CUDA's current pair-launch limit; they verify
+Metal's larger supported domain, not an executable CUDA comparison.
+[Validation](validation/cuda-grouped-roc-m3.txt). No benchmark was run.

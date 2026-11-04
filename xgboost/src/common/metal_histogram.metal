@@ -4025,7 +4025,7 @@ struct RankingROCParams {
   uint groups, weighted;
 };
 
-// Canonical ascending prediction keys. NaNs never win or tie a pair on CPU;
+// Canonical ascending prediction keys. CUDA's FP32 difference scores NaN as zero;
 // place them last for merging and explicitly omit their comparison counts.
 kernel void xgb_ranking_roc_init(
     device const uint2* labels_order [[buffer(0)]], device const uint* predictions [[buffer(1)]],
@@ -4083,7 +4083,7 @@ kernel void xgb_ranking_roc_merge(device const uint2* source [[buffer(0)]],
   ulong bound = xgb_roc_bound(source, other_begin, other_end, value.x, !left);
   if (left && value.x != 0xffffffffu) {
     uint ties = 0;
-    // Infinity minus the same infinity is NaN, which CPU scores as zero.
+    // Infinity minus the same infinity is NaN, which CUDA scores as zero.
     if (value.x != 0x007fffffu && value.x != 0xff800000u)
       ties = uint(xgb_roc_bound(source, bound, other_end, value.x, true) - bound);
     counts[value.y] += uint2(uint(bound - other_begin), ties);
@@ -4109,7 +4109,10 @@ kernel void xgb_ranking_roc_score(device const uint2* counts [[buffer(0)]],
     return;
   }
   if (magnitude >= 0x7f800000u) {
-    if (!tid) partial[group] = ulong2(0x7ff8000000000000ul, one.bits);
+    // CUDA tests the scanned weight >0 before division: NaN weights give zero;
+    // infinite squared weights give NaN (Inf/Inf or NaN/Inf). Metadata rejects
+    // nonfinite inputs, but a finite query weight can overflow when squared.
+    if (!tid) partial[group] = ulong2(magnitude > 0x7f800000u ? 0 : 0x7ff8000000000000ul, one.bits);
     return;
   }
   threadgroup ulong2 sums[256];

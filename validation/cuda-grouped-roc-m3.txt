@@ -1,0 +1,78 @@
+Grouped ROC CUDA-source edge behavior on Apple M3
+Date: 2026-11-04
+Source base: 10f3d2a plus the grouped-ROC changes accompanying this record.
+
+Authority: metric/auc.cu::RankingAUC; metric/auc.cc::GroupRankingROC and
+  EvalAUC::Eval for the CPU difference/public finalizer;
+  common/device_helpers.cuh::TemporaryArray for uninitialized CUDA query slots.
+
+Changes:
+  Preserve source NaN result when a finite query weight's FP32 square overflows.
+  Removed MPS's CPU-specific CHECK_LE on raw sums; shared finalizer retains its
+  non-NaN score check and warning behavior after collective aggregation.
+  NaN squared weights yield score0/valid1 for query length>=3, matching CUDA's
+  scanned_weight>0 branch. Infinite squares yield NaN/valid1. Public metadata
+  validation remains unchanged; nonfinite/negative inputs are private API checks.
+  Zero/underflowed squares retain score0/valid1. Short queries retain score0/valid0.
+  No ABI/statistics layout changes, no new kernel or extra command/staging.
+
+Algorithm correspondence:
+  CUDA stably sorts descending labels, including equal-label pairs in input order.
+  FP32 prediction differences become1/.5/0; NaN difference (including same-sign
+  infinity subtraction) becomes0. Query weight square and score*square roundFP32.
+  Pair terms/weights scan inFP64; positive final weight divides, otherwise score0.
+  Existing Metal merge counting exactly counts wins/ties using ordered FP32 keys,
+  retaining NaN/Inf exclusions, signed zeros and subnormal distinctions.
+  For finite square w, numerator=wins*w+ties*float(.5f*w), denominator=pairs*w,
+  followed byFP64 division. This changes addition association versus CUDA's
+  quadratic scan; tested tolerance remains2e-12, no bitwise CUB/NVIDIA claim.
+  CUDA's current launch checks total pairs<INT32_MAX. Metal's million-row analytic
+  tests exceed that source limit and validate an extension, not CUDA execution.
+  Empty/one-row slots are zeroed safely. CUDA's size-only TemporaryArray<double>
+  is uninitialized; those slots get no writes when no pairs are generated.
+  A mixed batch can reduce unwritten slots. Undefined behavior is not reproduced.
+
+Before/after:
+  results/test-ranking-roc-cuda-before-v1.log fails old10f3d2a on finite weight1e30:
+  Invalid ranking ROC-AUC (group-weight square may have overflowed).
+  The new CUDA-source fixture requires NaN/valid1; original CPU still throws.
+
+Native tests/metal_ranking_roc_api.cc:
+  PASS390 added queries /19110rows, plus a3-row/3-pair overflow fixture;
+  2168663 independently enumerated pairs combined. Sizes0/1/2/3/31/257,13weight
+  regimes,5score/label regimes. Includes zero/signed-zero/negative/nativeNaN/Inf,
+  finite-overflow/underflow weights, odd subnormal half-weight rounding, exceptional
+  scores, tiny differences, stable label ties, per-query values, aggregate counts,
+  input bit immutability, output guards and GPU sort/metric dispatch counters.
+  PASS272 retained production cases /161680rows /234208157 enumerated pairs.
+  Source pair oracle's final positive-weight branch now follows CUDA explicitly;
+  production CPU checks retained for the compatible existing corpus.
+  PASS3 million-row analytic cases,500002500003 implied pairs each,64-bit counts.
+  Original2e-12 tolerance unchanged. NaNs compared by classification explicitly.
+
+Public tests/test_metal_ranking_auc.py:
+  PASS73 tests (20 added),9 expected warnings,1.90s focused.
+  Nine finite-overflow profiles (3weights x perfect/reverse/tied predictions)
+  require NaN+warning on MPS and original error on CPU. Twelve source pair-term
+  cases cover zero/ordinary/large/underflow and odd-subnormal squared weights,
+  tied/untied scores, stable fractional-label order, GPU counters and model reload.
+  Existing training and compatible CPU metric checks retained unchanged.
+
+Runs:
+  results/run-ranking-roc-cuda-focused-v1.sh 11:43:17-11:43:29UTC exit0.
+  build-ranking-roc-cuda-v1.log PASS.
+  test-ranking-roc-cuda-native-v1.log PASS with Metal API validation.
+  test-ranking-roc-cuda-python-v1.log PASS73.
+  results/run-ranking-roc-cuda-full-v1.sh 11:43:43-11:47:54UTC exit0.
+  build-ranking-roc-cuda-final-v1.log PASS final Metal build.
+  test-ranking-roc-cuda-full-v1.log PASS every native suite;1686 Python passed,
+  1 skipped,371 expected warnings,96.70s. Native grouped-ROC counts match above.
+  build-cpu-ranking-roc-cuda-v1.log PASS CPU-only build.
+  check-cpu-ranking-roc-cuda-v1.log PASS unavailable Metal and clear device=mps error.
+  No production/test changes after full validation started. No benchmarks run.
+
+Limits:
+  No NVIDIA or cross-Apple run; source reference is host code, not device emulation.
+  Merge association, FP32 FTZ/compiler behavior and CUB scans remain unverified
+  across architectures. Host-owned inputs, collective transport and other ledger
+  gaps remain. Full CUDA parity is NOT complete. No benchmark run.

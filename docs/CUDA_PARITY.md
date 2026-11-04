@@ -51,8 +51,9 @@ work, not accepted substitutes for CUDA behavior:
   execution remain unverified; they are not cross-device bitwise guarantees.
 - Precision/NDCG/MAP now follow CUDA-source arithmetic and degenerate-query
   weighting. Parallel scan/reduction association remains architecture-dependent;
-  classification AUC now also follows CUDA term/output rules and GPU normalization;
-  grouped ROC still needs its remaining source/rounding evidence.
+  classification AUC follows CUDA term/output rules and GPU normalization.
+  Grouped ROC's source pair terms and weight edge behavior are checked below;
+  its count-based accumulation has a different association from CUDA's pair scan.
 - Scalar split enumeration now follows CUDA's exclusive numeric scan and strict
   missing-direction comparison; vector scans now preserve CUDA inclusive scans,
   double chunk argmax and FP32 updates. Other reduction order, quantile statistics
@@ -216,23 +217,55 @@ native suite and the CPU-only build/API check. NDCG cache checks remain separate
 below.
 [Validation record](../validation/cuda-ranking-metrics-m3.txt).
 
-Grouped ranking ROC now sorts labels stably on GPU and counts concordant/tied
-pairs during parallel merges of prediction keys. This preserves the CPU rule that
+### Grouped ROC CUDA-source contract
+
+Grouped ranking ROC sorts labels stably on GPU and counts concordant/tied
+pairs during parallel merges of prediction keys. This preserves CUDA's rule that
 equal-label pairs participate in input order. It avoids the CPU's quadratic pair
-enumeration: counts require `O(N log² m)` work for `N` rows and maximum query size
+enumeration and CUDA's quadratic pair scan: counts require `O(N log² m)` work for `N` rows and maximum query size
 `m`, followed by integer reductions and software-binary64 normalization. Query
 weights are squared in FP32, and half-weight products retain FP32 subnormal
-rounding. Queries shorter than three rows are excluded; zero-weight queries retain
-CPU's zero score and valid count. Overflowing squared weights raise an error.
+rounding. CUDA computes each pair's FP32 prediction difference, maps it to
+`1`, `0.5` or `0`, multiplies by the squared weight in FP32, scans pair terms and
+weights in binary64, then divides if the weight sum is positive. NaN differences,
+including equal signed infinities, contribute zero. The merge counter preserves
+those classifications, including finite subnormal differences and signed zeros.
 
-CPU comparison uses a `2e-12` absolute/relative tolerance in the tested cases;
-binary64 weighting/aggregation can differ from repeated CPU additions for very
-large, irregularly weighted queries. Bitwise equivalence is not a universal claim.
+Queries shorter than three rows are excluded. Zero squared weights give zero
+scores but retain the valid-query count. Finite weights whose FP32 square overflows
+give NaN scores, as CUDA's `Inf/Inf` or `NaN/Inf` arithmetic specifies. The former
+Metal host check copied CPU's error behavior; it has been removed. The shared
+metric finalizer still checks non-NaN scores after collective aggregation and
+warns on NaN. Private NaN query weights give zero scores because the scanned weight
+is not positive; public metadata continues to reject nonfinite/negative weights.
+
+For finite squared weights, the numerator is `wins*w + ties*float(0.5f*w)` and the
+denominator is `pairs*w`. Integer counts are exact; the final binary64 products,
+sum and division introduce a different association from CUDA's repeated pair
+additions. Native CUDA-source pair enumeration and compatible CPU comparisons
+retain the `2e-12` tolerance. This is a justified algorithm adaptation, not a
+bitwise CUB/NVIDIA reduction guarantee. No actual NVIDIA run has been performed.
 Million-row analytic cases use unit weights and exact expected scores, exercising
-pair counts beyond 32 bits without running a trillion-comparison CPU oracle.
+pair counts beyond 32 bits without running a trillion-comparison CPU oracle. They
+exceed CUDA's `n_threads < INT32_MAX` pair-launch check and establish an extended
+Metal domain. Empty/one-row groups are safely zeroed. CUDA's `TemporaryArray<double>`
+allocation is uninitialized and those groups generate no pair writes, so a mixed
+valid/empty batch can reduce unwritten slots. That undefined behavior is not copied.
 Input arrays remain staged and host-owned. Only the aggregate score/valid count
 normally returns to the host; optional native-test diagnostics expose per-query
 results. The public metric retains distributed/final ratio handling on the host.
+
+The existing **272 native cases / 234,208,157 independently enumerated pairs** and
+three million-row analytic cases remain. **390 added query cases / 19,110 rows**,
+plus an explicit overflow fixture (**2,168,663 enumerated pairs** combined), cover the source weight branches, half-weight rounding,
+exceptional predictions, stable ties, short/empty queries, guards, unchanged inputs
+and completed GPU counters. All **73 public grouped AUC tests** pass, including
+nine overflow profiles, 12 source pair-term cases, model reloads and existing
+training comparisons. Full regression passes **1,686 Python tests, one skip**,
+every native suite and the CPU-only build/device check (2026-11-04,
+11:43:43–11:47:54 UTC). [Validation record](../validation/cuda-grouped-roc-m3.txt).
+
+### Grouped PR CUDA-source contract
 
 Grouped PR-AUC now follows `metric/auc.cu::RankingPRAUC` and
 `RankingPRAUCImpl`. Every false-positive term is computed in binary64 as

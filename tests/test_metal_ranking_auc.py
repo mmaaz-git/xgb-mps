@@ -56,12 +56,75 @@ def test_ranking_auc_no_valid_queries(metal, groups, metric):
     assert xgb.metal_info()[counter] == before + int(n != 0)
 
 
-def test_ranking_roc_weight_overflow(metal):
-    data = xgb.DMatrix(np.ones((3, 1)), label=[0, 1, 2], group=[3], weight=[1e30], nthread=2)
-    for device in ["cpu", "mps"]:
-        model = xgb.train(dict(device=device, eval_metric="auc", base_score=.5, nthread=2), data, 0)
-        with pytest.raises(xgb.core.XGBoostError):
-            score(model, data)
+@pytest.mark.parametrize("weight", [1e20, 1e30, np.finfo(np.float32).max])
+@pytest.mark.parametrize("margin", [[0, 1, 2], [2, 1, 0], [1, 1, 1]])
+def test_ranking_roc_weight_overflow(metal, weight, margin):
+    # Finite, accepted metadata. CUDA's FP32 square overflows; Inf/Inf or NaN/Inf
+    # gives NaN. CPU alone has a per-query CHECK that throws before aggregation.
+    data = xgb.DMatrix(np.ones((3, 1)), label=[0, 1, 2], base_margin=margin,
+                       group=[3], weight=[weight], nthread=2)
+    p = dict(eval_metric="auc", base_score=.5, nthread=2)
+    cpu = xgb.train(p | {"device": "cpu"}, data, 0)
+    with pytest.raises(xgb.core.XGBoostError):
+        score(cpu, data)
+    gpu = xgb.train(p | {"device": "mps"}, data, 0)
+    before = xgb.metal_info()["ranking_roc_auc_dispatches"]
+    with pytest.warns(UserWarning, match="only positive or negative"):
+        assert np.isnan(score(gpu, data))
+    assert xgb.metal_info()["ranking_roc_auc_dispatches"] == before + 1
+    loaded = xgb.Booster(model_file=gpu.save_raw())
+    loaded.set_param({"device": "mps", "eval_metric": "auc"})
+    with pytest.warns(UserWarning, match="only positive or negative"):
+        assert np.isnan(score(loaded, data))
+
+
+def cuda_grouped_roc_reference(labels, margins, sizes, weights):
+    """Host CUDA-source FP32 pair terms and FP64 sums, not NVIDIA execution."""
+    total_area, valid, begin = 0.0, 0, 0
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        for size, weight in zip(sizes, weights):
+            size = int(size)
+            y = labels[begin:begin + size]
+            predictions = margins[begin:begin + size]
+            begin += size
+            if size < 3:
+                continue
+            order = np.argsort(-y, kind="stable")
+            squared = np.float32(np.float32(weight) * np.float32(weight))
+            area, pair_weight = 0.0, 0.0
+            for i in range(size):
+                for j in range(i + 1, size):
+                    difference = np.float32(predictions[order[i]] - predictions[order[j]])
+                    value = np.float32(1 if difference > 0 else .5 if difference == 0 else 0)
+                    area += float(np.float32(value * squared))
+                    pair_weight += float(squared)
+            total_area += area / pair_weight if pair_weight > 0 else 0.0
+            valid += 1
+    return total_area / valid if valid else float("nan")
+
+
+@pytest.mark.parametrize("weight", [0., .7, 1e19, 2.**-100,
+                                     float.fromhex("0x1.8p-75"), float.fromhex("0x1.4p-74")])
+@pytest.mark.parametrize("ties", [False, True])
+def test_cuda_ranking_roc_pair_terms(metal, weight, ties):
+    groups = np.array([2, 3, 31, 257], dtype=np.uint32)
+    n = int(groups.sum())
+    labels = (np.arange(n) % 7).astype(np.float32) / 7
+    margin = (np.ones(n) if ties else (np.arange(n) * 17) % 23).astype(np.float32)
+    weights = np.full(len(groups), weight, dtype=np.float32)
+    expected = cuda_grouped_roc_reference(labels, margin, groups, weights)
+    data = xgb.DMatrix(np.ones((n, 1)), label=labels, base_margin=margin,
+                       group=groups, weight=weights, nthread=2)
+    p = dict(eval_metric="auc", base_score=.5, nthread=2)
+    cpu = xgb.train(p | {"device": "cpu"}, data, 0)
+    np.testing.assert_allclose(score(cpu, data), expected, rtol=2e-12, atol=2e-12)
+    gpu = xgb.train(p | {"device": "mps"}, data, 0)
+    before = xgb.metal_info()["ranking_roc_auc_dispatches"]
+    np.testing.assert_allclose(score(gpu, data), expected, rtol=2e-12, atol=2e-12)
+    assert xgb.metal_info()["ranking_roc_auc_dispatches"] == before + 1
+    loaded = xgb.Booster(model_file=gpu.save_raw())
+    loaded.set_param({"device": "mps", "eval_metric": "auc"})
+    np.testing.assert_allclose(score(loaded, data), expected, rtol=2e-12, atol=2e-12)
 
 
 @pytest.mark.parametrize("metric", ["auc", "aucpr"])

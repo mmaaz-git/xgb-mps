@@ -1,4 +1,4 @@
-// Actual GPU grouped ROC compared with upstream CPU and independent pair enumeration.
+// Actual GPU grouped ROC compared with CUDA-source pair enumeration and compatible CPU cases.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -28,6 +28,7 @@ void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
 void Close(double actual, double expected) {
+  if (std::isnan(actual) && std::isnan(expected)) return;
   if (actual == expected) return;
   if (!std::isfinite(actual) || !std::isfinite(expected) ||
       std::abs(actual - expected) > 2e-12 * std::max(1.0, std::abs(expected))) {
@@ -38,6 +39,7 @@ void Close(double actual, double expected) {
 
 double PairReference(std::vector<float> const& scores, std::vector<float> const& labels,
                      float weight) {
+  if (scores.size() < 3) return 0;
   // Work directly in input order. Label comparisons choose which document is
   // earlier; equal labels retain input order. No merge or inversion algorithm.
   float squared = weight * weight;
@@ -51,7 +53,9 @@ double PairReference(std::vector<float> const& scores, std::vector<float> const&
       total += squared;
       ++enumerated_pairs;
     }
-  return total != 0 ? area / total : area;
+  // metric/auc.cu::RankingAUC writes zero unless the scanned pair weight is >0.
+  // This differs from CPU for NaN query weights (private API only).
+  return total > 0 ? area / total : 0;
 }
 
 void Case(size_t n, int layout, int mode) {
@@ -164,7 +168,9 @@ void LargeAnalytic() {
   }
 }
 
-void ErrorAndEmpty() {
+void CudaEdgeContracts() {
+  auto previous_pairs = enumerated_pairs;
+  current = "CUDA grouped ROC finite query weight with overflowing FP32 square";
   auto empty = common::metal::RankingROCAUC(linalg::MakeVec(std::vector<float>{}),
                                             linalg::MakeVec(std::vector<float>{}),
                                             std::vector<bst_group_t>{0}, {});
@@ -174,32 +180,101 @@ void ErrorAndEmpty() {
   std::vector<bst_group_t> groups{0, 3};
   Context cpu;
   cpu.Init({{"device", "cpu"}, {"nthread", "1"}});
-  bool cpu_error = false, gpu_error = false;
+  bool cpu_error = false;
   try {
     metric::GroupRankingROC(&cpu, p, linalg::MakeVec(y), w[0]);
   } catch (std::exception const&) {
     cpu_error = true;
   }
-  try {
-    common::metal::RankingROCAUC(linalg::MakeVec(p), linalg::MakeVec(y), groups, w);
-  } catch (std::exception const&) {
-    gpu_error = true;
+  Check(cpu_error, "Expected CPU-only overflow rejection");
+  auto result = common::metal::RankingROCAUC(linalg::MakeVec(p), linalg::MakeVec(y), groups, w);
+  Close(result.area, PairReference(p, y, w[0]));
+  Close(result.valid_groups, 1);
+
+  // Many queries in one command exercise the source weight branch, independently
+  // enumerated FP32 pair terms, exceptional predictions, stable label ties and
+  // short-query exclusions. Nonfinite/negative weights are private API tests;
+  // public DMatrix metadata continues to reject them.
+  std::vector<float> edge_weights{0,         -0.f,       1,          .7f,   -.7f,
+                                  0x1p-100f, 0x1.8p-75f, 0x1.4p-74f, 1e19f, 1e30f,
+                                  INFINITY,  -INFINITY,  NAN};
+  std::vector<float> predictions, labels, weights;
+  std::vector<bst_group_t> offsets{0};
+  std::vector<common::metal::RankingAUCSums> expected;
+  double expected_sum = 0, expected_valid = 0;
+  for (size_t n : {0, 1, 2, 3, 31, 257}) {
+    for (float weight : edge_weights) {
+      for (int mode = 0; mode < 5; ++mode) {
+        std::vector<float> query_p(n), query_y(n);
+        for (size_t i = 0; i < n; ++i) {
+          query_y[i] = mode == 4 ? 1 : float((i * 3) % 11);
+          query_p[i] = float((i * 7) % 13);
+          if (mode == 1) query_p[i] = i % 2 ? -0.f : 0.f;
+          if (mode == 2) query_p[i] = std::ldexp(float(int(i % 5) - 2), -149);
+          if (mode == 3) {
+            float values[]{INFINITY, -INFINITY, NAN, INFINITY, -INFINITY, 0};
+            query_p[i] = values[i % 6];
+          }
+        }
+        double area = PairReference(query_p, query_y, weight), valid = n >= 3;
+        expected.push_back({area, valid});
+        expected_sum += area;
+        expected_valid += valid;
+        predictions.insert(predictions.end(), query_p.begin(), query_p.end());
+        labels.insert(labels.end(), query_y.begin(), query_y.end());
+        weights.push_back(weight);
+        offsets.push_back(predictions.size());
+      }
+    }
   }
-  Check(cpu_error && gpu_error, "Group-weight square overflow error differs");
+  auto before_p = predictions, before_y = labels, before_w = weights;
+  auto before_offsets = offsets;
+  std::vector<common::metal::RankingAUCSums> guarded(expected.size() + 2, {-397, 973});
+  Span<common::metal::RankingAUCSums> individual{guarded.data() + 1, expected.size()};
+  auto before = common::metal::GetStatistics();
+  result = common::metal::RankingROCAUC(linalg::MakeVec(predictions), linalg::MakeVec(labels),
+                                        offsets, weights, individual);
+  auto after = common::metal::GetStatistics();
+  Check(after.ranking_roc_auc_dispatches == before.ranking_roc_auc_dispatches + 1,
+        "CUDA edge cases did not execute on GPU");
+  Check(after.group_sort_dispatches == before.group_sort_dispatches + 1,
+        "CUDA edge cases did not sort on GPU");
+  auto unchanged = [](auto const& a, auto const& b) {
+    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(a[0])) == 0;
+  };
+  Check(unchanged(predictions, before_p) && unchanged(labels, before_y) &&
+            unchanged(weights, before_w) && offsets == before_offsets,
+        "CUDA edge inputs modified");
+  Check(guarded.front().area == -397 && guarded.front().valid_groups == 973 &&
+            guarded.back().area == -397 && guarded.back().valid_groups == 973,
+        "CUDA edge output guards modified");
+  for (size_t g = 0; g < expected.size(); ++g) {
+    current = "CUDA grouped ROC edge query=" + std::to_string(g);
+    Close(individual[g].area, expected[g].area);
+    Close(individual[g].valid_groups, expected[g].valid_groups);
+  }
+  Close(result.area, expected_sum);
+  Close(result.valid_groups, expected_valid);
+  std::printf(
+      "PASS %zu CUDA grouped ROC edge queries / %zu rows / %llu enumerated pairs; "
+      "NaN/overflow/underflow weights, "
+      "FP32 pair terms, short queries, guards and GPU counters\n",
+      expected.size(), predictions.size(), (unsigned long long)(enumerated_pairs - previous_pairs));
+  enumerated_pairs = previous_pairs;
 }
 
 int main() {
   try {
+    CudaEdgeContracts();
     for (size_t n : {0, 1, 2, 3, 31, 256, 257, 1025})
       for (int layout = 0; layout < 3; ++layout)
         for (int mode = 0; mode < 11; ++mode) Case(n, layout, mode);
     for (size_t n : {4097, 8193})
       for (int mode : {0, 1, 6, 9}) Case(n, 2, mode);
     LargeAnalytic();
-    ErrorAndEmpty();
     std::printf(
         "PASS %zu native grouped ROC cases / %zu rows / %llu independently enumerated pairs, plus "
-        "3 million-row analytic cases and empty/overflow checks\n",
+        "3 million-row analytic cases and CUDA empty/overflow checks\n",
         cases, checked_rows, (unsigned long long)enumerated_pairs);
     return 0;
   } catch (std::exception const& error) {
