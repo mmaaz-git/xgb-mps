@@ -11,6 +11,7 @@
 #include <xgboost/data.h>
 
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "gradient_index.h"
@@ -53,10 +54,21 @@ class SimpleDMatrix : public DMatrix {
   std::shared_ptr<EllpackPage> ellpack_page_{nullptr};
   std::shared_ptr<GHistIndexMatrix> gradient_index_{nullptr};
   bool gradient_index_metal_{false};
+#if defined(XGBOOST_USE_METAL)
+  std::shared_ptr<GHistIndexMatrix> metal_gradient_index_;
+  mutable std::mutex metal_matrix_mutex_;
+#endif
   BatchParam batch_param_;
 
   bool EllpackExists() const override { return static_cast<bool>(ellpack_page_); }
-  bool GHistIndexExists() const override { return static_cast<bool>(gradient_index_); }
+  bool GHistIndexExists() const override {
+#if defined(XGBOOST_USE_METAL)
+    std::lock_guard<std::mutex> lock{metal_matrix_mutex_};
+    return static_cast<bool>(gradient_index_) || static_cast<bool>(metal_gradient_index_);
+#else
+    return static_cast<bool>(gradient_index_);
+#endif
+  }
   bool SparsePageExists() const override { return true; }
 
  private:

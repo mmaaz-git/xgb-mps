@@ -25,6 +25,10 @@
 #include "xgboost/c_api.h"
 #include "xgboost/data.h"
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ellpack.h"
+#endif
+
 namespace xgboost::data {
 MetaInfo& SimpleDMatrix::Info() { return info_; }
 
@@ -129,53 +133,102 @@ BatchSet<EllpackPage> SimpleDMatrix::GetEllpackBatches(Context const* ctx,
 
 BatchSet<GHistIndexMatrix> SimpleDMatrix::GetGradientIndex(Context const* ctx,
                                                            const BatchParam& param) {
+#if defined(XGBOOST_USE_METAL)
+  std::lock_guard<std::mutex> lock{metal_matrix_mutex_};
+#endif
   detail::CheckEmpty(batch_param_, param);
-  // Check whether we can regenerate the gradient index. This is to keep the consistency
-  // between evaluation data and training data.
-  if (gradient_index_ && param.Initialized() && param.forbid_regen) {
+  bool exists = static_cast<bool>(gradient_index_);
+#if defined(XGBOOST_USE_METAL)
+  exists = exists || static_cast<bool>(metal_gradient_index_);
+#endif
+  if (exists && param.Initialized() && param.forbid_regen) {
     if (detail::RegenGHist(batch_param_, param)) {
       CHECK_EQ(batch_param_.max_bin, param.max_bin) << error::InconsistentMaxBin();
     }
     CHECK(!detail::RegenGHist(batch_param_, param)) << "Inconsistent sparse threshold.";
   }
   // Ordinary CPU and Metal matrices use different sketch algorithms. Empty
-  // parameters (prediction/cut inspection) and fixed reference cuts must retain
-  // the existing index, just as CPU-to-CUDA QuantileDMatrix conversion does.
-  bool backend_changed = param.Initialized() && !param.forbid_regen && !ctx->IsCUDA() &&
-                         gradient_index_metal_ != ctx->IsMPS();
-  if (!gradient_index_ || detail::RegenGHist(batch_param_, param) || backend_changed) {
-    // GIDX page doesn't exist, generate it
+  // parameters and fixed reference cuts retain the current generation.
+  bool backend_changed = param.Initialized() && !param.forbid_regen && !param.for_cuts &&
+                         !ctx->IsCUDA() && gradient_index_metal_ != ctx->IsMPS();
+  if (!exists || detail::RegenGHist(batch_param_, param) || backend_changed) {
     LOG(DEBUG) << "Generating new Gradient Index.";
-    // These places can ask for a CSR gidx:
-    // - CPU Hist: the ctx must be on CPU.
-    // - IterativeDMatrix::InitFromCPU: The ctx must be on CPU.
-    // - IterativeDMatrix::InitFromCUDA: It asks for gidx only if it exists. It should not
-    //   regen, otherwise it indicates a mismatched parameter like max_bin.
     CHECK_GE(param.max_bin, 2);
-    // Used only by approx.
     auto sorted_sketch = param.regen;
-    if (!ctx->IsCUDA()) {
-      // The context passed in is on CPU, we pick it first since we prioritize the context
-      // in Booster.
-      gradient_index_.reset(new GHistIndexMatrix{ctx, this, param.max_bin, param.sparse_thresh,
-                                                 sorted_sketch, param.hess});
-    } else if (!fmat_ctx_.IsCUDA()) {
-      // DMatrix was initialized on CPU, we use the context from initialization.
-      gradient_index_.reset(new GHistIndexMatrix{&fmat_ctx_, this, param.max_bin,
-                                                 param.sparse_thresh, sorted_sketch, param.hess});
-    } else {
-      // Mismatched parameter, user set a new max_bin during training.
-      auto cpu_ctx = ctx->MakeCPU();
-      gradient_index_.reset(new GHistIndexMatrix{&cpu_ctx, this, param.max_bin, param.sparse_thresh,
-                                                 sorted_sketch, param.hess});
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) {
+      auto cuts = common::SketchOnDMatrix(ctx, this, param.max_bin, sorted_sketch, param.hess);
+      // CUDA GetRowStride also reads host CSR row pointers.
+      bst_idx_t stride = 0;
+      auto const& offsets = sparse_page_->offset.ConstHostVector();
+      for (std::size_t r = 1; r < offsets.size(); ++r)
+        stride = std::max<bst_idx_t>(stride, offsets[r] - offsets[r - 1]);
+      auto layout = common::metal::MakeEllpackInfo(cuts, stride, this->IsDense());
+      auto compressed = common::metal::MakeCompressedPage(layout, Info().num_row_, 0);
+      compressed->PushCSR(*sparse_page_, cuts, Info().feature_types.ConstHostSpan());
+      compressed->Commit(0.0);
+      CHECK_EQ(compressed->NonMissing(), Info().num_nonzero_);
+      auto view = std::make_shared<GHistIndexMatrix>();
+      compressed->View(cuts, param.max_bin, false, view.get());
+      metal_gradient_index_ = std::move(view);
+      gradient_index_.reset();
+    } else
+#endif
+    {
+      // CPU and CUDA callers preserve the original host sketch/context behavior.
+      auto cpu_ctx = ctx->IsCUDA() && fmat_ctx_.IsCUDA() ? ctx->MakeCPU() : fmat_ctx_;
+      auto access_ctx = ctx->IsCUDA() ? &cpu_ctx : ctx;
+      auto host = std::make_shared<GHistIndexMatrix>(
+          access_ctx, this, param.max_bin, param.sparse_thresh, sorted_sketch, param.hess);
+      gradient_index_ = std::move(host);
+#if defined(XGBOOST_USE_METAL)
+      metal_gradient_index_.reset();
+#endif
     }
-
     gradient_index_metal_ = ctx->IsMPS();
     batch_param_ = param.MakeCache();
     CHECK_EQ(batch_param_.hess.data(), param.hess.data());
   }
+  auto page = gradient_index_;
+#if defined(XGBOOST_USE_METAL)
+  if (param.for_cuts) {
+    // Metadata access uses whichever representation exists, regardless of the
+    // initialization context; it must not upload bins or create a CPU mirror.
+    page = metal_gradient_index_ ? metal_gradient_index_ : gradient_index_;
+  } else if (ctx->IsMPS()) {
+    if (!metal_gradient_index_) {
+      CHECK(gradient_index_);
+      auto const& host = *gradient_index_;
+      bst_idx_t stride = 0;
+      for (bst_idx_t r = 0; r < host.Size(); ++r)
+        stride = std::max<bst_idx_t>(stride, host.row_ptr[r + 1] - host.row_ptr[r]);
+      auto layout = common::metal::MakeEllpackInfo(host.cut, stride, host.IsDense());
+      auto compressed = common::metal::MakeCompressedPage(layout, host.Size(), 0);
+      compressed->Pack(host);
+      compressed->Commit(0.0);
+      CHECK_EQ(compressed->NonMissing(), Info().num_nonzero_);
+      auto view = std::make_shared<GHistIndexMatrix>();
+      compressed->View(host.cut, batch_param_.max_bin, false, view.get());
+      metal_gradient_index_ = std::move(view);
+    }
+    page = metal_gradient_index_;
+  } else if (!gradient_index_) {
+    CHECK(metal_gradient_index_);
+    auto host = std::make_shared<GHistIndexMatrix>();
+    host->cut = metal_gradient_index_->cut;
+    host->base_rowid = metal_gradient_index_->base_rowid;
+    host->max_numeric_bins_per_feat = metal_gradient_index_->max_numeric_bins_per_feat;
+    host->SetDense(metal_gradient_index_->IsDense());
+    host->SetMetalRows(metal_gradient_index_->Size());
+    host->metal_page = std::atomic_load(&metal_gradient_index_->metal_page);
+    auto cpu_ctx = ctx->MakeCPU();
+    common::metal::MaterializeHost(&cpu_ctx, batch_param_.sparse_thresh, host.get());
+    gradient_index_ = std::move(host);
+    page = gradient_index_;
+  }
+#endif
   auto begin_iter = BatchIterator<GHistIndexMatrix>(
-      new SimpleBatchIteratorImpl<GHistIndexMatrix>(gradient_index_));
+      new SimpleBatchIteratorImpl<GHistIndexMatrix>(std::move(page)));
   return BatchSet<GHistIndexMatrix>(begin_iter);
 }
 

@@ -97,7 +97,7 @@ must be reported rather than hidden by widening test tolerances.
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add GPU dense/columnar ingestion, resident sketches and bins; native device arrays and distributed sketch collectives remain open |
-| Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Disk mode retains host gradient-index pages. Ordinary DMatrix compressed storage, compressed disk pages/internal ELLPACK save/load, and optional Snappy cache compression remain open |
+| Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Ordinary in-memory DMatrix now compresses raw CSR directly with separate lazy CPU views and cache-generation tracking. Disk mode retains host gradient-index pages. Compressed disk pages/internal ELLPACK save/load and optional Snappy cache compression remain open |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Prediction/SHAP row-level mapping and raw-input preparation now run on GPU; explicit MPS QuantileDMatrix training adapters also recode on GPU; dictionary storage/copies and general metadata remain host |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
@@ -367,7 +367,7 @@ This does not complete compressed matrix ownership. The subsequent direct
 construction step below removes temporary host quantized bins from this path.
 At that checkpoint restoration materialized host gradient-index/column mirrors.
 The subsequent consumer/ownership steps below read compressed symbols and create
-host mirrors only for CPU access. Open areas include ordinary DMatrix compressed storage,
+host mirrors only for CPU access. Open areas include disk-backed compressed storage,
 CUDA's optional Snappy/nvcomp compression/decompression, native
 Metal array/half interfaces, metadata ownership and GPU collectives. Shared/private
 cache bytes do not measure whole-process memory savings. No speedup is claimed.
@@ -613,13 +613,90 @@ margins/leaves and CPU exports remain exact; SHAP retains the existing 2e-5 tole
 The focused existing regression passes 249 cases; the new public/changed-iterator
 run passes 32 cases (27 new plus all five changed-iterator checks).
 
-Ordinary DMatrix pages, compressed disk caches/internal ELLPACK save/load, optional
-Snappy, native device arrays, general metadata/state and collectives remain open.
+Ordinary DMatrix ownership was still open at that checkpoint; the next step below
+extends it to ordinary in-memory matrices. Compressed disk caches/internal ELLPACK
+save/load, optional Snappy, native device arrays, state and collectives remain open.
 This is ownership/coverage work, with no new performance, whole-process memory,
 NVIDIA execution or cross-Apple claim.
 Full regression passes **2,224 Python tests, one skip**, every rebuilt native suite
 and the CPU-only build/API checks (2026-11-04, 18:29:39–18:35:28 UTC).
 [Validation record](../validation/cuda-inmemory-ellpack-m3.txt).
+
+## Ordinary in-memory matrices: direct CSR compression
+
+`SimpleDMatrix` now constructs MPS quantized pages directly from raw CSR through
+`CompressedPage::PushCSR`, without an eager host gradient-index/column mirror or
+an intermediate typed GPU index. It retains the original raw CSR, as CUDA does.
+The source contract is `ellpack_page.cu::EllpackPageImpl(DMatrix*)`,
+`CreateHistIndices`, and `CompressBinEllpackKernel`.
+
+The kernel implements dense, feature-relative sparse and global-bin sparse
+layouts. Relative sparse rows locate feature slots with lower-bound search;
+numeric bins use clamped upper-bound search, categorical bins use lower-bound
+search with `AsCat` conversion, and null slots are written explicitly. Output
+row offsets cover appended pages and subwindows; input row offsets can be nonzero.
+Raw row pointers and entries upload in bounded row windows. CUDA's
+`TotalMemory/(16*stride*sizeof(Entry))` policy is mapped to Apple's recommended
+working-set budget and maximum buffer length. An internal diagnostic argument can
+reduce the row-window limit. Empty/zero-stride pages avoid division by zero and
+spurious work. Row-width calculation remains on CPU, matching CUDA `GetRowStride`.
+
+The existing CUDA-derived sketch handles optional Hessians and weights. Cache
+regeneration still respects max-bin/sparse-threshold changes, explicit regeneration
+and mutable CPU/MPS sketch changes. Fixed references and empty-parameter readers
+retain cuts. Constant-Hessian `approx` reuses its page; variable-Hessian `approx`
+regenerates per updater invocation. Old batch readers retain their original
+buffers after regeneration. A mutex serializes publication and first conversion.
+
+CPU-only batch access materializes a separate host view once. Approximate pages
+with a NaN sparse threshold omit columns, matching ordinary GHist construction;
+normal hist pages create columns. A CPU-origin fixed-cut request can instead pack
+existing host bins once. Neither direction rereads raw input after conversion.
+Mutable MPS training after CPU training explicitly regenerates CUDA-derived cuts
+and compresses raw CSR, rather than retaining the CPU sketch's bins.
+
+`BatchParam::for_cuts` marks metadata-only requests from cut export/reference
+lookup; it is cleared in cached generation parameters. Such a request returns an
+existing representation without uploading bins or materializing CPU arrays. This
+is needed because ordinary matrices keep their initialization context even when
+training generated MPS cuts. Raw `get_data()` and ordinary CPU prediction use the
+original CSR and therefore need no quantized host mirror either.
+
+Three counters record completed raw compression dispatches, values and uploaded
+raw CSR bytes: `ellpack_csr_dispatches`, `ellpack_csr_values`, and
+`ellpack_csr_input_bytes`. Bytes include each window's rows/entries, excluding cut
+metadata. Existing host-bin upload, materialization and typed-index counters must
+remain unchanged on direct construction. CPU-only builds report zeros.
+
+Native raw-format validation passes **70 cases / 568 windows / 120,537 exact bytes /
+7,573,364 fields**, plus 12 expected errors. An independent scalar search and the
+upstream compressed writer verify every byte, row pointer, global bin and hit count.
+Tests include windows 1/7/31/default, appended empty pages, nonzero CSR offsets,
+zero rows/cuts, dense/relative/sparse/all-missing layouts, numerical subnormals,
+categorical fractional values and clamping, max-bin 3/17/257/65537, and a 65,537-row
+sparse case. Malformed row widths, features, cut points and construction order fail.
+
+Native matrix validation passes **130 cases / 1,173,186 exact fields**, including
+**10 concurrent conversions and 35 regenerated views**. Independent CPU searches
+use the same cuts across hist/approx, weights, categories, layouts and bin widths.
+It checks metadata-only access, exact CPU rows/bins/hits/columns, fixed-reference
+errors, CPU-origin conversion, backend switching and GPU reads after regeneration
+and matrix destruction. The focused existing regression passes 303 tests.
+
+**40 new public tests** cover scalar hist/approx, constant/variable Hessians,
+vector hist, DART, CPU predictions, exact SHAP/interactions, supported approximate
+SHAP, model reload, raw export, references, max-bin changes and cross-booster reuse.
+Unsupported vector approx and approximate vector SHAP are upstream limitations;
+the latter's error is checked. Approx-to-hist reference construction retains the
+existing sparse-threshold mismatch error. Numeric tolerances remain unchanged.
+
+Disk-backed `SparsePageDMatrix` and `ExtMemQuantileDMatrix(on_host=False)` still
+use host gradient-index pages. Compressed disk storage/internal ELLPACK save/load,
+optional Snappy, native Apple arrays, general state/metadata and collectives remain
+open. No performance, whole-process memory, NVIDIA execution or cross-Apple claim.
+Full regression passes **2,264 Python tests, one skip**, every rebuilt native suite
+and the CPU-only build/API checks (2026-11-04, 18:46:04–18:52:37 UTC).
+[Validation record](../validation/cuda-ordinary-ellpack-m3.txt).
 
 ## Prediction input preparation and row-level recoding
 

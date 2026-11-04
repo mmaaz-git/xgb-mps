@@ -29,7 +29,10 @@ def test_resident_rows_and_page_cache(metal, layout, growth):
     recorded = RecordedSquaredError()
     gpu = xgb.train(p | {"device": "mps"}, d, 7, obj=recorded)
     after = xgb.metal_info()
-    assert after["index_uploads"] - before["index_uploads"] == 1
+    assert after["ellpack_csr_values"] - before["ellpack_csr_values"] == d.num_nonmissing()
+    assert after["ellpack_view_pages"] - before["ellpack_view_pages"] == 1
+    for key in ["index_uploads", "ellpack_pack_input_bytes", "ellpack_host_materializations"]:
+        assert after[key] == before[key], key
     assert after["row_init_dispatches"] - before["row_init_dispatches"] == 7
     assert after["leaf_partition_dispatches"] - before["leaf_partition_dispatches"] == 7
     assert after["partition_dispatches"] > before["partition_dispatches"]
@@ -37,9 +40,10 @@ def test_resident_rows_and_page_cache(metal, layout, growth):
     assert after["resident_histogram_dispatches"] - before["resident_histogram_dispatches"] == after["histogram_dispatches"] - before["histogram_dispatches"]
     assert min(audit_recorded(gpu,d,x,recorded,p)) > 0
     # Reuse the source page in a different booster without reuploading immutable bins.
-    before = xgb.metal_info()["index_uploads"]
+    before = xgb.metal_info()
     fresh = xgb.train(p | {"device": "mps"}, d, 7)
-    assert xgb.metal_info()["index_uploads"] == before
+    for key in ["index_uploads", "ellpack_csr_dispatches", "ellpack_view_pages", "ellpack_host_materializations"]:
+        assert xgb.metal_info()[key] == before[key], key
     np.testing.assert_array_equal(fresh.predict(d), gpu.predict(d))
 
 
@@ -50,9 +54,12 @@ def test_quantized_page_invalidation_and_device_switch(metal):
     for bins in [16, 257, 64, 16]:
         p = dict(tree_method="hist", max_bin=bins, max_depth=3, nthread=2)
         xgb.train(p | {"device": "cpu"}, d, 3)  # Populate the CPU cache before switching.
-        before = xgb.metal_info()["index_uploads"]
+        before = xgb.metal_info()
         model = xgb.train(p | {"device": "mps"}, d, 3)
-        assert xgb.metal_info()["index_uploads"] - before == 1
+        after = xgb.metal_info()
+        assert after["ellpack_csr_values"] - before["ellpack_csr_values"] == d.num_nonmissing()
+        for key in ["index_uploads", "ellpack_pack_input_bytes", "ellpack_host_materializations"]:
+            assert after[key] == before[key], key
         reference = xgb.QuantileDMatrix(x, label=x[:, 0] - x[:, 1], ref=d, max_bin=bins)
         expected = xgb.train(p | {"device": "cpu"}, reference, 3).predict(reference)
         np.testing.assert_allclose(model.predict(d), expected, rtol=2e-5, atol=2e-5)

@@ -261,6 +261,8 @@ struct BatchParam {
    * @brief Forbid regenerating the gradient index. Used for internal validation.
    */
   bool forbid_regen{false};
+  /** @brief Request only cut metadata; returned batches need not have host bins. */
+  bool for_cuts{false};
   /**
    * @brief Parameter used to generate column matrix for hist.
    */
@@ -314,6 +316,7 @@ struct BatchParam {
     // first place.
     p.regen = false;
     p.forbid_regen = false;
+    p.for_cuts = false;
     return p;
   }
 };

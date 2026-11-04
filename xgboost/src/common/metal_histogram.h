@@ -104,6 +104,7 @@ struct Statistics {
       ellpack_input_dispatches;
   std::uint64_t ellpack_view_pages, ellpack_count_dispatches, ellpack_host_materializations,
       ellpack_host_readback_bytes;
+  std::uint64_t ellpack_csr_dispatches, ellpack_csr_values, ellpack_csr_input_bytes;
 };
 
 class Histogram {

@@ -32,6 +32,10 @@ class CompressedPage {
   virtual std::size_t HostBytes() const = 0;
   virtual std::size_t DeviceBytes() const = 0;
   virtual void Pack(GHistIndexMatrix const& input) = 0;
+  // Append raw CSR rows directly into compressed symbols. Zero window_rows selects
+  // a bounded device-budget window; a nonzero value may reduce it for diagnostics.
+  virtual void PushCSR(SparsePage const& input, HistogramCuts const& cuts,
+                       Span<FeatureType const> types, bst_idx_t window_rows = 0) = 0;
   // Ordered raw adapter windows write bins directly into the compressed buffer.
   virtual void BeginAdapter(HistogramCuts const& cuts, Span<FeatureType const> types) = 0;
   virtual void PushAdapter(AdapterInput const& input) = 0;

@@ -28,6 +28,7 @@ void GetCutsFromRef(Context const* ctx, std::shared_ptr<DMatrix> ref, bst_featur
   CHECK(ref);
   CHECK(p_cuts);
   p.forbid_regen = true;
+  p.for_cuts = true;
   // Fetch cuts from GIDX
   auto csr = [&] {
     // A reference needs only cut metadata. Use its existing representation when

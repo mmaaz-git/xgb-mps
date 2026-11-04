@@ -1,0 +1,146 @@
+Direct raw CSR compression for ordinary in-memory Metal matrices
+===============================================================
+Machine: Apple M3 Air, 8 CPU / 10 GPU cores, 16 GB unified memory.
+Date: 2026-11-04. Coverage/ownership work; no new benchmark.
+
+Implementation and CUDA contract
+--------------------------------
+SimpleDMatrix MPS generation now uses CUDA-derived SketchOnDMatrix with optional
+Hessians/weights, host maximum row width, and direct compressed raw CSR writes.
+Authority: ellpack_page.cu EllpackPageImpl(DMatrix*), CreateHistIndices and
+CompressBinEllpackKernel; ellpack_page.cuh GetRowStride intentionally uses host
+row pointers. Raw CSR remains in the ordinary matrix, matching upstream storage.
+
+CompressedPage::PushCSR appends complete raw pages using bounded row windows.
+The GPU kernel handles dense, feature-relative sparse and global-bin sparse
+layouts; relative sparse slots use feature lower_bound, numeric values use upper
+bound, categories use AsCat/lower_bound, all clamp to the final cut and null slots
+are written. Nonzero input entry offsets, appended page rows and subwindows are
+accounted separately. Zero-stride pages require zero input entries and no dispatch.
+CUDA's total-memory/(16*stride*sizeof(Entry)) row budget is mapped to Apple's
+recommended working-set budget and maximum buffer length. An internal window_rows
+argument may reduce the automatic window for diagnostics; it cannot enlarge it.
+Actual final compressed nnz is counted on GPU and checked against matrix metadata.
+
+Generation creates a GPU view without host rows/bins/hits/columns or a typed GPU
+index/transpose. Separate CPU/GPU views are published under a mutex. Explicit CPU
+batch access materializes once and retains its compressed view. Approx pages with
+NaN sparse threshold skip column initialization, matching the existing ordinary
+GHist constructor. Empty/fixed requests keep cuts; mutable backend/maxbin/threshold
+changes and explicit regen build a new generation. Retained batches keep old data.
+Constant-Hessian approx reuses cuts; variable-Hessian approx rebuilds each updater
+invocation. CPU-origin fixed-cut MPS conversion uploads bins once; mutable MPS
+training instead constructs CUDA-derived cuts and compresses raw CSR.
+
+BatchParam::for_cuts explicitly identifies cut-export/reference requests, and
+MakeCache clears it. SimpleDMatrix returns existing metadata without conversion,
+even when its initialization context is CPU and active cuts are MPS-generated.
+Other batch consumers retain explicit CPU/GPU selection. Fixed-reference parameter
+errors are preserved. Raw get_data and ordinary CPU prediction use original CSR,
+so they do not request quantized host mirrors.
+
+Statistics appended: ellpack_csr_dispatches, ellpack_csr_values,
+ellpack_csr_input_bytes (completed commands; row+entry upload bytes, excluding cuts).
+CPU-only reporting is zero. All native callers are rebuilt for the changed ABI.
+Other new code does not change histogram/split/sketch arithmetic or tolerances.
+
+Focused native raw-format evidence
+-----------------------------------
+tests/metal_ellpack_csr_api.cc, MTL_DEBUG_LAYER=1:
+70 cases / 568 windows / 120,537 exact bytes / 7,573,364 fields /
+12 expected errors PASS (results/test-ordinary-ellpack-focused-v1.log).
+
+Scalar upper/lower-bound searches and upstream CompressedBufferWriter independently
+produce complete expected bytes, global bins, row pointers and hit counts. Cases
+cross max-bin 3/17/257/65537, dense/relative/sparse/all-missing layouts and window
+rows 0(auto)/1/7/31. Appended empty pages and a three-entry prefix test nonzero CSR
+origins; zero rows/cuts and a 65,537-row sparse case extend the grid. Numerical
+subnormals, signed zero, category fractions and high-value clamping are included.
+Counters require exact window/upload/value accounting and no host-bin staging,
+materialization or diagnostic raw readback during compression. Restored CPU arrays
+match exactly. Invalid ordering/feature counts/cut points/row widths, incomplete
+construction, out-of-order bases and post-commit writes are rejected.
+
+Focused native matrix evidence
+-------------------------------
+tests/metal_ordinary_ellpack_api.cc, MTL_DEBUG_LAYER=1:
+130 cases / 1,173,186 exact fields / 10 concurrent conversions /
+35 regenerated views PASS (results/test-ordinary-ellpack-native-v1.log).
+
+128 cases cross bins 2/17/257/65537, four layouts, numerical/categorical, weights
+and hist/approx; two zero-row cases extend the grid. Independent CPU bin searches
+use the same cuts and compare every row offset/bin/hit and hist column. Approx
+mirrors intentionally omit unused columns. Six mixed CPU/GPU readers are released
+together in ten cases, verifying one stable representation per device and exactly
+one host conversion. Metadata reads and failed references produce no host mirror.
+Changed-bin generations retain old readers; GPU input reconstruction remains exact
+after matrix destruction. A CPU-origin fixture additionally checks no upload for
+cut-only access, one-time fixed-cut packing, fresh raw CSR compression for mutable
+MPS training, and return to the CPU sketch on mutable CPU training.
+
+Focused public evidence
+------------------------
+Existing binning/training/approx/in-memory/adapter regression:
+303 passed, one warning, 30.84 seconds (test-ordinary-ellpack-focused-v1.log).
+Existing ordinary ownership assertions now require direct CSR values and absence
+of typed-index upload/host bins. External approx keeps its existing typed-bin checks.
+
+New public suite tests/test_metal_ordinary_ellpack.py:
+40 passed, one warning, 1.77 seconds (test-ordinary-ellpack-public-v4.log).
+35 consumer cases cover five layouts and scalar hist, constant/variable-Hessian
+scalar approx, vector hist and all three scalar DART variants. Five cases repeatedly
+switch CPU/MPS and max-bin values, validate fixed references and failed references,
+and compare CPU models using identical cuts. Exact same-model margin/leaf/CPU
+approximate SHAP checks and existing 2e-5 exact SHAP/interactions tolerances remain.
+Model reload, original CSR export, cut metadata and cross-booster reuse are checked.
+Counters prove no quantized host mirror or typed bin upload for GPU-only training,
+ordinary CPU prediction/export and metadata lookup. Invalid vector approximate
+SHAP is checked against both CPU and MPS fallback. DART alias deprecation accounts
+for the focused warning.
+
+Failures investigated
+----------------------
+Production build, focused raw-format/native-matrix runs and the 303-case existing
+regression passed initially. New fixture corrections were source-driven:
+- Initially expected three approx generations for squared error. Both the existing
+  MPS updater and CUDA use !task.const_hess; constant-Hessian tests now require one
+  generation. Added pseudo-Huber cases explicitly require three generations.
+- Approx-to-hist QuantileDMatrix references fail the existing sparse-threshold
+  mismatch check in SimpleDMatrix (also present in CUDA Ellpack batching). Tests
+  preserve that error and verify metadata access itself remains without conversion.
+- Approximate vector SHAP is unsupported in upstream shap.cc; test the explicit
+  error, while keeping all supported exact vector SHAP checks.
+- Reloaded vector models must keep their serialized three-target intercept rather
+  than overwrite it with the training fixture's scalar .5. Reload now sets only
+  device/nthread; prediction equality checks are unchanged.
+- Upstream gbtree.cc rejects vector-leaf approx before construction. The public
+  grid now covers supported vector hist, with scalar/multiple-target approx already
+  covered in the existing regression. No unsupported API was invented for tests.
+No numerical tolerance was widened or numerical comparison removed to hide a bug.
+
+Full validation
+----------------
+Driver results/run-ordinary-ellpack-full-v1.sh, tmux xgb-ordinary-ellpack-full-v1.
+2026-11-04T18:46:04Z to 18:52:37Z (6 minutes 33 seconds), FULL_EXIT=0.
+Final Metal build and every rebuilt native suite/reference updater passed.
+Python: 2,264 passed, one skipped, 388 warnings in 116.90 seconds.
+CPU-only configure/build and API/device/cache checks passed. The full run repeats
+both new native suites with the exact focused counts above, and every existing
+compressed/in-memory/external-cache native suite. Only documentation changed once
+the full run started; git diff --check passed.
+Stages: final Metal build; all rebuilt native suites/reference updater/Python;
+CPU-only configure/build and API/device/cache checks.
+Logs: results/ordinary-ellpack-full-driver-v1.log,
+build-ordinary-ellpack-final-v1.log, test-ordinary-ellpack-full-v1.log,
+configure-cpu-ordinary-ellpack-v1.log, build-cpu-ordinary-ellpack-v1.log,
+check-cpu-ordinary-ellpack-v1.log.
+
+Remaining scope
+----------------
+Disk-backed SparsePageDMatrix and ExtMemQuantileDMatrix(on_host=False) still use
+host gradient-index caches. Compressed disk representation/internal ELLPACK
+save/load, optional Snappy/nvcomp compression, native Apple GPU arrays/half input,
+general metadata/state ownership, remaining CUDA algorithm audits and distributed
+GPU collectives remain open. Small metadata, raw ordinary CSR, source host row
+width loops and host orchestration are intentionally retained. No speedup,
+whole-process memory, NVIDIA-equivalence or cross-Apple claim is made.

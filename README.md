@@ -14,7 +14,26 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **compressed in-memory QuantileDMatrix ownership**. Explicit MPS
+Latest step: **direct raw CSR compression for ordinary in-memory matrices**.
+MPS training now builds ELLPACK directly from bounded windows of raw rows and
+values, without a host quantized matrix or a typed GPU-bin upload. CPU quantized
+views are materialized only on explicit demand. Metadata-only cut lookup, raw
+`get_data()` export and ordinary CPU prediction leave those mirrors absent.
+
+CUDA sketch selection and cache regeneration are preserved: constant-Hessian
+`approx` reuses cuts, variable-Hessian `approx` regenerates them, and mutable
+CPU/MPS training switches choose the corresponding sketch. Retained readers keep
+their old generation when a new one is published.
+
+Native validation passes **70 raw-format cases / 568 windows / 120,537 exact bytes**
+and **130 matrix cases / 1,173,186 exact fields**, including concurrent conversion
+and retained views after regeneration/destruction. **303 existing focused tests**
+and **40 new public API cases** pass. Full regression passes **2,264 Python tests,
+one skip**, every rebuilt native suite and the CPU-only build/API checks.
+No new benchmark was run.
+[Ordinary-matrix validation](validation/cuda-ordinary-ellpack-m3.txt).
+
+The preceding step added **compressed in-memory QuantileDMatrix ownership**. Explicit MPS
 construction writes directly to GPU ELLPACK pages and joins input batches there.
 CPU-created quantile matrices compress their existing bins once on first MPS use.
 Training and prediction retain a GPU view with no host bin/row/column arrays;
@@ -26,7 +45,7 @@ New native validation passes **260 cases / 3,266,138 exact fields**, including
 devices, CPU export, model reload and a sparse input crossing the actual
 67-million-slot window boundary. Two new iterator checks reject changed column
 counts and increased row width. Existing CPU comparisons and tolerances are retained.
-Full regression passes **2,224 Python tests, one skip**, every rebuilt native suite
+Full regression at that checkpoint passed **2,224 Python tests, one skip**, every rebuilt native suite
 and the CPU-only build/API checks. No new speedup is claimed.
 [In-memory validation](validation/cuda-inmemory-ellpack-m3.txt).
 
@@ -93,7 +112,7 @@ Apple shared and private buffers both use unified memory; this is a storage/acce
 policy, not additional VRAM capacity. Direct construction above removes that
 checkpoint's intermediate host bins. The later consumer/ownership steps above
 retain compressed GPU views and create host mirrors only for CPU access. CUDA's
-optional Snappy cache compression, ordinary DMatrix compressed ownership, native Apple GPU tensor handles and
+optional Snappy cache compression, disk-backed matrix compressed ownership, native Apple GPU tensor handles and
 general device ownership remain unfinished. No new performance measurement was made.
 
 The preceding disk-backed construction step supports `DataIter(on_host=False)`:
@@ -185,8 +204,8 @@ The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
-The major remaining areas are ordinary DMatrix compressed storage, compressed disk
-caches and internal ELLPACK save/load, optional cache compression, native device-array ingestion,
+The major remaining areas are compressed disk caches for ordinary/external quantile
+matrices, internal ELLPACK save/load, optional cache compression, native device-array ingestion,
 remaining initialization/state and metadata operations,
 CUDA algorithm alignment, Apple GPU array interoperability and distributed collectives. Sensitive AFT tails and some
 long-run ranking and Covertype comparisons have numerical differences.
@@ -309,10 +328,10 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly; GPU-owned interaction masks and monotonic bounds, including initialization/growth; unions and feature filtering on GPU; candidate staging and tree metadata remain host |
 | Vector model storage | Bit-preserving GPU copies for parent/child weights and category words, with GPU FP32 learning-rate scaling of new child weights; allocation/growth and metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
-| Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; explicit MPS quantile adapters also bin on GPU; in-memory quantile matrices and external compressed caches create host mirrors only for CPU access; ordinary DMatrix host mirrors remain |
+| Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; explicit MPS quantile adapters also bin on GPU; ordinary in-memory and quantile matrices plus external compressed caches create quantized host mirrors only for explicit CPU batch access; disk-backed ordinary pages retain host bins |
 | Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Explicit MPS in-memory and external quantile adapters feed resident sketches; native device arrays and distributed sketches remain open |
 | Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Model dictionary copies, persistent storage and row-level map application remain host |
-| Quantized data cache | Ordinary DMatrix pages retain typed GPU bins and dense transpose. In-memory quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly. Prefetch retains device-only views; CPU access explicitly materializes host mirrors. Optional Snappy compression, compressed disk storage and ordinary DMatrix compressed storage remain open |
+| Quantized data cache | Ordinary in-memory DMatrix pages use raw CSR-to-ELLPACK compression. In-memory quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly. Prefetch retains device-only views; CPU access explicitly materializes host mirrors. Optional Snappy compression, compressed disk storage and internal ELLPACK save/load remain open |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
 | Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; scalar/vector split statistics retain integers |
@@ -885,7 +904,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Read compressed external-cache pages directly in histograms, partitions and prediction/SHAP input preparation.
 - [x] Create external-cache host mirrors only for CPU access; preserve compressed views across prefetch/device switches.
 - [x] Keep in-memory quantile matrices compressed, with one-time CPU conversion and stable concurrent CPU/GPU views.
-- [ ] Extend compressed storage and host ownership to ordinary DMatrix pages.
+- [x] Compress ordinary in-memory DMatrix raw CSR directly; retain separate CPU views and cache-generation rules.
 - [ ] Port compressed disk caches and internal ELLPACK save/load.
 - [ ] Port optional Snappy cache compression.
 - [ ] Complete native device arrays and remaining metadata/state operations.

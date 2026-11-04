@@ -30,8 +30,11 @@ def test_bin_assignment_matches_cpu(metal, layout, bins, categorical):
     before = xgb.metal_info()
     gpu = xgb.train(p | {"device": "mps"}, gpu_data, 3)
     after = xgb.metal_info()
-    assert after["binning_dispatches"] - before["binning_dispatches"] == 1
-    assert after["binning_gpu_time_ns"] > before["binning_gpu_time_ns"]
+    assert after["ellpack_csr_dispatches"] - before["ellpack_csr_dispatches"] == 1
+    assert after["ellpack_csr_values"] - before["ellpack_csr_values"] == gpu_data.num_nonmissing()
+    for key in ["binning_dispatches", "index_uploads", "ellpack_host_materializations", "ellpack_pack_input_bytes"]:
+        assert after[key] == before[key], key
+    assert after["ellpack_gpu_time_ns"] > before["ellpack_gpu_time_ns"]
     # Bin identical cut candidates on the CPU; also check the ordinary Metal
     # cuts against the CUDA sketch equations independently.
     from cuda_sketch_reference import assert_cuts

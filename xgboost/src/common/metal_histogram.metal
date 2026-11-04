@@ -7668,6 +7668,51 @@ kernel void xgb_ellpack_pack(device const uchar* index [[buffer(0)]],
   }
   xgb_ellpack_write(output, i + p.row_offset * p.stride, p.bits, symbol);
 }
+// CUDA CompressBinEllpackKernel: raw CSR windows, with feature-relative symbols
+// for dense/relatively dense pages and global symbols for truly sparse pages.
+struct EllpackCSRParams { EllpackParams shape; ulong entries; };
+kernel void xgb_ellpack_csr(device const ulong* rows [[buffer(0)]],
+                            device const uint2* entries [[buffer(1)]],
+                            device const uint* ptrs [[buffer(2)]],
+                            device const uint* cuts [[buffer(3)]],
+                            device const uchar* categorical [[buffer(4)]],
+                            device atomic_uint* output [[buffer(5)]],
+                            device atomic_uint* status [[buffer(6)]],
+                            constant EllpackCSRParams& params [[buffer(7)]],
+                            uint2 tid [[thread_position_in_grid]]) {
+  auto p = params.shape;
+  if (ulong(tid.y) >= p.rows || tid.x >= p.stride) return;
+  ulong begin = rows[tid.y] - rows[0], end = rows[tid.y + 1] - rows[0];
+  if (begin > end || end > params.entries || end - begin > p.stride ||
+      (p.dense && end - begin != p.stride)) {
+    atomic_fetch_or_explicit(status, 1u, memory_order_relaxed);
+    return;
+  }
+  uint slot = tid.x, symbol = p.dense ? p.symbols : p.symbols - 1;
+  ulong entry = begin + slot;
+  bool relative = p.dense || p.stride == p.features;
+  if (relative && !p.dense) {
+    ulong low = begin, high = end;
+    while (low < high) {
+      ulong mid = low + (high - low) / 2;
+      if (entries[mid].x < slot) low = mid + 1;
+      else high = mid;
+    }
+    entry = low;
+    if (entry == end || entries[entry].x != slot) entry = end;
+  }
+  if (entry < end) {
+    auto value = entries[entry];
+    uint f = value.x;
+    if (f >= p.features || ptrs[f] == ptrs[f + 1] || (p.dense && f != slot)) {
+      atomic_fetch_or_explicit(status, 2u, memory_order_relaxed);
+      return;
+    }
+    symbol = xgb_search_bin(value.y, ptrs[f], ptrs[f + 1], categorical[f] != 0, cuts);
+    if (relative) { symbol -= ptrs[f]; slot = f; }
+  }
+  xgb_ellpack_write(output, (ulong(tid.y) + p.row_offset) * p.stride + slot, p.bits, symbol);
+}
 kernel void xgb_ellpack_copy(device const uchar* head [[buffer(0)]],
                              device const uchar* tail [[buffer(1)]],
                              device atomic_uint* output [[buffer(2)]],

@@ -256,6 +256,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ellpack_view_pages"] = Integer{static_cast<std::int64_t>(stats.ellpack_view_pages)};
   info["ellpack_count_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.ellpack_count_dispatches)};
+  info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
+  info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
+  info["ellpack_csr_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.ellpack_csr_input_bytes)};
   info["ellpack_host_materializations"] =
       Integer{static_cast<std::int64_t>(stats.ellpack_host_materializations)};
   info["ellpack_host_readback_bytes"] =
@@ -492,6 +496,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ellpack_input_dispatches"] = Integer{0};
   info["ellpack_view_pages"] = Integer{0};
   info["ellpack_count_dispatches"] = Integer{0};
+  info["ellpack_csr_dispatches"] = Integer{0};
+  info["ellpack_csr_values"] = Integer{0};
+  info["ellpack_csr_input_bytes"] = Integer{0};
   info["ellpack_host_materializations"] = Integer{0};
   info["ellpack_host_readback_bytes"] = Integer{0};
   info["adapter_prepare_dispatches"] = Integer{0};
@@ -1424,7 +1431,9 @@ void GetCutImpl(Context const *ctx, std::shared_ptr<DMatrix> p_m,
                 std::vector<std::uint64_t> *p_indptr, std::vector<float> *p_data) {
   auto &indptr = *p_indptr;
   auto &data = *p_data;
-  for (auto const &page : p_m->GetBatches<Page>(ctx, {})) {
+  BatchParam param;
+  param.for_cuts = true;
+  for (auto const &page : p_m->GetBatches<Page>(ctx, param)) {
     auto const &cut = page.Cuts();
     auto const &ptrs = cut.Ptrs();
     auto const &vals = cut.Values();

@@ -127,6 +127,7 @@ std::atomic<std::uint64_t> ellpack_adapter_dispatches{0}, ellpack_adapter_values
     ellpack_pack_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_histogram_dispatches{0}, ellpack_partition_dispatches{0},
     ellpack_input_dispatches{0};
+std::atomic<std::uint64_t> ellpack_csr_dispatches{0}, ellpack_csr_values{0}, ellpack_csr_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
     ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
 std::atomic<std::uint64_t> adapter_prepare_dispatches{0}, adapter_index_dispatches{0},
@@ -266,7 +267,7 @@ class Runtime {
   id<MTLComputePipelineState> input_prepare_pipeline;
   id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
       ellpack_copy_pipeline, ellpack_count_pipeline, ellpack_unpack_pipeline;
-  id<MTLComputePipelineState> ellpack_adapter_pipeline, ellpack_null_pipeline;
+  id<MTLComputePipelineState> ellpack_adapter_pipeline, ellpack_null_pipeline, ellpack_csr_pipeline;
   id<MTLComputePipelineState> ellpack_histogram_pipeline, ellpack_shared_histogram_pipeline,
       ellpack_partition_pipeline, ellpack_input_pipeline;
   id<MTLComputePipelineState> adapter_count_pipeline, adapter_scatter_pipeline,
@@ -361,6 +362,7 @@ class Runtime {
       ellpack_count_pipeline = make_pipeline(@"xgb_ellpack_count");
       ellpack_unpack_pipeline = make_pipeline(@"xgb_ellpack_unpack");
       ellpack_adapter_pipeline = make_pipeline(@"xgb_ellpack_adapter");
+      ellpack_csr_pipeline = make_pipeline(@"xgb_ellpack_csr");
       ellpack_null_pipeline = make_pipeline(@"xgb_ellpack_null");
       ellpack_histogram_pipeline = make_pipeline(@"xgb_histogram_ellpack");
       ellpack_shared_histogram_pipeline = make_pipeline(@"xgb_histogram_dense_shared_ellpack");
@@ -1891,7 +1893,10 @@ Statistics GetStatistics() {
           ellpack_view_pages.load(std::memory_order_relaxed),
           ellpack_count_dispatches.load(std::memory_order_relaxed),
           ellpack_host_materializations.load(std::memory_order_relaxed),
-          ellpack_host_readback_bytes.load(std::memory_order_relaxed)};
+          ellpack_host_readback_bytes.load(std::memory_order_relaxed),
+          ellpack_csr_dispatches.load(std::memory_order_relaxed),
+          ellpack_csr_values.load(std::memory_order_relaxed),
+          ellpack_csr_input_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6470,6 +6475,79 @@ class MetalCompressedPage final : public CompressedPage {
       written_ = rows_;
     }
   }
+  void PushCSR(SparsePage const& input, HistogramCuts const& cuts,
+               Span<FeatureType const> types, bst_idx_t window_rows) override {
+    @autoreleasepool {
+      CHECK(!committed_ && !adapter_active_);
+      CHECK_EQ(input.base_rowid, base_ + written_);
+      CHECK_LE(input.Size(), rows_ - written_);
+      CHECK_EQ(cuts.NumFeatures(), info_.features);
+      CHECK(types.empty() || types.size() == info_.features);
+      auto const& offsets = input.offset.ConstHostVector();
+      auto const& values = input.data.ConstHostVector();
+      CHECK_EQ(offsets.size(), input.Size() + 1);
+      CHECK_LE(offsets.front(), offsets.back());
+      CHECK_LE(offsets.back(), values.size());
+      if (!info_.row_stride) {
+        CHECK_EQ(offsets.front(), offsets.back());
+        written_ += input.Size();
+        return;
+      }
+      auto& rt = GetRuntime();
+      // CUDA uses TotalMemory/(16*stride*sizeof(Entry)); keep the same bounded
+      // row-window policy with Apple's working-set recommendation and buffer cap.
+      auto max_rows = std::max<std::uint64_t>(1, CacheWorkingSetBytes() / 16 /
+                                                   (info_.row_stride * sizeof(Entry)));
+      max_rows = std::min<std::uint64_t>(max_rows, rt.device.maxBufferLength /
+                                                    (info_.row_stride * sizeof(Entry)));
+      max_rows = std::min<std::uint64_t>(max_rows, rt.device.maxBufferLength / 8 - 1);
+      CHECK_GT(max_rows, 0);
+      if (window_rows) max_rows = std::min<std::uint64_t>(max_rows, window_rows);
+      auto ptrs = Upload(rt, cuts.Ptrs().data(), cuts.Ptrs().size() * 4);
+      auto cut_values = Upload(rt, cuts.Values().data(), cuts.Values().size() * 4);
+      std::vector<std::uint8_t> categories(info_.features, 0);
+      for (std::size_t f = 0; f < types.size(); ++f)
+        categories[f] = types[f] == FeatureType::kCategorical;
+      auto categorical = Upload(rt, categories.data(), categories.size());
+      for (bst_idx_t first = 0; first < input.Size(); first += max_rows) {
+        auto count = std::min<bst_idx_t>(max_rows, input.Size() - first);
+        auto begin = offsets[first], end = offsets[first + count];
+        CHECK_LE(begin, end);
+        CHECK_LE(end, values.size());
+        CHECK_LE(end - begin, count * info_.row_stride);
+        auto row_ptr = Upload(rt, offsets.data() + first, (count + 1) * 8);
+        auto entries = Upload(rt, values.empty() ? nullptr : values.data() + begin,
+                               (end - begin) * sizeof(Entry));
+        std::uint32_t zero = 0;
+        auto status = Upload(rt, &zero, 4);
+        struct { EllpackParams shape; std::uint64_t entries; } params{Params(), end - begin};
+        static_assert(sizeof(params) == 56);
+        params.shape.rows = count;
+        params.shape.row_offset = written_ + first;
+        auto command = [rt.queue commandBuffer];
+        auto e = [command computeCommandEncoder];
+        [e setComputePipelineState:rt.ellpack_csr_pipeline];
+        [e setBuffer:row_ptr offset:0 atIndex:0];
+        [e setBuffer:entries offset:0 atIndex:1];
+        [e setBuffer:ptrs offset:0 atIndex:2];
+        [e setBuffer:cut_values offset:0 atIndex:3];
+        [e setBuffer:categorical offset:0 atIndex:4];
+        [e setBuffer:buffer_ offset:0 atIndex:5];
+        [e setBuffer:status offset:0 atIndex:6];
+        [e setBytes:&params length:sizeof(params) atIndex:7];
+        [e dispatchThreads:MTLSizeMake(info_.row_stride, count, 1)
+            threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+        [e endEncoding];
+        CompleteOperation(command, &ellpack_csr_dispatches, &ellpack_gpu_time_ns);
+        CHECK_EQ(*static_cast<std::uint32_t const*>(status.contents), 0)
+            << "Metal CSR compression found invalid rows, features or cut points.";
+        ellpack_csr_values.fetch_add(end - begin, std::memory_order_relaxed);
+        ellpack_csr_input_bytes.fetch_add((count + 1) * 8 + (end - begin) * sizeof(Entry),
+                                          std::memory_order_relaxed);
+      }
+      written_ += input.Size();
+    }
+  }
   void BeginAdapter(HistogramCuts const& cuts, Span<FeatureType const> types) override {
     @autoreleasepool {
       CHECK(!committed_ && !adapter_active_);
@@ -6754,7 +6832,7 @@ void MaterializeHost(Context const* ctx, double sparse_thresh, GHistIndexMatrix*
     if (nnz) std::memcpy(output->index.data<std::uint8_t>(), index.contents, nnz * p.width);
     for (std::size_t i = 0; i < output->hit_count.size(); ++i)
       output->hit_count[i] = static_cast<std::uint32_t const*>(hits.contents)[i];
-    output->InitColumns(ctx, sparse_thresh);
+    if (!std::isnan(sparse_thresh)) output->InitColumns(ctx, sparse_thresh);
     // ResizeIndex invalidates a stale device cache. These bins came from this
     // exact compressed view, so retain it rather than re-uploading host data.
     std::atomic_store(&output->metal_page, std::move(cached));
