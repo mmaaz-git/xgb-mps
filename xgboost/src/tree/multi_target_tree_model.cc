@@ -6,14 +6,19 @@
 #include <algorithm>    // for copy_n
 #include <cstddef>      // for size_t
 #include <cstdint>      // for int32_t, uint8_t
+#include <cstring>      // for memcpy
 #include <limits>       // for numeric_limits
 #include <string_view>  // for string_view
+#include <type_traits>  // for is_same_v
 #include <utility>      // for move
 #include <vector>       // for vector
 
 #include "../common/cuda_rt_utils.h"  // for MemcpyAsync
 #include "../common/linalg_op.h"      // for cbegin
 #include "../common/nvtx_utils.h"     // for xgboost_NVTX_FN_RANGE
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_model.h"
+#endif
 #include "io_utils.h"                 // for I32ArrayT, FloatArrayT, GetElem, ...
 #include "xgboost/base.h"             // for bst_node_t, bst_feature_t, bst_target_t
 #include "xgboost/json.h"             // for Json, get, Object, Number, Integer, ...
@@ -60,6 +65,37 @@ void CopyBatch(Context const* ctx, std::size_t size, std::vector<CopyBatchItem<T
   }
 #endif  // defined(XGBOOST_USE_CUDA)
 
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    static_assert(sizeof(T) == sizeof(std::uint32_t));
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, tree::CatWordT>);
+    auto old = out->ConstHostSpan();
+    // A batch can refer to the old model. Snapshot aliases before Resize can
+    // invalidate those spans, and before any GPU copy writes a destination.
+    std::vector<std::vector<T>> snapshots(copies.size());
+    std::vector<common::metal::ModelCopy> operations;
+    operations.reserve(copies.size());
+    for (std::size_t i = 0; i < copies.size(); ++i) {
+      auto source = copies[i].src;
+      auto a = reinterpret_cast<std::uintptr_t>(source.data());
+      auto b = reinterpret_cast<std::uintptr_t>(old.data());
+      bool alias = !source.empty() && !old.empty() &&
+                   (a >= b ? a - b < old.size_bytes() : b - a < source.size_bytes());
+      if (alias) {
+        snapshots[i].resize(source.size());
+        std::memcpy(snapshots[i].data(), source.data(), source.size_bytes());
+        source = common::Span<T const>{snapshots[i]};
+      }
+      operations.push_back({source.data(), copies[i].dst_offset, source.size()});
+    }
+    out->Resize(size);
+    common::metal::CopyModelBuffer(out->HostSpan().data(), size, operations,
+                                   std::is_same_v<T, float>
+                                       ? common::metal::ModelBufferKind::kWeights
+                                       : common::metal::ModelBufferKind::kCategories);
+    return;
+  }
+#endif
   out->Resize(size);
   auto dst = out->HostSpan();
   for (auto const& copy : copies) {
@@ -78,6 +114,12 @@ void ApplyLearningRate(Context const* ctx, std::size_t offset, std::size_t size,
 #endif  // defined(XGBOOST_USE_CUDA)
 
   auto out = values->HostSpan().subspan(offset, size);
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    common::metal::ScaleModelWeights(out, eta);
+    return;
+  }
+#endif
   std::transform(out.cbegin(), out.cend(), out.begin(),
                  [eta](float weight) { return weight * eta; });
 }

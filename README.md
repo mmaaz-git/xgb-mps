@@ -14,12 +14,12 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **GPU split finalization and constraint bounds**. Metal
-now chooses scalar/vector feature winners, calculates parent gains and unscaled
-node weights, and updates monotonic bounds. Direct checks pass **448 nodes /
-11,904 target weights / 90 bound updates**. Final validation passes **1,502 Python
-tests**, every native suite and the CPU-only build/API check.
-[Validation](validation/split-finalization-m3.txt) · [Scope](docs/CUDA_PARITY.md#gpu-split-finalization-and-constraint-bounds).
+Latest validated step: **vector model-buffer copies and learning-rate scaling**.
+Metal now copies parent/child weights and category storage, then scales new child
+weights with CUDA's FP32 multiplication semantics. Direct checks pass **81 copy
+cases / 1,053,248 products / 16 growing trees**. Final validation passes **1,521
+Python tests**, every native suite and the CPU-only build/API check.
+[Validation](validation/model-state-m3.txt) · [Scope](docs/CUDA_PARITY.md#vector-model-buffer-copies-and-learning-rate-scaling).
 Actual NVIDIA execution equivalence remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
@@ -104,6 +104,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Gradient state | Shared per-tree integer gradients/scales for both sampling methods, all roots and histograms; GPU target/layout copies and bit-preserving Hessian extraction |
 | Histograms | Dense/sparse indices, external pages, scaled integer sums and shared-memory accumulation; resident integer cache retains page additions/subtractions; scalar/vector split scans read integers directly, with a binary64 view for host consumers |
 | Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights and monotonic-bound updates; interaction masks, categorical bitset assembly and tree metadata remain host |
+| Vector model storage | Bit-preserving GPU copies for parent/child weights and category words, with GPU FP32 learning-rate scaling of new child weights; allocation/growth and metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; adapter-built QuantileDMatrix bins remain CPU |
 | Feature sketches | GPU group/Hessian weighting, sorted-column weighted summaries, streaming level compaction and final numeric merging/pruning; row queues and value sorting remain CPU; final cut materialization remains host, as in CUDA |
@@ -2028,6 +2029,28 @@ Final validation passes **1,502 Python tests (one skipped)**, every native suite
 and the CPU-only build/API check. [Validation](validation/split-finalization-m3.txt).
 
 This is still a synchronous hybrid backend. Interaction masks, categorical bitset
-assembly, staging and tree metadata remain on the host; vector model buffer copies
-and learning-rate scaling still need their CUDA GPU counterparts. Candidate
+assembly, staging and tree metadata remain on the host. Vector model buffer copies
+and learning-rate scaling were the next gap, addressed below. Candidate
 readbacks have not yet been removed or fused with finalization. No benchmark was run.
+
+
+### Vector model-buffer copies and learning-rate scaling
+
+Vector tree expansion now uses Metal blit copies for parent/child weights and
+category words, followed by a GPU multiply for each new child weight. This follows
+`multi_target_tree_model.cu`. Copies preserve every bit; scaling rounds once to
+FP32, including subnormal results, signed zero and overflow. Unscaled parent
+weights and existing untouched nodes remain intact. Sources aliased to the old
+model are snapshotted before storage growth can invalidate them.
+
+The native suite passes **81 copy cases, 80 scale cases / 1,053,248 products, and
+16 growing trees**. Nineteen new public tests check categorical/numeric trees,
+both growth policies, zero/ordinary/unit learning rates, model reload and resumed
+training, GPU operation counters and complete CUDA-source tree formulas.
+Final validation passes **1,521 Python tests (one skipped)**, all native suites
+and the separate CPU-only build/API check. [Validation](validation/model-state-m3.txt).
+
+This moves the CUDA copy/scale operations to Metal. Model storage is still owned
+by host vectors, with guarded shared views or staging; allocation and persistent
+GPU ownership remain unfinished. Category bitset assembly and interaction masks
+also remain separate gaps. No performance benchmark was run.

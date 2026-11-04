@@ -6264,3 +6264,18 @@ kernel void xgb_update_split_bounds(device float* lower [[buffer(0)]],
   lower[right] = p.monotone > 0 ? mid : lo;
   upper[right] = p.monotone < 0 ? mid : hi;
 }
+
+struct ModelScaleParams {
+  uint count, eta;
+};
+kernel void xgb_scale_model_weights(device uint* weights [[buffer(0)]],
+                                    constant ModelScaleParams& p [[buffer(1)]],
+                                    uint i [[thread_position_in_grid]]) {
+  if (i >= p.count) return;
+  // CUDA uses ordinary FP32 w * eta. Two FP32 factors have an exact binary64
+  // product, then one FP32 rounding. Integer-backed software arithmetic and
+  // raw loads/stores preserve subnormals even on Metal devices that flush them.
+  auto product =
+      xgb_dmul(xgb_dfrom_float(as_type<float>(weights[i])), xgb_dfrom_float(as_type<float>(p.eta)));
+  weights[i] = as_type<uint>(xgb_dto_float(product));
+}

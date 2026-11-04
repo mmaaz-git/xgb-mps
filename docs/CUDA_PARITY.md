@@ -89,6 +89,7 @@ must be reported rather than hidden by widening test tolerances.
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU bias/feature gradient reductions and residual updates with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
+| Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
 | CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | NVIDIA-specific interfaces cannot consume Metal memory; corresponding Apple-device interoperability is missing |
@@ -1029,7 +1030,8 @@ Python suite; the native shader and API source were unchanged after their full r
 
 At this vector checkpoint, feature reduction, weight calculation and constraint
 updates remained on CPU; the following update moves them onto Metal. Interaction
-masks and generic model-buffer operations still require GPU coverage. Generic
+masks and generic model-buffer operations remained unported at that checkpoint;
+model copies and learning-rate products are covered by the update below. Generic
 state ownership, sketches, RNG differences and the other ledger entries remain.
 The source-derived model uses separately rounded binary64 gain operations; actual
 NVCC contraction/build behavior has not been compared. Extreme nonfinite gains
@@ -1087,8 +1089,58 @@ Python tests**, every native suite and the CPU-only build/API check.
 Remaining work includes interaction masks, categorical bitset materialization,
 constraint allocation/initialization and persistent GPU ownership. Finalization
 currently uses a separate synchronous command: candidate readback/staging has not
-been eliminated. Host tree orchestration remains; CUDA's vector model-buffer copy
-and learning-rate application operations (`multi_target_tree_model.cc` / its CUDA
-helpers) still need Metal integration. Extreme nonfinite candidate/expansion rules,
+been eliminated. Host tree orchestration remains. Vector model-buffer copies and
+learning-rate application were the next missing operations, addressed below.
+Extreme nonfinite candidate/expansion rules,
 NVCC contraction and actual NVIDIA execution remain unverified. Other coverage
 ledger entries are unchanged. No performance benchmark accompanies this step.
+
+## Vector model-buffer copies and learning-rate scaling
+
+The source authority is `tree/multi_target_tree_model.cu`: `CopyBatch` calls
+device-to-device batch memcpy, and `ApplyLearningRate` multiplies each new child
+weight by `eta` with a single FP32 operation. The Metal branch in
+`multi_target_tree_model.cc` now routes float weights and category words through
+`CopyModelBuffer`, then scales only the new child-weight slice through
+`ScaleModelWeights`. Parent weights are copied unchanged, and old untouched nodes
+and category words survive model growth. Scalar tree learning-rate multiplication
+remains on the host, as it does in the upstream CUDA updater.
+
+Copies use a Metal blit encoder and preserve all 32-bit payloads, including NaNs,
+signed zero and category bit patterns. Disjoint destination ranges can arrive in
+any order; overlapping destinations and invalid extents are rejected before
+dispatch. Sources overlapping the destination are snapshotted before any writes.
+The frontend also snapshots sources referring to the old model before resizing
+its host vector. Eligible host memory is borrowed through guarded shared buffers;
+unaligned or otherwise ineligible memory uses initialized staging buffers, so
+holes and untouched prefixes remain intact.
+
+The scaling kernel loads/stores raw bits. Its software-binary64 product of two
+FP32 operands is exact before one FP32 rounding, preserving gradual underflow,
+signed zero and overflow. This avoids Metal's native subnormal flushing. NaN
+arithmetic is checked by classification; copy operations retain exact NaN bits.
+The local reference is an independent host FP32 multiply with contraction disabled.
+Actual NVIDIA execution and alternate compiler/FTZ settings remain unverified.
+
+Completed-operation counters are `model_weight_copy_dispatches`,
+`model_category_copy_dispatches` and `model_scale_dispatches`; `model_copy_words`
+counts copied 32-bit words, and `model_state_gpu_time_ns` sums these command times.
+Empty copies/scales do not dispatch. CPU-only builds expose all fields as zero.
+The statistics ABI changed, so native API test executables must be rebuilt.
+
+Native checks pass **81 copy cases, 80 scale cases / 1,053,248 products, and 16
+growing trees**. Cases cover unsorted destinations, aliases, read-only sources,
+unaligned buffers, holes/guards, exceptional FP32 values and invalid inputs.
+Integrated trees use 2–129 targets, multiple expansions, unscaled parent weights,
+preserved older nodes, aliased category sources across resize and serialization.
+Nineteen public cases cover numeric/one-hot/partition trees, depthwise/loss-guide
+growth, zero/ordinary/unit learning rates, continuation from serialized models,
+exact dispatch/word accounting, complete CUDA-source tree oracles and CPU-loaded
+prediction equality. Root-only trees perform no model copy/scale dispatch.
+Final validation passes **1,521 Python tests (one skipped)**, every rebuilt native
+suite and the CPU-only build/API check. [Validation record](../validation/model-state-m3.txt).
+
+This completes the two operations in that CUDA translation unit, not all model
+state handling. Model allocation/growth remains host-owned and both operations
+are synchronous. Category bitset **assembly**, interaction masks, generic state
+ownership and the other ledger gaps remain unfinished. No benchmark was run.

@@ -20,6 +20,7 @@
 #include "metal_leaf.h"
 #include "metal_linear.h"
 #include "metal_memory.h"
+#include "metal_model.h"
 #include "metal_ops.h"
 #include "metal_predictor.h"
 #include "metal_quantile.h"
@@ -58,6 +59,8 @@ std::atomic<std::uint64_t> leaf_integer_sum_dispatches{0};
 std::atomic<std::uint64_t> cuda_integer_split_dispatches{0};
 std::atomic<std::uint64_t> cuda_integer_multi_split_dispatches{0};
 std::atomic<std::uint64_t> split_finalize_dispatches{0}, split_bounds_dispatches{0};
+std::atomic<std::uint64_t> model_weight_copy_dispatches{0}, model_category_copy_dispatches{0},
+    model_copy_words{0}, model_scale_dispatches{0}, model_state_gpu_time_ns{0};
 std::atomic<std::uint64_t> leaf_sum_init_dispatches{0}, leaf_sum_dispatches{0},
     leaf_weight_dispatches{0}, leaf_fitting_gpu_time_ns{0};
 std::atomic<std::uint64_t> linear_gradient_dispatches{0}, linear_residual_dispatches{0},
@@ -143,6 +146,7 @@ class Runtime {
   id<MTLComputePipelineState> split_pipeline, multi_split_pipeline, quantized_split_pipeline;
   id<MTLComputePipelineState> quantized_multi_split_pipeline;
   id<MTLComputePipelineState> split_finalize_pipeline, split_bounds_pipeline;
+  id<MTLComputePipelineState> model_scale_pipeline;
   id<MTLComputePipelineState> dequantize_hist_pipeline, subtract_hist_pipeline,
       gather_hist_pipeline;
   id<MTLComputePipelineState> store_integer_hist_pipeline, subtract_integer_hist_pipeline,
@@ -247,6 +251,7 @@ class Runtime {
       quantized_multi_split_pipeline = make_pipeline(@"xgb_evaluate_quantized_multi_splits");
       split_finalize_pipeline = make_pipeline(@"xgb_finalize_split_nodes");
       split_bounds_pipeline = make_pipeline(@"xgb_update_split_bounds");
+      model_scale_pipeline = make_pipeline(@"xgb_scale_model_weights");
       multi_split_pipeline = make_pipeline(@"xgb_evaluate_multi_splits");
       dequantize_hist_pipeline = make_pipeline(@"xgb_histogram_dequantize");
       subtract_hist_pipeline = make_pipeline(@"xgb_histogram_subtract");
@@ -1651,7 +1656,12 @@ Statistics GetStatistics() {
           cuda_integer_split_dispatches.load(std::memory_order_relaxed),
           cuda_integer_multi_split_dispatches.load(std::memory_order_relaxed),
           split_finalize_dispatches.load(std::memory_order_relaxed),
-          split_bounds_dispatches.load(std::memory_order_relaxed)};
+          split_bounds_dispatches.load(std::memory_order_relaxed),
+          model_weight_copy_dispatches.load(std::memory_order_relaxed),
+          model_category_copy_dispatches.load(std::memory_order_relaxed),
+          model_copy_words.load(std::memory_order_relaxed),
+          model_scale_dispatches.load(std::memory_order_relaxed),
+          model_state_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1666,6 +1676,98 @@ void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>*
     duration->fetch_add(static_cast<std::uint64_t>(elapsed * 1e9), std::memory_order_relaxed);
 }
 }  // namespace
+void CopyModelBuffer(void* output, std::size_t words, Span<ModelCopy const> copies,
+                     ModelBufferKind kind) {
+  CHECK(kind == ModelBufferKind::kWeights || kind == ModelBufferKind::kCategories);
+  CHECK_LE(words, std::numeric_limits<std::size_t>::max() / sizeof(std::uint32_t));
+  CHECK(output || words == 0);
+  std::vector<std::pair<std::size_t, std::size_t>> ranges;
+  for (auto const& copy : copies) {
+    CHECK_LE(copy.destination, words);
+    CHECK_LE(copy.count, words - copy.destination);
+    CHECK(copy.source || copy.count == 0);
+    if (copy.count) ranges.emplace_back(copy.destination, copy.destination + copy.count);
+  }
+  std::sort(ranges.begin(), ranges.end());
+  std::size_t copied = 0, end = 0;
+  for (auto const& range : ranges) {
+    CHECK_GE(range.first, end) << "Overlapping model copy destinations";
+    copied += range.second - range.first;
+    end = range.second;
+  }
+  if (!copied) return;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto bytes = words * sizeof(std::uint32_t);
+    auto out = TryBorrowMemory(rt.device, output, bytes, alignof(std::uint32_t));
+    bool copy_out = !out.buffer;
+    if (copy_out) out = {Upload(rt, output, bytes), 0};
+    std::vector<BorrowedMemory> sources;
+    sources.reserve(copies.size());
+    // Retain every source, including snapshots of aliases, until completion.
+    for (auto const& copy : copies) {
+      auto size = copy.count * sizeof(std::uint32_t);
+      if (!size) {
+        sources.push_back({});
+        continue;
+      }
+      auto in = MemoryRangesOverlap(copy.source, size, output, bytes)
+                    ? BorrowedMemory{}
+                    : TryBorrowMemory(rt.device, copy.source, size, alignof(std::uint32_t));
+      if (!in.buffer) in = {Upload(rt, copy.source, size), 0};
+      sources.push_back(in);
+    }
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto encoder = [command blitCommandEncoder];
+    CHECK(encoder);
+    for (std::size_t i = 0; i < copies.size(); ++i) {
+      auto const& copy = copies[i];
+      if (!copy.count) continue;
+      [encoder copyFromBuffer:sources[i].buffer
+                 sourceOffset:sources[i].offset
+                     toBuffer:out.buffer
+            destinationOffset:out.offset + copy.destination * sizeof(std::uint32_t)
+                         size:copy.count * sizeof(std::uint32_t)];
+    }
+    [encoder endEncoding];
+    CompleteOperation(command,
+                      kind == ModelBufferKind::kWeights ? &model_weight_copy_dispatches
+                                                        : &model_category_copy_dispatches,
+                      &model_state_gpu_time_ns);
+    if (copy_out) std::memcpy(output, out.buffer.contents, bytes);
+    model_copy_words.fetch_add(copied, std::memory_order_relaxed);
+  }
+}
+
+void ScaleModelWeights(Span<float> weights, float eta) {
+  if (weights.empty()) return;
+  CHECK(weights.data());
+  CHECK_LE(weights.size(), std::numeric_limits<std::uint32_t>::max());
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto out = TryBorrowMemory(rt.device, weights.data(), weights.size_bytes(), alignof(float));
+    bool copy_out = !out.buffer;
+    if (copy_out) out = {Upload(rt, weights.data(), weights.size_bytes()), 0};
+    struct {
+      std::uint32_t count, eta;
+    } p{static_cast<std::uint32_t>(weights.size()), 0};
+    std::memcpy(&p.eta, &eta, sizeof(eta));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto encoder = [command computeCommandEncoder];
+    CHECK(encoder);
+    [encoder setComputePipelineState:rt.model_scale_pipeline];
+    [encoder setBuffer:out.buffer offset:out.offset atIndex:0];
+    [encoder setBytes:&p length:sizeof(p) atIndex:1];
+    [encoder dispatchThreads:MTLSizeMake(p.count, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder endEncoding];
+    CompleteOperation(command, &model_scale_dispatches, &model_state_gpu_time_ns);
+    if (copy_out) std::memcpy(weights.data(), out.buffer.contents, weights.size_bytes());
+  }
+}
+
 std::unique_ptr<LeafSums> MakeLeafSums(
     std::size_t leaves, std::size_t targets,
     std::shared_ptr<GradientQuantizer const> original_quantizer) {

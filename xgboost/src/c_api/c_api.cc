@@ -340,6 +340,14 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.split_finalize_dispatches)};
   info["split_bounds_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.split_bounds_dispatches)};
+  info["model_weight_copy_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.model_weight_copy_dispatches)};
+  info["model_category_copy_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.model_category_copy_dispatches)};
+  info["model_copy_words"] = Integer{static_cast<std::int64_t>(stats.model_copy_words)};
+  info["model_scale_dispatches"] = Integer{static_cast<std::int64_t>(stats.model_scale_dispatches)};
+  info["model_state_gpu_time_ns"] =
+      Integer{static_cast<std::int64_t>(stats.model_state_gpu_time_ns)};
   info["cuda_integer_multi_split_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.cuda_integer_multi_split_dispatches)};
   info["cuda_gradient_sampling_dispatches"] =
@@ -462,6 +470,11 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["cuda_integer_multi_split_dispatches"] = Integer{0};
   info["split_finalize_dispatches"] = Integer{0};
   info["split_bounds_dispatches"] = Integer{0};
+  info["model_weight_copy_dispatches"] = Integer{0};
+  info["model_category_copy_dispatches"] = Integer{0};
+  info["model_copy_words"] = Integer{0};
+  info["model_scale_dispatches"] = Integer{0};
+  info["model_state_gpu_time_ns"] = Integer{0};
   info["histogram_integer_sum_dispatches"] = Integer{0};
   info["resident_split_dispatches"] = Integer{0};
 
