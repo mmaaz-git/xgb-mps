@@ -14,6 +14,16 @@ namespace xgboost::common::metal {
 void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> groups,
                 Span<std::size_t> relative_indices);
 
+enum class RankingLabelKind : std::uint32_t { kBinary, kNDCG };
+// Returns validation flags: bit 0 = invalid binary/integer label, bit 1 =
+// relevance exceeds 31. Empty inputs pass without a dispatch.
+std::uint32_t CheckRankingLabels(linalg::VectorView<float const> labels, RankingLabelKind kind);
+// Sort labels and calculate discounts/inverse ideal gains on GPU. The caller
+// validates labels first; linear gains may include finite negative values.
+void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
+              std::uint32_t topk, bool exponential, Span<double> discounts,
+              Span<double> inverse_idcg);
+
 enum class RankingMetricKind : std::uint32_t { kPrecision, kNDCG, kMAP };
 struct RankingSums {
   double score, weight;

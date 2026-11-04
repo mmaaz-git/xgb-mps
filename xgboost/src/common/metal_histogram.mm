@@ -47,6 +47,8 @@ std::atomic<std::uint64_t> roc_auc_dispatches{0}, roc_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> pr_auc_dispatches{0}, pr_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> group_sort_dispatches{0}, group_sort_gpu_time_ns{0};
 std::atomic<std::uint64_t> ranking_metric_dispatches{0}, ranking_metric_gpu_time_ns{0};
+std::atomic<std::uint64_t> ranking_label_dispatches{0}, ranking_label_gpu_time_ns{0},
+    ranking_cache_dispatches{0}, ranking_cache_gpu_time_ns{0};
 std::atomic<std::uint64_t> float_sum_dispatches{0}, float_sum_gpu_time_ns{0};
 std::atomic<std::uint64_t> row_workspace_allocations{0}, row_workspace_reuses{0};
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
@@ -111,6 +113,7 @@ class Runtime {
       pr_area_pipeline, prefix_double_pair_pipeline, prefix_double_pair_add_pipeline;
   id<MTLComputePipelineState> group_sort_small_pipeline, group_sort_medium_pipeline, group_sort_key_pipeline,
       group_sort_export_pipeline, ranking_score_pipeline;
+  id<MTLComputePipelineState> ranking_labels_pipeline, ndcg_discount_pipeline, ndcg_ideal_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
@@ -203,6 +206,9 @@ class Runtime {
       group_sort_key_pipeline = make_pipeline(@"xgb_group_sort_key");
       group_sort_export_pipeline = make_pipeline(@"xgb_group_sort_export");
       ranking_score_pipeline = make_pipeline(@"xgb_ranking_score");
+      ranking_labels_pipeline = make_pipeline(@"xgb_ranking_labels");
+      ndcg_discount_pipeline = make_pipeline(@"xgb_ndcg_discount");
+      ndcg_ideal_pipeline = make_pipeline(@"xgb_ndcg_ideal");
       prefix_double_pair_pipeline = make_pipeline(@"xgb_prefix_double_pair");
       prefix_double_pair_add_pipeline = make_pipeline(@"xgb_prefix_double_pair_add");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
@@ -958,7 +964,11 @@ Statistics GetStatistics() {
           group_sort_dispatches.load(std::memory_order_relaxed),
           group_sort_gpu_time_ns.load(std::memory_order_relaxed),
           ranking_metric_dispatches.load(std::memory_order_relaxed),
-          ranking_metric_gpu_time_ns.load(std::memory_order_relaxed)};
+          ranking_metric_gpu_time_ns.load(std::memory_order_relaxed),
+          ranking_label_dispatches.load(std::memory_order_relaxed),
+          ranking_label_gpu_time_ns.load(std::memory_order_relaxed),
+          ranking_cache_dispatches.load(std::memory_order_relaxed),
+          ranking_cache_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1459,6 +1469,112 @@ void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> 
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
     std::memcpy(relative_indices.data(), output.contents, relative_indices.size_bytes());
     RecordGroupSort(order.radix, command.GPUEndTime - command.GPUStartTime);
+  }
+}
+
+std::uint32_t CheckRankingLabels(linalg::VectorView<float const> labels, RankingLabelKind kind) {
+  CHECK(kind == RankingLabelKind::kBinary || kind == RankingLabelKind::kNDCG);
+  CHECK_LE(labels.Size(), std::numeric_limits<std::uint32_t>::max());
+  if (!labels.Size()) return 0;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    std::uint32_t zero = 0;
+    auto flags = Upload(rt, &zero, sizeof(zero));
+    struct {
+      std::uint64_t rows, stride;
+      std::uint32_t kind, padding;
+    } p{labels.Size(), labels.Stride(0), static_cast<std::uint32_t>(kind), 0};
+    static_assert(sizeof(p) == 24);
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.ranking_labels_pipeline];
+    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:flags offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreadgroups:MTLSizeMake((labels.Size() + 255) / 256, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    ranking_label_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      ranking_label_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                          std::memory_order_relaxed);
+    return *static_cast<std::uint32_t const*>(flags.contents);
+  }
+}
+
+void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
+              std::uint32_t topk, bool exponential, Span<double> discounts,
+              Span<double> inverse_idcg) {
+  auto max_group_size = CheckGroupSort(labels, groups);
+  auto n_groups = groups.size() - 1;
+  CHECK_EQ(discounts.size(), max_group_size);
+  CHECK_EQ(inverse_idcg.size(), n_groups);
+  if (!n_groups) return;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto offsets = Upload(rt, groups.data(), groups.size_bytes());
+    auto discount = Allocate(rt, discounts.size_bytes());
+    auto inverse = Allocate(rt, inverse_idcg.size_bytes());
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    GroupOrder order{Allocate(rt, 16), false};
+    if (labels.Size()) {
+      order = EncodeGroupSort(rt, command, input, offsets, labels.Size(), labels.Stride(0),
+                              n_groups, max_group_size);
+    }
+    if (max_group_size) {
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.ndcg_discount_pipeline];
+      [e setBuffer:discount offset:0 atIndex:0];
+      [e dispatchThreads:MTLSizeMake(max_group_size, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    struct {
+      std::uint64_t rows, label_stride;
+      std::uint32_t groups, topk, kind, weighted, minus, exponential;
+    } p{labels.Size(),
+        labels.Stride(0),
+        static_cast<std::uint32_t>(n_groups),
+        topk,
+        0,
+        0,
+        0,
+        static_cast<std::uint32_t>(exponential)};
+    static_assert(sizeof(p) == 40);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.ndcg_ideal_pipeline];
+    [e setBuffer:order.records offset:0 atIndex:0];
+    [e setBuffer:input offset:0 atIndex:1];
+    [e setBuffer:offsets offset:0 atIndex:2];
+    [e setBuffer:discount offset:0 atIndex:3];
+    [e setBuffer:inverse offset:0 atIndex:4];
+    [e setBytes:&p length:sizeof(p) atIndex:5];
+    [e dispatchThreadgroups:MTLSizeMake((n_groups + 7) / 8, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    if (!discounts.empty())
+      std::memcpy(discounts.data(), discount.contents, discounts.size_bytes());
+    std::memcpy(inverse_idcg.data(), inverse.contents, inverse_idcg.size_bytes());
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (labels.Size()) RecordGroupSort(order.radix, elapsed);
+    ranking_cache_dispatches.fetch_add(1, std::memory_order_relaxed);
+    if (elapsed > 0)
+      ranking_cache_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                          std::memory_order_relaxed);
   }
 }
 

@@ -2973,6 +2973,67 @@ struct RankingScoreParams {
   ulong rows, label_stride;
   uint groups, topk, kind, weighted, minus, exponential;
 };
+struct RankingLabelParams {
+  ulong rows, stride;
+  uint kind, padding;
+};
+kernel void xgb_ranking_labels(device const uint* labels [[buffer(0)]],
+                                device atomic_uint* result [[buffer(1)]],
+                                constant RankingLabelParams& p [[buffer(2)]],
+                                uint tid [[thread_position_in_grid]],
+                                uint lane [[thread_index_in_simdgroup]]) {
+  uint error = 0;
+  // Uniform threadgroups allow the SIMD reduction to include padded lanes.
+  if (ulong(tid) < p.rows) {
+    uint bits = labels[ulong(tid) * p.stride], magnitude = bits & 0x7fffffffu;
+    float value = as_type<float>(bits);
+    if (magnitude >= 0x7f800000u) {
+      error = p.kind ? 3 : 1;
+    } else if (p.kind == 0) {
+      bool near_zero = magnitude < as_type<uint>(1.0e-6f);
+      error = !(near_zero || abs(value - 1.0f) < 1.0e-6f);
+    } else {
+      bool negative = (bits & 0x80000000u) && magnitude;
+      error = uint(negative || abs(floor(value) - value) > 1.0e-6f);
+      if (value >= 32.0f) error |= 2;
+    }
+  }
+  // Only failing SIMD groups contend on the flag word.
+  uint combined = simd_or(error);
+  if (lane == 0 && combined) atomic_fetch_or_explicit(result, combined, memory_order_relaxed);
+}
+kernel void xgb_ndcg_discount(device ulong* discounts [[buffer(0)]],
+                               uint tid [[thread_position_in_grid]]) {
+  using namespace xgb_survival;
+  D n{xgb_scaled_integer(ulong(tid) + 2, 0)};
+  discounts[tid] = (D{0x3fe62e42fefa39eful} / Log(n)).bits;
+}
+kernel void xgb_ndcg_ideal(device const uint2* records [[buffer(0)]],
+                            device const uint* labels [[buffer(1)]],
+                            device const uint* offsets [[buffer(2)]],
+                            device const ulong* discounts [[buffer(3)]],
+                            device ulong* inverse [[buffer(4)]],
+                            constant RankingScoreParams& p [[buffer(5)]],
+                            uint block [[threadgroup_position_in_grid]],
+                            uint lane [[thread_index_in_simdgroup]],
+                            uint simd [[simdgroup_index_in_threadgroup]]) {
+  uint group = block * 8 + simd;
+  if (group >= p.groups) return;
+  using namespace xgb_survival;
+  uint begin = offsets[group], n = min(offsets[group + 1] - begin, p.topk);
+  D sum = zero;
+  for (ulong i = lane; i < n; i += 32) {
+    uint bits = labels[ulong(records[ulong(begin) + i].y) * p.label_stride];
+    D gain = p.exponential ? D{xgb_scaled_integer((1u << uint(as_type<float>(bits))) - 1, 0)}
+                           : From(as_type<float>(bits));
+    sum = sum + D{discounts[i]} * gain;
+  }
+  for (uint distance = 16; distance; distance >>= 1) {
+    D other = xgb_shuffle_down_double(sum, distance);
+    if (lane + distance < 32) sum = sum + other;
+  }
+  if (lane == 0) inverse[group] = (xgb_dzero(sum) ? zero : one / sum).bits;
+}
 // One SIMD group per query. Eight queries share a threadgroup without barriers;
 // sorted records stay on the GPU and only the final (score, weight) is read back.
 kernel void xgb_ranking_score(device const uint2* records [[buffer(0)]],

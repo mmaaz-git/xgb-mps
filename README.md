@@ -69,7 +69,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Ranking sorts | Stable per-query prediction order for pairwise/NDCG/MAP training and NDCG/MAP/precision metrics; NDCG ideal-label order and query-weight sums also use Metal; pair construction and gradients remain CPU |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
-| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision; NDCG discounts and inverse ideal gains remain CPU |
+| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision; GPU label validation and NDCG cache initialization |
 
 AFT gradient evaluation is still hybrid for numerically sensitive censored rows.
 The GPU flags interval probabilities at or below `1e-5`; the host recomputes those
@@ -910,3 +910,42 @@ is 0.90× and uncapped MAP is 0.90×. Maximum absolute metric difference across 
 benchmarks is below `3.5e-15`. Initial cache setup, data/model construction and
 training are excluded; first-evaluation times and every repeat are retained.
 These metric improvements do not change the **1.04×** wide-training result above.
+
+
+### Ranking validation and NDCG cache initialization
+
+Ranking label checks now execute on Metal. NDCG label ordering, discounts and
+inverse ideal gains also run on GPU; their arrays return to the existing host-owned
+cache. Linear-gain NDCG retains upstream's validation behavior. The new counters
+`ranking_label_dispatches` and `ranking_cache_dispatches`, with corresponding GPU
+time fields, expose this work. Cache-command time overlaps its grouped-sort time.
+
+The [fresh-cache benchmark](validation/benchmark-ndcg-init-v2-m3.json) includes
+ranking validation, ideal-gain cache construction, prediction caching and NDCG@10
+evaluation on every timed repeat. Runtime is warmed; data and model construction
+are excluded. One million rows, 8 CPU threads, five alternating repeats:
+
+| Query size | CPU | Metal | CPU / Metal |
+| ---: | ---: | ---: | ---: |
+| 32 | 7.30 ms | 6.38 ms | 1.14× |
+| 256 | 10.55 ms | 5.68 ms | 1.86× |
+| 4,096 | 16.30 ms | 5.36 ms | **3.04×** |
+| 65,537 | 19.93 ms | 15.25 ms | 1.31× |
+
+The [preceding hybrid-cache measurements](validation/benchmark-ndcg-init-baseline-v1-m3.json)
+are retained. At 4,096 rows per query, Metal time changes from 6.65 to 5.36 ms;
+CPU timing varies between sessions. Maximum metric difference in the new benchmark
+is `1.34e-15`. These remain evaluation timings, not training speedups.
+
+All **570 Python tests**, native suites under Metal API Validation and CPU-only
+checks pass; one Python test is skipped. Added native tests cover **380 label
+validation cases / 1,858,512 values** and **336 NDCG cache cases / 3,566,880 rows**,
+checking **3,551,424 discounts**. Discount relative error is at most `3.34e-16`;
+ideal-gain error scaled by absolute term sums is at most `2.73e-14`.
+
+Nearly zero linear ideal gains can amplify tiny rounding differences when inverted;
+the [numerical notes](docs/CUDA_PARITY.md#ranking-metric-numerical-behavior) state this
+limit explicitly. The cancellation test uses an independent 80-digit Decimal
+reference. On this Apple arm64 build, `long double` itself has only 53 significant
+bits, so the earlier long-double PR checks should not be read as higher-precision
+oracles. Ranking pair construction, gradients and grouped ROC/PR-AUC remain to port.

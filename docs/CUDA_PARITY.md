@@ -21,7 +21,7 @@ listed below. This is not yet a complete GPU backend.
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means and Newton stump fitting use Metal; label validation and other objective-specific initialization remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means/stump fitting and initial quantile estimation use Metal; other initialization work remains CPU |
-| Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. Pair construction, gradients, discounts, ideal-gain calculation and other normalization remain CPU |
+| Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; pair construction, gradients and other normalization remain CPU |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients and prediction/base-score transforms; GPU identifies small censored probabilities for original CPU gradient recomputation, exposed through correction counters/time. Full GPU coverage remains incomplete |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; other initialization work and leaf fitting remain CPU |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; CPU input views stage dense chunks and recode categories |
@@ -33,7 +33,7 @@ listed below. This is not yet a complete GPU backend.
 | AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and binary64 block sums; small final host reduction |
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and tied-score trapezoids on Metal; per-output normalization and aggregation remain host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and stable continuous integration on Metal; final per-output degeneracy checks and aggregation remain host |
-| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts and inverse ideal gains are still calculated on CPU after GPU ideal-label sorting. Label validation remains CPU. Grouped ROC/PR-AUC remains CPU |
+| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC/PR-AUC remains CPU |
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Quantile sketching/cut construction remain CPU; numeric/categorical bin assignment and hit counts for SparsePage-backed matrices use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
@@ -112,6 +112,20 @@ is selected. This path remains on the GPU and is slower for long nonbinary queri
 Empty-query and top-k-zero native tests preserve CPU NaN/fallback behavior; the
 existing public metric finalization still reports invalid scores.
 
-The fused metric command reads back only score and weight totals. NDCG cache creation,
-ranking pair construction/gradients and grouped AUC remain separate unfinished work;
+The fused metric command reads back only score and weight totals. NDCG cache creation
+also executes on Metal; ranking pair construction/gradients and grouped AUC remain unfinished;
 GPU metric dispatch does not imply those operations have been ported.
+
+
+NDCG cache initialization uses software-binary64 logarithms for discounts and
+parallel ideal-gain sums. Native tests compare 3.55 million discounts and include
+zero and nearly cancelling linear gains. Discount relative error is at most
+`3.34e-16`; ideal-gain error scaled by the sum of absolute terms is at most
+`2.73e-14` in the tested cases. Inverse gains near zero are ill-conditioned: their
+relative difference can be much larger, so no uniform relative equivalence is
+claimed there. An 80-digit Decimal oracle checks the cancellation example; Apple
+arm64 `long double` has only 53 significand bits. Earlier PR integral tests are
+independent formulas implemented in `long double`, not extra-precision oracles on
+this machine. Linear NDCG labels retain upstream's lack of relevance validation;
+exponential NDCG and binary ranking labels are checked on GPU, including negative
+subnormals and tolerance boundaries.

@@ -32,6 +32,9 @@ def test_ranking_training(metal, objective, method, largest):
     assert after["group_sort_dispatches"] - before["group_sort_dispatches"] >= 20
     assert after["float_sum_dispatches"] > before["float_sum_dispatches"]
     assert after["ranking_metric_dispatches"] - before["ranking_metric_dispatches"] == 15
+    # NDCG also builds a temporary objective cache for intercept estimation.
+    assert after["ranking_cache_dispatches"] - before["ranking_cache_dispatches"] == (3 if objective == "rank:ndcg" else 1)
+    assert after["ranking_label_dispatches"] > before["ranking_label_dispatches"]
     assert (after["radix_sort_dispatches"] > before["radix_sort_dispatches"]) == (largest > 4096)
     np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
                                rtol=2e-5, atol=2e-5)
@@ -110,3 +113,42 @@ def test_ranking_soft_label_cancellation(metal, metric, reverse):
         np.testing.assert_allclose(float(gpu.eval(d).rsplit(":", 1)[1]),
                                    float(cpu.eval(d).rsplit(":", 1)[1]), rtol=2e-12, atol=2e-12)
     assert xgb.metal_info()["ranking_metric_dispatches"] == before + 1
+
+
+@pytest.mark.parametrize("metric", ["ndcg", "map", "pre"])
+@pytest.mark.parametrize("label", [-.1, .5, 32., -np.nextafter(np.float32(0), np.float32(1))])
+def test_ranking_label_validation(metal, metric, label):
+    labels = np.ones(257, dtype=np.float32)
+    labels[-1] = label
+    d = xgb.DMatrix(np.ones((257, 1)), label=labels, group=[31, 226], nthread=2)
+    params = dict(objective="reg:squarederror", eval_metric=metric, nthread=2, base_score=.5)
+    cpu = xgb.train(params | {"device": "cpu"}, d, 0)
+    gpu = xgb.train(params | {"device": "mps"}, d, 0)
+    before = xgb.metal_info()["ranking_label_dispatches"]
+    if abs(label) < 1e-6 and metric != "ndcg":
+        np.testing.assert_allclose(float(gpu.eval(d).rsplit(":", 1)[1]),
+                                   float(cpu.eval(d).rsplit(":", 1)[1]), rtol=2e-12, atol=2e-12)
+    else:
+        for model in [cpu, gpu]:
+            with pytest.raises(xgb.core.XGBoostError, match="integer|Relevance|binary"):
+                model.eval(d)
+    assert xgb.metal_info()["ranking_label_dispatches"] == before + 1
+
+
+def test_ndcg_linear_cache_and_reuse(metal):
+    rng = np.random.default_rng(813)
+    labels = rng.uniform(-.2, 3, 8193).astype(np.float32)
+    d = xgb.DMatrix(np.ones((8193, 1)), label=labels, group=[4097, 4096],
+                    base_margin=rng.normal(size=8193).astype(np.float32), nthread=2)
+    params = dict(objective="reg:squarederror", eval_metric="ndcg", ndcg_exp_gain=False,
+                  nthread=2, base_score=.5)
+    cpu = xgb.train(params | {"device": "cpu"}, d, 0)
+    gpu = xgb.train(params | {"device": "mps"}, d, 0)
+    before = xgb.metal_info()
+    for _ in range(3):
+        np.testing.assert_allclose(float(gpu.eval(d).rsplit(":", 1)[1]),
+                                   float(cpu.eval(d).rsplit(":", 1)[1]), rtol=2e-12, atol=2e-12)
+    after = xgb.metal_info()
+    assert after["ranking_cache_dispatches"] == before["ranking_cache_dispatches"] + 1
+    assert after["ranking_label_dispatches"] == before["ranking_label_dispatches"]
+    assert after["group_sort_dispatches"] == before["group_sort_dispatches"] + 4

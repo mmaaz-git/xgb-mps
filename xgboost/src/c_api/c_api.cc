@@ -194,6 +194,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["group_sort_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.group_sort_gpu_time_ns)};
   info["ranking_metric_dispatches"] = Integer{static_cast<std::int64_t>(stats.ranking_metric_dispatches)};
   info["ranking_metric_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.ranking_metric_gpu_time_ns)};
+  info["ranking_label_dispatches"] = Integer{static_cast<std::int64_t>(stats.ranking_label_dispatches)};
+  info["ranking_label_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.ranking_label_gpu_time_ns)};
+  info["ranking_cache_dispatches"] = Integer{static_cast<std::int64_t>(stats.ranking_cache_dispatches)};
+  info["ranking_cache_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.ranking_cache_gpu_time_ns)};
   info["roc_auc_dispatches"] = Integer{static_cast<std::int64_t>(stats.roc_auc_dispatches)};
   info["roc_auc_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.roc_auc_gpu_time_ns)};
 

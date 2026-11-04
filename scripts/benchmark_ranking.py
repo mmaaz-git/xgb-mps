@@ -20,16 +20,19 @@ def main():
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--threads", type=int, default=os.cpu_count())
     parser.add_argument("--metric", default="ndcg@10")
+    parser.add_argument("--fresh-cache", action="store_true",
+                        help="Recreate the model before every timed evaluation to include metric cache initialization")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
         parser.error(f"{args.output} exists; inspect it or choose a new output name")
     assert xgb.metal_info()["available"]
     report = dict(platform=platform.platform(), cpu_threads=args.threads, repeats=args.repeats,
-                  metric=args.metric, cases=[],
+                  metric=args.metric, fresh_cache=args.fresh_cache, cases=[],
                   timing="model.eval on fixed margins and labels, warmed prediction cache/runtime; "
                          "includes metric staging, sorting, GPU work and synchronization; "
-                         "excludes DMatrix/model construction, data generation and training")
+                         "excludes DMatrix/model construction, data generation and training; "
+                         + ("includes metric cache initialization" if args.fresh_cache else "metric cache warmed"))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for rows in args.rows:
         for query_size in args.query_sizes:
@@ -54,6 +57,8 @@ def main():
             counters = {device: [] for device in models}
             for repeat in range(args.repeats):
                 for device in (["cpu", "mps"] if repeat % 2 == 0 else ["mps", "cpu"]):
+                    if args.fresh_cache:
+                        models[device] = xgb.train(params | {"device": device}, d, 0)
                     before = xgb.metal_info()
                     wall_start = time.time()
                     start = time.perf_counter()
@@ -63,7 +68,10 @@ def main():
                         raise RuntimeError("Benchmark crossed sleep or a clock adjustment")
                     after = xgb.metal_info()
                     delta = {k: after[k] - before[k] for k in after if k not in {"built", "available"}}
-                    assert delta["group_sort_dispatches"] == int(device == "mps")
+                    fresh_ndcg = args.fresh_cache and args.metric.split("@")[0].rstrip("-") == "ndcg"
+                    assert delta["group_sort_dispatches"] == int(device == "mps") * (1 + fresh_ndcg)
+                    assert delta["ranking_cache_dispatches"] == int(device == "mps" and fresh_ndcg)
+                    assert delta["ranking_label_dispatches"] == int(device == "mps" and args.fresh_cache)
                     expected_score = device == "mps" and args.metric.split("@")[0].rstrip("-") in {"ndcg", "pre", "map"}
                     assert delta["ranking_metric_dispatches"] == int(expected_score)
                     timings[device].append(seconds)

@@ -24,6 +24,35 @@
 #endif
 
 namespace xgboost::ltr {
+namespace {
+void ValidateNDCGLabels(Context const* ctx, LambdaRankParam const& p,
+                        linalg::VectorView<float const> labels) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    if (!p.ndcg_exp_gain) return;
+    auto flags = common::metal::CheckRankingLabels(labels, common::metal::RankingLabelKind::kNDCG);
+    CHECK_EQ(flags & 1, 0)
+        << "When using relevance degree as target, label must be either 0 or positive integer.";
+    CHECK_EQ(flags & 2, 0) << "Relevance degress must be lesser than or equal to " << MaxRel()
+                          << " when the exponential NDCG gain function is used. "
+                          << "Set `ndcg_exp_gain` to false to use custom DCG gain.";
+    return;
+  }
+#endif
+  CheckNDCGLabels(p, labels, [](auto beg, auto end, auto op) { return std::none_of(beg, end, op); });
+}
+void ValidateBinaryLabels(Context const* ctx, StringView name,
+                          linalg::VectorView<float const> labels) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    auto flags = common::metal::CheckRankingLabels(labels, common::metal::RankingLabelKind::kBinary);
+    CHECK_EQ(flags, 0) << name << " can only be used with binary labels.";
+    return;
+  }
+#endif
+  CheckPreLabels(name, labels, [](auto beg, auto end, auto op) { return std::all_of(beg, end, op); });
+}
+}  // namespace
 void RankingCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   if (info.group_ptr_.empty()) {
     group_ptr_.Resize(2, 0);
@@ -93,45 +122,29 @@ common::Span<std::size_t const> RankingCache::MakeRankOnCUDA(Context const*,
 
 void NDCGCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   auto const h_group_ptr = this->DataGroupPtr(ctx);
+  auto n_groups = h_group_ptr.size() - 1;
+  auto h_labels = info.labels.HostView().Slice(linalg::All(), 0);
+  ValidateNDCGLabels(ctx, this->Param(), h_labels);
 
   discounts_.Resize(MaxGroupSize(), 0);
   auto& h_discounts = discounts_.HostVector();
-  for (std::size_t i = 0; i < MaxGroupSize(); ++i) {
-    h_discounts[i] = CalcDCGDiscount(i);
-  }
-
-  auto n_groups = h_group_ptr.size() - 1;
-  auto h_labels = info.labels.HostView().Slice(linalg::All(), 0);
-
-  CheckNDCGLabels(this->Param(), h_labels,
-                  [](auto beg, auto end, auto op) { return std::none_of(beg, end, op); });
-
   inv_idcg_.Reshape(n_groups);
   auto h_inv_idcg = inv_idcg_.HostView();
   std::size_t topk = this->Param().TopK();
   auto const exp_gain = this->Param().ndcg_exp_gain;
-
-  std::vector<std::size_t> metal_order;
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
-    metal_order.resize(h_labels.Size());
-    common::metal::SortGroups(h_labels, h_group_ptr, metal_order);
+    common::metal::InitNDCG(h_labels, h_group_ptr, topk, exp_gain, h_discounts, h_inv_idcg.Values());
+    return;
   }
 #endif
-
+  for (std::size_t i = 0; i < MaxGroupSize(); ++i) {
+    h_discounts[i] = CalcDCGDiscount(i);
+  }
   common::ParallelFor(n_groups, ctx->Threads(), [&](auto g) {
     auto g_labels = h_labels.Slice(linalg::Range(h_group_ptr[g], h_group_ptr[g + 1]));
-    std::vector<std::size_t> cpu_order;
-    common::Span<std::size_t const> sorted_idx;
-    if (ctx->IsMPS()) {
-      sorted_idx = common::Span<std::size_t const>{metal_order}.subspan(h_group_ptr[g],
-                                                                      g_labels.Size());
-    } else {
-      cpu_order = common::ArgSort<std::size_t>(ctx, linalg::cbegin(g_labels),
-                                              linalg::cend(g_labels), std::greater<>{});
-      sorted_idx = cpu_order;
-    }
-
+    auto sorted_idx = common::ArgSort<std::size_t>(ctx, linalg::cbegin(g_labels),
+                                                  linalg::cend(g_labels), std::greater<>{});
     double idcg{0.0};
     for (std::size_t i = 0; i < std::min(g_labels.Size(), topk); ++i) {
       if (exp_gain) {
@@ -150,20 +163,18 @@ void NDCGCache::InitOnCUDA(Context const*, MetaInfo const&) { common::AssertGPUS
 
 DMLC_REGISTER_PARAMETER(LambdaRankParam);
 
-void PreCache::InitOnCPU(Context const*, MetaInfo const& info) {
+void PreCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   auto const& h_label = info.labels.HostView().Slice(linalg::All(), 0);
-  CheckPreLabels("pre", h_label,
-                 [](auto beg, auto end, auto op) { return std::all_of(beg, end, op); });
+  ValidateBinaryLabels(ctx, "pre", h_label);
 }
 
 #if !defined(XGBOOST_USE_CUDA)
 void PreCache::InitOnCUDA(Context const*, MetaInfo const&) { common::AssertGPUSupport(); }
 #endif  // !defined(XGBOOST_USE_CUDA)
 
-void MAPCache::InitOnCPU(Context const*, MetaInfo const& info) {
+void MAPCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   auto const& h_label = info.labels.HostView().Slice(linalg::All(), 0);
-  CheckPreLabels("map", h_label,
-                 [](auto beg, auto end, auto op) { return std::all_of(beg, end, op); });
+  ValidateBinaryLabels(ctx, "map", h_label);
 }
 
 #if !defined(XGBOOST_USE_CUDA)
