@@ -1,0 +1,125 @@
+CUDA-source typed category names and recoding maps
+2026-11-04; Apple M3 / 10 GPU cores / 16 GB unified memory
+
+Scope and source authority
+--------------------------
+Ported name-index initialization/sorting, whole-dictionary type/empty validation,
+segmented lower-bound lookup, exact candidate equality and first-missing search.
+Source: xgboost/src/encoder/ordinal.cuh::SortNames/Recode and segmented search
+operators; data/cat_container.cu::Sort/MakeCatAccessor; ordinal.h::BasicChecks,
+ReportMissing and the category type list. String ordering comes from the signed
+int8 spans and xgboost/span.h::LexicographicalCompare.
+
+This is not the complete categorical preprocessing port. Dictionary ownership,
+model category copies, packing/staging and row-level map application remain host.
+No benchmark or NVIDIA execution comparison was run.
+
+Implementation
+--------------
+metal_category.h exposes SortCategories and RecodeCategories for host views.
+A packed descriptor records payload/offset byte locations, feature segment,
+size, explicit integer/string type and the source empty flag. Payload bytes keep
+all integer widths; there is no float/double conversion of names. String offsets
+and values preserve embedded NULs and signed byte comparisons.
+
+Sort creates (feature, local-index) keys on GPU, merges by feature then name,
+and extracts local indices on GPU. Merge ranks choose stable ties. CUDA uses
+thrust::sort, so duplicate-name tie order is not promised equivalent. Public
+category dictionaries have unique names; valid unique-name results match the
+source order exactly. The original numeric/string category data is not sorted
+or rewritten on the host.
+
+Recode uses source host BasicChecks, then GPU global type/empty validation,
+per-name lower_bound and exact equality, mapping into original local indices.
+A GPU atomic minimum selects the first missing incoming index. Error strings
+are formatted on the host, as in CUDA. In particular, any schema mismatch wins
+before all missing-name errors: the CPU implementation instead checks each
+feature and could report an earlier missing name before a later type mismatch.
+The test suite explicitly distinguishes that source behavior.
+Successful maps return to host accessors. Failed maps are not copied to host.
+
+Production integration:
+- CatContainer::Sort with an MPS context routes model category sorting to Metal.
+- cpu_impl::MakeCatAccessor routes MPS name recoding to Metal before supplying the
+  existing mapping view. This covers batch/in-place/leaf prediction and SHAP.
+- MPS still uses CPU DeviceOrd for storage; IsMPS is checked before CPU fallback.
+- CUDA+Metal combined builds are already rejected by CMake, so the non-CUDA
+  CatContainer implementation is the appropriate Metal integration point.
+- CPU-only behavior and CUDA sources are unchanged.
+
+Statistics ABI gained category_sort_dispatches, category_recode_dispatches and
+category_gpu_time_ns. They count completed whole commands, not individual passes.
+No-category sorting/zero-feature recoding dispatch nothing. Nonzero-feature
+recoding still validates schemas when all category counts are zero. GPU schema
+or missing-name failures count completed work. The duration excludes host packing,
+copying and applying the mapping to rows. CPU-only builds expose zero values.
+
+Validation
+----------
+tests/metal_category_api.cc:
+ 33 dictionary cases / 2,730,917 exact sorted/mapped indices;
+ 80 expected errors; no numerical tolerances for indices.
+ All 8 integer types (unsigned/signed 8/16/32/64) plus string names.
+ Values include signed extrema, UINT64_MAX and adjacent values above 2^53.
+ Strings include empty names, embedded/trailing NULs, non-ASCII signed bytes,
+ UTF-8, prefixes and a 4,097-byte name. Repeated empty feature segments are mixed
+ with populated columns. Empty string offset arrays are distinguished from a
+ single zero offset, matching CatStrArrayView::empty().
+ Input-size families: 0,1,2,31,32,33,255,256,257,4097,65537. Narrow integer domains
+ are deduplicated rather than inventing unsupported distinct 8-bit names.
+ Incoming dictionaries are permuted/full, permuted subsets and single names.
+ Sorting compares with vendored host enc::SortNames; mapping compares with both
+ enc::Recode and independently known original category positions. Output guards,
+ actual CatContainer copy/sort/accessor calls and GPU counters are checked.
+ Errors cover all 72 ordered type mismatches, first missing name, schema-error
+ precedence, wrong vector sizes/feature counts/segments and empty-flag mismatch.
+ No CPU per-category sorting/search is used by the production Metal path.
+ Focused native run passed at 15:38:39 UTC.
+
+tests/test_metal_category_names.py: 19 public tests.
+ Typed strings/uint64/int64, reordered codes, missing rows, category subsets,
+ model serialization/reload; batch, leaf, SHAP contribution, SHAP interaction
+ and in-place prediction. Exact same-model outputs before/after recoding; CPU
+ output comparisons use 3e-6 relative/absolute tolerances. GPU counters are
+ required for both model sorting and prediction name mapping. Unknown names and
+ CUDA whole-dictionary schema-error precedence have explicit failure checks.
+ Focused v2: 19 passed / 17 embedded-NUL warnings, 1.04 seconds, 15:40:35 UTC.
+ Existing prediction tests: 33 passed / 2 warnings, 1.66 seconds, 15:37:17 UTC.
+
+The first public fixture run failed before reaching the new kernels in 12 cases:
+ NumPy's Unicode np.roll conversion dropped a trailing NUL from a category name;
+ and XGBoost's existing pandas adapter rejects uint64 names above INT64_MAX.
+Fixtures now reorder the original typed pandas category index and stay within
+the public adapter's allowed range. Native tests retain full UINT64 coverage.
+No production workaround or tolerance change was introduced for those failures.
+
+Build v1 passed at 15:36:27 UTC. Formatting completed before the full run.
+Full regression PASS, 15:41:19–15:46:40 UTC, FULL_EXIT=0 (5 minutes 21 seconds):
+ Metal build and every rebuilt native suite/reference updater passed.
+ Python: 1,875 passed / 1 skipped / 387 warnings, 96.29 seconds.
+ CPU-only configure/build/API/device check passed, including all new zero counters.
+ No production/test edits after this full run started; documentation only.
+ git diff --check passed.
+
+Remaining limits
+----------------
+No measured NVIDIA/libdevice or cross-Apple equivalence. Duplicate category-name
+tie order is not specified by CUDA's sort. The public adapter's signed-range
+restriction on uint64 names is preserved. No float category-name support was
+added: the vendored encoder supports only integer/string names.
+Dictionary arrays/maps are staged and read back, and row accessors still apply
+maps while filling host chunks for prediction/SHAP. Device dictionary caches,
+GPU category copy/storage, row preprocessing, general metadata validation and
+Apple array interoperability remain separate work. No new performance claim.
+
+Local logs:
+ results/build-category-v1.log
+ results/test-category-prediction-v1.log
+ results/test-category-native-v1.log
+ results/test-category-public-v1.log and -v2.log
+ results/category-names-full-driver-v1.log
+ results/build-category-names-final-v1.log
+ results/test-category-names-full-v1.log
+ results/configure-cpu-category-names-v1.log
+ results/build-cpu-category-names-v1.log
+ results/check-cpu-category-names-v1.log

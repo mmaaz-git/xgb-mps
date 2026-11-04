@@ -17,6 +17,7 @@
 #include "../collective/aggregator.h"
 #include "../data/gradient_index.h"
 #include "metal_auc.h"
+#include "metal_category.h"
 #include "metal_constraints.h"
 #include "metal_cuda_sketch.h"
 #include "metal_data.h"
@@ -111,6 +112,8 @@ std::atomic<std::uint64_t> binning_dispatches{0}, binning_gpu_time_ns{0};
 std::atomic<std::uint64_t> mean_dispatches{0}, mean_gpu_time_ns{0};
 std::atomic<std::uint64_t> small_histogram_dispatches{0}, vector_arithmetic_dispatches{0},
     float_mean_dispatches{0};
+std::atomic<std::uint64_t> category_sort_dispatches{0}, category_recode_dispatches{0},
+    category_gpu_time_ns{0};
 std::atomic<std::uint64_t> radix_sort_dispatches{0}, quantile_dispatches{0},
     quantile_gpu_time_ns{0};
 std::atomic<std::uint64_t> index_uploads{0}, index_uploaded_bytes{0},
@@ -241,6 +244,8 @@ class Runtime {
   id<MTLComputePipelineState> shared_pipeline, gradient_bounds_pipeline, gradient_scale_pipeline;
   id<MTLComputePipelineState> residual_stats_pipeline, residual_apply_pipeline,
       float32_sum_pipeline;
+  id<MTLComputePipelineState> category_iota_pipeline, category_merge_pipeline,
+      category_extract_pipeline, category_validate_pipeline, category_recode_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
@@ -319,6 +324,11 @@ class Runtime {
       residual_stats_pipeline = make_pipeline(@"xgb_residual_stats_reduce");
       residual_apply_pipeline = make_pipeline(@"xgb_residual_scale_apply");
       float32_sum_pipeline = make_pipeline(@"xgb_float32_sum");
+      category_iota_pipeline = make_pipeline(@"xgb_category_iota");
+      category_merge_pipeline = make_pipeline(@"xgb_category_merge");
+      category_extract_pipeline = make_pipeline(@"xgb_category_extract");
+      category_validate_pipeline = make_pipeline(@"xgb_category_validate");
+      category_recode_pipeline = make_pipeline(@"xgb_category_recode");
       residual_reduce_pipeline = make_pipeline(@"xgb_residual_scale_reduce");
       residual_finish_pipeline = make_pipeline(@"xgb_residual_scale_finish");
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
@@ -1773,7 +1783,10 @@ Statistics GetStatistics() {
           cuda_sketch_gpu_time_ns.load(std::memory_order_relaxed),
           small_histogram_dispatches.load(std::memory_order_relaxed),
           vector_arithmetic_dispatches.load(std::memory_order_relaxed),
-          float_mean_dispatches.load(std::memory_order_relaxed)};
+          float_mean_dispatches.load(std::memory_order_relaxed),
+          category_sort_dispatches.load(std::memory_order_relaxed),
+          category_recode_dispatches.load(std::memory_order_relaxed),
+          category_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1788,6 +1801,190 @@ void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>*
     duration->fetch_add(static_cast<std::uint64_t>(elapsed * 1e9), std::memory_order_relaxed);
 }
 }  // namespace
+namespace {
+struct CategoryColumn {
+  std::uint64_t values{0}, offsets{0};
+  std::uint32_t begin{0}, size{0}, type{0}, empty{0};
+};
+static_assert(sizeof(CategoryColumn) == 32);
+struct CategoryParams {
+  std::uint32_t count, features, width, padding;
+};
+struct CategoryError {
+  void Error(std::string&& message) const { LOG(FATAL) << message; }
+};
+using CategoryPolicy = enc::Policy<CategoryError>;
+struct PackedCategories {
+  std::vector<CategoryColumn> columns;
+  std::vector<std::uint8_t> data;
+  std::uint64_t Append(void const* source, std::size_t bytes) {
+    auto offset = (data.size() + 7) & ~std::size_t{7};
+    data.resize(offset + bytes);
+    if (bytes) std::memcpy(data.data() + offset, source, bytes);
+    return offset;
+  }
+  explicit PackedCategories(enc::HostColumnsView view) {
+    CHECK_EQ(view.feature_segments.size(), view.Size() + 1);
+    CHECK_EQ(view.feature_segments.front(), 0);
+    CHECK_EQ(view.feature_segments.back(), view.n_total_cats);
+    CHECK_LE(view.Size(), std::numeric_limits<std::uint32_t>::max());
+    columns.resize(view.Size());
+    for (std::size_t f = 0; f < view.Size(); ++f) {
+      auto& out = columns[f];
+      CHECK_GE(view.feature_segments[f + 1], view.feature_segments[f]);
+      out.begin = view.feature_segments[f];
+      std::visit(
+          [&](auto const& col) {
+            CHECK_EQ(col.size(), view.feature_segments[f + 1] - view.feature_segments[f]);
+            out.size = col.size();
+            out.empty = col.empty();
+            if constexpr (std::is_same_v<std::decay_t<decltype(col)>, enc::CatStrArrayView>) {
+              out.offsets = Append(col.offsets.data(), col.offsets.size_bytes());
+              out.values = Append(col.values.data(), col.values.size_bytes());
+            } else {
+              using T = std::remove_const_t<typename std::decay_t<decltype(col)>::value_type>;
+              static_assert(std::is_integral_v<T>,
+                            "Extend Metal category comparisons for new types");
+              out.type = (sizeof(T) == 1   ? 1
+                          : sizeof(T) == 2 ? 3
+                          : sizeof(T) == 4 ? 5
+                                           : 7) +
+                         std::is_signed_v<T>;
+              out.values = Append(col.data(), col.size_bytes());
+            }
+          },
+          view.columns[f]);
+    }
+  }
+};
+}  // namespace
+
+void SortCategories(enc::HostColumnsView columns, Span<std::int32_t> sorted) {
+  CHECK_GE(columns.n_total_cats, 0);
+  CHECK_EQ(sorted.size(), columns.n_total_cats)
+      << "`sorted_idx` should have the same size as `n_total_cats`.";
+  if (sorted.empty()) return;
+  PackedCategories packed{columns};
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto metadata =
+        Upload(rt, packed.columns.data(), packed.columns.size() * sizeof(CategoryColumn));
+    auto data = Upload(rt, packed.data.data(), packed.data.size());
+    auto keys = Allocate(rt, sorted.size() * 8), scratch = Allocate(rt, sorted.size() * 8);
+    auto result = Allocate(rt, sorted.size_bytes());
+    CategoryParams p{static_cast<std::uint32_t>(sorted.size()),
+                     static_cast<std::uint32_t>(columns.Size()), 1, 0};
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.category_iota_pipeline];
+    [e setBuffer:metadata offset:0 atIndex:0];
+    [e setBuffer:keys offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(p.count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    for (; p.width < p.count; p.width *= 2) {
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.category_merge_pipeline];
+      [e setBuffer:data offset:0 atIndex:0];
+      [e setBuffer:metadata offset:0 atIndex:1];
+      [e setBuffer:keys offset:0 atIndex:2];
+      [e setBuffer:scratch offset:0 atIndex:3];
+      [e setBytes:&p length:sizeof(p) atIndex:4];
+      [e dispatchThreads:MTLSizeMake(p.count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      std::swap(keys, scratch);
+    }
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.category_extract_pipeline];
+    [e setBuffer:keys offset:0 atIndex:0];
+    [e setBuffer:result offset:0 atIndex:1];
+    [e setBytes:&p.count length:sizeof(p.count) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(p.count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &category_sort_dispatches, &category_gpu_time_ns);
+    std::memcpy(sorted.data(), result.contents, sorted.size_bytes());
+  }
+}
+
+void RecodeCategories(enc::HostColumnsView original, Span<std::int32_t const> sorted,
+                      enc::HostColumnsView incoming, Span<std::int32_t> mapping) {
+  enc::detail::BasicChecks(CategoryPolicy{}, original, sorted, incoming, mapping);
+  CHECK_GE(original.n_total_cats, 0);
+  CHECK_GE(incoming.n_total_cats, 0);
+  if (original.Empty()) return;
+  PackedCategories orig{original}, next{incoming};
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto om = Upload(rt, orig.columns.data(), orig.columns.size() * sizeof(CategoryColumn));
+    auto od = Upload(rt, orig.data.data(), orig.data.size());
+    auto nm = Upload(rt, next.columns.data(), next.columns.size() * sizeof(CategoryColumn));
+    auto nd = Upload(rt, next.data.data(), next.data.size());
+    auto order = Upload(rt, sorted.data(), sorted.size_bytes());
+    auto result = Allocate(rt, mapping.size_bytes());
+    CategoryParams p{static_cast<std::uint32_t>(mapping.size()),
+                     static_cast<std::uint32_t>(incoming.Size()), 0, 0};
+    std::uint32_t status[2]{0, p.count};
+    auto error = Upload(rt, status, sizeof(status));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.category_validate_pipeline];
+    [e setBuffer:om offset:0 atIndex:0];
+    [e setBuffer:nm offset:0 atIndex:1];
+    [e setBuffer:error offset:0 atIndex:2];
+    [e setBytes:&p.features length:sizeof(p.features) atIndex:3];
+    [e dispatchThreads:MTLSizeMake(p.features, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    if (p.count) {
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.category_recode_pipeline];
+      [e setBuffer:od offset:0 atIndex:0];
+      [e setBuffer:om offset:0 atIndex:1];
+      [e setBuffer:order offset:0 atIndex:2];
+      [e setBuffer:nd offset:0 atIndex:3];
+      [e setBuffer:nm offset:0 atIndex:4];
+      [e setBuffer:result offset:0 atIndex:5];
+      [e setBuffer:error offset:0 atIndex:6];
+      [e setBytes:&p length:sizeof(p) atIndex:7];
+      [e dispatchThreads:MTLSizeMake(p.count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    CompleteOperation(command, &category_recode_dispatches, &category_gpu_time_ns);
+    std::memcpy(status, error.contents, sizeof(status));
+    CHECK_EQ(status[0], 0) << "Invalid new DataFrame. "
+                              "The data type doesn't match the one used in the training dataset. "
+                              "Both should be either numeric or categorical. "
+                              "For a categorical feature, the index type must match between the "
+                              "training and test set.";
+    if (status[1] < p.count) {
+      auto it = std::upper_bound(incoming.feature_segments.begin(), incoming.feature_segments.end(),
+                                 status[1]);
+      auto f = std::distance(incoming.feature_segments.begin(), it) - 1;
+      auto index = status[1] - incoming.feature_segments[f];
+      std::stringstream name;
+      std::visit(
+          [&](auto const& col) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(col)>, enc::CatStrArrayView>) {
+              for (auto c : col.values.subspan(col.offsets[index],
+                                               col.offsets[index + 1] - col.offsets[index]))
+                name.put(c);
+            } else {
+              name << col[index];
+            }
+          },
+          incoming.columns[f]);
+      enc::detail::ReportMissing(CategoryPolicy{}, name.str(), f);
+    }
+    if (!mapping.empty()) std::memcpy(mapping.data(), result.contents, mapping.size_bytes());
+  }
+}
+
 void CopyModelBuffer(void* output, std::size_t words, Span<ModelCopy const> copies,
                      ModelBufferKind kind) {
   CHECK(kind == ModelBufferKind::kWeights || kind == ModelBufferKind::kCategories);

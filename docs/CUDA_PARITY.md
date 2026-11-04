@@ -96,7 +96,7 @@ must be reported rather than hidden by widening test tolerances.
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Adapter/device-array ingestion, adapter-built QuantileDMatrix bins and distributed sketch collectives remain open |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
-| Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
+| Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Dictionary storage/copies, row-level recoding, general metadata and adapter preprocessing remain host |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
@@ -230,6 +230,60 @@ execution remain unverified; performance has not been benchmarked. Full
 regression passes **1,856 Python tests, one skip**, every rebuilt native suite
 and the CPU-only build/device check (2026-11-04, 14:59:14–15:03:58 UTC).
 [Validation record](../validation/cuda-objective-arithmetic-m3.txt).
+
+## Typed categorical name sorting and recoding
+
+`CatContainer::Sort` now routes MPS dictionaries to GPU segmented index
+initialization, sorting by feature and typed name, and extraction of the sorted
+local indices. `cpu_impl::MakeCatAccessor` dispatches MPS recoding to GPU schema
+validation, segmented lower-bound searches, candidate equality checks and the
+first missing-name reduction. The existing API name reflects its host views;
+with an MPS context, the name lookup calculations now run on Metal. These calls
+are used by model training, batch/in-place/leaf prediction and SHAP.
+
+The source type list contains strings and unsigned/signed 8/16/32/64-bit integers.
+It does not support floating category names. Integer widths remain intact; in
+particular, signedness and values above 2^53 never pass through float/double.
+Strings compare lexicographically as signed int8 spans, including embedded NULs
+and non-ASCII bytes. The test corpus includes long shared prefixes, empty
+strings, and empty columns between populated feature segments. The Python
+adapter's pre-existing rejection of uint64 names above INT64_MAX remains intact;
+full unsigned range behavior is checked through the native API.
+
+CUDA validates types and empty status across the entire dictionary before any
+name searches. Metal preserves that order: a later schema mismatch takes
+precedence over an earlier unknown name. Source BasicChecks remain on the host.
+Unknown-name selection is a GPU minimum over missing indices; only formatting
+the selected error is host-side. Output maps are copied to the host after
+successful validation to serve the existing accessors. Sorting uses stable
+parallel merge ranks instead of Thrust's sort; unique names have the same order.
+Duplicate-name tie order is not an NVIDIA-equivalence claim.
+
+Native tests compare against the vendored host encoder and independently known
+maps: 33 cases / 2,730,917 exact indices and 80 expected errors. They cover every
+source type, 0/1/31/32/33/255/256/257/4097/65537 sizes, permuted/subset/single-name
+incoming dictionaries, repeated feature boundaries, output guards, container
+copy/sort/accessor integration and completed GPU counters. Nineteen public tests
+check prediction, leaf indices, contributions, interactions, in-place calls,
+serialization, category subsets, unknown names and CUDA schema-error precedence.
+They require exact same-model outputs after code reordering and use a 3e-6
+CPU comparison for ordinary numerical output.
+
+The new counters `category_sort_dispatches`, `category_recode_dispatches` and
+`category_gpu_time_ns` describe completed commands. Empty sorting and zero-feature
+recoding require no dispatch; nonzero-feature recoding validates schemas even
+with no category entries. Invalid schemas/unknown names still count GPU work.
+All counters report zero in CPU-only builds.
+
+Still unfinished: dictionary copy/storage ownership, cached GPU dictionaries and
+maps, applying the maps to every input row on GPU, general metadata operations,
+and adapter/device-array preprocessing. Current prediction staging still invokes
+`CatAccessor` on the host while filling dense chunks. This milestone ports the
+name algorithms and their production routing, not the entire data preparation
+pipeline. No performance benchmark or NVIDIA/cross-Apple comparison was run.
+Full regression passed **1,875 Python tests, one skip**, every rebuilt native suite
+and the CPU-only build/check (2026-11-04, 15:41:19–15:46:40 UTC).
+[Validation](../validation/cuda-category-names-m3.txt).
 
 ## Adaptive objectives and generic reduction precision
 

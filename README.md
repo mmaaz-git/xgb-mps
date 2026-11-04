@@ -14,7 +14,23 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **absolute-error and quantile gradients now preserve CUDA's source
+Latest step: **category-name sorting and recoding maps now run on Metal**.
+The kernels retain all eight integer types, including exact 64-bit comparisons,
+and signed-byte string ordering. They validate the complete incoming dictionary
+before searching names, matching CUDA's error precedence. Training, batch and
+in-place prediction, leaf prediction, SHAP contributions and interactions use
+these paths.
+
+New checks pass **33 native dictionary cases / 2,730,917 exact indices**, **80
+expected errors** and **19 public tests**, including reordered/subset dictionaries,
+embedded NULs, Unicode, integer boundaries and model reload. Dictionary storage,
+staging and applying maps to individual rows still use host paths; this is not
+a complete categorical preprocessing port. No new performance measurement was
+made. Full regression passes **1,875 Python tests**, every rebuilt native suite
+and the CPU-only build/check.
+[Category-name validation](validation/cuda-category-names-m3.txt).
+
+The preceding adaptive step: **absolute-error and quantile gradients now preserve CUDA's source
 arithmetic**, including subnormal values, hypot/tanh edge cases and weight order.
 Residual roots now sum in FP32, while optional weights sum in binary64, matching
 the distinct CUDA reducers. Small scale statistics pass through the same host
@@ -81,7 +97,7 @@ category deduplication and resident summary pruning/merging.
 
 The major remaining areas are adapter/device-array sketch ingestion and matrix preprocessing,
 remaining objective initialization and training-state operations, CUDA algorithm
-alignment, categorical/metadata operations, Apple GPU array
+alignment, categorical row preprocessing and metadata operations, Apple GPU array
 interoperability and distributed collectives. Sensitive AFT tails and some
 long-run ranking and Covertype comparisons have numerical differences.
 Persistent GPU ownership and less synchronization also remain unfinished.
@@ -165,6 +181,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; adapter-built QuantileDMatrix bins remain CPU |
 | Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Adapter/device-array ingestion remains open |
+| Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Model dictionary copies, persistent storage and row-level map application remain host |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
@@ -239,6 +256,12 @@ whose duration remains in `mean_gpu_time_ns`; do not add these counts together.
 and intercept conversion separately. Invalid checked inputs still count completed
 GPU work. Empty inputs, identity conversions and unconditional label predicates
 require no dispatch.
+`category_sort_dispatches` and `category_recode_dispatches` count completed
+category-name sorting and dictionary validation/mapping commands;
+`category_gpu_time_ns` measures their GPU time. Schema or unknown-category errors
+still count completed work. Empty sorts and zero-feature dictionaries dispatch
+nothing; nonzero-feature empty dictionaries still receive GPU schema validation.
+These counters exclude host dictionary packing, row-level recoding and staging.
 `shap_dispatches` and `shap_interaction_dispatches` count completed contribution
 and interaction batches; `shap_gpu_time_ns` covers both. These are separate from
 ordinary prediction counters and exclude host preparation and staging.
@@ -503,6 +526,10 @@ On Apple M3, validated through 2026-11-04:
   `7.883e-15`; tiny tied-score cases also receive relative-accuracy checks.
 - Native objectives: **20 cases / 131,968 gradient pairs** compared against
   independent CPU mathematical references.
+- Category-name dictionaries: **33 native cases / 2,730,917 exact indices**,
+  plus **80 expected errors**, across every supported integer/string type.
+  **19 public tests** verify GPU routing, reordered/subset categories, unknown
+  names, global schema-error precedence, predictions, SHAP and model reload.
 - Native adaptive objectives: **180 cases / 1,260 residual scales / 452,592 gradient
   pairs**, covering zero/tiny weights, multiple targets and response scales.
   New extracted-source checks cover **2,359,332 fields**, with **1,000,800**

@@ -214,6 +214,11 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["vector_arithmetic_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.vector_arithmetic_dispatches)};
   info["float_mean_dispatches"] = Integer{static_cast<std::int64_t>(stats.float_mean_dispatches)};
+  info["category_sort_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.category_sort_dispatches)};
+  info["category_recode_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.category_recode_dispatches)};
+  info["category_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.category_gpu_time_ns)};
   info["mean_dispatches"] = Integer{static_cast<std::int64_t>(stats.mean_dispatches)};
   info["mean_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.mean_gpu_time_ns)};
   info["binning_dispatches"] = Integer{static_cast<std::int64_t>(stats.binning_dispatches)};
@@ -416,6 +421,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["small_histogram_dispatches"] = Integer{0};
   info["vector_arithmetic_dispatches"] = Integer{0};
   info["float_mean_dispatches"] = Integer{0};
+  info["category_sort_dispatches"] = Integer{0};
+  info["category_recode_dispatches"] = Integer{0};
+  info["category_gpu_time_ns"] = Integer{0};
   info["mean_dispatches"] = Integer{0};
   info["mean_gpu_time_ns"] = Integer{0};
   info["binning_dispatches"] = Integer{0};

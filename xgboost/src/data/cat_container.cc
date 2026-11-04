@@ -310,6 +310,14 @@ void CatContainer::Copy(Context const* ctx, CatContainer const& that) {
 }
 
 void CatContainer::Sort(Context const* ctx) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    auto view = this->HostView();
+    this->sorted_idx_.HostVector().resize(view.n_total_cats);
+    common::metal::SortCategories(view, this->sorted_idx_.HostSpan());
+    return;
+  }
+#endif
   CHECK(ctx->IsCPU());
   auto view = this->HostView();
   this->sorted_idx_.HostVector().resize(view.n_total_cats);

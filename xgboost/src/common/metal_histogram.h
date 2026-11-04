@@ -91,6 +91,7 @@ struct Statistics {
   std::uint64_t cuda_sketch_dispatches, cuda_sketch_batches, cuda_sketch_input_entries,
       cuda_sketch_gpu_time_ns;
   std::uint64_t small_histogram_dispatches, vector_arithmetic_dispatches, float_mean_dispatches;
+  std::uint64_t category_sort_dispatches, category_recode_dispatches, category_gpu_time_ns;
 };
 
 class Histogram {

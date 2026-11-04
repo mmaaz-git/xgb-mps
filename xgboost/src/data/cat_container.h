@@ -19,6 +19,10 @@
 #include "xgboost/data.h"                // for Entry
 #include "xgboost/host_device_vector.h"  // for HostDeviceVector
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_category.h"
+#endif
+
 namespace xgboost {
 class Json;
 
@@ -272,7 +276,14 @@ inline auto MakeCatAccessor(Context const* ctx, enc::HostColumnsView const& new_
   std::vector<std::int32_t> mapping(new_enc.n_total_cats);
   auto sorted_idx = orig_cats->RefSortedIndex(ctx);
   auto orig_enc = orig_cats->HostView();
-  enc::Recode(cpu_impl::EncPolicy, orig_enc, sorted_idx, new_enc, common::Span{mapping});
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    common::metal::RecodeCategories(orig_enc, sorted_idx, new_enc, common::Span{mapping});
+  } else
+#endif
+  {
+    enc::Recode(cpu_impl::EncPolicy, orig_enc, sorted_idx, new_enc, common::Span{mapping});
+  }
   CHECK_EQ(new_enc.feature_segments.size(), orig_enc.feature_segments.size());
   auto cats_mapping = enc::MappingView{new_enc.feature_segments, mapping};
   auto acc = CatAccessor{cats_mapping};

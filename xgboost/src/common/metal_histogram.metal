@@ -7139,3 +7139,158 @@ kernel void xgb_cs_fix(device float4* entries [[buffer(0)]], device const ulong*
     hi = v.y;
   }
 }
+
+// CUDA encoder/ordinal.cuh: typed name sorting, dictionary checks and lower_bound.
+// Numeric types: u8/i8/u16/i16/u32/i32/u64/i64. String bytes compare as signed int8.
+struct CategoryColumn {
+  ulong values, offsets;
+  uint begin, size, type, empty;
+};
+struct CategoryParams {
+  uint count, features, width, padding;
+};
+inline uint xgb_category_feature(device const CategoryColumn* columns, uint features, uint i) {
+  uint lo = 0, hi = features;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (columns[mid].begin <= i)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo - 1;
+}
+inline int xgb_category_compare(device const uchar* lhs, CategoryColumn l, uint li,
+                                device const uchar* rhs, CategoryColumn r, uint ri) {
+  if (l.type == 0) {
+    auto lo = reinterpret_cast<device const int*>(lhs + l.offsets);
+    auto ro = reinterpret_cast<device const int*>(rhs + r.offsets);
+    int lb = lo[li], le = lo[li + 1], rb = ro[ri], re = ro[ri + 1];
+    auto lv = reinterpret_cast<device const char*>(lhs + l.values);
+    auto rv = reinterpret_cast<device const char*>(rhs + r.values);
+    while (lb < le && rb < re) {
+      if (lv[lb] != rv[rb]) return lv[lb] < rv[rb] ? -1 : 1;
+      ++lb;
+      ++rb;
+    }
+    return lb == le ? (rb == re ? 0 : -1) : 1;
+  }
+  if (l.type & 1) {
+    ulong a, b;
+    switch (l.type) {
+      case 1:
+        a = lhs[l.values + li];
+        b = rhs[r.values + ri];
+        break;
+      case 3:
+        a = reinterpret_cast<device const ushort*>(lhs + l.values)[li];
+        b = reinterpret_cast<device const ushort*>(rhs + r.values)[ri];
+        break;
+      case 5:
+        a = reinterpret_cast<device const uint*>(lhs + l.values)[li];
+        b = reinterpret_cast<device const uint*>(rhs + r.values)[ri];
+        break;
+      default:
+        a = reinterpret_cast<device const ulong*>(lhs + l.values)[li];
+        b = reinterpret_cast<device const ulong*>(rhs + r.values)[ri];
+    }
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+  long a, b;
+  switch (l.type) {
+    case 2:
+      a = reinterpret_cast<device const char*>(lhs + l.values)[li];
+      b = reinterpret_cast<device const char*>(rhs + r.values)[ri];
+      break;
+    case 4:
+      a = reinterpret_cast<device const short*>(lhs + l.values)[li];
+      b = reinterpret_cast<device const short*>(rhs + r.values)[ri];
+      break;
+    case 6:
+      a = reinterpret_cast<device const int*>(lhs + l.values)[li];
+      b = reinterpret_cast<device const int*>(rhs + r.values)[ri];
+      break;
+    default:
+      a = reinterpret_cast<device const long*>(lhs + l.values)[li];
+      b = reinterpret_cast<device const long*>(rhs + r.values)[ri];
+  }
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+inline bool xgb_category_less(device const uchar* data, device const CategoryColumn* columns,
+                              uint2 l, uint2 r) {
+  if (l.x != r.x) return l.x < r.x;
+  return xgb_category_compare(data, columns[l.x], l.y, data, columns[r.x], r.y) < 0;
+}
+kernel void xgb_category_iota(device const CategoryColumn* columns [[buffer(0)]],
+                              device uint2* keys [[buffer(1)]],
+                              constant CategoryParams& p [[buffer(2)]],
+                              uint i [[thread_position_in_grid]]) {
+  if (i >= p.count) return;
+  uint f = xgb_category_feature(columns, p.features, i);
+  keys[i] = uint2(f, i - columns[f].begin);
+}
+kernel void xgb_category_merge(device const uchar* data [[buffer(0)]],
+                               device const CategoryColumn* columns [[buffer(1)]],
+                               device const uint2* input [[buffer(2)]],
+                               device uint2* output [[buffer(3)]],
+                               constant CategoryParams& p [[buffer(4)]],
+                               uint i [[thread_position_in_grid]]) {
+  if (i >= p.count) return;
+  uint base = (i / (2 * p.width)) * (2 * p.width), mid = min(base + p.width, p.count),
+       end = min(base + 2 * p.width, p.count);
+  bool left = i < mid;
+  uint lo = left ? mid : base, hi = left ? end : mid, start = lo;
+  uint2 key = input[i];
+  while (lo < hi) {
+    uint m = lo + (hi - lo) / 2;
+    bool before = left ? xgb_category_less(data, columns, input[m], key)
+                       : !xgb_category_less(data, columns, key, input[m]);
+    if (before)
+      lo = m + 1;
+    else
+      hi = m;
+  }
+  output[base + (i - (left ? base : mid)) + (lo - start)] = key;
+}
+kernel void xgb_category_extract(device const uint2* keys [[buffer(0)]],
+                                 device uint* sorted [[buffer(1)]], constant uint& n [[buffer(2)]],
+                                 uint i [[thread_position_in_grid]]) {
+  if (i < n) sorted[i] = keys[i].y;
+}
+kernel void xgb_category_validate(device const CategoryColumn* original [[buffer(0)]],
+                                  device const CategoryColumn* incoming [[buffer(1)]],
+                                  device atomic_uint* status [[buffer(2)]],
+                                  constant uint& features [[buffer(3)]],
+                                  uint f [[thread_position_in_grid]]) {
+  if (f < features &&
+      (original[f].type != incoming[f].type || original[f].empty != incoming[f].empty))
+    atomic_store_explicit(status, 1u, memory_order_relaxed);
+}
+kernel void xgb_category_recode(device const uchar* original_data [[buffer(0)]],
+                                device const CategoryColumn* original [[buffer(1)]],
+                                device const uint* sorted [[buffer(2)]],
+                                device const uchar* incoming_data [[buffer(3)]],
+                                device const CategoryColumn* incoming [[buffer(4)]],
+                                device int* mapping [[buffer(5)]],
+                                device atomic_uint* status [[buffer(6)]],
+                                constant CategoryParams& p [[buffer(7)]],
+                                uint i [[thread_position_in_grid]]) {
+  if (i >= p.count || atomic_load_explicit(status, memory_order_relaxed)) return;
+  uint f = xgb_category_feature(incoming, p.features, i), local = i - incoming[f].begin;
+  CategoryColumn col = original[f], next = incoming[f];
+  uint lo = 0, hi = col.size;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (xgb_category_compare(original_data, col, sorted[col.begin + mid], incoming_data, next,
+                             local) < 0)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  int idx = -1;
+  if (lo < col.size && xgb_category_compare(original_data, col, sorted[col.begin + lo],
+                                            incoming_data, next, local) == 0)
+    idx = int(sorted[col.begin + lo]);
+  mapping[i] = idx;
+  if (idx < 0) atomic_fetch_min_explicit(status + 1, i, memory_order_relaxed);
+}
