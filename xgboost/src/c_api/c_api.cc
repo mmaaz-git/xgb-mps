@@ -52,6 +52,7 @@
 #include "xgboost/windefs.h"             // for xgboost_IS_WIN
 
 #if defined(XGBOOST_USE_METAL)
+#include "../common/metal_gradient.h"
 #include "../common/metal_histogram.h"
 #include "../common/metal_metadata.h"
 #endif
@@ -296,6 +297,15 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["metadata_host_copy_bytes"] =
       Integer{static_cast<std::int64_t>(stats.metadata_host_copy_bytes)};
   info["metadata_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.metadata_gpu_time_ns)};
+  info["gradient_import_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_import_dispatches)};
+  info["gradient_import_pairs"] = Integer{static_cast<std::int64_t>(stats.gradient_import_pairs)};
+  info["gradient_import_shared_output_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_import_shared_output_bytes)};
+  info["gradient_import_host_copy_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_import_host_copy_bytes)};
+  info["gradient_import_gpu_time_ns"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_import_gpu_time_ns)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -564,6 +574,11 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["metadata_shared_output_bytes"] = Integer{0};
   info["metadata_host_copy_bytes"] = Integer{0};
   info["metadata_gpu_time_ns"] = Integer{0};
+  info["gradient_import_dispatches"] = Integer{0};
+  info["gradient_import_pairs"] = Integer{0};
+  info["gradient_import_shared_output_bytes"] = Integer{0};
+  info["gradient_import_host_copy_bytes"] = Integer{0};
+  info["gradient_import_gpu_time_ns"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};
@@ -1742,6 +1757,35 @@ void CopyGradientFromArrays(Context const *ctx, ArrayInterface<2, false> const &
     CopyGradientFromCudaArrays(ctx, i_grad, i_hess, out_gpair);
   }
 }
+
+void CopyGradientFromInterfaces(Context const *ctx, char const *grad, char const *hess,
+                                bst_idx_t rows, linalg::Matrix<GradientPair> *output) {
+  xgboost_CHECK_C_ARG_PTR(grad);
+  xgboost_CHECK_C_ARG_PTR(hess);
+  auto j_grad = Json::Load(StringView{grad});
+  auto j_hess = Json::Load(StringView{hess});
+  auto native = [](Json const &json) {
+    if (!IsA<Object>(json)) return false;
+    auto const &object = get<Object const>(json);
+    return object.find("device_type") != object.cend();
+  };
+  auto metal = native(j_grad);
+  CHECK_EQ(metal, native(j_hess)) << "gradient and hessian should be on the same device.";
+  if (metal) {
+#if defined(XGBOOST_USE_METAL)
+    common::metal::CopyNativeGradients(StringView{grad}, StringView{hess}, rows, output);
+#else
+    LOG(FATAL) << "Metal gradient input requires XGBoost built with USE_METAL=ON.";
+#endif
+    return;
+  }
+  ArrayInterface<2, false> i_grad{j_grad}, i_hess{j_hess};
+  StringView msg{"Mismatched shape between the gradient and hessian."};
+  CHECK_EQ(i_grad.Shape<0>(), i_hess.Shape<0>()) << msg;
+  CHECK_EQ(i_grad.Shape<1>(), i_hess.Shape<1>()) << msg;
+  CHECK_EQ(i_grad.Shape<0>(), rows) << "Mismatched size between the gradient and training data.";
+  CopyGradientFromArrays(ctx, i_grad, i_hess, output);
+}
 }  // namespace xgboost
 
 XGB_DLL int XGBoosterTrainOneIter(BoosterHandle handle, DMatrixHandle dtrain, int iter,
@@ -1751,17 +1795,10 @@ XGB_DLL int XGBoosterTrainOneIter(BoosterHandle handle, DMatrixHandle dtrain, in
   xgboost_CHECK_C_ARG_PTR(grad);
   xgboost_CHECK_C_ARG_PTR(hess);
   auto p_fmat = CastDMatrixHandle(dtrain);
-  ArrayInterface<2, false> i_grad{StringView{grad}};
-  ArrayInterface<2, false> i_hess{StringView{hess}};
-  StringView msg{"Mismatched shape between the gradient and hessian."};
-  CHECK_EQ(i_grad.Shape<0>(), i_hess.Shape<0>()) << msg;
-  CHECK_EQ(i_grad.Shape<1>(), i_hess.Shape<1>()) << msg;
-  CHECK_EQ(i_grad.Shape<0>(), p_fmat->Info().num_row_)
-      << "Mismatched size between the gradient and training data.";
   auto *learner = static_cast<Learner *>(handle);
   auto ctx = learner->Ctx();
   GradientContainer gpair;
-  CopyGradientFromArrays(ctx, i_grad, i_hess, &gpair.gpair);
+  CopyGradientFromInterfaces(ctx, grad, hess, p_fmat->Info().num_row_, &gpair.gpair);
   learner->BoostOneIter(iter, p_fmat, &gpair);
   API_END();
 }
@@ -1785,26 +1822,10 @@ XGB_DLL int XGBoosterTrainOneIterWithSplitGrad(BoosterHandle handle, DMatrixHand
   auto *learner = static_cast<Learner *>(handle);
   GradientContainer gpair;
   auto ctx = learner->Ctx();
-  {
-    ArrayInterface<2, false> i_grad{StringView{split_grad}};
-    ArrayInterface<2, false> i_hess{StringView{split_hess}};
-    StringView msg{"Mismatched shape between the gradient and hessian."};
-    CHECK_EQ(i_grad.Shape<0>(), i_hess.Shape<0>()) << msg;
-    CHECK_EQ(i_grad.Shape<1>(), i_hess.Shape<1>()) << msg;
-    CopyGradientFromArrays(ctx, i_grad, i_hess, &gpair.gpair);
-  }
-  {
-    ArrayInterface<2, false> i_grad{StringView{value_grad}};
-    ArrayInterface<2, false> i_hess{StringView{value_hess}};
-    StringView msg{"Mismatched shape between the gradient and hessian."};
-    CHECK_EQ(i_grad.Shape<0>(), i_hess.Shape<0>()) << msg;
-    CHECK_EQ(i_grad.Shape<1>(), i_hess.Shape<1>()) << msg;
-    CopyGradientFromArrays(ctx, i_grad, i_hess, &gpair.value_gpair);
-  }
-
   auto p_fmat = CastDMatrixHandle(dtrain);
-  CHECK_EQ(gpair.gpair.Shape(0), p_fmat->Info().num_row_);
-  CHECK_EQ(gpair.value_gpair.Shape(0), p_fmat->Info().num_row_);
+  CopyGradientFromInterfaces(ctx, split_grad, split_hess, p_fmat->Info().num_row_, &gpair.gpair);
+  CopyGradientFromInterfaces(ctx, value_grad, value_hess, p_fmat->Info().num_row_,
+                             &gpair.value_gpair);
   learner->BoostOneIter(iter, p_fmat, &gpair);
 
   API_END();

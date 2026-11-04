@@ -144,6 +144,9 @@ std::atomic<std::uint64_t> tensor_imports{0}, tensor_copy_dispatches{0}, tensor_
 std::atomic<std::uint64_t> metadata_copy_dispatches{0}, metadata_convert_dispatches{0},
     metadata_validate_dispatches{0}, metadata_qid_dispatches{0}, metadata_values{0},
     metadata_shared_output_bytes{0}, metadata_host_copy_bytes{0}, metadata_gpu_time_ns{0};
+std::atomic<std::uint64_t> gradient_import_dispatches{0}, gradient_import_pairs{0},
+    gradient_import_shared_output_bytes{0}, gradient_import_host_copy_bytes{0},
+    gradient_import_gpu_time_ns{0};
 std::atomic<std::uint64_t> ellpack_csr_dispatches{0}, ellpack_csr_values{0}, ellpack_csr_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
     ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
@@ -282,6 +285,7 @@ class Runtime {
   id<MTLComputePipelineState> category_iota_pipeline, category_merge_pipeline,
       category_extract_pipeline, category_validate_pipeline, category_recode_pipeline;
   id<MTLComputePipelineState> input_prepare_pipeline;
+  id<MTLComputePipelineState> gradient_import_pipeline;
   id<MTLComputePipelineState> metadata_convert_pipeline, metadata_validate_pipeline,
       metadata_qid_mark_pipeline, metadata_qid_starts_pipeline, metadata_qid_counts_pipeline;
   id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
@@ -376,6 +380,7 @@ class Runtime {
       category_validate_pipeline = make_pipeline(@"xgb_category_validate");
       category_recode_pipeline = make_pipeline(@"xgb_category_recode");
       input_prepare_pipeline = make_pipeline(@"xgb_prepare_input");
+      gradient_import_pipeline = make_pipeline(@"xgb_import_gradient_pairs");
       metadata_convert_pipeline = make_pipeline(@"xgb_metadata_convert");
       metadata_validate_pipeline = make_pipeline(@"xgb_metadata_validate");
       metadata_qid_mark_pipeline = make_pipeline(@"xgb_metadata_qid_mark");
@@ -1952,7 +1957,12 @@ Statistics GetStatistics() {
           metadata_values.load(std::memory_order_relaxed),
           metadata_shared_output_bytes.load(std::memory_order_relaxed),
           metadata_host_copy_bytes.load(std::memory_order_relaxed),
-          metadata_gpu_time_ns.load(std::memory_order_relaxed)};
+          metadata_gpu_time_ns.load(std::memory_order_relaxed),
+          gradient_import_dispatches.load(std::memory_order_relaxed),
+          gradient_import_pairs.load(std::memory_order_relaxed),
+          gradient_import_shared_output_bytes.load(std::memory_order_relaxed),
+          gradient_import_host_copy_bytes.load(std::memory_order_relaxed),
+          gradient_import_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6043,21 +6053,21 @@ class MetalTensor final : public Tensor {
   InputArray array;
   bst_idx_t rows;
   bst_feature_t columns;
-  explicit MetalTensor(StringView descriptor, bool metadata = false) {
+  explicit MetalTensor(StringView descriptor, bool allow_tensor_shape = false) {
     @autoreleasepool {
       auto json = Json::Load(descriptor);
       CHECK_EQ(get<Integer const>(json["device_type"]), 8);
       CHECK_EQ(get<Integer const>(json["device_id"]), 0);
       auto const& shape = get<Array const>(json["shape"]);
       auto const& strides = get<Array const>(json["strides"]);
-      CHECK((metadata && shape.size() < 2) || shape.size() == 2)
-          << "Metal feature input must be two-dimensional; metadata may also be a scalar/vector.";
+      CHECK((allow_tensor_shape && shape.size() < 2) || shape.size() == 2)
+          << "Metal feature input must be two-dimensional; other tensors may also be scalar/vector.";
       CHECK_EQ(strides.size(), shape.size());
       auto r = shape.empty() ? std::int64_t{1} : get<Integer const>(shape[0]);
       auto c = shape.size() < 2 ? std::int64_t{1} : get<Integer const>(shape[1]);
       CHECK_GE(r, 0);
       CHECK_LE(r, std::numeric_limits<std::uint32_t>::max());
-      CHECK_GE(c, metadata ? 0 : 1);
+      CHECK_GE(c, allow_tensor_shape ? 0 : 1);
       CHECK_LE(c, std::numeric_limits<bst_feature_t>::max());
       rows = r;
       columns = c;
@@ -6501,6 +6511,48 @@ std::unique_ptr<AdapterInput> PrepareAdapterImpl(Adapter const& adapter, float m
 }  // namespace
 std::shared_ptr<Tensor> ImportTensor(StringView descriptor) {
   return std::make_shared<MetalTensor>(descriptor);
+}
+void CopyNativeGradients(StringView grad, StringView hess, bst_idx_t rows,
+                         linalg::Matrix<GradientPair>* output) {
+  // Both snapshots validate devices, dtypes, extents and signed strides before
+  // resizing output, also protecting producers that alias its previous storage.
+  MetalTensor g{grad, true}, h{hess, true};
+  StringView msg{"Mismatched shape between the gradient and hessian."};
+  CHECK_EQ(g.rows, h.rows) << msg;
+  CHECK_EQ(g.columns, h.columns) << msg;
+  CHECK_EQ(g.rows, rows) << "Mismatched size between the gradient and training data.";
+  auto count = rows * g.columns;
+  auto& rt = GetRuntime();
+  CHECK_LT(count, std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(count, rt.device.maxBufferLength / sizeof(GradientPair));
+  output->Reshape(rows, g.columns);
+  if (!count) return;
+  static_assert(sizeof(GradientPair) == 8);
+  auto destination = output->Data()->HostSpan();
+  @autoreleasepool {
+    auto out = TryBorrowMemory(rt.device, destination.data(), destination.size_bytes(), 8);
+    bool shared = out.buffer != nil;
+    if (!shared) out = {Allocate(rt, destination.size_bytes()), 0};
+    struct { std::uint64_t count; std::uint32_t columns, padding; } p{count, g.columns, 0};
+    static_assert(sizeof(p) == 16);
+    auto command = [rt.queue commandBuffer];
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.gradient_import_pipeline];
+    [e setBuffer:g.buffer offset:0 atIndex:0];
+    [e setBuffer:h.buffer offset:0 atIndex:1];
+    [e setBuffer:out.buffer offset:out.offset atIndex:2];
+    [e setBytes:&g.array length:sizeof(g.array) atIndex:3];
+    [e setBytes:&h.array length:sizeof(h.array) atIndex:4];
+    [e setBytes:&p length:sizeof(p) atIndex:5];
+    [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &gradient_import_dispatches, &gradient_import_gpu_time_ns);
+    if (!shared) std::memcpy(destination.data(), out.buffer.contents, destination.size_bytes());
+    (shared ? gradient_import_shared_output_bytes : gradient_import_host_copy_bytes)
+        .fetch_add(destination.size_bytes(), std::memory_order_relaxed);
+    gradient_import_pairs.fetch_add(count, std::memory_order_relaxed);
+  }
 }
 void SetMetadata(MetaInfo* info, StringView field, StringView descriptor) {
   auto kind = static_cast<std::uint32_t>(data::MapMetaField(field, true));

@@ -115,6 +115,9 @@ struct Statistics {
   std::uint64_t metadata_copy_dispatches, metadata_convert_dispatches, metadata_validate_dispatches,
       metadata_qid_dispatches, metadata_values, metadata_shared_output_bytes,
       metadata_host_copy_bytes, metadata_gpu_time_ns;
+  std::uint64_t gradient_import_dispatches, gradient_import_pairs,
+      gradient_import_shared_output_bytes, gradient_import_host_copy_bytes,
+      gradient_import_gpu_time_ns;
 };
 
 class Histogram {

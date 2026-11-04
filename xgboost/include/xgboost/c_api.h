@@ -1120,8 +1120,10 @@ XGB_DLL int XGBoosterBoostOneIter(BoosterHandle handle, DMatrixHandle dtrain, fl
  * @param dtrain The training data.
  * @param iter   The current iteration round. When training continuation is used, the count
  *               should restart.
- * @param grad   Json encoded __(cuda)_array_interface__ for gradient.
- * @param hess   Json encoded __(cuda)_array_interface__ for Hessian.
+ * @param grad   Json encoded __(cuda)_array_interface__ or native Metal descriptor
+ *               (device_type=8, as in XGProxyDMatrixSetDataMetal) for gradient.
+ * @param hess   Matching interface kind for Hessian. Metal supports scalar/vector/matrix
+ *               shape and requires completed producer work through the synchronous call.
  *
  * @return 0 when success, -1 when failure happens
  */

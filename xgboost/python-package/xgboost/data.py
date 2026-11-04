@@ -1550,7 +1550,7 @@ def dispatch_meta_backend(
     handle = matrix.handle
     assert handle is not None
     if is_metal(data):
-        tensor = transform_metal(data, metadata=True)
+        tensor = transform_metal(data, allow_tensor_shape=True)
         _validate_meta_shape(tensor, name)
         _check_call(
             _LIB.XGDMatrixSetInfoFromMetal(handle, c_str(name), tensor.descriptor)

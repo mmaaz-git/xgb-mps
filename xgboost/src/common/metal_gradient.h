@@ -6,6 +6,7 @@
 
 #include "xgboost/base.h"
 #include "xgboost/linalg.h"
+#include "xgboost/string_view.h"
 
 namespace xgboost::common::metal {
 // Immutable original per-target bounds/scales, without allocating integer rows.
@@ -50,4 +51,9 @@ void CopyGradients(linalg::MatrixView<GradientPair const> input,
                    linalg::MatrixView<GradientPair> output);
 void ExtractHessians(linalg::MatrixView<GradientPair const> input,
                      linalg::MatrixView<float> output);
+// Native tensor descriptors have explicit device_type=8 tags, not host pointers.
+// Preserve CUDA CustomGradHessOp casts and packing without clamping/validation
+// of the numerical values. Shape/device validation precedes output publication.
+void CopyNativeGradients(StringView grad, StringView hess, bst_idx_t rows,
+                         linalg::Matrix<GradientPair>* output);
 }  // namespace xgboost::common::metal

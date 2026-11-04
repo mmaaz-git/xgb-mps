@@ -1639,7 +1639,9 @@ class QuantileDMatrix(DMatrix, _RefMixIn):
         # A single-batch iterator consumes metadata more than once. Retain one
         # managed export so a caller-supplied DLPack capsule is consumed once.
         meta = {
-            name: transform_metal(value, metadata=True) if is_metal(value) else value
+            name: transform_metal(value, allow_tensor_shape=True)
+            if is_metal(value)
+            else value
             for name, value in meta.items()
         }
         if is_metal(data):
@@ -2331,9 +2333,9 @@ class Booster:
         iteration :
             The current training iteration.
         grad :
-            The first order of gradient.
+            The first order of gradient. Metal DLPack tensors and capsules are supported.
         hess :
-            The second order of gradient.
+            The second order of gradient, on the same device as ``grad``.
         fobj :
             A custom objective function. If gradient is None, then an objective function
             is required.
@@ -2347,7 +2349,10 @@ class Booster:
             )
         n_samples = dtrain.num_row()
 
+        from ._metal import capture_tensors
+
         def train_one_iter(grad: NumpyOrCupy, hess: NumpyOrCupy) -> None:
+            grad, hess = capture_tensors(grad, hess)
             _check_call(
                 _LIB.XGBoosterTrainOneIter(
                     self.handle,
@@ -2399,6 +2404,7 @@ class Booster:
             train_one_iter(sgrad, shess)
             return
 
+        sgrad, shess, vgrad, vhess = capture_tensors(sgrad, shess, vgrad, vhess)
         _check_call(
             _LIB.XGBoosterTrainOneIterWithSplitGrad(
                 self.handle,

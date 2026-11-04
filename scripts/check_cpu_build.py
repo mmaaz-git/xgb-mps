@@ -43,6 +43,11 @@ try:
     assert b"USE_METAL=ON" in lib.XGBGetLastError()
     assert lib.XGDMatrixSetInfoFromMetal(proxy, b"label", b"{}") != 0
     assert b"USE_METAL=ON" in lib.XGBGetLastError()
+    native = b'{"device_type":8}'
+    assert lib.XGBoosterTrainOneIter(booster, proxy, 0, native, native) != 0
+    assert b"USE_METAL=ON" in lib.XGBGetLastError()
+    assert lib.XGBoosterTrainOneIterWithSplitGrad(booster, proxy, 0, native, native, native, native) != 0
+    assert b"USE_METAL=ON" in lib.XGBGetLastError()
     assert lib.XGBoosterPredictFromMetal(booster, b"{}", b"{}", None, None, None, None) != 0
     assert b"USE_METAL=ON" in lib.XGBGetLastError()
 finally:

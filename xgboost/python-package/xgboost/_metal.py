@@ -3,6 +3,7 @@
 import ctypes as C
 import json
 import sys
+import warnings
 import weakref
 from typing import Any
 
@@ -102,7 +103,7 @@ class MetalData:
     Generic Metal DLPack providers must finish their writes before exporting.
     """
 
-    def __init__(self, data: Any, *, metadata: bool = False) -> None:
+    def __init__(self, data: Any, *, allow_tensor_shape: bool = False) -> None:
         if type(data).__name__ == "PyCapsule":
             capsule = data
         else:
@@ -115,15 +116,17 @@ class MetalData:
         tensor = managed.tensor
         if tensor.device.kind != 8 or tensor.device.index != 0:
             raise BufferError("Expected a Metal DLPack tensor on device 0.")
-        valid_dim = tensor.ndim in (0, 1, 2) if metadata else tensor.ndim == 2
+        valid_dim = tensor.ndim in (0, 1, 2) if allow_tensor_shape else tensor.ndim == 2
         if not valid_dim or (tensor.ndim and not tensor.shape):
             raise ValueError(
-                "Metal metadata must have at most two dimensions."
-                if metadata
+                "Metal tensor must have at most two dimensions."
+                if allow_tensor_shape
                 else "Metal feature input must be two-dimensional."
             )
         shape = tuple(tensor.shape[i] for i in range(tensor.ndim))
-        if any(size < 0 for size in shape) or (not metadata and shape[1] == 0):
+        if any(size < 0 for size in shape) or (
+            not allow_tensor_shape and shape[1] == 0
+        ):
             raise ValueError("Invalid Metal tensor shape.")
         strides = (
             tuple(tensor.strides[i] for i in range(tensor.ndim))
@@ -168,6 +171,53 @@ class MetalData:
         _synchronize()
         return self._descriptor
 
+    def gradient_descriptor(self, n_samples: int) -> bytes:
+        """Preserve the existing flattened-gradient compatibility path on GPU."""
+        descriptor = self.descriptor
+        if (
+            self.shape
+            and self.shape[0] != n_samples
+            and (len(self.shape) == 1 or self.shape[1] == 1)
+        ):
+            warnings.warn(
+                "Since 2.1.0, the shape of the gradient and hessian is required to"
+                " be (n_samples, n_targets) or (n_samples, n_classes).",
+                FutureWarning,
+            )
+            size = self.shape[0]
+            if not n_samples or size % n_samples:
+                raise ValueError(
+                    "Gradient size cannot be reshaped to the training row count."
+                )
+            desc = json.loads(descriptor)
+            targets = size // n_samples
+            stride = desc["strides"][0]
+            desc["shape"] = (n_samples, targets)
+            desc["strides"] = (stride * targets, stride)
+            descriptor = json.dumps(desc).encode("utf-8")
+        return descriptor
 
-def transform(data: Any, *, metadata: bool = False) -> MetalData:
-    return data if isinstance(data, MetalData) else MetalData(data, metadata=metadata)
+
+def transform(data: Any, *, allow_tensor_shape: bool = False) -> MetalData:
+    return (
+        data
+        if isinstance(data, MetalData)
+        else MetalData(data, allow_tensor_shape=allow_tensor_shape)
+    )
+
+
+def capture_tensors(*arrays: Any) -> tuple:
+    """Retain managed exports through a C call, consuming aliased capsules once."""
+    captured = {}
+    result = []
+    for array in arrays:
+        key = id(array)
+        if key in captured:
+            result.append(captured[key])
+        elif is_metal(array):
+            tensor = transform(array, allow_tensor_shape=True)
+            captured[key] = tensor
+            result.append(tensor)
+        else:
+            result.append(array)
+    return tuple(result)

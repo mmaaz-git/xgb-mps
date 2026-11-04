@@ -21,6 +21,7 @@ from ._data_utils import (
     array_interface,
     cuda_array_interface,
 )
+from ._metal import MetalData
 from ._typing import ArrayLike, NumpyOrCupy
 from .compat import _is_cupy_alike
 
@@ -65,9 +66,11 @@ class TreeObjective(Objective):
 
 
 def _grad_arrinf(array: NumpyOrCupy, n_samples: int) -> bytes:
+    if isinstance(array, MetalData):
+        return array.gradient_descriptor(n_samples)
     # Can we check for __array_interface__ instead of a specific type instead?
     msg = (
-        "Expecting `np.ndarray` or `cupy.ndarray` for gradient and hessian."
+        "Expecting `np.ndarray`, `cupy.ndarray`, or a Metal DLPack tensor for gradient and hessian."
         f" Got: {type(array)}"
     )
     if not isinstance(array, np.ndarray) and not _is_cupy_alike(array):

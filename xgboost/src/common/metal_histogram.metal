@@ -7472,6 +7472,19 @@ inline uint xgb_input_float(device const uchar* data, InputArray a, ulong row, u
   float value = (a.type < 8) ? float(as_type<long>(bits)) : float(bits);
   return as_type<uint>(value);
 }
+struct GradientImportParams { ulong count; uint columns, padding; };
+kernel void xgb_import_gradient_pairs(
+    device const uchar* grad [[buffer(0)]], device const uchar* hess [[buffer(1)]],
+    device uint2* output [[buffer(2)]], constant InputArray& g [[buffer(3)]],
+    constant InputArray& h [[buffer(4)]], constant GradientImportParams& p [[buffer(5)]],
+    uint i [[thread_position_in_grid]]) {
+  if (ulong(i) >= p.count) return;
+  ulong row = i / p.columns, column = i % p.columns;
+  // CUDA CustomGradHessOp casts each independently, then packs the pair.
+  // No missing-value substitution, Hessian clamping or finite-value predicate.
+  output[i] = uint2(xgb_input_float(grad, g, row, column),
+                    xgb_input_float(hess, h, row, column));
+}
 // Metadata uses CUDA's typed casts, not feature missing-value substitution.
 struct MetadataParams { ulong count; uint columns, kind; };
 inline uint xgb_metadata_uint(device const uchar* data, InputArray a, ulong row, ulong column,

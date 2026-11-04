@@ -107,7 +107,7 @@ must be reported rather than hidden by widening test tolerances.
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
-| CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack feature tensors feed quantile constructors, iterators and inplace prediction through owned GPU snapshots; real PyTorch/MLX, strides, half and capsule lifetimes are tested. Native metadata imports now use Metal conversion/validation/grouping. Ordinary DMatrix feature input, custom-gradient imports, GPU outputs and portable producer stream handshakes remain open. NVIDIA-specific interfaces cannot consume Metal memory |
+| CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack feature tensors feed quantile constructors, iterators and inplace prediction through owned GPU snapshots; real PyTorch/MLX, strides, half and capsule lifetimes are tested. Native metadata imports use Metal conversion/validation/grouping; custom gradients use GPU typed pair packing for regular and split/value entry points. Ordinary DMatrix feature input, GPU outputs and portable producer stream handshakes remain open. NVIDIA-specific interfaces cannot consume Metal memory |
 | CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Shared-memory Metal runtime, guarded host-memory views for ordinary gradients, quantization and leaf assignment, model-local row workspaces, reused command queue and histogram buffers; persistent end-to-end device ownership and asynchronous scheduling missing |
 
 Paths in the table are relative to `xgboost/src` and denote starting points, not
@@ -2839,7 +2839,7 @@ and the test launcher configures the shared runtime. Arbitrary mixed-runtime
 packaging is not fixed by the Metal import code.
 
 Metadata imports are implemented in the next section. Remaining interoperability
-work includes native ordinary `DMatrix` input, custom-gradient imports, GPU outputs and
+work includes native ordinary `DMatrix` input, GPU outputs and
 broader device ownership. Native sparse/columnar device adapters and a portable
 producer queue protocol also remain open. No new performance benchmark, NVIDIA
 comparison or other Apple-device validation was performed.
@@ -2911,6 +2911,76 @@ suite/reference updater and the CPU-only build/API checks (2026-11-04,
 20:26:46Z–20:33:48Z). No production or test changes followed that final build/run.
 
 No new benchmark, NVIDIA execution or other Apple-device comparison was run.
-Native ordinary feature matrices, custom gradients, GPU output tensors, general
+Custom gradients are implemented in the next section. Native ordinary feature
+matrices, GPU output tensors, general
 metadata/state manipulation and ownership, remaining CUDA arithmetic audits and
 GPU collectives remain open.
+
+## Native Metal custom gradients
+
+CUDA authority: `c_api/c_api_utils.h::CustomGradHessOp` and
+`c_api/c_api.cu::CopyGradientFromCudaArrays`. For each row/target, the source
+independently casts the supplied gradient and Hessian to FP32 and packs them into
+one pair. There is no Hessian clamping or finite-value validation at this stage.
+The Metal kernel preserves those rules, including signed zeros, subnormals,
+negative Hessians and nonfinite values. Later training stages retain their own
+validation and numeric policies.
+
+The existing `XGBoosterTrainOneIter` and `XGBoosterTrainOneIterWithSplitGrad` entry
+points recognize explicitly tagged Metal descriptors (`device_type=8`). Host and
+CUDA array interfaces keep their existing dispatch. Each gradient/Hessian pair
+must have matching devices and normalized shapes, and its rows must match the
+training matrix. Split and value pairs are independent: either may use host or
+Metal inputs, with different dtypes and target widths. Invalid descriptor/shape
+inputs leave the model unchanged. CPU-only builds reject Metal input clearly
+before touching the opaque buffer handle.
+
+Owned GPU snapshots validate dtypes, device, offsets and signed/broadcast strides
+before destination resizing. The GPU decodes float16/32/64, signed/unsigned
+integers and bool and writes packed FP32 pairs into an eligible shared host
+allocation, otherwise into a GPU buffer followed by a counted copy. This closes
+the native import operation; it does not implement generic Metal-owned
+`HostDeviceVector`/`linalg` allocation or end-to-end private GPU training state.
+
+Python captures managed exports through each C call. Aliased capsules across
+gradient/Hessian and split/value arguments are consumed and deleted exactly once.
+Real PyTorch/MLX tensors, plain custom functions, `Objective`, `TreeObjective`,
+and direct `Booster.boost` calls use this route. Known producer work is completed
+before import; generic providers must supply ready buffers. Legacy flattened
+vectors/single columns retain upstream's FutureWarning and reshape by changing
+the descriptor, without reading tensor payloads on the CPU. Row vectors are not
+silently reshaped. Scalars are additionally accepted for one training row, while
+the original NumPy Python helper requires at least one dimension. Empty inputs
+preserve their normalized shapes. Callback predictions still arrive as NumPy;
+GPU prediction-output tensors and a portable queue handshake remain open.
+
+Counters: `gradient_import_dispatches`, `gradient_import_pairs`,
+`gradient_import_shared_output_bytes`, `gradient_import_host_copy_bytes`, and
+`gradient_import_gpu_time_ns`. Input snapshots use the existing `tensor_*`
+counters. These count import work separately from later gradient-state kernels.
+CPU-only builds report zero. Native callers of the statistics structure must be
+rebuilt when its fields grow.
+
+Native validation passes **333 cases / 328,515 field checks / 17 invalid inputs**.
+Independent scalar casts check every integer width, float32/64, differing
+G/H dtypes and layouts, both source storage modes, signed strides, transposes,
+broadcasts and offsets. All 65,536 half patterns are checked for both G and H,
+with exact non-NaN bits and NaN classification. FP32 edge patterns retain their
+bits, and negative Hessians remain negative. GPU source overwrite/release cannot
+alter the result. Invalid shape/device/bounds/dtype inputs preserve the existing
+destination. **163,084 pairs / 1,304,672 shared output bytes / zero host payload
+copy bytes** were observed; the copy fallback remains available.
+
+Python tests compare native and host inputs with **byte-identical saved models**
+on both CPU and MPS. They cover two producers, six gradient dtypes with separately
+typed Hessians, five layouts, legacy flattened shapes, GPU arithmetic inside
+callbacks, split/value device placement, exact-once capsule deletion, failed-call
+model preservation and empty/scalar inputs. This is input-path equivalence, not
+an NVIDIA execution comparison. No new benchmark or cross-hardware run.
+
+Final focused regression: **587 passed** (162 new gradient tests, 93 feature
+regressions, 332 metadata regressions). Full regression: **2,953 Python tests
+passed, one skipped**, every rebuilt native suite/reference updater and CPU-only
+build/API checks passed on 2026-11-04, 20:44:51Z–20:52:00Z. No production or test
+changes followed that final build/run.
+[Validation record](../validation/cuda-metal-gradient-import-m3.txt).

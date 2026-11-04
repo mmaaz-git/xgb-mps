@@ -14,7 +14,27 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **native Metal metadata imports**. PyTorch/MLX labels, weights,
+Latest step: **native Metal custom-gradient imports**. `Booster.boost` and custom
+objective callbacks accept PyTorch/MLX GPU gradients and Hessians, including
+separate split-selection and leaf-value pairs. Metal follows CUDA's independent
+typed casts and pair packing, with no CPU conversion of input tensor values.
+Split/value pairs can independently come from CPU or Metal; each gradient and
+its Hessian must share a device. Legacy flattened inputs retain their warning.
+
+Native validation passes **333 cases / 328,515 field checks / 17 rejected inputs**,
+including all float16 bit patterns and private buffers. The **162 new Python tests**
+compare native-input models with host-input models byte for byte on both CPU and
+MPS. Focused regression passes **587 tests**; full regression passes **2,953 Python
+tests, one skip**, with every rebuilt native suite and CPU-only build/API checks
+passing.
+[Gradient import validation](validation/cuda-metal-gradient-import-m3.txt).
+
+Packing writes through safe shared destination views, with a counted copy
+fallback. Generic gradient allocation remains host-owned; callback predictions
+still arrive as NumPy arrays. GPU output tensors and end-to-end device ownership
+remain open. No new benchmark.
+
+The preceding step added **native Metal metadata imports**. PyTorch/MLX labels, weights,
 base margins, survival bounds, feature weights and ranking groups/query IDs now
 enter through GPU conversion and validation. Query IDs use GPU run-length
 encoding and prefix scans; final group boundaries remain host-side as in CUDA.
@@ -299,7 +319,7 @@ The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
-The major remaining areas are native ordinary-matrix input, custom-gradient/output
+The major remaining areas are native ordinary-matrix input, GPU output
 tensor interoperability, general metadata/state ownership and manipulation,
 remaining initialization/state operations,
 CUDA algorithm alignment and distributed collectives. Compressed disk caches,
@@ -403,6 +423,13 @@ survival bounds, feature weights and group/qid metadata may be native tensors
 or host arrays. Float16/32/64, integer widths and bool are supported
 by the native interface, subject to each producer's dtype support.
 
+Custom objectives can return Metal gradients and Hessians through the same
+DLPack bridge. `Objective` and `TreeObjective` are supported, including distinct
+split/value gradient pairs. Each pair must use one device; different pairs may
+use different devices. Predictions passed into the callback still use NumPy,
+so a callback computing gradients in PyTorch/MLX must transfer those predictions.
+The returned GPU gradients are packed on Metal without a NumPy conversion.
+
 Set `DYLD_LIBRARY_PATH` above **before starting Python** when using PyTorch with
 this Homebrew OpenMP build. PyTorch's wheel bundles another OpenMP runtime;
 loading both caused a reproduced worker-thread crash. The test launcher selects
@@ -463,6 +490,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Model dictionary copies, persistent storage and row-level map application remain host |
 | Quantized data cache | Ordinary in-memory DMatrix pages use raw CSR-to-ELLPACK compression. Quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly; CPU access explicitly materializes host mirrors. Compressed disk storage, internal ELLPACK save/load and optional native Snappy compression are implemented |
 | Native Apple feature tensors | Metal DLPack inputs for in-memory/external quantile matrices and inplace prediction; strided GPU snapshots, half decoding and PyTorch/MLX synchronization. Ordinary DMatrix feature input and GPU outputs remain open |
+| Native custom-gradient imports | CUDA typed casts and GPU pair packing for regular and split/value entry points; real PyTorch/MLX and legacy/versioned capsules. Safe shared destinations or counted copy fallback; generic allocation remains host-owned |
 | Native metadata imports | GPU typed copies/conversion and CUDA label/weight predicates; GPU query-ID RLE/prefix scans. Scalars, vectors, matrices, empty/strided data and half supported. Final group boundaries and group-size prefix sums remain host as in CUDA; general allocation/slicing/concatenation remain host |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
