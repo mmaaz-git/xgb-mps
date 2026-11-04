@@ -272,8 +272,10 @@ Fresh MPS histogram matrices batch the retained levels of all numeric columns
 into one Metal command. GPU merging preserves level order and equal-value rank
 combination, repairs cumulative rank bounds, prunes after each merge and prunes
 again to the requested final budget. FP32 operation order, subnormal ranks and
-comparison behavior match the CPU sketch. Pruning currently uses software
-binary64 division rounded to FP32. Each column has one GPU thread; columns run
+comparison behavior match the CPU sketch. Pruning uses a native FP32 quotient
+estimate corrected by exact integer residuals and rounded once with
+guard/round/sticky bits. A 5,830,328-input check matches CPU division exactly for
+finite/infinite/zero results and checks NaN classification. Each column has one GPU thread; columns run
 in parallel, while operations within a column remain sequential.
 
 This is partial sketch coverage. CPU ingestion still builds and sorts queues,

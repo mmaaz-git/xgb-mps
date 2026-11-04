@@ -31,6 +31,10 @@ echo "Checking Metal partitioning and index transposition against CPU references
 clang++ -std=c++17 -fobjc-arc tests/metal_partition.mm \
   -framework Metal -framework Foundation -o results/metal_partition_test
 results/metal_partition_test xgboost/src/common/metal_histogram.metal
+echo "Checking exact FP32 division against CPU arithmetic"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_fp32_div.mm \
+  -framework Metal -framework Foundation -o results/metal_fp32_div_test
+MTL_DEBUG_LAYER=1 results/metal_fp32_div_test xgboost/src/common/metal_histogram.metal
 echo "Checking software binary64 against CPU arithmetic"
 clang++ -std=c++17 -fobjc-arc tests/metal_fp64.mm \
   -framework Metal -framework Foundation -o results/metal_fp64_test

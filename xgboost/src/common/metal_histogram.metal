@@ -4567,6 +4567,69 @@ inline uint xgb_sketch_merge(device const float4* a, uint na, device const float
   }
   return n;
 }
+// Exact binary32 division. Estimate the normalized quotient with native FP32,
+// correct its integer remainder, then round once with guard/round/sticky bits.
+// The exact numerator and product fit in 51 bits. This avoids computing the
+// unused 29 extra significand bits of a software binary64 quotient.
+inline float xgb_fdiv_preserve(float a, float b) {
+  uint aa = as_type<uint>(a), bb = as_type<uint>(b);
+  uint sign = (aa ^ bb) & 0x80000000u;
+  aa &= 0x7fffffffu;
+  bb &= 0x7fffffffu;
+  if (aa > 0x7f800000u || bb > 0x7f800000u || (!aa && !bb) ||
+      (aa == 0x7f800000u && bb == 0x7f800000u))
+    return as_type<float>(0x7fc00000u);
+  if (aa == 0x7f800000u || !bb) return as_type<float>(sign | 0x7f800000u);
+  if (bb == 0x7f800000u || !aa) return as_type<float>(sign);
+  int ea = int(aa >> 23), eb = int(bb >> 23);
+  uint ma = aa & 0x7fffffu, mb = bb & 0x7fffffu;
+  if (ea) {
+    ma |= 0x800000u;
+  } else {
+    int shift = int(clz(ma)) - 8;
+    ma <<= shift;
+    ea = 1 - shift;
+  }
+  if (eb) {
+    mb |= 0x800000u;
+  } else {
+    int shift = int(clz(mb)) - 8;
+    mb <<= shift;
+    eb = 1 - shift;
+  }
+  int exponent = ea - eb + 127;
+  if (ma < mb) {
+    ma <<= 1;
+    --exponent;
+  }
+  ulong numerator = ulong(ma) << 26;
+  uint quotient = uint((float(ma) / float(mb)) * 0x1p26f);
+  ulong product = ulong(quotient) * mb;
+  // Correction also makes rounding independent of the native divide's accuracy.
+  while (product > numerator) {
+    --quotient;
+    product -= mb;
+  }
+  while (numerator - product >= mb) {
+    ++quotient;
+    product += mb;
+  }
+  quotient |= uint(numerator != product);
+  if (exponent <= 0) {
+    quotient = uint(xgb_shift_jam(quotient, uint(1 - exponent)));
+    exponent = 0;
+  }
+  uint tail = quotient & 7;
+  uint rounded = (quotient >> 3) + uint(tail > 4 || (tail == 4 && ((quotient >> 3) & 1)));
+  if (!exponent) {
+    if (rounded & 0x800000u) exponent = 1;
+  } else if (rounded & 0x1000000u) {
+    rounded >>= 1;
+    ++exponent;
+  }
+  if (exponent >= 255) return as_type<float>(sign | 0x7f800000u);
+  return as_type<float>(sign | (uint(exponent) << 23) | (rounded & 0x7fffffu));
+}
 inline uint xgb_sketch_prune(device const float4* input, uint count, uint budget,
                              device float4* output) {
   if (!budget || !count) return 0;
@@ -4581,7 +4644,7 @@ inline uint xgb_sketch_prune(device const float4* input, uint count, uint budget
   uint n = budget - 1, cursor = 1, last = 0, written = 1;
   for (uint k = 1; k < n; ++k) {
     float product = xgb_fmul_preserve(float(k), range);
-    float quotient = xgb_dto_float(xgb_ddiv(xgb_dfrom_float(product), xgb_dfrom_float(float(n))));
+    float quotient = xgb_fdiv_preserve(product, float(n));
     float rank = xgb_fmul_preserve(2.f, xgb_fadd_preserve(quotient, begin));
     while (cursor < count - 1 &&
            xgb_sketch_ge(rank, xgb_fadd_preserve(input[cursor + 1].y, input[cursor + 1].x)))

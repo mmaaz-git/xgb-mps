@@ -214,6 +214,10 @@ On Apple M3, 2026-11-03:
   zero/tiny/overflowing weights, rank repair and empty/tiny pruning budgets.
   Public tests require identical cut bits for dense, sparse, missing-value,
   weighted, grouped, categorical and external-page inputs.
+- Exact FP32 division: **5,830,328 inputs** match CPU arithmetic, including random
+  bit patterns, all exponent pairs, pruning denominators and subnormal rounding
+  ties; NaNs are checked by classification. This replaces software binary64
+  division in sketch pruning without changing its rounding contract.
 - Grouped ranking PR-AUC: **297 production cases / 14,198,354 rows / 4,660 query
   results**, checked against CPU and independent continuous-integral references.
   Includes irregular/empty queries, recursive scan carries, widely differing query
@@ -1477,3 +1481,34 @@ improvement, not a claim of general GPU training acceleration.
   --colsample-bytree .8 --colsample-bylevel .8 --colsample-bynode .5 \
   --output results/my-column-wide.json
 ```
+
+### Numeric sketch finalization update
+
+Final merging and pruning of retained numeric sketch levels now execute on Metal.
+This expands preprocessing coverage; ingestion, queue sorting and streaming
+compaction remain CPU work. Final cut materialization remains on the host in both
+this backend and the vendored CUDA implementation. The
+[native/integration validation](validation/sketch-finalization-m3.txt) checks exact
+summary fields and cut bits, including weighted and external-page inputs.
+
+Initial measurements use the same column-sampling workloads immediately above,
+with fresh matrices and three alternating CPU/MPS pairs:
+
+| Workload | CPU | MPS | CPU / MPS | Sketch GPU time |
+| --- | ---: | ---: | ---: | ---: |
+| 1M × 128 | 4.305 s | 4.667 s | 0.92× | 148.6 ms |
+| 100K × 2,048 | 8.724 s | 8.466 s | 1.03× | 55.5 ms |
+
+The [million-row report](validation/benchmark-sketch-million-v1-m3.json) and
+[wide report](validation/benchmark-sketch-wide-v1-m3.json) record zero final-pair
+prediction differences. Wide CPU times range from 7.39 to 10.15 s and MPS times
+from 8.04 to 9.36 s. With this variability and substantial system swap, the small
+median lead does not establish a reliable training speedup. The preceding
+column-sampling reports remain the baseline before GPU sketch finalization.
+
+Pruning initially used software binary64 division rounded to FP32. It now uses
+a native FP32 estimate corrected by exact integer residuals, retaining one final
+round-to-nearest-even step including subnormals. The
+[division validation](validation/sketch-fp32-division-m3.txt) checks 5,830,328
+arithmetic inputs, all 942 sketch cases and all 700 Python tests (one skipped).
+The first measurements above precede this optimization.
