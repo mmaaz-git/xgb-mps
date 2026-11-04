@@ -62,9 +62,17 @@ void RankingCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   }
 
   auto const& gptr = group_ptr_.ConstHostVector();
-  for (std::size_t i = 1; i < gptr.size(); ++i) {
-    std::size_t n = gptr[i] - gptr[i - 1];
-    max_group_size_ = std::max(max_group_size_, n);
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    metal_plan_ = common::metal::MakeRankingPlan(gptr, param_.NumPair(), param_.IsMean());
+    max_group_size_ = metal_plan_->MaxGroupSize();
+  } else
+#endif
+  {
+    for (std::size_t i = 1; i < gptr.size(); ++i) {
+      std::size_t n = gptr[i] - gptr[i - 1];
+      max_group_size_ = std::max(max_group_size_, n);
+    }
   }
 
   double sum_weights = 0;
@@ -93,7 +101,7 @@ common::Span<std::size_t const> RankingCache::MakeRankOnCPU(Context const* ctx,
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
     common::metal::SortGroups(linalg::MakeTensorView(DeviceOrd::CPU(), predt, predt.size()),
-                              gptr, rank);
+                              gptr, rank, metal_plan_);
     return rank;
   }
 #endif
@@ -134,7 +142,8 @@ void NDCGCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   auto const exp_gain = this->Param().ndcg_exp_gain;
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
-    common::metal::InitNDCG(h_labels, h_group_ptr, topk, exp_gain, h_discounts, h_inv_idcg.Values());
+    common::metal::InitNDCG(h_labels, h_group_ptr, topk, exp_gain, h_discounts, h_inv_idcg.Values(),
+                            this->MetalPlan());
     return;
   }
 #endif

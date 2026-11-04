@@ -94,6 +94,8 @@ std::atomic<std::uint64_t> objective_shared_input_bytes{0}, objective_shared_out
 std::atomic<std::uint64_t> roc_auc_dispatches{0}, roc_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> pr_auc_dispatches{0}, pr_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> group_sort_dispatches{0}, group_sort_gpu_time_ns{0};
+std::atomic<std::uint64_t> ranking_plan_dispatches{0}, ranking_plan_reuses{0},
+    ranking_plan_gpu_time_ns{0};
 std::atomic<std::uint64_t> ranking_metric_dispatches{0}, ranking_metric_gpu_time_ns{0};
 std::atomic<std::uint64_t> ranking_roc_auc_dispatches{0}, ranking_roc_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> ranking_pr_auc_dispatches{0}, ranking_pr_auc_gpu_time_ns{0};
@@ -177,6 +179,7 @@ class Runtime {
       group_sort_key_pipeline, group_sort_export_pipeline, ranking_score_pipeline,
       ranking_map_labels_pipeline;
   id<MTLComputePipelineState> ranking_labels_pipeline, ndcg_discount_pipeline, ndcg_ideal_pipeline;
+  id<MTLComputePipelineState> ranking_plan_init_pipeline, ranking_plan_finish_pipeline;
   id<MTLComputePipelineState> ranking_map_stats_pipeline, ranking_pairs_pipeline,
       ranking_normalize_pipeline, ranking_gather_pipeline, ranking_mean_labels_pipeline,
       ranking_mean_sample_pipeline, ranking_mean_links_pipeline, ranking_mean_gather_pipeline,
@@ -385,6 +388,8 @@ class Runtime {
       pr_totals_pipeline = make_pipeline(@"xgb_pr_totals");
       auc_result_pipeline = make_pipeline(@"xgb_auc_result");
       auc_normalize_pipeline = make_pipeline(@"xgb_auc_normalize");
+      ranking_plan_init_pipeline = make_pipeline(@"xgb_ranking_plan_init");
+      ranking_plan_finish_pipeline = make_pipeline(@"xgb_ranking_plan_finish");
       group_sort_small_pipeline = make_pipeline(@"xgb_group_sort_small");
       group_sort_medium_pipeline = make_pipeline(@"xgb_group_sort_medium");
       group_sort_key_pipeline = make_pipeline(@"xgb_group_sort_key");
@@ -1664,6 +1669,9 @@ Statistics GetStatistics() {
           ranking_label_gpu_time_ns.load(std::memory_order_relaxed),
           ranking_cache_dispatches.load(std::memory_order_relaxed),
           ranking_cache_gpu_time_ns.load(std::memory_order_relaxed),
+          ranking_plan_dispatches.load(std::memory_order_relaxed),
+          ranking_plan_reuses.load(std::memory_order_relaxed),
+          ranking_plan_gpu_time_ns.load(std::memory_order_relaxed),
           ranking_gradient_dispatches.load(std::memory_order_relaxed),
           ranking_gradient_gpu_time_ns.load(std::memory_order_relaxed),
           ranking_pairs.load(std::memory_order_relaxed),
@@ -2843,20 +2851,109 @@ void MetalQuantizedGradients::SampleGradient(float probability, std::uint32_t se
 }  // namespace
 
 namespace {
-std::uint32_t CheckGroupSort(linalg::VectorView<float const> values,
-                             Span<bst_group_t const> groups) {
-  static_assert(sizeof(bst_group_t) == 4 && sizeof(std::size_t) == 8);
+class MetalRankingPlan final : public RankingPlan {
+  std::uint32_t groups_, pairs_, maximum_{0};
+  bool mean_;
+  id<MTLBuffer> offsets_, tasks_;
+
+ public:
+  MetalRankingPlan(Span<bst_group_t const> groups, std::uint32_t pairs, bool mean)
+      : pairs_{pairs}, mean_{mean} {
+    static_assert(sizeof(bst_group_t) == 4 && sizeof(std::size_t) == 8);
+    static_assert(sizeof(RankingPairTask) == 32);
+    CHECK_GE(groups.size(), 1);
+    CHECK_EQ(groups.front(), 0);
+    CHECK_LE(groups.size() - 1, std::numeric_limits<std::uint32_t>::max());
+    groups_ = groups.size() - 1;
+    @autoreleasepool {
+      auto& rt = GetRuntime();
+      offsets_ = Upload(rt, groups.data(), groups.size_bytes());
+      tasks_ = Allocate(rt, groups.size() * sizeof(RankingPairTask));
+      auto pair_counts = Allocate(rt, groups.size() * sizeof(std::uint64_t));
+      auto tile_counts = Allocate(rt, groups.size() * sizeof(std::uint64_t));
+      std::uint32_t initial[2]{0, 0};
+      auto state = Upload(rt, initial, sizeof(initial));
+      struct {
+        std::uint32_t groups, pairs, mean, padding;
+      } p{groups_, pairs_, static_cast<std::uint32_t>(mean_), 0};
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.ranking_plan_init_pipeline];
+      [e setBuffer:offsets_ offset:0 atIndex:0];
+      [e setBuffer:tasks_ offset:0 atIndex:1];
+      [e setBuffer:pair_counts offset:0 atIndex:2];
+      [e setBuffer:tile_counts offset:0 atIndex:3];
+      [e setBuffer:state offset:0 atIndex:4];
+      [e setBytes:&p length:sizeof(p) atIndex:5];
+      [e dispatchThreadgroups:MTLSizeMake((groups.size() + 255) / 256, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      if (pairs_) {
+        auto pair_prefix = EncodePrefixU64(rt, command, pair_counts, groups.size());
+        auto tile_prefix = EncodePrefixU64(rt, command, tile_counts, groups.size());
+        e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt.ranking_plan_finish_pipeline];
+        [e setBuffer:tasks_ offset:0 atIndex:0];
+        [e setBuffer:pair_prefix offset:0 atIndex:1];
+        [e setBuffer:tile_prefix offset:0 atIndex:2];
+        [e dispatchThreads:MTLSizeMake(groups.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+      }
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      auto result = static_cast<std::uint32_t const*>(state.contents);
+      CHECK_EQ(result[1], 0) << "Ranking group offsets must be nondecreasing.";
+      maximum_ = result[0];
+      ranking_plan_dispatches.fetch_add(1, std::memory_order_relaxed);
+      auto elapsed = command.GPUEndTime - command.GPUStartTime;
+      if (elapsed > 0)
+        ranking_plan_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                           std::memory_order_relaxed);
+    }
+  }
+  Span<bst_group_t const> Groups() const override {
+    return {static_cast<bst_group_t const*>(offsets_.contents), std::size_t{groups_} + 1};
+  }
+  Span<RankingPairTask const> Tasks() const override {
+    return {static_cast<RankingPairTask const*>(tasks_.contents), std::size_t{groups_} + 1};
+  }
+  std::uint32_t MaxGroupSize() const override { return maximum_; }
+  std::uint32_t NumPair() const override { return pairs_; }
+  bool IsMean() const override { return mean_; }
+  id<MTLBuffer> OffsetsBuffer() const { return offsets_; }
+  id<MTLBuffer> TasksBuffer() const { return tasks_; }
+};
+std::shared_ptr<MetalRankingPlan const> CheckGroupSort(linalg::VectorView<float const> values,
+                                                       Span<bst_group_t const> groups,
+                                                       std::shared_ptr<RankingPlan const> plan = {},
+                                                       std::uint32_t pairs = 0, bool mean = false) {
   CHECK_GE(groups.size(), 1);
   CHECK_EQ(groups.front(), 0);
   CHECK_EQ(groups.back(), values.Size());
   CHECK_LE(values.Size(), std::numeric_limits<std::uint32_t>::max());
-  CHECK_LE(groups.size() - 1, std::numeric_limits<std::uint32_t>::max());
-  std::uint32_t max_group_size = 0;
-  for (std::size_t i = 1; i < groups.size(); ++i) {
-    CHECK_LE(groups[i - 1], groups[i]);
-    max_group_size = std::max(max_group_size, groups[i] - groups[i - 1]);
+  if (plan) {
+    auto saved = plan->Groups();
+    CHECK_EQ(saved.size(), groups.size());
+    // Validate reuse against immutable owned offsets, including changes to an
+    // input array at the same address. This is validation, not count generation.
+    CHECK_EQ(std::memcmp(saved.data(), groups.data(), groups.size_bytes()), 0)
+        << "Ranking metadata belongs to different query groups.";
+    if (pairs) {
+      CHECK_EQ(plan->NumPair(), pairs);
+      CHECK_EQ(plan->IsMean(), mean);
+    }
+    ranking_plan_reuses.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    plan = MakeRankingPlan(groups, pairs, mean);
   }
-  return max_group_size;
+  auto result = std::dynamic_pointer_cast<MetalRankingPlan const>(plan);
+  CHECK(result);
+  return result;
 }
 struct GroupOrder {
   id<MTLBuffer> records;
@@ -2929,15 +3026,20 @@ void RecordGroupSort(bool radix, double seconds) {
                                      std::memory_order_relaxed);
 }
 }  // namespace
+std::shared_ptr<RankingPlan const> MakeRankingPlan(Span<bst_group_t const> groups,
+                                                  std::uint32_t pairs, bool mean) {
+  return std::make_shared<MetalRankingPlan>(groups, pairs, mean);
+}
 void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> groups,
-                Span<std::size_t> relative_indices) {
-  auto max_group_size = CheckGroupSort(values, groups);
+                Span<std::size_t> relative_indices, std::shared_ptr<RankingPlan const> plan) {
+  auto metadata = CheckGroupSort(values, groups, std::move(plan));
+  auto max_group_size = metadata->MaxGroupSize();
   CHECK_EQ(relative_indices.size(), values.Size());
   if (!values.Size()) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
     auto input = Upload(rt, values.Values().data(), values.Values().size_bytes());
-    auto offsets = Upload(rt, groups.data(), groups.size_bytes());
+    auto offsets = metadata->OffsetsBuffer();
     auto output = Allocate(rt, relative_indices.size_bytes());
     auto command = [rt.queue commandBuffer];
     CHECK(command);
@@ -2963,7 +3065,8 @@ void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> 
 RankingAUCSums RankingROCAUC(linalg::VectorView<float const> predictions,
                              linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
                              Span<float const> weights, Span<RankingAUCSums> individual) {
-  auto max_group_size = CheckGroupSort(labels, groups);
+  auto metadata = CheckGroupSort(labels, groups);
+  auto max_group_size = metadata->MaxGroupSize();
   auto n_groups = groups.size() - 1;
   CHECK_EQ(predictions.Size(), labels.Size());
   CHECK(weights.empty() || weights.size() == n_groups);
@@ -2973,7 +3076,7 @@ RankingAUCSums RankingROCAUC(linalg::VectorView<float const> predictions,
     auto& rt = GetRuntime();
     auto input = Upload(rt, predictions.Values().data(), predictions.Values().size_bytes());
     auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
-    auto offsets = Upload(rt, groups.data(), groups.size_bytes());
+    auto offsets = metadata->OffsetsBuffer();
     auto weight = Upload(rt, weights.data(), weights.size_bytes());
     auto source = Allocate(rt, labels.Size() * 2 * sizeof(std::uint32_t));
     auto target = Allocate(rt, labels.Size() * 2 * sizeof(std::uint32_t));
@@ -3101,8 +3204,9 @@ std::uint32_t CheckRankingLabels(linalg::VectorView<float const> labels, Ranking
 
 void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
               std::uint32_t topk, bool exponential, Span<double> discounts,
-              Span<double> inverse_idcg) {
-  auto max_group_size = CheckGroupSort(labels, groups);
+              Span<double> inverse_idcg, std::shared_ptr<RankingPlan const> plan) {
+  auto metadata = CheckGroupSort(labels, groups, std::move(plan));
+  auto max_group_size = metadata->MaxGroupSize();
   auto n_groups = groups.size() - 1;
   CHECK_EQ(discounts.size(), max_group_size);
   CHECK_EQ(inverse_idcg.size(), n_groups);
@@ -3110,7 +3214,7 @@ void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> gr
   @autoreleasepool {
     auto& rt = GetRuntime();
     auto input = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
-    auto offsets = Upload(rt, groups.data(), groups.size_bytes());
+    auto offsets = metadata->OffsetsBuffer();
     auto discount = Allocate(rt, discounts.size_bytes());
     auto inverse = Allocate(rt, inverse_idcg.size_bytes());
     auto command = [rt.queue commandBuffer];
@@ -3181,14 +3285,15 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
                      Span<double const> discounts, Span<double const> inverse_idcg,
                      Span<GradientPair> output, bool mean, std::uint32_t seed, RankingBias bias,
                      Span<std::array<std::uint32_t, 2>> mean_pair_trace,
-                     RankingGradientTrace diagnostics) {
+                     RankingGradientTrace diagnostics, std::shared_ptr<RankingPlan const> plan) {
   auto values = linalg::MakeTensorView(DeviceOrd::CPU(), predictions, predictions.size());
-  auto max_group_size = CheckGroupSort(values, groups);
+  CHECK_GE(pairs, 1);
+  auto metadata = CheckGroupSort(values, groups, std::move(plan), pairs, mean);
+  auto max_group_size = metadata->MaxGroupSize();
   auto n_groups = groups.size() - 1;
   CHECK_EQ(bias.positive.size(), bias.negative.size());
   CHECK_LE(bias.positive.size(), std::numeric_limits<std::uint32_t>::max());
   auto positions = static_cast<std::uint32_t>(bias.positive.size());
-  CHECK_GE(pairs, 1);
   CHECK_EQ(labels.Size(), predictions.size());
   CHECK_EQ(output.size(), predictions.size());
   CHECK(weights.empty() || weights.size() == n_groups);
@@ -3207,24 +3312,11 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
         (kind == RankingLossKind::kMAP && diagnostics.map_prefix.size() == predictions.size()));
   if (predictions.empty()) return;
   static_assert(sizeof(GradientPair) == 8);
-  struct Task {
-    std::uint64_t pair_begin, tile_begin;
-    std::uint32_t begin, count, topk, padding;
-  };
-  static_assert(sizeof(Task) == 32);
-  std::vector<Task> tasks(n_groups + 1);
-  std::uint64_t total_pairs = 0, total_tiles = 0;
-  for (std::size_t g = 0; g < n_groups; ++g) {
-    auto count = groups[g + 1] - groups[g], k = mean ? pairs : std::min(count, pairs);
-    tasks[g] = {total_pairs, total_tiles, groups[g], count, k, 0};
-    auto n = std::uint64_t{k} * count - (mean ? 0 : std::uint64_t{k} * (k + 1ull) / 2);
-    total_pairs += n;
-    total_tiles += (n + 255) / 256;
-  }
-  tasks.back() = {total_pairs, total_tiles, groups.back(), 0, 0, 0};
-  // Host work is query-size/launch metadata only. Actual pair indices, labels
-  // and gradients are generated on GPU. Reuse a 64 MiB pair buffer across
-  // batches; a single larger query is allowed up to the device buffer limit.
+  auto tasks = metadata->Tasks();
+  auto total_pairs = tasks.back().pair_begin;
+  // GPU-generated counts/prefixes remain resident. Read them only to allocate
+  // bounded pair storage and schedule batches; a single larger query is allowed
+  // up to the device buffer limit.
   auto budget_pairs =
       (64ull << 20) / (sizeof(GradientPair) + (mean ? 16 : 0) + (positions ? 24 : 0));
   std::vector<std::uint32_t> batches{0};
@@ -3243,8 +3335,8 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
         << "A ranking query needs more pair storage than this Metal device supports.";
     auto input = Upload(rt, predictions.data(), predictions.size_bytes());
     auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
-    auto offsets = Upload(rt, groups.data(), groups.size_bytes());
-    auto task_buffer = Upload(rt, tasks.data(), tasks.size() * sizeof(Task));
+    auto offsets = metadata->OffsetsBuffer();
+    auto task_buffer = metadata->TasksBuffer();
     auto weight = Upload(rt, weights.data(), weights.size_bytes());
     auto discount = Upload(rt, discounts.data(), discounts.size_bytes());
     auto inverse = Upload(rt, inverse_idcg.data(), inverse_idcg.size_bytes());
@@ -3577,8 +3669,9 @@ RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const>
                          linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
                          Span<float const> weights, std::uint32_t topk, bool minus,
                          bool exponential, Span<double const> discounts,
-                         Span<double const> inverse_idcg) {
-  auto max_group_size = CheckGroupSort(predictions, groups);
+                         Span<double const> inverse_idcg, std::shared_ptr<RankingPlan const> plan) {
+  auto metadata = CheckGroupSort(predictions, groups, std::move(plan));
+  auto max_group_size = metadata->MaxGroupSize();
   auto n_groups = groups.size() - 1;
   CHECK_EQ(labels.Size(), predictions.Size());
   CHECK(weights.empty() || weights.size() == n_groups);
@@ -3593,7 +3686,7 @@ RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const>
     auto& rt = GetRuntime();
     auto input = Upload(rt, predictions.Values().data(), predictions.Values().size_bytes());
     auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
-    auto offsets = Upload(rt, groups.data(), groups.size_bytes());
+    auto offsets = metadata->OffsetsBuffer();
     auto weight = Upload(rt, weights.data(), weights.size_bytes());
     auto discount = Upload(rt, discounts.data(), discounts.size_bytes());
     auto inverse = Upload(rt, inverse_idcg.data(), inverse_idcg.size_bytes());
@@ -3923,7 +4016,8 @@ double NormalizeAUC(Span<double const> summaries) {
 RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
                             linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
                             Span<float const> weights, Span<RankingAUCSums> individual) {
-  auto max_group_size = CheckGroupSort(predictions, groups);
+  auto metadata = CheckGroupSort(predictions, groups);
+  auto max_group_size = metadata->MaxGroupSize();
   auto n_groups = groups.size() - 1;
   CHECK_EQ(predictions.Size(), labels.Size());
   CHECK(weights.empty() || weights.size() == n_groups);
@@ -3933,7 +4027,7 @@ RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
     auto& rt = GetRuntime();
     auto input = Upload(rt, predictions.Values().data(), predictions.Values().size_bytes());
     auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
-    auto offsets = Upload(rt, groups.data(), groups.size_bytes());
+    auto offsets = metadata->OffsetsBuffer();
     auto weight = Upload(rt, weights.data(), weights.size_bytes());
     auto ids = Allocate(rt, predictions.Size() * sizeof(std::uint32_t));
     auto keys = Allocate(rt, predictions.Size() * sizeof(std::uint32_t));

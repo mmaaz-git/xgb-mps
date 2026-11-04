@@ -272,9 +272,42 @@ def test_ndcg_linear_cache_and_reuse(metal):
         np.testing.assert_allclose(float(gpu.eval(d).rsplit(":", 1)[1]),
                                    float(cpu.eval(d).rsplit(":", 1)[1]), rtol=2e-12, atol=2e-12)
     after = xgb.metal_info()
+    assert after["ranking_plan_dispatches"] == before["ranking_plan_dispatches"] + 1
+    assert after["ranking_plan_reuses"] == before["ranking_plan_reuses"] + 4
     assert after["ranking_cache_dispatches"] == before["ranking_cache_dispatches"] + 1
     assert after["ranking_label_dispatches"] == before["ranking_label_dispatches"]
     assert after["group_sort_dispatches"] == before["group_sort_dispatches"] + 4
+
+
+@pytest.mark.parametrize("objective", ["rank:pairwise", "rank:ndcg", "rank:map"])
+@pytest.mark.parametrize("method", ["topk", "mean"])
+def test_ranking_metadata_cache_lifetime(metal, objective, method):
+    rng = np.random.default_rng(761)
+    sizes = [1, 7, 31, 257]
+    x = rng.normal(size=(sum(sizes), 3)).astype(np.float32)
+    y = (x[:, 0] > 0).astype(np.float32)
+    first = xgb.QuantileDMatrix(x, label=y, group=sizes, nthread=2)
+    second = xgb.QuantileDMatrix(x, label=y, group=[256, 32, 8], nthread=2)
+    params = dict(device="mps", objective=objective, tree_method="hist", nthread=2,
+                  base_score=0, max_depth=2, seed=83, lambdarank_pair_method=method,
+                  lambdarank_num_pair_per_sample=3)
+    model = xgb.Booster(params, [first, second])
+    before = xgb.metal_info()
+    for iteration in range(3):
+        model.update(first, iteration)
+    after = xgb.metal_info()
+    assert after["ranking_plan_dispatches"] == before["ranking_plan_dispatches"] + 1
+    assert after["ranking_plan_reuses"] >= before["ranking_plan_reuses"] + 3
+
+    # Changing pair parameters or MetaInfo renews the owning RankingCache.
+    # Subsequent rounds reuse the new metadata, even with the same row count.
+    model.set_param({"lambdarank_num_pair_per_sample": 5})
+    model.update(first, 3)
+    assert xgb.metal_info()["ranking_plan_dispatches"] == after["ranking_plan_dispatches"] + 1
+    model.update(second, 4)
+    model.update(second, 5)
+    assert xgb.metal_info()["ranking_plan_dispatches"] == after["ranking_plan_dispatches"] + 2
+    assert_cpu_prediction_of_metal_model(model, second)
 
 
 @pytest.mark.parametrize("objective", ["rank:pairwise", "rank:ndcg", "rank:map"])

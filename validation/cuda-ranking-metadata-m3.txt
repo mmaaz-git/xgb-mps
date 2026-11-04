@@ -1,0 +1,108 @@
+CUDA-derived GPU ranking metadata, Apple M3
+==========================================
+Date: 2026-11-04
+Sources: common/ranking_utils.cu::RankingCache::InitOnCUDA,
+         common/threading_utils.cuh::SegmentedTrapezoidThreads and
+         DiscreteTrapezoidArea; common/ranking_utils.cuh::ThreadsForMean.
+NVIDIA execution: not performed. No new performance benchmark was run.
+
+Implemented
+-----------
+Query offsets start on the host, as in CUDA. Metal uploads an owned immutable
+copy, computes adjacent differences, validates monotonicity, and reduces the
+maximum query size on GPU. Mean pair counts are n*k; top-k uses the same integer
+trapezoid area as CUDA. Counts are written as [0, count0, count1, ...] and scanned
+with the existing recursive 256-entry uint64 GPU prefix implementation. Metal's
+256-pair tile counts and prefixes use the same integer machinery. Pair totals
+never pass through floating-point arithmetic. No row/pair allocation is needed
+to build this metadata, including logical totals close to UINT64_MAX.
+
+The GPU-built task buffer itself feeds pair sampling, gradients, normalization
+and gathers; there is no host reconstruction/upload of its counts or prefixes.
+RankingCache owns a shared immutable RankingPlan. Objective calls, cached sorts,
+NDCG initialization and precision/NDCG/MAP scoring retain/reuse its GPU offsets
+and tasks. Existing parameter/MetaInfo cache renewal creates a new plan.
+Standalone sort and grouped ROC/PR-AUC calls also obtain maxima on GPU.
+The old MPS host maximum loop in RankingCache and the host task-prefix loop in
+RankingGradient are gone. The CPU path's maximum computation is unchanged.
+
+The host reads the completed scalar maximum and shared task metadata to allocate
+buffers and schedule 64 MiB pair batches. It checks cached group identity with
+memcmp and rejects mismatched pair parameters. Input ownership is independent
+of callers' vectors. These host validation/scheduling operations and the initial
+GPU wait are explicit; this is not complete asynchronous ranking execution.
+Gradients, row data, discounts and bias state still stage through host memory.
+
+Counters: ranking_plan_dispatches counts successful metadata builds,
+ranking_plan_reuses counts validated supplied-plan uses, and
+ranking_plan_gpu_time_ns measures these commands. GPU timings exclude host
+allocation, waits, validation and scheduling. They are separate from subsequent
+sort/objective GPU command durations. Statistics and internal ranking signatures
+changed, so the full validation rebuilds all native binaries.
+
+Validation
+----------
+New tests/metal_ranking_plan_api.cc:
+  180 cases / 12,611,280 exactly checked task fields.
+  131,415 checked pair prefixes cannot be represented exactly as binary64.
+  Independent unsigned __int128 source-formula oracle plus nested-loop pair
+  enumeration for small queries. Tests include zero queries, empty/singleton
+  queries, k=0 sort-only plans, k up to UINT32_MAX, total rows up to UINT32_MAX,
+  near-UINT64_MAX mean totals, 254/255/256/257-query boundaries, 65,534 through
+  65,537 queries and 262,145 queries through recursive GPU scan levels.
+  Malformed/descending offsets are rejected. Every valid case checks the
+  production GPU metadata counter.
+
+Cache tests instantiate the actual RankingCache on MPS, check its maximum and
+bias-position size, reuse its storage for three exact stable sorts, then retain
+its plan beyond the cache lifetime. Both methods produce bit-identical cached
+and fresh gradients for seeds 0, 919 and UINT32_MAX. Caller offset mutation does
+not modify the plan; stale groups, changed k and changed pair methods are rejected.
+
+Public Python tests add six objective/cache lifecycle cases: three objectives
+and both pair methods. Three boosting rounds reuse one plan; changing k or the
+MetaInfo object renews it, including a different query layout with the same row
+count. Saved-model CPU predictions retain the existing 2e-5 tolerance. Existing
+NDCG metric tests now assert one metadata build and four uses over three evals.
+
+Focused validation:
+  Build v1 PASS (13:28:42 UTC).
+  Focused v1 caught a test-only Args initializer template-deduction error before
+  execution. Fixed by passing the explicit Args type; no tolerance changes.
+  Focused v2 PASS, 13:30:23-13:30:32 UTC:
+    all native metadata cases/cache guards; 101 existing ranking Python tests.
+  Logs: results/cuda-ranking-plan-build-v1.log,
+        results/cuda-ranking-plan-focused-v1.log,
+        results/cuda-ranking-plan-focused-v2.log.
+
+Full validation PASS, 2026-11-04 13:31:20-13:35:47 UTC, FULL_EXIT=0:
+  All native executables rebuilt and passed, including the test-only reference
+  updater and existing ranking arithmetic/pair-order/bias suites.
+  1,779 Python tests passed, 1 skipped, 371 warnings, 92.69 seconds.
+  The skipped case requires a host without a GPU; GPU tests used --require-metal.
+  CPU-only configure/build and API/device checks passed.
+  The new six objective cache-lifetime tests and NDCG reuse assertions passed.
+  Existing 1,442 ranking cases still have 2,444,200 bit-exact gradient pairs;
+  2,592 unbiased calls retain maximum scaled gradient error 1.69500709e-7 and
+  zero bias error. Existing tolerances and pair/gradient corpora are unchanged.
+  No production/test edits after the full run started; later changes were docs.
+  git diff --check passed.
+  Logs:
+    results/cuda-ranking-plan-full-driver-v1.log
+    results/build-cuda-ranking-plan-final-v1.log
+    results/test-cuda-ranking-plan-full-v1.log
+    results/configure-cpu-cuda-ranking-plan-v1.log
+    results/build-cpu-cuda-ranking-plan-v1.log
+    results/check-cpu-cuda-ranking-plan-v1.log
+
+Limits
+------
+This establishes exact metadata/formula checks on Apple M3, not NVIDIA-device
+execution equivalence or cross-Apple validation. It does not change the ranking
+arithmetic edge policies documented in cuda-ranking-arithmetic-m3.txt. Existing
+gradient, pair-order, bias-update and precision tolerances are retained.
+Remaining full-port work includes host metric final reductions, AFT's CPU
+corrections, adapter/device-array
+sketch ingestion, generic metadata/category operations, objective/state work,
+Apple array interoperability, distributed collectives and persistent asynchronous
+ownership. No full CUDA-operation parity or performance improvement is claimed.

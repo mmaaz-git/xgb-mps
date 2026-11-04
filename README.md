@@ -14,21 +14,26 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **CUDA-derived ranking gradient and cost arithmetic**. Metal now
-builds per-query rounding bounds, truncates both gradient signs independently,
-uses CUDA's combined weight multiplier, and scans MAP labels in parallel.
-Unbiased ranking makes two bounded-memory passes so all pairs contribute to
-cost bounds before bias updates. CUDA's shared cost-factor race and nonfinite
-rounding inputs have explicit deterministic policies, documented below.
+Latest step: **GPU ranking query metadata and persistent cache ownership**.
+Query-size maxima, pair counts and exact 64-bit pair/tile prefixes now run on
+Metal. The objective, sort and precision/NDCG/MAP paths reuse immutable GPU
+metadata owned by each ranking cache. Host code reads completed sizes to allocate
+storage and schedule bounded batches; it no longer generates those prefixes.
 
-All **2.44 million ordinary gradient pairs** match the host source-formula oracle
-bit for bit; multi-round unbiased tests also pass. New tests cover **977,106
-exact rounding fields** and **2.11 million MAP prefix fields**. This builds on the
-previous **9.07 million exact sampled-pair checks**. Full validation passes
-**1,773 Python tests**, every rebuilt native suite and the CPU-only build/device
-check. NVIDIA execution equivalence remains unverified.
-[Validation](validation/cuda-ranking-arithmetic-m3.txt) ·
-[Arithmetic and remaining limits](docs/CUDA_PARITY.md#ranking-gradient-numerical-behavior).
+New source-formula tests pass **180 cases / 12,611,280 exact task fields**,
+including **131,415 prefixes that binary64 cannot represent exactly**. These use
+large logical query sizes without allocating the corresponding rows or pairs.
+Cache tests cover ownership, reuse, changing seeds and stale-input rejection.
+Full validation passes **1,779 Python tests**, every rebuilt native suite and
+the CPU-only build/device check. NVIDIA execution equivalence remains unverified.
+[Metadata validation](validation/cuda-ranking-metadata-m3.txt).
+
+The preceding arithmetic port checks **2.44 million ordinary gradient pairs**
+bit for bit against the host CUDA-formula oracle, plus multi-round unbiased
+updates and **9.07 million exact sampled pairs**. CUDA's shared cost-factor race
+and nonfinite rounding inputs have explicit deterministic policies.
+[Arithmetic validation](validation/cuda-ranking-arithmetic-m3.txt) ·
+[Behavior and remaining limits](docs/CUDA_PARITY.md#ranking-gradient-numerical-behavior).
 
 The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 `hist` and `approx`, including external-memory pages: GPU sorting, FP32 scans,
@@ -36,7 +41,7 @@ category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
 The major remaining areas are adapter/device-array sketch ingestion and matrix preprocessing,
-remaining objective initialization and training-state operations, CUDA algorithm
+remaining objective initialization, metric reductions and training-state operations, CUDA algorithm
 alignment, categorical/metadata operations, Apple GPU array
 interoperability and distributed collectives. AFT still has CPU corrections;
 some long-run ranking and Covertype comparisons have numerical differences.
@@ -139,7 +144,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input staging and category recoding remain host |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
-| Ranking training | Stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, raw bounds, independent sign/cost truncation, parallel MAP prefixes, normalization and combined weights on Metal; unbiased bias updates use a deterministic global cost-factor policy |
+| Ranking training | GPU query maxima/counts/integer prefixes and immutable cache reuse; stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, raw bounds, independent sign/cost truncation, parallel MAP prefixes, normalization and combined weights on Metal; unbiased bias updates use a deterministic global cost-factor policy |
 | ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; collective transport remains host |
 | Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior |
 | Column sampling | CUDA-source Philox weighted draws and Thrust Feistel unweighted shuffle; GPU compaction, stable priority ordering and integer feature sorting; 24 shuffle keys and cache metadata remain host as in CUDA, while feature arrays still stage through host |
@@ -171,6 +176,9 @@ its saved state and does not increment that counter.
 `ranking_roc_auc_dispatches` and `ranking_roc_auc_gpu_time_ns` likewise describe a
 subset of ROC-AUC and generic metric work; their timings overlap those totals.
 The corresponding `ranking_pr_auc_*` counters are subsets of PR-AUC and metric totals.
+`ranking_plan_dispatches` counts completed query-metadata builds; `ranking_plan_reuses`
+counts validated uses of a supplied immutable cache. `ranking_plan_gpu_time_ns`
+measures metadata commands, separately from subsequent sort/gradient commands.
 `cuda_sketch_batches` counts nonempty raw-entry windows (64M entries maximum,
 matching CUDA). `cuda_sketch_input_entries` counts their input entries, while
 `cuda_sketch_dispatches` and `cuda_sketch_gpu_time_ns` count completed commands
@@ -341,6 +349,11 @@ On Apple M3, 2026-11-03:
   oracles for both methods, with unchanged tolerances. The previous unrounded
   mean reference has been replaced by the full arithmetic oracle below.
   [Validation](validation/cuda-ranking-pairs-m3.txt).
+- Ranking metadata: **180 native cases / 12,611,280 exact task fields**, including
+  **131,415 integer prefixes not representable in binary64**. Covers empty queries,
+  256-entry scan boundaries, recursive scans through 262,145 queries, maximum
+  uint32 row/pair parameters, exact cached/fresh gradients with three seeds, retained
+  buffer ownership and stale-input guards. [Validation](validation/cuda-ranking-metadata-m3.txt).
 - Ranking gradient/cost arithmetic: **162,851 direct rounding cases / 977,106
   exact fields**, plus **64 production diagnostics cases / 1,600 bounds and
   multipliers / 2,113,664 MAP prefix fields**. **1,442 gradient cases / 2,444,200
@@ -608,6 +621,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port CUDA raw CSR sketching and resident summaries for ordinary hist/approx matrices.
 - [ ] Complete adapter/device-array sketches and remaining objective/state operations.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.
+- [x] Port query maxima/counts/prefixes and reuse GPU metadata through ranking caches.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.

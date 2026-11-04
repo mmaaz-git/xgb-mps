@@ -478,10 +478,32 @@ mean incidence-list construction is still serial within a query. Cross-query
 bias sums use ordered 128-query blocks and a final reduction. Small bias vectors
 and output gradients return to host storage. Persistent ownership, less
 synchronization, performance tuning and NVIDIA/cross-Apple validation remain open.
-A further cache audit confirms that the query-size maximum and pair/tile-count
-prefixes are still computed on the host. CUDA's `RankingCache::InitOnCUDA` uses
-GPU reduction and scans for these operations; porting this metadata construction
-remains required even though gradient arithmetic now executes on Metal.
+Query metadata now follows `RankingCache::InitOnCUDA` and
+`SegmentedTrapezoidThreads`: GPU adjacent-offset differences and maximum reduction,
+mean/top-k pair counts, and exact uint64 inclusive scans of `[0, counts...]`.
+Metal's 256-pair tile offsets are scanned on GPU too. The existing recursive
+integer scan is reused; no floating-point conversion is involved. Prefixes can
+approach the uint64 limit for valid uint32 row/pair parameters.
+
+Each `RankingCache` owns immutable shared Metal offset/task buffers. The objective,
+cached sort, NDCG initialization and precision/NDCG/MAP scoring reuse them; parameter
+or MetaInfo-identity changes renew the existing owning cache. Standalone grouped sort and
+ROC/PR-AUC calls build their query maxima on GPU. Host code still validates shapes
+and cached offset identity, reads completed size metadata, allocates storage, and
+partitions queries into bounded pair batches. These are explicit synchronization
+and scheduling costs, not host pair-count/prefix generation. Row data, gradients,
+discounts and bias state still stage through host storage; this change does not
+claim complete ranking residency or asynchronous execution.
+
+Native tests check 180 metadata cases and 12,611,280 task fields exactly against
+wide-integer CUDA-formula references, with explicit pair enumeration for small
+queries. 131,415 checked prefixes cannot be represented exactly by binary64.
+They include empty/singleton queries, scan boundaries, 262,145-query recursive
+scans and near-uint64 totals without allocating logical rows/pairs. Cache tests
+check exact sorting and cached/fresh gradient replay, changed seeds, retained
+ownership, invalid offsets and stale-group/parameter rejection. Public tests also
+check objective-cache renewal and metric reuse.
+[Validation record](../validation/cuda-ranking-metadata-m3.txt).
 
 Earlier ranking performance and CPU-equivalence reports describe the old
 unrounded arithmetic (and, for mean, the CPU random stream). They remain

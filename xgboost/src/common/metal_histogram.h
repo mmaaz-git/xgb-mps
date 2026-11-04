@@ -53,6 +53,7 @@ struct Statistics {
   std::uint64_t ranking_metric_dispatches, ranking_metric_gpu_time_ns;
   std::uint64_t ranking_label_dispatches, ranking_label_gpu_time_ns,
       ranking_cache_dispatches, ranking_cache_gpu_time_ns;
+  std::uint64_t ranking_plan_dispatches, ranking_plan_reuses, ranking_plan_gpu_time_ns;
   std::uint64_t ranking_gradient_dispatches, ranking_gradient_gpu_time_ns,
       ranking_pairs, ranking_pair_batches;
   std::uint64_t ranking_bias_dispatches;

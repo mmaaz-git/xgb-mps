@@ -3,17 +3,39 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 #include "xgboost/base.h"
 #include "xgboost/linalg.h"
 #include "xgboost/span.h"
 
 namespace xgboost::common::metal {
+// Immutable, query-specific metadata. Counts, maximum size and exact uint64
+// prefixes are computed on GPU. Tasks() is a read-only view of shared Metal
+// storage for allocation/launch decisions; the same buffer feeds the kernels.
+struct RankingPairTask {
+  std::uint64_t pair_begin, tile_begin;
+  std::uint32_t begin, count, topk, padding;
+};
+class RankingPlan {
+ public:
+  virtual ~RankingPlan() = default;
+  virtual Span<bst_group_t const> Groups() const = 0;
+  virtual Span<RankingPairTask const> Tasks() const = 0;
+  virtual std::uint32_t MaxGroupSize() const = 0;
+  virtual std::uint32_t NumPair() const = 0;
+  virtual bool IsMean() const = 0;
+};
+// Zero pairs builds group/sort metadata only. No row or pair arrays are needed,
+// so very large logical pair counts can be inspected without allocating them.
+std::shared_ptr<RankingPlan const> MakeRankingPlan(Span<bst_group_t const> groups,
+                                                   std::uint32_t pairs, bool mean);
+
 // Stable descending sort within each query. Output indices are query-relative.
 // Groups begin at zero and end at values.Size(); empty groups are permitted.
 // NaN scores have no defined CPU ordering and are outside this contract.
 void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> groups,
-                Span<std::size_t> relative_indices);
+                Span<std::size_t> relative_indices, std::shared_ptr<RankingPlan const> plan = {});
 
 enum class RankingLabelKind : std::uint32_t { kBinary, kNDCG };
 // Returns validation flags: bit 0 = invalid binary/integer label, bit 1 =
@@ -23,7 +45,7 @@ std::uint32_t CheckRankingLabels(linalg::VectorView<float const> labels, Ranking
 // validates labels first; linear gains may include finite negative values.
 void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
               std::uint32_t topk, bool exponential, Span<double> discounts,
-              Span<double> inverse_idcg);
+              Span<double> inverse_idcg, std::shared_ptr<RankingPlan const> plan = {});
 
 enum class RankingMetricKind : std::uint32_t { kPrecision, kNDCG, kMAP };
 struct RankingSums {
@@ -59,12 +81,14 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
                      Span<double const> discounts, Span<double const> inverse_idcg,
                      Span<GradientPair> output, bool mean = false, std::uint32_t seed = 0,
                      RankingBias bias = {}, Span<std::array<std::uint32_t, 2>> mean_pair_trace = {},
-                     RankingGradientTrace diagnostics = {});
+                     RankingGradientTrace diagnostics = {},
+                     std::shared_ptr<RankingPlan const> plan = {});
 // GPU sort and weighted query scoring in one command. NDCG uses the existing
 // cache's discounts and inverse ideal gains. Caller validates label semantics.
 RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const> predictions,
                          linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
                          Span<float const> weights, std::uint32_t topk, bool minus = false,
                          bool exponential = true, Span<double const> discounts = {},
-                         Span<double const> inverse_idcg = {});
+                         Span<double const> inverse_idcg = {},
+                         std::shared_ptr<RankingPlan const> plan = {});
 }  // namespace xgboost::common::metal

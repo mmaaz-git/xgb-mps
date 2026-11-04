@@ -23,6 +23,10 @@
 #include "xgboost/span.h"                // for Span
 #include "xgboost/string_view.h"         // for StringView
 
+#if defined(XGBOOST_USE_METAL)
+#include "metal_ranking.h"
+#endif
+
 namespace xgboost::ltr {
 /**
  * \brief Relevance degree
@@ -170,6 +174,9 @@ class RankingCache {
   HostDeviceVector<std::size_t> sorted_idx_cache_;
   // Maximum size of group
   std::size_t max_group_size_{0};
+#if defined(XGBOOST_USE_METAL)
+  std::shared_ptr<common::metal::RankingPlan const> metal_plan_;
+#endif
   // Normalization for weight
   double weight_norm_{1.0};
   /**
@@ -235,6 +242,10 @@ class RankingCache {
     group_ptr_.SetDevice(ctx->Device());
     return ctx->IsCUDA() ? group_ptr_.ConstDeviceSpan() : group_ptr_.ConstHostSpan();
   }
+
+#if defined(XGBOOST_USE_METAL)
+  [[nodiscard]] auto const& MetalPlan() const { return metal_plan_; }
+#endif
 
   [[nodiscard]] auto const& Param() const { return param_; }
   [[nodiscard]] std::size_t Groups() const { return group_ptr_.Size() - 1; }

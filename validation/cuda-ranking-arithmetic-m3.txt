@@ -127,8 +127,11 @@ Local logs (ignored results/)
   No production or test edits after the full run began; later edits were docs.
   git diff --check PASS.
 
-Remaining limits
-----------------
+Remaining limits at this checkpoint
+----------------------------------
+Follow-up: query metadata is now ported; see cuda-ranking-metadata-m3.txt.
+The paragraph below records the gap identified before that follow-up.
+
 Query-size maximum and pair/tile-count prefixes remain host computations.
 CUDA RankingCache::InitOnCUDA uses GPU reduction and scans for this metadata;
 a read-only follow-up audit identified this as remaining operation coverage.

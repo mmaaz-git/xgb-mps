@@ -3356,6 +3356,46 @@ struct RankingPairTask {
   ulong pair_begin, tile_begin;
   uint begin, count, topk, padding;
 };
+struct RankingPlanParams {
+  uint groups, pairs, mean, padding;
+};
+// RankingCache::InitOnCUDA and SegmentedTrapezoidThreads: one count per
+// query followed by an inclusive scan of [0, counts...]. Integer arithmetic
+// is required: valid logical pair counts can exceed binary64's exact range.
+kernel void xgb_ranking_plan_init(device const uint* offsets [[buffer(0)]],
+                                   device RankingPairTask* tasks [[buffer(1)]],
+                                   device ulong* pairs [[buffer(2)]],
+                                   device ulong* tiles [[buffer(3)]],
+                                   device atomic_uint* state [[buffer(4)]],
+                                   constant RankingPlanParams& p [[buffer(5)]],
+                                   uint block [[threadgroup_position_in_grid]],
+                                   uint tid [[thread_index_in_threadgroup]],
+                                   uint lane [[thread_index_in_simdgroup]]) {
+  ulong g = ulong(block) * 256 + tid;
+  uint count = 0;
+  if (g == 0) { pairs[0] = 0; tiles[0] = 0; }
+  if (g < p.groups) {
+    uint begin = offsets[g], end = offsets[g + 1];
+    if (end < begin) atomic_fetch_or_explicit(state + 1, 1u, memory_order_relaxed);
+    else count = end - begin;
+    uint k = p.mean ? p.pairs : min(count, p.pairs);
+    ulong n = ulong(k) * count - (p.mean ? 0ul : ulong(k) * (ulong(k) + 1) / 2);
+    pairs[g + 1] = n;
+    tiles[g + 1] = (n + 255) / 256;
+    tasks[g] = {0, 0, begin, count, k, 0};
+  } else if (g == p.groups) {
+    tasks[g] = {0, 0, offsets[g], 0, 0, 0};
+  }
+  uint maximum = simd_max(count);
+  if (lane == 0) atomic_fetch_max_explicit(state, maximum, memory_order_relaxed);
+}
+kernel void xgb_ranking_plan_finish(device RankingPairTask* tasks [[buffer(0)]],
+                                     device const ulong* pairs [[buffer(1)]],
+                                     device const ulong* tiles [[buffer(2)]],
+                                     uint g [[thread_position_in_grid]]) {
+  tasks[g].pair_begin = pairs[g];
+  tasks[g].tile_begin = tiles[g];
+}
 struct RankingGradientParams {
   ulong rows, label_stride, pair_base, tile_base;
   uint group_begin, group_end, row_begin, kind;

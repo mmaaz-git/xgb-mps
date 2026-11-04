@@ -311,7 +311,7 @@ class EvalPrecision : public EvalRankWithCache<ltr::PreCache> {
           common::metal::RankingMetricKind::kPrecision,
           linalg::MakeTensorView(DeviceOrd::CPU(), predt.ConstHostSpan(), predt.Size()),
           info.labels.HostView().Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
-          info.weights_.ConstHostSpan(), param_.TopK());
+          info.weights_.ConstHostSpan(), param_.TopK(), false, true, {}, {}, p_cache->MetalPlan());
       return Finalize(ctx_, info, sums.score, sums.weight);
     }
 #endif
@@ -380,7 +380,7 @@ class EvalNDCG : public EvalRankWithCache<ltr::NDCGCache> {
           linalg::MakeTensorView(DeviceOrd::CPU(), preds.ConstHostSpan(), preds.Size()),
           info.labels.HostView().Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
           info.weights_.ConstHostSpan(), param_.TopK(), minus_, param_.ndcg_exp_gain,
-          p_cache->Discount(ctx_), p_cache->InvIDCG(ctx_).Values());
+          p_cache->Discount(ctx_), p_cache->InvIDCG(ctx_).Values(), p_cache->MetalPlan());
       return Finalize(ctx_, info, sums.score, sums.weight);
     }
 #endif
@@ -449,7 +449,7 @@ class EvalMAPScore : public EvalRankWithCache<ltr::MAPCache> {
           common::metal::RankingMetricKind::kMAP,
           linalg::MakeTensorView(DeviceOrd::CPU(), predt.ConstHostSpan(), predt.Size()),
           info.labels.HostView().Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
-          info.weights_.ConstHostSpan(), param_.TopK(), minus_);
+          info.weights_.ConstHostSpan(), param_.TopK(), minus_, true, {}, {}, p_cache->MetalPlan());
       return Finalize(ctx_, info, sums.score, sums.weight);
     }
 #endif

@@ -174,7 +174,8 @@ class LambdaRankObj : public FitIntercept {
         out_gpair->HostView().Values(), param_.IsMean(), seed,
         {param_.lambdarank_unbiased ? ti_plus_.HostView().Values() : common::Span<double>{},
          param_.lambdarank_unbiased ? tj_minus_.HostView().Values() : common::Span<double>{},
-         param_.Regularizer()});
+         param_.Regularizer()},
+        {}, {}, p_cache_->MetalPlan());
     return true;
   }
 #endif
