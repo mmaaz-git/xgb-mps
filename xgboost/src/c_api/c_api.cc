@@ -256,6 +256,11 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ellpack_view_pages"] = Integer{static_cast<std::int64_t>(stats.ellpack_view_pages)};
   info["ellpack_count_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.ellpack_count_dispatches)};
+  info["ellpack_io_read_pages"] = Integer{static_cast<std::int64_t>(stats.ellpack_io_read_pages)};
+  info["ellpack_io_write_pages"] = Integer{static_cast<std::int64_t>(stats.ellpack_io_write_pages)};
+  info["ellpack_io_read_bytes"] = Integer{static_cast<std::int64_t>(stats.ellpack_io_read_bytes)};
+  info["ellpack_io_write_bytes"] = Integer{static_cast<std::int64_t>(stats.ellpack_io_write_bytes)};
+  info["ellpack_io_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_io_dispatches)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -496,6 +501,11 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["ellpack_input_dispatches"] = Integer{0};
   info["ellpack_view_pages"] = Integer{0};
   info["ellpack_count_dispatches"] = Integer{0};
+  info["ellpack_io_read_pages"] = Integer{0};
+  info["ellpack_io_write_pages"] = Integer{0};
+  info["ellpack_io_read_bytes"] = Integer{0};
+  info["ellpack_io_write_bytes"] = Integer{0};
+  info["ellpack_io_dispatches"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};

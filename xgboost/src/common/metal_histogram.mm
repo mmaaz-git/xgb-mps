@@ -18,6 +18,7 @@
 #include "../data/adapter.h"
 #include "../data/gradient_index.h"
 #include "compressed_iterator.h"
+#include "io.h"
 #include "metal_adapter.h"
 #include "metal_auc.h"
 #include "metal_category.h"
@@ -127,6 +128,8 @@ std::atomic<std::uint64_t> ellpack_adapter_dispatches{0}, ellpack_adapter_values
     ellpack_pack_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_histogram_dispatches{0}, ellpack_partition_dispatches{0},
     ellpack_input_dispatches{0};
+std::atomic<std::uint64_t> ellpack_io_read_pages{0}, ellpack_io_write_pages{0},
+    ellpack_io_read_bytes{0}, ellpack_io_write_bytes{0}, ellpack_io_dispatches{0};
 std::atomic<std::uint64_t> ellpack_csr_dispatches{0}, ellpack_csr_values{0}, ellpack_csr_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
     ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
@@ -655,16 +658,17 @@ class Page final : public QuantizedPage {
   id<MTLBuffer> index, row_ptr, offsets, cuts;
   id<MTLBuffer> tail;
   CompressedParams compressed{};
+  std::size_t compressed_bytes{0};
   bool IsCompressed() const { return compressed.bits != 0; }
   Page(Runtime const& rt, HistogramCuts const& values, EllpackInfo info, id<MTLBuffer> head,
-       id<MTLBuffer> tail, std::uint64_t split)
+       id<MTLBuffer> tail, std::uint64_t split, std::size_t bytes)
       : index{head}, tail{tail}, compressed{split,
                                             info.row_stride,
                                             info.bits,
                                             info.symbols,
                                             std::uint32_t(info.dense),
                                             info.features,
-                                            0} {
+                                            0}, compressed_bytes{bytes} {
     // Compressed consumers do not need restored indices, row pointers or a transpose.
     row_ptr = Allocate(rt, 0);
     offsets = Upload(rt, values.Ptrs().data(), values.Ptrs().size() * 4);
@@ -1896,7 +1900,12 @@ Statistics GetStatistics() {
           ellpack_host_readback_bytes.load(std::memory_order_relaxed),
           ellpack_csr_dispatches.load(std::memory_order_relaxed),
           ellpack_csr_values.load(std::memory_order_relaxed),
-          ellpack_csr_input_bytes.load(std::memory_order_relaxed)};
+          ellpack_csr_input_bytes.load(std::memory_order_relaxed),
+          ellpack_io_read_pages.load(std::memory_order_relaxed),
+          ellpack_io_write_pages.load(std::memory_order_relaxed),
+          ellpack_io_read_bytes.load(std::memory_order_relaxed),
+          ellpack_io_write_bytes.load(std::memory_order_relaxed),
+          ellpack_io_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6750,7 +6759,7 @@ class MetalCompressedPage final : public CompressedPage {
       output->max_numeric_bins_per_feat = max_bin;
       output->SetDense(info_.dense);
       output->SetMetalRows(rows_);
-      output->metal_page = std::make_shared<Page>(rt, cuts, info_, head, tail, p.split);
+      output->metal_page = std::make_shared<Page>(rt, cuts, info_, head, tail, p.split, bytes_);
       ellpack_view_pages.fetch_add(1, std::memory_order_relaxed);
     }
   }
@@ -6791,6 +6800,97 @@ class MetalCompressedPage final : public CompressedPage {
   }
 };
 }  // namespace
+std::size_t WriteCompressedPage(GHistIndexMatrix const& input, AlignedFileWriteStream* output) {
+  CHECK(output);
+  auto page = std::dynamic_pointer_cast<Page>(std::atomic_load(&input.metal_page));
+  CHECK(page && page->IsCompressed());
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto const& p = page->compressed;
+    auto bytes = page->compressed_bytes;
+    CHECK_LE(p.split, bytes);
+    auto buffer = Allocate(rt, bytes);
+    auto command = [rt.queue commandBuffer];
+    auto blit = [command blitCommandEncoder];
+    if (p.split)
+      [blit copyFromBuffer:page->index sourceOffset:0 toBuffer:buffer destinationOffset:0 size:p.split];
+    if (bytes > p.split)
+      [blit copyFromBuffer:page->tail sourceOffset:0 toBuffer:buffer destinationOffset:p.split
+                     size:bytes - p.split];
+    [blit endEncoding];
+    CompleteOperation(command, &ellpack_io_dispatches, &ellpack_gpu_time_ns);
+    bst_idx_t rows = input.Size(), stride = p.stride, base = input.base_rowid, symbols = p.symbols;
+    bool dense = p.dense;
+    std::uint64_t count = bytes;
+    auto written = output->Write(rows);
+    written += output->Write(dense);
+    written += output->Write(stride);
+    written += output->Write(count);
+    written += output->Write(buffer.contents, bytes);
+    written += output->Write(base);
+    written += output->Write(symbols);
+    ellpack_io_write_pages.fetch_add(1, std::memory_order_relaxed);
+    ellpack_io_write_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    return written;
+  }
+}
+bool ReadCompressedPage(AlignedResourceReadStream* input, HistogramCuts const& cuts,
+                        bst_bin_t max_bin, bool prefetch_copy, GHistIndexMatrix* output) {
+  CHECK(input && output);
+  CHECK(output->row_ptr.empty() && !output->metal_page);
+  bst_idx_t rows = 0, stride = 0, base = 0, symbols = 0;
+  std::uint8_t dense = 0;
+  std::uint64_t bytes = 0;
+  // Read bool as a byte so an invalid representation never becomes a C++ bool.
+  if (!input->Read(&rows) || !input->Read(&dense) || !input->Read(&stride) || !input->Read(&bytes))
+    return false;
+  CHECK_LE(dense, 1);
+  CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(stride, cuts.NumFeatures());
+  auto& rt = GetRuntime();
+  CHECK_LE(bytes, rt.device.maxBufferLength);
+  auto [data, available] = input->Consume(bytes);
+  if (available != bytes || !input->Read(&base) || !input->Read(&symbols)) return false;
+  CHECK_LE(base, std::numeric_limits<bst_idx_t>::max() - rows);
+  auto info = MakeEllpackInfo(cuts, stride, dense != 0);
+  CHECK_EQ(stride, info.row_stride);
+  CHECK_EQ(symbols, info.symbols);
+  CHECK_GE(bytes, EllpackBytes(rows, info));
+  @autoreleasepool {
+    // The buffer owns its bytes, independently of the mapped reader's lifetime.
+    auto shared = Upload(rt, data, bytes);
+    auto buffer = shared;
+    if (prefetch_copy) {
+      buffer = EllpackPrivate(rt, bytes);
+      auto command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      [blit copyFromBuffer:shared sourceOffset:0 toBuffer:buffer destinationOffset:0 size:bytes];
+      [blit endEncoding];
+      CompleteOperation(command, &ellpack_io_dispatches, &ellpack_gpu_time_ns);
+    }
+    auto view = std::make_shared<Page>(rt, cuts, info, buffer, buffer, 0, bytes);
+    output->cut = cuts;
+    output->base_rowid = base;
+    output->max_numeric_bins_per_feat = max_bin;
+    output->SetDense(dense != 0);
+    output->SetMetalRows(rows);
+    output->metal_page = std::move(view);
+    ellpack_view_pages.fetch_add(1, std::memory_order_relaxed);
+    ellpack_io_read_pages.fetch_add(1, std::memory_order_relaxed);
+    ellpack_io_read_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return true;
+}
+bst_idx_t CompressedNonMissing(GHistIndexMatrix const& input) {
+  @autoreleasepool {
+    auto page = std::dynamic_pointer_cast<Page>(std::atomic_load(&input.metal_page));
+    CHECK(page && page->IsCompressed());
+    auto const& c = page->compressed;
+    EllpackParams p{input.Size(), c.split, 0, c.features, c.stride, c.symbols, c.bits, c.dense, 4};
+    auto rows = EllpackRowPtr(GetRuntime(), p, page->index, page->tail, &ellpack_count_dispatches);
+    return static_cast<std::uint64_t const*>(rows.contents)[input.Size()];
+  }
+}
 void MaterializeHost(Context const* ctx, double sparse_thresh, GHistIndexMatrix* output) {
   if (output->HostReadable()) return;
   @autoreleasepool {

@@ -43,7 +43,7 @@ class IterativeDMatrix : public QuantileDMatrix {
 #endif
   BatchParam batch_;
 
-  DMatrixHandle proxy_;
+  DMatrixHandle proxy_{nullptr};
 
   void InitFromCUDA(Context const *ctx, BatchParam const &p,
                     DataIterProxy<DataIterResetCallback, XGDMatrixCallbackNext> &&iter,
@@ -58,6 +58,13 @@ class IterativeDMatrix : public QuantileDMatrix {
   explicit IterativeDMatrix(std::shared_ptr<EllpackPage> ellpack) : ellpack_{std::move(ellpack)} {
     this->fmat_ctx_.UpdateAllowUnknown(Args{{"device", DeviceSym::CUDA()}});
   }
+
+#if defined(XGBOOST_USE_METAL)
+  IterativeDMatrix(Context const *ctx, std::shared_ptr<GHistIndexMatrix> page)
+      : metal_ghist_{std::move(page)} {
+    this->fmat_ctx_ = *ctx;
+  }
+#endif
 
  public:
   explicit IterativeDMatrix(DataIterHandle iter_handle, DMatrixHandle proxy,

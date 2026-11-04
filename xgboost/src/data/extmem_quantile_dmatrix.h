@@ -19,6 +19,7 @@
 
 namespace xgboost::data {
 class MetalPageSource;
+class MetalDiskPageSource;
 /**
  * @brief A DMatrix class for building a `QuantileDMatrix` from external memory iterator.
  *
@@ -63,7 +64,8 @@ class ExtMemQuantileDMatrix : public QuantileDMatrix {
     return std::visit([](auto &&v) { return static_cast<bool>(v); }, ellpack_page_source_);
   }
   [[nodiscard]] bool GHistIndexExists() const override {
-    return static_cast<bool>(ghist_index_source_) || static_cast<bool>(metal_page_source_);
+    return static_cast<bool>(ghist_index_source_) || static_cast<bool>(metal_page_source_) ||
+           static_cast<bool>(metal_disk_source_);
   }
 
   [[nodiscard]] BatchSet<ExtSparsePage> GetExtBatches(Context const *ctx,
@@ -81,5 +83,6 @@ class ExtMemQuantileDMatrix : public QuantileDMatrix {
   std::variant<EllpackDiskPtr, EllpackHostPtr> ellpack_page_source_;
   std::shared_ptr<ExtGradientIndexPageSource> ghist_index_source_;
   std::shared_ptr<MetalPageSource> metal_page_source_;
+  std::shared_ptr<MetalDiskPageSource> metal_disk_source_;
 };
 }  // namespace xgboost::data

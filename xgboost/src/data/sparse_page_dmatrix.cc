@@ -19,6 +19,10 @@
 #include "gradient_index.h"       // for GHistIndexMatrix
 #include "sparse_page_source.h"   // for MakeCachePrefix
 
+#if defined(XGBOOST_USE_METAL)
+#include "metal_page_source.h"
+#endif
+
 namespace xgboost::data {
 MetaInfo &SparsePageDMatrix::Info() { return info_; }
 
@@ -94,6 +98,7 @@ SparsePageDMatrix::~SparsePageDMatrix() {
   column_source_.reset();
   sorted_column_source_.reset();
   ghist_index_source_.reset();
+  metal_disk_source_.reset();
 
   DeleteCacheFiles(cache_info_);
 }
@@ -163,31 +168,65 @@ BatchSet<GHistIndexMatrix> SparsePageDMatrix::GetGradientIndex(Context const *ct
   }
   detail::CheckEmpty(batch_param_, param);
   auto id = MakeCache(this, ".gradient_index.page", false, cache_prefix_, &cache_info_);
-  bool backend_changed = param.Initialized() && !param.forbid_regen && !ctx->IsCUDA() &&
-                         gradient_index_metal_ != ctx->IsMPS();
+  bool backend_changed = param.Initialized() && !param.forbid_regen && !param.for_cuts &&
+                         !ctx->IsCUDA() && gradient_index_metal_ != ctx->IsMPS();
   if (!cache_info_.at(id)->written || detail::RegenGHist(batch_param_, param) || backend_changed) {
+    // Join old prefetches before overwriting this generation's cache file.
+    ghist_index_source_.reset();
+    metal_disk_source_.reset();
     this->InitializeSparsePage(ctx);
     cache_info_.erase(id);
     id = MakeCache(this, ".gradient_index.page", false, cache_prefix_, &cache_info_);
     LOG(INFO) << "Generating new Gradient Index.";
-    // Use sorted sketch for approx.
-    auto sorted_sketch = param.regen;
-    auto cuts = common::SketchOnDMatrix(ctx, this, param.max_bin, sorted_sketch, param.hess);
-    this->InitializeSparsePage(ctx);  // reset after use.
-
-    gradient_index_metal_ = ctx->IsMPS();
-    batch_param_ = param;
-    ghist_index_source_.reset();
+    auto cuts = common::SketchOnDMatrix(ctx, this, param.max_bin, param.regen, param.hess);
     CHECK_NE(cuts.Values().size(), 0);
     auto ft = this->info_.feature_types.ConstHostSpan();
-    ghist_index_source_.reset(new GradientIndexPageSource(
-        ctx, this->missing_, this->Info().num_col_, this->NumBatches(), cache_info_.at(id), param,
-        std::move(cuts), this->IsDense(), ft, sparse_page_source_));
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) {
+      // CUDA GetRowStride also scans raw CSR rows on the host. Binning and
+      // packing then operate directly on raw CSR, one compressed page per batch.
+      bst_idx_t stride = 0;
+      for (auto const &raw : this->GetRowBatchesImpl(ctx)) {
+        auto rows = raw.offset.ConstHostSpan();
+        for (bst_idx_t r = 0; r < raw.Size(); ++r)
+          stride = std::max<bst_idx_t>(stride, rows[r + 1] - rows[r]);
+      }
+      auto layout = common::metal::MakeEllpackInfo(cuts, stride, this->IsDense());
+      auto source =
+          std::make_shared<MetalDiskPageSource>(ctx, missing_, param, cache_info_.at(id), cuts);
+      for (auto const &raw : this->GetRowBatchesImpl(ctx)) {
+        auto compressed = common::metal::MakeCompressedPage(layout, raw.Size(), raw.base_rowid);
+        compressed->PushCSR(raw, cuts, ft);
+        source->Append(*compressed);
+      }
+      CHECK_EQ(source->NonMissing(), info_.num_nonzero_);
+      source->Finalize();
+      metal_disk_source_ = std::move(source);
+    } else
+#endif
+    {
+      this->InitializeSparsePage(ctx);
+      ghist_index_source_ = std::make_shared<GradientIndexPageSource>(
+          ctx, missing_, info_.num_col_, this->NumBatches(), cache_info_.at(id), param,
+          std::move(cuts), this->IsDense(), ft, sparse_page_source_);
+    }
+    gradient_index_metal_ = ctx->IsMPS();
+    batch_param_ = param;
   } else {
-    CHECK(ghist_index_source_);
-    ghist_index_source_->Reset(param);
+#if defined(XGBOOST_USE_METAL)
+    if (metal_disk_source_)
+      metal_disk_source_->Reset(ctx, param);
+    else
+#endif
+    {
+      CHECK(ghist_index_source_);
+      ghist_index_source_->Reset(param);
+    }
   }
-  return BatchSet{BatchIterator<GHistIndexMatrix>{this->ghist_index_source_}};
+#if defined(XGBOOST_USE_METAL)
+  if (metal_disk_source_) return BatchSet{BatchIterator<GHistIndexMatrix>{metal_disk_source_}};
+#endif
+  return BatchSet{BatchIterator<GHistIndexMatrix>{ghist_index_source_}};
 }
 
 #if !defined(XGBOOST_USE_CUDA)

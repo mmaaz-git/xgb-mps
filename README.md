@@ -14,7 +14,30 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **direct raw CSR compression for ordinary in-memory matrices**.
+Latest step: **compressed disk caches and internal ELLPACK save/load**.
+MPS external quantile matrices now bin directly into compressed disk pages;
+ordinary external matrices compress raw CSR into the same format. GPU traversal
+loads compressed views, and CPU bin/column arrays are created only on demand.
+The disk field order, alignment and payload follow CUDA's raw ELLPACK format.
+Loaded Metal buffers remain valid after their mapping or cache is destroyed.
+
+Internal quantile save/load now preserves cuts and compressed pages, matching
+CUDA's internal contract. This is not a new public `QuantileDMatrix.save_binary`
+API and does not serialize labels or other training metadata.
+
+Focused validation passes **224 cache cases / 12,662,693 exact fields** and
+**124 IO cases / 18,400 exact bytes / 111 invalid streams / three internal
+save/load cases**. **254 existing public tests and 50 new public cases** pass.
+Full regression passes **2,314 Python tests, one skip**, every rebuilt native suite
+and the CPU-only build/API checks. A final resource-scope follow-up also passes its
+targeted build and IO suite. No new benchmark was run. [Disk-format validation](validation/cuda-disk-ellpack-m3.txt).
+
+Still open in this area: ordinary external matrices' `on_host=True` compressed
+cache selection, mapped-file zero-copy, and optional Snappy compression.
+CPU-origin external matrices retain the existing compatibility path; upstream CUDA
+rejects CPU-created external quantile matrices. Broader device/state and collective gaps remain.
+
+The preceding step added **direct raw CSR compression for ordinary in-memory matrices**.
 MPS training now builds ELLPACK directly from bounded windows of raw rows and
 values, without a host quantized matrix or a typed GPU-bin upload. CPU quantized
 views are materialized only on explicit demand. Metadata-only cut lookup, raw
@@ -28,7 +51,7 @@ their old generation when a new one is published.
 Native validation passes **70 raw-format cases / 568 windows / 120,537 exact bytes**
 and **130 matrix cases / 1,173,186 exact fields**, including concurrent conversion
 and retained views after regeneration/destruction. **303 existing focused tests**
-and **40 new public API cases** pass. Full regression passes **2,264 Python tests,
+and **40 new public API cases** pass. Full regression at that checkpoint passed **2,264 Python tests,
 one skip**, every rebuilt native suite and the CPU-only build/API checks.
 No new benchmark was run.
 [Ordinary-matrix validation](validation/cuda-ordinary-ellpack-m3.txt).
@@ -83,7 +106,7 @@ The preceding step added **direct GPU adapter-to-ELLPACK construction for extern
 Decoded values now feed compressed bin writes directly, without an intermediate
 host gradient-index matrix or host-bin upload. Sparse row positions stay on GPU
 across input windows; missing padding is written after the values, following CUDA.
-The disk path retains its existing host cache format.
+At that checkpoint the disk path retained its host format; the latest step above replaces it for MPS-origin caches.
 
 New native checks pass **73 cases / 2,933 windows / 81,666 exact bytes / 7,455,890
 fields**, plus **12 expected errors**. Focused public regression passes **210
@@ -112,7 +135,7 @@ Apple shared and private buffers both use unified memory; this is a storage/acce
 policy, not additional VRAM capacity. Direct construction above removes that
 checkpoint's intermediate host bins. The later consumer/ownership steps above
 retain compressed GPU views and create host mirrors only for CPU access. CUDA's
-optional Snappy cache compression, disk-backed matrix compressed ownership, native Apple GPU tensor handles and
+optional Snappy cache compression, ordinary external host-cache selection, native Apple GPU tensor handles and
 general device ownership remain unfinished. No new performance measurement was made.
 
 The preceding disk-backed construction step supports `DataIter(on_host=False)`:
@@ -905,7 +928,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Create external-cache host mirrors only for CPU access; preserve compressed views across prefetch/device switches.
 - [x] Keep in-memory quantile matrices compressed, with one-time CPU conversion and stable concurrent CPU/GPU views.
 - [x] Compress ordinary in-memory DMatrix raw CSR directly; retain separate CPU views and cache-generation rules.
-- [ ] Port compressed disk caches and internal ELLPACK save/load.
+- [x] Port compressed MPS-origin disk caches and internal ELLPACK save/load.
+- [ ] Complete ordinary external host-cache selection.
 - [ ] Port optional Snappy cache compression.
 - [ ] Complete native device arrays and remaining metadata/state operations.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.

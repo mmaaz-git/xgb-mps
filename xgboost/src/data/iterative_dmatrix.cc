@@ -227,6 +227,8 @@ BatchSet<GHistIndexMatrix> IterativeDMatrix::GetGradientIndex(Context const* ctx
       metal_ghist_ = std::move(view);
     }
   } else if (!ghist_ && metal_ghist_) {
+    CHECK_GE(batch_.max_bin, 2)
+        << "Internal ELLPACK load restores only cuts and compressed pages, not training metadata.";
     // Build a separate CPU representation, then publish only when complete.
     // Existing Metal batches keep their immutable shape and compressed buffers.
     auto host = std::make_shared<GHistIndexMatrix>();
@@ -328,13 +330,33 @@ BatchSet<EllpackPage> IterativeDMatrix::GetEllpackBatches(Context const*, BatchP
   return BatchSet<EllpackPage>(BatchIterator<EllpackPage>(begin_iter));
 }
 
-void IterativeDMatrix::Save(common::AlignedFileWriteStream*) const {
+void IterativeDMatrix::Save(common::AlignedFileWriteStream* output) const {
+#if defined(XGBOOST_USE_METAL)
+  std::lock_guard<std::mutex> lock{metal_matrix_mutex_};
+  CHECK(output);
+  CHECK(metal_ghist_) << "Internal ELLPACK save requires a compressed Metal page.";
+  metal_ghist_->cut.Save(output);
+  common::metal::WriteCompressedPage(*metal_ghist_, output);
+#else
   LOG(FATAL) << "Not implemented";
+#endif
 }
 
-IterativeDMatrix* IterativeDMatrix::Load(Context const*, common::AlignedResourceReadStream*) {
+IterativeDMatrix* IterativeDMatrix::Load(Context const* ctx,
+                                         common::AlignedResourceReadStream* input) {
+#if defined(XGBOOST_USE_METAL)
+  CHECK(ctx && ctx->IsMPS());
+  CHECK(input);
+  std::unique_ptr<common::HistogramCuts> cuts{common::HistogramCuts::Load(input)};
+  auto page = std::make_shared<GHistIndexMatrix>();
+  CHECK(common::metal::ReadCompressedPage(input, *cuts, 0, true, page.get()));
+  // Match CUDA's internal page-only contract: labels, MetaInfo and training
+  // parameters are deliberately not serialized by this format.
+  return new IterativeDMatrix{ctx, std::move(page)};
+#else
   LOG(FATAL) << "Not implemented";
   return nullptr;
+#endif
 }
 #endif  // !defined(XGBOOST_USE_CUDA)
 }  // namespace xgboost::data

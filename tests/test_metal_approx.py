@@ -97,7 +97,7 @@ def test_approx_training(metal, layout, kind, subsample, sampling, growth, tmp_p
     assert after["gradient_copy_dispatches"] - before["gradient_copy_dispatches"] >= 3 * groups
     assert after["hessian_extract_dispatches"] - before["hessian_extract_dispatches"] == 3 * groups
     for key in ["gradient_sum_dispatches", "sketch_weight_dispatches",
-                "binning_dispatches" if layout == "external" else "ellpack_csr_dispatches",
+                "ellpack_csr_dispatches",
                 "cuda_sketch_dispatches", "histogram_dispatches", "split_dispatches",
                 "partition_dispatches", "leaf_partition_dispatches", "gradient_state_gpu_time_ns"]:
         assert after[key] > before[key], key

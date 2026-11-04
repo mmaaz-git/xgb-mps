@@ -60,6 +60,7 @@ ExtMemQuantileDMatrix::ExtMemQuantileDMatrix(DataIterHandle iter_handle, DMatrix
       // active readers before removing the partially written page cache.
       ghist_index_source_.reset();
       metal_page_source_.reset();
+      metal_disk_source_.reset();
       DeleteCacheFiles(cache_info_);
       throw;
     }
@@ -79,6 +80,7 @@ ExtMemQuantileDMatrix::~ExtMemQuantileDMatrix() {
   // Clear out all resources before deleting the cache file.
   ghist_index_source_.reset();
   metal_page_source_.reset();
+  metal_disk_source_.reset();
   std::visit([](auto &&ptr) { ptr.reset(); }, ellpack_page_source_);
 
   DeleteCacheFiles(cache_info_);
@@ -115,21 +117,47 @@ void ExtMemQuantileDMatrix::InitFromMPS(
     batch_ptr_ = metal_page_source_->BatchPtr();
     n_batches_ = batch_ptr_.size() - 1;
   } else {
-    // CUDA's disk path retains one page per input batch.
-    auto id = MakeCache(this, ".gradient_index.page", false, cache_prefix_, &cache_info_);
-    ghist_index_source_ = std::make_shared<ExtGradientIndexPageSource>(
-        ctx, missing, &info_, cache_info_.at(id), p, cuts, iter, proxy, ext.base_rowids,
-        ext.batch_nnz);
+    // CUDA's disk path retains one compressed page per input batch.
+    auto id = MakeCache(this, ".metal-ellpack.page", false, cache_prefix_, &cache_info_);
+    metal_disk_source_ =
+        std::make_shared<MetalDiskPageSource>(ctx, missing, p, cache_info_.at(id), cuts);
+    auto layout = common::metal::MakeEllpackInfo(cuts, ext.row_stride, info_.IsDense());
+    bst_idx_t batch = 0;
+    iter->Reset();
+    while (iter->Next()) {
+      CHECK_LT(batch, ext.n_batches) << "Different number of batches returned between iterations";
+      auto rows = ext.base_rowids[batch + 1] - ext.base_rowids[batch];
+      CHECK_EQ(BatchSamples(proxy), rows);
+      CHECK_EQ(BatchColumns(proxy), ext.n_features);
+      auto compressed = common::metal::MakeCompressedPage(layout, rows, ext.base_rowids[batch]);
+      compressed->BeginAdapter(cuts, types);
+      bst_idx_t nnz = 0;
+      metal_impl::AdapterWindows(ctx, proxy, missing, [&](auto const &input) {
+        compressed->PushAdapter(input);
+        nnz += input.NonMissing();
+      });
+      CHECK_EQ(nnz, ext.batch_nnz[batch]) << "Non-missing counts changed between iterations";
+      compressed->EndAdapter();
+      proxy->Info().num_row_ = rows;
+      proxy->Info().num_col_ = ext.n_features;
+      proxy->Info().num_nonzero_ = nnz;
+      info_.Extend(proxy->Info(), false, true);
+      metal_disk_source_->Append(*compressed);
+      ++batch;
+    }
+    CHECK_EQ(batch, ext.n_batches) << "Different number of batches returned between iterations";
+    iter->Reset();
+    metal_disk_source_->Finalize();
   }
   bst_idx_t batches = 0, rows = 0;
-  bst_idx_t nnz = metal_page_source_ ? metal_page_source_->NonMissing() : 0;
+  bst_idx_t nnz =
+      metal_page_source_ ? metal_page_source_->NonMissing() : metal_disk_source_->NonMissing();
   for (auto const& page : GetGradientIndexImpl()) {
     CHECK_LT(batches, n_batches_);
     CHECK_EQ(page.base_rowid, batch_ptr_[batches]);
     CHECK_EQ(page.Size(), batch_ptr_[batches + 1] - batch_ptr_[batches]);
     CHECK_EQ(page.Features(), ext.n_features);
     rows += page.Size();
-    if (!metal_page_source_) nnz += page.row_ptr[page.Size()];
     ++batches;
   }
   CHECK_EQ(batches, n_batches_);
@@ -194,6 +222,7 @@ void ExtMemQuantileDMatrix::InitFromCPU(
 [[nodiscard]] BatchSet<GHistIndexMatrix> ExtMemQuantileDMatrix::GetGradientIndexImpl() {
 #if defined(XGBOOST_USE_METAL)
   if (metal_page_source_) return BatchSet{BatchIterator<GHistIndexMatrix>{metal_page_source_}};
+  if (metal_disk_source_) return BatchSet{BatchIterator<GHistIndexMatrix>{metal_disk_source_}};
 #endif
   return BatchSet{BatchIterator<GHistIndexMatrix>{this->ghist_index_source_}};
 }
@@ -210,6 +239,8 @@ BatchSet<GHistIndexMatrix> ExtMemQuantileDMatrix::GetGradientIndex(Context const
 #if defined(XGBOOST_USE_METAL)
   if (metal_page_source_)
     metal_page_source_->Reset(ctx, param);
+  else if (metal_disk_source_)
+    metal_disk_source_->Reset(ctx, param);
   else
 #endif
     this->ghist_index_source_->Reset(param);

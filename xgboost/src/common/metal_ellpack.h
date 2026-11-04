@@ -11,6 +11,10 @@
 
 namespace xgboost {
 class GHistIndexMatrix;
+namespace common {
+class AlignedFileWriteStream;
+class AlignedResourceReadStream;
+}  // namespace common
 namespace common::metal {
 class AdapterInput;
 struct EllpackInfo {
@@ -53,6 +57,12 @@ class CompressedPage {
   // Diagnostic only. Production restoration reads compressed bytes on GPU.
   virtual std::vector<std::uint8_t> Readback() const = 0;
 };
+// CUDA EllpackPageRawFormat field order and alignment, with owned Metal buffers.
+std::size_t WriteCompressedPage(GHistIndexMatrix const& page, AlignedFileWriteStream* output);
+bool ReadCompressedPage(AlignedResourceReadStream* input, HistogramCuts const& cuts,
+                        bst_bin_t max_bin, bool prefetch_copy, GHistIndexMatrix* output);
+// Actual compressed non-missing symbols; only the final scalar returns to host.
+bst_idx_t CompressedNonMissing(GHistIndexMatrix const& page);
 // Explicit CPU access boundary. Idempotent; retains the compressed GPU view.
 void MaterializeHost(Context const* ctx, double sparse_thresh, GHistIndexMatrix* page);
 std::shared_ptr<CompressedPage> MakeCompressedPage(EllpackInfo info, bst_idx_t rows,

@@ -81,11 +81,14 @@ def test_extmem_adapter_cuts_cache_training(metal, tmp_path, layout, weight_kind
     q = xgb.ExtMemQuantileDMatrix(it, device="mps", max_bin=17, nthread=2)
     after = xgb.metal_info()
     assert after["adapter_prepare_dispatches"] > before["adapter_prepare_dispatches"]
-    assert after["adapter_index_dispatches"] - before["adapter_index_dispatches"] == 3
+    assert after["adapter_index_dispatches"] == before["adapter_index_dispatches"]
+    assert after["ellpack_adapter_values"] - before["ellpack_adapter_values"] == q.num_nonmissing()
+    assert after["ellpack_io_write_pages"] - before["ellpack_io_write_pages"] == len(batches)
+    assert after["ellpack_host_materializations"] == before["ellpack_host_materializations"]
     assert after["adapter_debug_readback_bytes"] == before["adapter_debug_readback_bytes"]
     for name in ["sketch_finalize_dispatches", "sketch_update_dispatches", "sketch_sorted_dispatches"]:
         assert after[name] == before[name]
-    cache = list(tmp_path.glob("cache-*.gradient_index.page"))
+    cache = list(tmp_path.glob("cache-*.metal-ellpack.page"))
     assert len(cache) == 1 and cache[0].stat().st_size > 0
     raw = xgb.DMatrix(x, feature_types=types, nthread=2)
     assert q.num_nonmissing() == raw.num_nonmissing()
@@ -113,7 +116,7 @@ def test_extmem_adapter_cuts_cache_training(metal, tmp_path, layout, weight_kind
     assert input_ref() is None
     del q, cpu, model
     gc.collect()
-    assert not list(tmp_path.glob("*.gradient_index.page"))
+    assert not list(tmp_path.glob("*.metal-ellpack.page"))
 
 
 @pytest.mark.parametrize("reference_kind", ["cpu", "mps", "external"])
@@ -184,7 +187,7 @@ def test_extmem_adapter_failed_construction_cleans_cache(metal, tmp_path, change
     with pytest.raises(xgb.core.XGBoostError):
         xgb.ExtMemQuantileDMatrix(Changing(), device="mps", nthread=2)
     gc.collect()
-    assert not list(tmp_path.glob("*.gradient_index.page"))
+    assert not list(tmp_path.glob("*.metal-ellpack.page"))
 
 
 def test_extmem_adapter_defaults_errors_empty(metal, tmp_path):
@@ -206,7 +209,7 @@ def test_extmem_adapter_defaults_errors_empty(metal, tmp_path):
     bad = x.copy(); bad[5, 1] = np.inf
     with pytest.raises(xgb.core.XGBoostError, match="inf"):
         xgb.ExtMemQuantileDMatrix(pages([x, bad]), device="mps", nthread=2)
-    assert not list(tmp_path.glob("*.gradient_index.page"))
+    assert not list(tmp_path.glob("*.metal-ellpack.page"))
     valid = xgb.ExtMemQuantileDMatrix(pages([bad]), missing=np.inf, device="mps", nthread=2)
     assert valid.num_nonmissing() == x.size - 1
     empty = xgb.ExtMemQuantileDMatrix(pages([x[:0], x[:0]]), device="mps", nthread=2)

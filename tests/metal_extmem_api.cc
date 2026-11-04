@@ -62,7 +62,7 @@ struct Input {
   }
 };
 void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats, bool weighted,
-          bool on_host = false, double ratio = std::nan(""), std::int64_t minimum = 0) {
+          bool on_host = false, double ratio = std::nan(""), std::int64_t minimum = 0, bool ordinary = false) {
   constexpr std::size_t cols = 7, rows = 1029;
   std::shared_ptr<DMatrix> proxy = std::make_shared<data::DMatrixProxy>();
   Input input{static_cast<data::DMatrixProxy*>(proxy.get())};
@@ -84,25 +84,38 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   auto handle = static_cast<DataIterHandle>(&input);
   auto proxy_handle = static_cast<DMatrixHandle>(&proxy);
   auto before = metal::GetStatistics();
-  std::shared_ptr<DMatrix> matrix{DMatrix::Create(handle, proxy_handle, std::shared_ptr<DMatrix>{},
-                                                  Input::Reset, Input::Next, bins, config)};
+  std::shared_ptr<DMatrix> matrix;
+  if (ordinary) {
+    matrix.reset(DMatrix::Create(handle, proxy_handle, Input::Reset, Input::Next, config));
+    Context gpu; gpu.Init({{"device", "mps"}, {"nthread", "2"}});
+    for (auto const& page : matrix->GetBatches<GHistIndexMatrix>(&gpu, BatchParam{bins, .2}))
+      Check(!page.HostReadable(), "Raw external matrix creates device-only quantized pages");
+  } else {
+    matrix.reset(DMatrix::Create(handle, proxy_handle, std::shared_ptr<DMatrix>{},
+                                 Input::Reset, Input::Next, bins, config));
+  }
   auto after = metal::GetStatistics();
-  Check(after.adapter_prepare_dispatches > before.adapter_prepare_dispatches, "GPU construction");
+  Check(ordinary ? after.ellpack_csr_dispatches > before.ellpack_csr_dispatches || layout == 3
+                 : after.adapter_prepare_dispatches > before.adapter_prepare_dispatches,
+        "GPU construction");
+  if (!on_host) Check(after.ellpack_io_write_pages - before.ellpack_io_write_pages == input.sizes.size(),
+                      "One compressed disk page per input batch");
   Check(after.adapter_debug_readback_bytes == before.adapter_debug_readback_bytes,
         "No raw readback");
-  if (on_host) {
+  {
     Check(after.ellpack_host_materializations ==
                   before.ellpack_host_materializations &&
               after.ellpack_host_readback_bytes ==
                   before.ellpack_host_readback_bytes,
           "Construction creates no host mirror");
     Check(
-        after.ellpack_adapter_values - before.ellpack_adapter_values == matrix->Info().num_nonzero_,
+        (ordinary ? after.ellpack_csr_values - before.ellpack_csr_values
+                  : after.ellpack_adapter_values - before.ellpack_adapter_values) == matrix->Info().num_nonzero_,
         "Every valid value binned directly into the compressed GPU page");
     Check(after.adapter_index_dispatches == before.adapter_index_dispatches &&
               after.binning_dispatches == before.binning_dispatches &&
               after.ellpack_pack_input_bytes == before.ellpack_pack_input_bytes,
-          "Host cache construction has no intermediate host bins");
+          "Cache construction has no intermediate host bins");
   }
   // CPU quantization with the exact same reference cuts is an independent bin oracle.
   std::shared_ptr<DMatrix> cpu{DMatrix::Create(handle, proxy_handle, matrix, Input::Reset,
@@ -151,7 +164,7 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   for (unsigned pass = 0; pass < 3; ++pass) {
     BatchParam parameter;
     parameter.prefetch_copy = pass % 2;
-    if (on_host) {
+    {
       auto start = metal::GetStatistics();
       auto batches = matrix->GetBatches<GHistIndexMatrix>(&gpu, parameter);
       std::size_t batch = 0;
@@ -232,11 +245,26 @@ void Case(std::filesystem::path const& dir, int bins, unsigned layout, bool cats
   Check(input.calls == calls, "Cache independence");
   Check(after.ellpack_debug_readback_bytes == before.ellpack_debug_readback_bytes,
         "No raw compressed readback");
-  if (on_host) Check(after.index_uploads == before.index_uploads, "Restored buffers remain on GPU");
+  Check(after.index_uploads == before.index_uploads, "Restored buffers remain on GPU");
   Check(after.adapter_prepare_dispatches == before.adapter_prepare_dispatches &&
             after.adapter_index_dispatches == before.adapter_index_dispatches &&
             after.cuda_sketch_batches == before.cuda_sketch_batches,
         "No cache reingestion/resketch");
+  if (ordinary) {
+    // Old GPU pages must survive rewriting the cache in either storage format.
+    for (auto const& page : matrix->GetBatches<GHistIndexMatrix>(&ctx, BatchParam{bins, .2}))
+      Check(page.HostReadable(), "Mutable CPU generation");
+    for (int next_bins : {bins + 1, bins}) {
+      auto start = metal::GetStatistics();
+      for (auto const& page : matrix->GetBatches<GHistIndexMatrix>(&gpu, BatchParam{next_bins, .2}))
+        Check(!page.HostReadable(), "Mutable Metal generation");
+      auto end = metal::GetStatistics();
+      Check(end.ellpack_io_write_pages - start.ellpack_io_write_pages == input.sizes.size(),
+            "Regeneration rewrites every compressed disk page");
+      Check(end.ellpack_host_materializations == start.ellpack_host_materializations,
+            "Regeneration has no CPU quantized mirror");
+    }
+  }
   matrix.reset();
   if (retained) {
     Check(!retained->HostReadable(),
@@ -282,6 +310,11 @@ int main() {
           for (double ratio : {0., .23, 1.})
             for (std::int64_t minimum : {0, 128, -1})
               Case(dir, bins, layout, cats, true, true, ratio, minimum);
+    for (int bins : {8, 257})
+      for (unsigned layout = 0; layout < 4; ++layout)
+        for (bool cats : {false, true})
+          for (bool weighted : {false, true})
+            Case(dir, bins, layout, cats, weighted, false, std::nan(""), 0, true);
     std::filesystem::remove(dir);
     std::printf("PASS %zu cases / %zu cached page visits / %zu exact fields\n", cases, pages,
                 fields);
