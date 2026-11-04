@@ -33,7 +33,7 @@ listed below. This is not yet a complete GPU backend.
 | AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and binary64 block sums; small final host reduction |
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and tied-score trapezoids on Metal; per-output normalization and aggregation remain host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and stable continuous integration on Metal; final per-output degeneracy checks and aggregation remain host |
-| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR-AUC remains CPU |
+| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses GPU label validation, stable score order, segmented binary64 prefixes, continuous PR integration, valid-query checks and aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Quantile sketching/cut construction remain CPU; numeric/categorical bin assignment and hit counts for SparsePage-backed matrices use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
@@ -81,7 +81,7 @@ interaction constraints, vector leaves and external-memory pages. Column
 sampling, remaining training-state updates and more efficient external-memory
 staging remain required.
 
-Grouped ranking PR-AUC, sensitive AFT gradient corrections, SHAP, quantile
+Sensitive AFT gradient corrections, SHAP, quantile
 construction, linear training and collectives are separate coverage requirements.
 The observed prediction speedups do not establish any of those as complete.
 
@@ -134,9 +134,9 @@ is selected. This path remains on the GPU and is slower for long nonbinary queri
 Empty-query and top-k-zero native tests preserve CPU NaN/fallback behavior; the
 existing public metric finalization still reports invalid scores.
 
-The fused metric command reads back only score and weight totals. NDCG cache creation
-also executes on Metal; grouped PR-AUC remains unfinished;
-GPU metric dispatch does not imply those operations have been ported.
+The fused metric command reads back only score and weight totals. NDCG cache
+creation and grouped ROC/PR calculation also execute on Metal; their completion
+does not establish coverage of the other training, data and prediction operations.
 
 Grouped ranking ROC now sorts labels stably on GPU and counts concordant/tied
 pairs during parallel merges of prediction keys. This preserves the CPU rule that
@@ -155,6 +155,26 @@ pair counts beyond 32 bits without running a trillion-comparison CPU oracle.
 Input arrays remain staged and host-owned. Only the aggregate score/valid count
 normally returns to the host; optional native-test diagnostics expose per-query
 results. The public metric retains distributed/final ratio handling on the host.
+
+Grouped PR-AUC uses stable prediction sorting and recursive segmented binary64
+scans. Query IDs accompany block totals so carries stop at every query boundary,
+including empty queries and boundaries inside SIMD groups or recursive scan
+blocks. The GPU preserves FP32 label/weight products and CPU's binary64 first
+negative term. A separate query flag checks positivity of the original FP32
+negative terms, so underflow cannot incorrectly make a degenerate query valid.
+Range validation executes on GPU, including negative subnormal labels. Invalid
+queries contribute neither score nor valid count; zero-weight PR queries remain
+invalid, unlike the CPU's zero-weight grouped ROC convention.
+
+The continuous PR integral uses the same stable `log1p`-equivalent formulation
+as the existing Metal classification metric. Native production tests cover 14.2
+million rows, query weights spanning large exponent ranges, fractional labels,
+subnormal products, nonfinite/degenerate queries, strides and three scan levels.
+The observed maximum difference from CPU/independent integral references is
+`9.1e-15`; the comparison tolerance is `2e-12` absolute/relative. This is tested
+agreement rather than a universal bitwise guarantee. Scores/valid counts are
+aggregated on GPU; the public metric keeps the final host ratio. Arrays still
+stage through host-owned storage.
 
 
 NDCG cache initialization uses software-binary64 logarithms for discounts and

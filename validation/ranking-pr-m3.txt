@@ -1,0 +1,29 @@
+Apple M3, 2026-11-03. Metal API Validation enabled.
+Reproduce: bash scripts/build.sh && MTL_DEBUG_LAYER=1 bash scripts/test.sh
+
+Checking grouped PR integrals, segmented prefixes and GPU label validation
+2026-11-03 19:50:30.041 metal_ranking_pr_api_test[43967:43138888] Metal API Validation Enabled
+Checked 24 PR cases / 33216 rows / 384 query results
+Checked 48 PR cases / 66456 rows / 768 query results
+Checked 72 PR cases / 99720 rows / 1152 query results
+Checked 96 PR cases / 134784 rows / 1536 query results
+Checked 120 PR cases / 176568 rows / 1920 query results
+Checked 144 PR cases / 225072 rows / 2304 query results
+Checked 168 PR cases / 273648 rows / 2688 query results
+Checked 192 PR cases / 322248 rows / 3072 query results
+Checked 216 PR cases / 370872 rows / 3456 query results
+Checked 240 PR cases / 649896 rows / 3840 query results
+Checked 264 PR cases / 2772120 rows / 4224 query results
+Checked 288 PR cases / 6737544 rows / 4608 query results
+Checked 289 PR cases / 7803374 rows / 4615 query results
+Checked 290 PR cases / 8869204 rows / 4622 query results
+Checked 291 PR cases / 9935034 rows / 4629 query results
+Checked 292 PR cases / 11000864 rows / 4636 query results
+Checked 293 PR cases / 12066694 rows / 4643 query results
+Checked 294 PR cases / 13132524 rows / 4650 query results
+Checked 295 PR cases / 14198354 rows / 4657 query results
+PASS six GPU label-validation errors, including negative subnormal
+PASS 297 production grouped PR cases / 14198354 rows / 4660 query results; max CPU/reference absolute difference 9.1038288e-15
+
+Python: 633 passed, 1 skipped.
+CPU-only build verified: Metal reports unavailable and device=mps raises a clear error.

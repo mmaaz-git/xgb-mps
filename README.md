@@ -82,6 +82,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Ranking training | Stable grouped sorting, NDCG cache/label checks and top-k and mean-sampled pairwise/NDCG/MAP pairs, gradients and normalization, including unbiased loss corrections and position-bias updates, on Metal |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior |
+| Grouped ranking PR-AUC | GPU label validation, stable prediction ordering, segmented binary64 prefixes, continuous PR integration, degenerate-query handling and aggregation |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision; GPU label validation and NDCG cache initialization |
 
@@ -106,6 +107,7 @@ gradient-based sampler separately; they are also included in the general samplin
 counters and must not be added to those totals.
 `ranking_roc_auc_dispatches` and `ranking_roc_auc_gpu_time_ns` likewise describe a
 subset of ROC-AUC and generic metric work; their timings overlap those totals.
+The corresponding `ranking_pr_auc_*` counters are subsets of PR-AUC and metric totals.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
@@ -121,7 +123,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **616 passed, 1 skipped**. The skip requires a machine without an
+- Python: **633 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
@@ -195,6 +197,12 @@ On Apple M3, 2026-11-03:
   **500,002,500,003 pairs**, testing 64-bit counts without a quadratic CPU run.
   Covers label/score ties, padded strides, zero/tiny/large weights, infinities/NaNs
   in scores, short queries, weight-square overflow errors and output guards.
+- Grouped ranking PR-AUC: **297 production cases / 14,198,354 rows / 4,660 query
+  results**, checked against CPU and independent continuous-integral references.
+  Includes irregular/empty queries, recursive scan carries, widely differing query
+  weights, fractional/subnormal labels, degenerate queries, strided storage and
+  six GPU label-validation errors. Maximum observed reference difference is
+  `9.1e-15`; tiny tied-score cases also receive relative-accuracy checks.
 - Native objectives: **20 cases / 131,968 gradient pairs** compared against
   independent CPU mathematical references.
 - Native adaptive objectives: **180 cases / 1,260 residual scales / 452,592 gradient
@@ -1305,3 +1313,21 @@ comparison. This is the observed training gain for that workload.
   --eval-metric auc --rounds 20 --threads 8 --repeats 3 \
   --output results/my-ranking-roc-training.json
 ```
+
+### Grouped ranking PR-AUC update
+
+Grouped PR-AUC now performs label validation, stable prediction sorting,
+segmented binary64 prefix sums, continuous precision/recall integration and
+query aggregation on Metal. Prefix scans reset at query boundaries, including
+boundaries inside SIMD groups, threadgroups and recursive scan levels. Empty,
+one-class and zero-weight queries retain CPU behavior. This completes the grouped
+PR metric entry left open in the preceding updates.
+
+[Native validation](validation/ranking-pr-m3.txt) covers **297 cases / 14,198,354
+rows / 4,660 query results**, comparing upstream CPU and an independent continuous
+integral. The maximum observed absolute difference is **9.10e-15**. Tests include
+strided inputs, ties, extreme query weights, subnormal labels and weights,
+million-row queries and six invalid-label checks. All **633 Python tests (one
+skipped)** and native suites pass with Metal API Validation; the separate CPU-only
+build also passes its compatibility checks. Performance measurements follow
+separately; full CUDA parity remains incomplete.

@@ -50,6 +50,7 @@ std::atomic<std::uint64_t> pr_auc_dispatches{0}, pr_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> group_sort_dispatches{0}, group_sort_gpu_time_ns{0};
 std::atomic<std::uint64_t> ranking_metric_dispatches{0}, ranking_metric_gpu_time_ns{0};
 std::atomic<std::uint64_t> ranking_roc_auc_dispatches{0}, ranking_roc_auc_gpu_time_ns{0};
+std::atomic<std::uint64_t> ranking_pr_auc_dispatches{0}, ranking_pr_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> ranking_gradient_dispatches{0}, ranking_gradient_gpu_time_ns{0},
     ranking_pairs{0}, ranking_pair_batches{0}, ranking_bias_dispatches{0};
 std::atomic<std::uint64_t> ranking_label_dispatches{0}, ranking_label_gpu_time_ns{0},
@@ -130,6 +131,8 @@ class Runtime {
       gradient_sampling_threshold_pipeline, gradient_sampling_apply_pipeline;
   id<MTLComputePipelineState> ranking_roc_init_pipeline, ranking_roc_merge_pipeline,
       ranking_roc_score_pipeline;
+  id<MTLComputePipelineState> ranking_pr_counts_pipeline, ranking_pr_area_pipeline,
+      ranking_pr_score_pipeline, prefix_segmented_pair_pipeline, prefix_segmented_pair_add_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
   id<MTLComputePipelineState> shared_pipeline, gradient_maximum_pipeline, gradient_scale_pipeline;
@@ -242,6 +245,11 @@ class Runtime {
       ranking_roc_init_pipeline = make_pipeline(@"xgb_ranking_roc_init");
       ranking_roc_merge_pipeline = make_pipeline(@"xgb_ranking_roc_merge");
       ranking_roc_score_pipeline = make_pipeline(@"xgb_ranking_roc_score");
+      ranking_pr_counts_pipeline = make_pipeline(@"xgb_ranking_pr_counts");
+      ranking_pr_area_pipeline = make_pipeline(@"xgb_ranking_pr_area");
+      ranking_pr_score_pipeline = make_pipeline(@"xgb_ranking_pr_score");
+      prefix_segmented_pair_pipeline = make_pipeline(@"xgb_prefix_segmented_pair");
+      prefix_segmented_pair_add_pipeline = make_pipeline(@"xgb_prefix_segmented_pair_add");
       prefix_double_pair_pipeline = make_pipeline(@"xgb_prefix_double_pair");
       prefix_double_pair_add_pipeline = make_pipeline(@"xgb_prefix_double_pair_add");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
@@ -1010,7 +1018,9 @@ Statistics GetStatistics() {
           gradient_sampling_dispatches.load(std::memory_order_relaxed),
           gradient_sampling_gpu_time_ns.load(std::memory_order_relaxed),
           ranking_roc_auc_dispatches.load(std::memory_order_relaxed),
-          ranking_roc_auc_gpu_time_ns.load(std::memory_order_relaxed)};
+          ranking_roc_auc_gpu_time_ns.load(std::memory_order_relaxed),
+          ranking_pr_auc_dispatches.load(std::memory_order_relaxed),
+          ranking_pr_auc_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2149,6 +2159,39 @@ RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const>
 }
 
 namespace {
+id<MTLBuffer> EncodeSegmentedDoublePrefix(Runtime& rt, id<MTLCommandBuffer> command,
+                                          id<MTLBuffer> input, id<MTLBuffer> ids,
+                                          std::uint32_t rows) {
+  auto blocks = (std::uint64_t{rows} + 255) / 256;
+  auto output = Allocate(rt, std::size_t{rows} * 2 * sizeof(double));
+  auto totals = Allocate(rt, blocks * 2 * sizeof(double));
+  auto total_ids = Allocate(rt, blocks * sizeof(std::uint32_t));
+  auto e = [command computeCommandEncoder];
+  CHECK(e);
+  [e setComputePipelineState:rt.prefix_segmented_pair_pipeline];
+  [e setBuffer:input offset:0 atIndex:0];
+  [e setBuffer:ids offset:0 atIndex:1];
+  [e setBuffer:output offset:0 atIndex:2];
+  [e setBuffer:totals offset:0 atIndex:3];
+  [e setBuffer:total_ids offset:0 atIndex:4];
+  [e setBytes:&rows length:sizeof(rows) atIndex:5];
+  [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+  if (blocks > 1) {
+    auto upper = EncodeSegmentedDoublePrefix(rt, command, totals, total_ids, blocks);
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.prefix_segmented_pair_add_pipeline];
+    [e setBuffer:output offset:0 atIndex:0];
+    [e setBuffer:ids offset:0 atIndex:1];
+    [e setBuffer:upper offset:0 atIndex:2];
+    [e setBuffer:total_ids offset:0 atIndex:3];
+    [e dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+  }
+  return output;
+}
+
 id<MTLBuffer> EncodeDoublePrefix(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuffer> input,
                                  std::uint32_t rows, std::uint32_t targets) {
   auto blocks = (std::uint64_t{rows} + 255) / 256;
@@ -2287,6 +2330,115 @@ void ROCAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<floa
 void PRAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float const> labels,
            Span<float const> weights, bool multiclass, Span<ROCAUCSums> output) {
   AUC(predictions, labels, weights, multiclass, true, output);
+}
+
+RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
+                            linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
+                            Span<float const> weights, Span<RankingAUCSums> individual) {
+  auto max_group_size = CheckGroupSort(predictions, groups);
+  auto n_groups = groups.size() - 1;
+  CHECK_EQ(predictions.Size(), labels.Size());
+  CHECK(weights.empty() || weights.size() == n_groups);
+  CHECK(individual.empty() || individual.size() == n_groups);
+  if (!n_groups) return {0, 0};
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto input = Upload(rt, predictions.Values().data(), predictions.Values().size_bytes());
+    auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto offsets = Upload(rt, groups.data(), groups.size_bytes());
+    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto ids = Allocate(rt, predictions.Size() * sizeof(std::uint32_t));
+    auto keys = Allocate(rt, predictions.Size() * sizeof(std::uint32_t));
+    auto counts = Allocate(rt, predictions.Size() * 2 * sizeof(double));
+    auto areas = Allocate(rt, predictions.Size() * sizeof(double));
+    auto flags = Allocate(rt, (n_groups + 1) * sizeof(std::uint32_t));
+    auto partial = Allocate(rt, n_groups * sizeof(RankingAUCSums));
+    auto output = Allocate(rt, sizeof(RankingAUCSums));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto clear = [command blitCommandEncoder];
+    CHECK(clear);
+    [clear fillBuffer:flags range:NSMakeRange(0, flags.length) value:0];
+    [clear endEncoding];
+    struct {
+      std::uint64_t rows, prediction_stride, label_stride;
+      std::uint32_t groups, weighted;
+    } p{predictions.Size(), predictions.Stride(0), labels.Stride(0),
+        static_cast<std::uint32_t>(n_groups), static_cast<std::uint32_t>(!weights.empty())};
+    static_assert(sizeof(p) == 32);
+    GroupOrder order{Allocate(rt, 16), false};
+    id<MTLBuffer> prefix = Allocate(rt, 16);
+    if (p.rows) {
+      order = EncodeGroupSort(rt, command, input, offsets, p.rows, predictions.Stride(0), n_groups,
+                              max_group_size);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.ranking_pr_counts_pipeline];
+      [e setBuffer:order.records offset:0 atIndex:0];
+      [e setBuffer:input offset:0 atIndex:1];
+      [e setBuffer:response offset:0 atIndex:2];
+      [e setBuffer:weight offset:0 atIndex:3];
+      [e setBuffer:offsets offset:0 atIndex:4];
+      [e setBuffer:ids offset:0 atIndex:5];
+      [e setBuffer:keys offset:0 atIndex:6];
+      [e setBuffer:counts offset:0 atIndex:7];
+      [e setBuffer:flags offset:0 atIndex:8];
+      [e setBytes:&p length:sizeof(p) atIndex:9];
+      [e dispatchThreads:MTLSizeMake(p.rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      prefix = EncodeSegmentedDoublePrefix(rt, command, counts, ids, p.rows);
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.ranking_pr_area_pipeline];
+      [e setBuffer:keys offset:0 atIndex:0];
+      [e setBuffer:prefix offset:0 atIndex:1];
+      [e setBuffer:ids offset:0 atIndex:2];
+      [e setBuffer:offsets offset:0 atIndex:3];
+      [e setBuffer:flags offset:0 atIndex:4];
+      [e setBuffer:areas offset:0 atIndex:5];
+      [e dispatchThreads:MTLSizeMake(p.rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.ranking_pr_score_pipeline];
+    [e setBuffer:areas offset:0 atIndex:0];
+    [e setBuffer:prefix offset:0 atIndex:1];
+    [e setBuffer:offsets offset:0 atIndex:2];
+    [e setBuffer:flags offset:0 atIndex:3];
+    [e setBuffer:partial offset:0 atIndex:4];
+    [e dispatchThreadgroups:MTLSizeMake(n_groups, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    SortShape shape{n_groups, 1, 1, 1, static_cast<std::uint32_t>(n_groups)};
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.gradient_sum_finish_pipeline];
+    [e setBuffer:partial offset:0 atIndex:0];
+    [e setBuffer:output offset:0 atIndex:1];
+    [e setBytes:&shape length:sizeof(shape) atIndex:2];
+    [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (p.rows) RecordGroupSort(order.radix, elapsed);
+    ranking_pr_auc_dispatches.fetch_add(1, std::memory_order_relaxed);
+    pr_auc_dispatches.fetch_add(1, std::memory_order_relaxed);
+    metric_dispatches.fetch_add(1, std::memory_order_relaxed);
+    if (elapsed > 0) {
+      auto ns = static_cast<std::uint64_t>(elapsed * 1e9);
+      ranking_pr_auc_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+      pr_auc_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+      metric_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+    }
+    CHECK_EQ(static_cast<std::uint32_t const*>(flags.contents)[n_groups], 0)
+        << "PR-AUC supports only binary relevance for learning to rank.";
+    if (!individual.empty())
+      std::memcpy(individual.data(), partial.contents, individual.size_bytes());
+    return *static_cast<RankingAUCSums const*>(output.contents);
+  }
 }
 
 void Quantiles(linalg::MatrixView<float const> values, Span<float const> weights,

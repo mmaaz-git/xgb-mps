@@ -256,6 +256,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.ranking_roc_auc_dispatches)};
   info["ranking_roc_auc_gpu_time_ns"] =
       Integer{static_cast<std::int64_t>(stats.ranking_roc_auc_gpu_time_ns)};
+  info["ranking_pr_auc_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.ranking_pr_auc_dispatches)};
+  info["ranking_pr_auc_gpu_time_ns"] =
+      Integer{static_cast<std::int64_t>(stats.ranking_pr_auc_gpu_time_ns)};
   info["residual_scale_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.residual_scale_dispatches)};
   info["histogram_conversion_dispatches"] =
@@ -327,6 +331,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["gradient_sampling_gpu_time_ns"] = Integer{0};
   info["ranking_roc_auc_dispatches"] = Integer{0};
   info["ranking_roc_auc_gpu_time_ns"] = Integer{0};
+  info["ranking_pr_auc_dispatches"] = Integer{0};
+  info["ranking_pr_auc_gpu_time_ns"] = Integer{0};
   info["residual_scale_dispatches"] = Integer{0};
   info["histogram_conversion_dispatches"] = Integer{0};
   info["histogram_subtraction_dispatches"] = Integer{0};

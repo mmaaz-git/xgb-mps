@@ -4033,3 +4033,156 @@ kernel void xgb_ranking_roc_score(device const uint2* counts [[buffer(0)]],
     partial[group] = ulong2(area.bits, one.bits);
   }
 }
+
+struct RankingPRParams {
+  ulong rows, prediction_stride, label_stride;
+  uint groups, weighted;
+};
+
+kernel void xgb_ranking_pr_counts(
+    device const uint2* sorted [[buffer(0)]], device const uint* predictions [[buffer(1)]],
+    device const float* labels [[buffer(2)]], device const float* weights [[buffer(3)]],
+    device const uint* groups [[buffer(4)]], device uint* row_group [[buffer(5)]],
+    device uint* keys [[buffer(6)]], device ulong2* counts [[buffer(7)]],
+    device atomic_uint* flags [[buffer(8)]], constant RankingPRParams& p [[buffer(9)]],
+    uint row [[thread_position_in_grid]]) {
+  using namespace xgb_survival;
+  uint low = 0, high = p.groups;
+  while (low + 1 < high) {
+    uint middle = low + (high - low) / 2;
+    if (groups[middle] <= row)
+      low = middle;
+    else
+      high = middle;
+  }
+  uint group = low, source = sorted[row].y;
+  row_group[row] = group;
+  uint bits = predictions[ulong(source) * p.prediction_stride];
+  uint magnitude = bits & 0x7fffffffu;
+  keys[row] = ~(magnitude == 0 ? 0x80000000u : (bits & 0x80000000u ? ~bits : bits ^ 0x80000000u));
+  float label = labels[ulong(source) * p.label_stride];
+  float weight = p.weighted ? weights[group] : 1.f;
+  uint label_bits = as_type<uint>(label), label_magnitude = label_bits & 0x7fffffffu;
+  uint weight_bits = as_type<uint>(weight), weight_magnitude = weight_bits & 0x7fffffffu;
+  if (label_magnitude <= 0x7f800000u &&
+      (((label_bits & 0x80000000u) && label_magnitude) ||
+       (!(label_bits & 0x80000000u) && label_bits > as_type<uint>(1.f)))) {
+    atomic_fetch_or_explicit(flags + p.groups, 1u, memory_order_relaxed);
+    atomic_fetch_or_explicit(flags + group, 2u, memory_order_relaxed);
+  }
+  // CPU's range predicate admits NaN labels; their query's PR score is invalid.
+  if (label_magnitude > 0x7f800000u || weight_magnitude >= 0x7f800000u ||
+      ((weight_bits & 0x80000000u) && weight_magnitude))
+    atomic_fetch_or_explicit(flags + group, 2u, memory_order_relaxed);
+  float negative = xgb_fmul_preserve(xgb_fsub_preserve(1.f, label), weight);
+  uint negative_bits = as_type<uint>(negative);
+  if (!(negative_bits & 0x80000000u) && negative_bits && negative_bits < 0x7f800000u)
+    atomic_fetch_or_explicit(flags + group, 1u, memory_order_relaxed);
+  D fp = row == groups[group] ? (one - From(label)) * From(weight) : From(negative);
+  D tp = From(xgb_fmul_preserve(label, weight));
+  counts[row] = ulong2(fp.bits, tp.bits);
+}
+
+// Inclusive binary64 scans reset at query boundaries. Recursive levels carry the
+// last query ID in each block, so unrelated queries never share a prefix total.
+kernel void xgb_prefix_segmented_pair(
+    device const ulong2* input [[buffer(0)]], device const uint* ids [[buffer(1)]],
+    device ulong2* output [[buffer(2)]], device ulong2* totals [[buffer(3)]],
+    device uint* total_ids [[buffer(4)]], constant uint& rows [[buffer(5)]],
+    uint block [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong row = ulong(block) * 256 + tid;
+  uint id = row < rows ? ids[row] : 0xffffffffu;
+  ulong2 value = row < rows ? input[row] : ulong2(0);
+  for (uint distance = 1; distance < 32; distance <<= 1) {
+    ulong2 prior = xgb_dpair_shuffle_up(value, distance);
+    uint prior_id = simd_shuffle_up(id, distance);
+    if (lane >= distance && id == prior_id) value = xgb_dpair_add(prior, value);
+  }
+  threadgroup ulong2 subgroup[8];
+  threadgroup uint subgroup_ids[8];
+  if (lane == 31) {
+    subgroup[simd] = value;
+    subgroup_ids[simd] = id;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd == 0) {
+    ulong2 upper = lane < 8 ? subgroup[lane] : ulong2(0);
+    uint upper_id = lane < 8 ? subgroup_ids[lane] : 0xffffffffu;
+    for (uint distance = 1; distance < 8; distance <<= 1) {
+      ulong2 prior = xgb_dpair_shuffle_up(upper, distance);
+      uint prior_id = simd_shuffle_up(upper_id, distance);
+      if (lane >= distance && upper_id == prior_id) upper = xgb_dpair_add(prior, upper);
+    }
+    if (lane < 8) subgroup[lane] = upper;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (simd && id == subgroup_ids[simd - 1]) value = xgb_dpair_add(subgroup[simd - 1], value);
+  if (row < rows) {
+    output[row] = value;
+    if (tid == 255 || row + 1 == rows) {
+      totals[block] = value;
+      total_ids[block] = id;
+    }
+  }
+}
+
+kernel void xgb_prefix_segmented_pair_add(device ulong2* values [[buffer(0)]],
+                                          device const uint* ids [[buffer(1)]],
+                                          device const ulong2* upper [[buffer(2)]],
+                                          device const uint* upper_ids [[buffer(3)]],
+                                          uint row [[thread_position_in_grid]]) {
+  uint block = row / 256;
+  if (block && ids[row] == upper_ids[block - 1])
+    values[row] = xgb_dpair_add(upper[block - 1], values[row]);
+}
+
+kernel void xgb_ranking_pr_area(device const uint* keys [[buffer(0)]],
+                                device const ulong2* prefix [[buffer(1)]],
+                                device const uint* ids [[buffer(2)]],
+                                device const uint* groups [[buffer(3)]],
+                                device const uint* flags [[buffer(4)]],
+                                device ulong* area [[buffer(5)]],
+                                uint row [[thread_position_in_grid]]) {
+  using namespace xgb_survival;
+  uint group = ids[row], begin = groups[group], end = groups[group + 1];
+  D total{prefix[end - 1].y}, value = zero;
+  if (flags[group] == 1 && total > zero && (row + 1 == end || keys[row] != keys[row + 1])) {
+    uint first = row, key = keys[row];
+    if (row > begin && keys[row - 1] == key) {
+      uint low = begin, high = row;
+      while (low < high) {
+        uint middle = low + (high - low) / 2;
+        if (keys[middle] < key)
+          low = middle + 1;
+        else
+          high = middle;
+      }
+      first = low;
+    }
+    ulong2 prev = first == begin ? ulong2(0) : prefix[first - 1], last = prefix[row];
+    value = xgb_pr_integral(D{prev.x}, D{last.x}, D{prev.y}, D{last.y}, total);
+  }
+  area[row] = value.bits;
+}
+
+kernel void xgb_ranking_pr_score(
+    device const ulong* area [[buffer(0)]], device const ulong2* prefix [[buffer(1)]],
+    device const uint* groups [[buffer(2)]], device const uint* flags [[buffer(3)]],
+    device ulong2* partial [[buffer(4)]], uint group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+    uint simd [[simdgroup_index_in_threadgroup]]) {
+  using namespace xgb_survival;
+  ulong begin = groups[group], end = groups[group + 1];
+  bool valid = begin < end && flags[group] == 1 && D{prefix[end - 1].y} > zero;
+  if (!valid) {
+    if (!tid) partial[group] = ulong2(0);
+    return;
+  }
+  D sum = zero;
+  for (ulong row = begin + tid; row < end; row += 256) sum = sum + D{area[row]};
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 result = xgb_reduce_double_pair(sum, zero, bounds, sums, lane, simd);
+  if (!tid) partial[group] = ulong2(result.x, one.bits);
+}

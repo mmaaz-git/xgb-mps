@@ -1,4 +1,4 @@
-"""Benchmark public grouped ROC evaluation on identical fixed predictions.
+"""Benchmark public grouped ROC/PR evaluation on identical fixed predictions.
 
 This isolates metric evaluation. Training and DMatrix construction are outside
 the timer; first evaluation and warm prediction-cache timings are separate.
@@ -27,7 +27,7 @@ def save(path, report):
     temporary.replace(path)
 
 
-def evaluate(model, data, device):
+def evaluate(model, data, device, metric):
     before = xgb.metal_info()
     memory_before = memory_snapshot()
     wall_start = time.time()
@@ -38,7 +38,7 @@ def evaluate(model, data, device):
     after = xgb.metal_info()
     counters = {key: after[key] - before[key] for key in after if key not in {"built", "available"}}
     score = float(text.rsplit(":", 1)[1])
-    return dict(device=device, seconds=elapsed, score=score, dispatch_statistics=counters,
+    return dict(device=device, metric=metric, seconds=elapsed, score=score, dispatch_statistics=counters,
                 clock=dict(started_utc=datetime.fromtimestamp(wall_start, timezone.utc).isoformat(),
                            wall_seconds=wall_elapsed, monotonic_seconds=elapsed),
                 memory=dict(before=memory_before, after=memory_snapshot()))
@@ -46,13 +46,15 @@ def evaluate(model, data, device):
 
 def validate(run, expected):
     assert abs(run["clock"]["wall_seconds"] - run["seconds"]) <= 1, "Sleep/clock discontinuity invalidates timing"
-    assert run["dispatch_statistics"]["ranking_roc_auc_dispatches"] == int(run["device"] == "mps")
-    assert run["dispatch_statistics"]["roc_auc_dispatches"] == int(run["device"] == "mps")
+    family = "pr" if run["metric"] == "aucpr" else "roc"
+    assert run["dispatch_statistics"][f"ranking_{family}_auc_dispatches"] == int(run["device"] == "mps")
+    assert run["dispatch_statistics"][f"{family}_auc_dispatches"] == int(run["device"] == "mps")
     np.testing.assert_allclose(run["score"], expected, rtol=2e-12, atol=2e-12)
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--metric", choices=["auc", "aucpr"], default="auc")
     parser.add_argument("--rows", type=int, nargs="+", default=[100000, 1000000])
     parser.add_argument("--query-sizes", type=int, nargs="+", default=[128, 1024])
     parser.add_argument("--repeats", type=int, default=3)
@@ -70,11 +72,12 @@ def main():
         for size in args.query_sizes:
             whole, tail = divmod(n, size)
             pairs = whole * size * (size - 1) // 2 + tail * (tail - 1) // 2
-            if pairs > args.max_cpu_pairs:
+            if args.metric == "auc" and pairs > args.max_cpu_pairs:
                 parser.error(f"{n} rows/query-size {size} would enumerate {pairs} CPU pairs; adjust --max-cpu-pairs explicitly")
     assert xgb.metal_info()["available"], "An accessible Metal device is required"
-    params = dict(objective="reg:squarederror", eval_metric="auc", base_score=.5, nthread=args.threads)
-    warm = xgb.DMatrix(np.ones((8, 1), dtype=np.float32), label=np.arange(8) % 3,
+    params = dict(objective="reg:squarederror", eval_metric=args.metric, base_score=.5, nthread=args.threads)
+    label_count = 2 if args.metric == "aucpr" else 8
+    warm = xgb.DMatrix(np.ones((8, 1), dtype=np.float32), label=np.arange(8) % 2,
                        base_margin=np.arange(8), group=[4, 4], nthread=args.threads)
     for device in ["cpu", "mps"]:
         xgb.train(params | {"device": device}, warm, 0).eval(warm)
@@ -96,7 +99,7 @@ def main():
             for query_size in args.query_sizes:
                 print(f"Preparing {n:,} rows, queries of {query_size:,}", flush=True)
                 rng = np.random.default_rng(839)
-                labels = rng.integers(0, 8, n).astype(np.float32)
+                labels = rng.integers(0, label_count, n).astype(np.float32)
                 margin = rng.standard_normal(n, dtype=np.float32)
                 groups = np.diff(np.r_[np.arange(0, n, query_size), n]).astype(np.uint32)
                 weights = rng.uniform(.1, 3, len(groups)).astype(np.float32) if args.weighted else None
@@ -104,7 +107,8 @@ def main():
                 data = xgb.DMatrix(np.ones((n, 1), dtype=np.float32), label=labels,
                                    base_margin=margin, group=groups, weight=weights, nthread=args.threads)
                 case = dict(rows=n, query_size=query_size, groups=len(groups),
-                            cpu_pair_comparisons=int(sum(int(g) * (int(g) - 1) // 2 for g in groups if g >= 3)),
+                            cpu_pair_comparisons=(int(sum(int(g) * (int(g) - 1) // 2 for g in groups if g >= 3))
+                                                  if args.metric == "auc" else None),
                             dmatrix_seconds=time.perf_counter() - start,
                             labels_sha256=hashlib.sha256(labels.tobytes()).hexdigest(),
                             margins_sha256=hashlib.sha256(margin.tobytes()).hexdigest(),
@@ -112,14 +116,14 @@ def main():
                 report["cases"].append(case)
                 models = {d: xgb.train(params | {"device": d}, data, 0) for d in ["cpu", "mps"]}
                 for device in ["cpu", "mps"]:
-                    run = evaluate(models[device], data, device)
+                    run = evaluate(models[device], data, device, args.metric)
                     case["first_evaluation"][device] = run
                     save(args.output, report)
                     validate(run, case["first_evaluation"]["cpu"]["score"])
                     print(f"  {device} first evaluation: {run['seconds']:.6f}s", flush=True)
                 for repeat in range(args.repeats):
                     for device in (["cpu", "mps"] if repeat % 2 == 0 else ["mps", "cpu"]):
-                        run = evaluate(models[device], data, device)
+                        run = evaluate(models[device], data, device, args.metric)
                         case["runs"][device].append(run)
                         save(args.output, report)
                         validate(run, case["first_evaluation"]["cpu"]["score"])

@@ -542,7 +542,18 @@ class EvalPRAUC : public EvalAUC<EvalPRAUC> {
     if (ctx_->IsCUDA()) {
       std::tie(auc, valid_groups) =
           cuda_impl::RankingPRAUC(ctx_, predts.ConstDeviceSpan(), info, &d_cache_);
-    } else {
+    }
+#if defined(XGBOOST_USE_METAL)
+    else if (ctx_->IsMPS()) {
+      auto result =
+          common::metal::RankingPRAUC(linalg::MakeVec(DeviceOrd::CPU(), predts.ConstHostSpan()),
+                                      info.labels.HostView().Slice(linalg::All(), 0),
+                                      info.group_ptr_, info.weights_.ConstHostSpan());
+      auc = result.area;
+      valid_groups = static_cast<std::uint32_t>(result.valid_groups);
+    }
+#endif
+    else {
       auto labels = info.labels.Data()->ConstHostSpan();
       if (std::any_of(labels.cbegin(), labels.cend(), PRAUCLabelInvalid{})) {
         InvalidLabels();

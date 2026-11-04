@@ -23,4 +23,9 @@ void PRAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float
 RankingAUCSums RankingROCAUC(linalg::VectorView<float const> predictions,
                              linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
                              Span<float const> weights, Span<RankingAUCSums> individual = {});
+// Grouped PR uses query weights, segmented binary64 prefixes and the same stable
+// continuous integral as PRAUC. Prediction NaNs have no CPU sorting contract.
+RankingAUCSums RankingPRAUC(linalg::VectorView<float const> predictions,
+                            linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
+                            Span<float const> weights, Span<RankingAUCSums> individual = {});
 }  // namespace xgboost::common::metal
