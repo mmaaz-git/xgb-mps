@@ -12,7 +12,7 @@ still a mixture of GPU operations and CPU work. Passing tests cover implemented
 paths, not every CUDA operation.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
-remaining objective initialization and leaf fitting, SHAP, linear boosting,
+remaining objective initialization and reduced-gradient leaf fitting, linear boosting,
 GPU `approx` training, categorical/metadata operations, Apple GPU array
 interoperability and distributed collectives. AFT still has CPU corrections;
 some long-run ranking and Covertype comparisons have numerical differences.
@@ -21,7 +21,8 @@ The [coverage ledger](docs/CUDA_PARITY.md) records the details. Performance
 experiments are deferred while these coverage gaps are addressed.
 
 The current backend runs histograms, gradient quantization, several objectives,
-prediction transforms, tree traversal, prediction-cache updates, common metrics,
+prediction transforms, tree traversal, SHAP contributions/interactions, prediction-cache
+updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums and stump
 fitting, means, stable column/grouped sorting, ROC/PR-AUC, ranking metrics,
 gradient-based row sampling, uniform/weighted column sampling and quantile/median
@@ -96,6 +97,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | AFT survival | GPU normal/logistic/extreme gradients, prediction/base-score transforms, likelihood and interval-accuracy metrics; numerically sensitive censored gradient rows are corrected on CPU and counted explicitly |
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
+| SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input staging and category recoding remain host |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
 | Ranking training | Stable grouped sorting, NDCG cache/label checks and top-k and mean-sampled pairwise/NDCG/MAP pairs, gradients and normalization, including unbiased loss corrections and position-bias updates, on Metal |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
@@ -138,6 +140,9 @@ by `initialization_gpu_time_ns`, separately from ordinary objective GPU time.
 and intercept conversion separately. Invalid checked inputs still count completed
 GPU work. Empty inputs, identity conversions and unconditional label predicates
 require no dispatch.
+`shap_dispatches` and `shap_interaction_dispatches` count completed contribution
+and interaction batches; `shap_gpu_time_ns` covers both. These are separate from
+ordinary prediction counters and exclude host preparation and staging.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
@@ -153,7 +158,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **778 passed, 1 skipped**. The skip requires a machine without an
+- Python: **865 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
@@ -242,6 +247,12 @@ On Apple M3, 2026-11-03:
   bit patterns, all exponent pairs, pruning denominators and subnormal rounding
   ties; NaNs are checked by classification. This replaces software binary64
   division in sketch pruning without changing its rounding contract.
+- SHAP: **576 native cases / 424,350,144 output values**, including zero entries,
+  compared with independent one-feature Shapley values; maximum absolute error
+  `2.39e-7`. Checks include guards, overlapping storage, empty inputs and batch
+  bounds. **87 public cases** cover CPU equivalence, independently enumerated
+  feature subsets, scalar/vector/categorical trees, external pages, base margins,
+  tree limits, deep repeated-feature paths, wide outputs and invalid covers.
 - Objective initialization: **164 native cases / 7,220,670 gradient pairs /
   14,441,340 copied floats**. Gradients match CPU bits except NaNs, which are
   checked by classification; broadcasts preserve every bit, including NaN
@@ -1608,3 +1619,23 @@ Finite margin conversions match the tested CPU's bits; exceptional values and
 invalid-input handling are checked separately. These results are correctness
 checks, not performance measurements. Generic metadata validation and other
 coverage gaps remain listed in the ledger.
+
+
+### SHAP coverage update
+
+SHAP feature contributions and interaction matrices now execute on Metal using
+the vendored eight-point quadrature algorithm. This includes repeated-feature
+paths, scalar/vector leaves, categorical and missing-value decisions, dropout
+weights, base margins and interaction finalization. Model preparation, input
+staging and categorical recoding remain host work and are recorded in the ledger.
+
+[Validation](validation/shap-m3.txt): **865 Python tests pass (one skipped)**,
+all native suites pass with Metal API Validation, and the independent CPU-only
+build passes. The 87 new public cases include independent feature-subset
+expectations and CPU comparisons through depth 130. Native checks cover 576 cases,
+buffer guards, overlapping storage and bounded batches. No SHAP speedup is claimed;
+coverage and correctness remain the priority.
+
+The next concrete training gap is final leaf refitting when custom objectives
+provide separate split and value gradients: leaf-gradient accumulation and
+regularized leaf-weight calculation still use the CPU.

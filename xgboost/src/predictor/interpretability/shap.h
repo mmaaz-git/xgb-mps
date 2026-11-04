@@ -29,6 +29,17 @@ void ShapInteractionValues(Context const* ctx, DMatrix* p_fmat,
                            bool approximate);
 }  // namespace cpu_impl
 
+#if defined(XGBOOST_USE_METAL)
+namespace metal_impl {
+void ShapValues(Context const* ctx, DMatrix* data, HostDeviceVector<float>* output,
+                gbm::GBTreeModel const& model, bst_tree_t tree_end,
+                std::vector<float> const* weights, int condition, unsigned feature);
+void ShapInteractionValues(Context const* ctx, DMatrix* data, HostDeviceVector<float>* output,
+                           gbm::GBTreeModel const& model, bst_tree_t tree_end,
+                           std::vector<float> const* weights);
+}  // namespace metal_impl
+#endif
+
 #if defined(XGBOOST_USE_CUDA)
 namespace cuda_impl {
 void ShapValues(Context const* ctx, DMatrix* p_fmat, HostDeviceVector<float>* out_contribs,
@@ -55,6 +66,13 @@ inline void ShapValues(Context const* ctx, DMatrix* p_fmat, HostDeviceVector<flo
     return;
   }
 #endif  // defined(XGBOOST_USE_CUDA)
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    metal_impl::ShapValues(ctx, p_fmat, out_contribs, model, tree_end, tree_weights, condition,
+                           condition_feature);
+    return;
+  }
+#endif
   cpu_impl::ShapValues(ctx, p_fmat, out_contribs, model, tree_end, tree_weights, condition,
                        condition_feature);
 }
@@ -83,6 +101,12 @@ inline void ShapInteractionValues(Context const* ctx, DMatrix* p_fmat,
     return;
   }
 #endif  // defined(XGBOOST_USE_CUDA)
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS() && !approximate) {
+    metal_impl::ShapInteractionValues(ctx, p_fmat, out_contribs, model, tree_end, tree_weights);
+    return;
+  }
+#endif
   cpu_impl::ShapInteractionValues(ctx, p_fmat, out_contribs, model, tree_end, tree_weights,
                                   approximate);
 }

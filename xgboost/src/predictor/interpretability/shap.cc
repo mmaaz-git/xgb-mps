@@ -6,6 +6,8 @@
 #include <algorithm>    // for copy, fill
 #include <array>        // for array
 #include <atomic>       // for atomic
+#include <limits>
+#include <utility>
 #include <cmath>        // for abs
 #include <type_traits>  // for remove_const_t
 #include <variant>      // for variant
@@ -18,6 +20,9 @@
 #include "../predict_fn.h"                 // for GetTreeLimit
 #include "dmlc/omp.h"                      // for omp_get_thread_num
 #include "quadrature.h"
+#if defined(XGBOOST_USE_METAL)
+#include "../../common/metal_shap.h"
+#endif
 #include "xgboost/base.h"        // for bst_omp_uint
 #include "xgboost/logging.h"     // for CHECK
 #include "xgboost/span.h"        // for Span
@@ -524,6 +529,132 @@ void LaunchShap(Context const *ctx, DMatrix *p_fmat, gbm::GBTreeModel const &mod
   }
 }
 }  // namespace
+
+#if defined(XGBOOST_USE_METAL)
+namespace metal_impl {
+namespace {
+template <typename Tree>
+std::uint32_t AppendShapTree(Tree const& tree, common::metal::ShapModel* model) {
+  auto root = model->nodes.size();
+  constexpr auto kLimit = std::numeric_limits<std::uint32_t>::max();
+  CHECK_LE(root + tree.Size(), kLimit);
+  model->nodes.resize(root + tree.Size());
+  // Only reachable nodes participate, so pruned/deleted nodes need no valid cover.
+  std::vector<std::pair<bst_node_t, std::uint32_t>> pending{{RegTree::kRoot, 1}};
+  while (!pending.empty()) {
+    auto [id, depth] = pending.back();
+    pending.pop_back();
+    model->depth = std::max(model->depth, depth);
+    auto& out = model->nodes[root + id];
+    if (tree.IsLeaf(id)) {
+      CHECK_LE(model->leaves.size() + tree.NumTargets(), kLimit);
+      out.node.leaf_begin = model->leaves.size();
+      for (bst_target_t target = 0; target < tree.NumTargets(); ++target) {
+        model->leaves.push_back(LeafValue(tree, id, target));
+      }
+      continue;
+    }
+    auto left = tree.LeftChild(id), right = tree.RightChild(id);
+    CHECK_GE(tree.SumHess(id), 0.0f);
+    CHECK_GE(tree.SumHess(left), 0.0f);
+    CHECK_GE(tree.SumHess(right), 0.0f);
+    out.node.left = left;
+    out.node.right = right;
+    out.node.missing = tree.DefaultLeft(id) ? left : right;
+    out.node.feature = tree.SplitIndex(id);
+    out.node.split = tree.SplitCond(id);
+    out.left_weight = detail::BranchWeight(tree.SumHess(left), tree.SumHess(id));
+    out.right_weight = detail::BranchWeight(tree.SumHess(right), tree.SumHess(id));
+    if (common::IsCat(tree.cats.split_type, id)) {
+      auto cats = tree.NodeCats(id);
+      CHECK_LE(model->categories.size() + cats.size(), kLimit);
+      out.node.categorical = 1;
+      out.node.category_begin = model->categories.size();
+      out.node.category_size = cats.size();
+      model->categories.insert(model->categories.end(), cats.begin(), cats.end());
+    }
+    CHECK_LT(depth, kLimit);
+    pending.emplace_back(right, depth + 1);
+    pending.emplace_back(left, depth + 1);
+  }
+  return static_cast<std::uint32_t>(root);
+}
+void PredictShap(Context const* ctx, DMatrix* data, HostDeviceVector<float>* output,
+                 gbm::GBTreeModel const& model, bst_tree_t tree_end,
+                 std::vector<float> const* tree_weights, bool interactions) {
+  tree_end = predictor::GetTreeLimit(model.trees, tree_end);
+  CHECK_GE(tree_end, 0);
+  ValidateTreeWeights(tree_weights, tree_end);
+  auto groups = model.learner_model_param->num_output_group;
+  auto features = model.learner_model_param->num_feature;
+  CHECK_GT(groups, 0);
+  CHECK_LT(features, std::numeric_limits<std::uint32_t>::max());
+  std::size_t columns = static_cast<std::size_t>(features) + 1;
+  CHECK_LE(columns, std::numeric_limits<std::size_t>::max() / columns);
+  auto per_group = interactions ? columns * columns : columns;
+  CHECK_LE(per_group, std::numeric_limits<std::size_t>::max() / groups);
+  auto per_row = per_group * groups;
+  CHECK_LE(data->Info().num_row_, std::numeric_limits<std::size_t>::max() / per_row);
+  auto& result = output->HostVector();
+  result.resize(data->Info().num_row_ * per_row);
+  // CUDA also prepares model covers, root means and the quadrature rule on host.
+  auto prepared = MakeQuadratureTreeShapModelData(model, tree_end, tree_weights);
+  common::metal::ShapModel gpu_model;
+  std::vector<std::uint32_t> roots;
+  for (auto const& tree : prepared.trees) {
+    roots.push_back(
+        std::visit([&](auto const& view) { return AppendShapTree(view, &gpu_model); }, tree));
+  }
+  for (auto const& entry : prepared.entries) {
+    gpu_model.trees.push_back({roots[entry.tree_idx], static_cast<std::uint32_t>(entry.group_idx),
+                               static_cast<std::uint32_t>(entry.target_idx), entry.weight});
+  }
+  gpu_model.root_means = std::move(prepared.group_root_mean_sums);
+  auto base_score = model.learner_model_param->BaseScore(DeviceOrd::CPU());
+  for (bst_target_t g = 0; g < groups; ++g) gpu_model.base_scores.push_back(base_score(g));
+  auto const& rule = detail::GetQuadratureRule();
+  std::copy_n(rule.nodes, 8, gpu_model.quadrature_nodes);
+  std::copy_n(rule.weights, 8, gpu_model.quadrature_weights);
+  auto gpu = common::metal::MakeShap(gpu_model, features, groups, interactions);
+  auto margin = data->Info().base_margin_.HostView();
+  if (margin.Size()) {
+    CHECK_EQ(margin.Shape(0), data->Info().num_row_);
+    CHECK_EQ(margin.Shape(1), groups);
+  }
+  auto process = [&](auto&& view) {
+    for (std::size_t begin = 0; begin < view.Size(); begin += gpu->MaxBatchRows()) {
+      auto rows = std::min<std::size_t>(gpu->MaxBatchRows(), view.Size() - begin);
+      std::vector<float> values(rows * features, std::numeric_limits<float>::quiet_NaN());
+      std::vector<float> margins(margin.Size() ? rows * groups : 0);
+      common::ParallelFor(rows, ctx->Threads(), [&](auto row) {
+        static_cast<void>(view.DoFill(begin + row, values.data() + row * features));
+        if (margin.Size()) {
+          for (bst_target_t g = 0; g < groups; ++g) {
+            margins[row * groups + g] = margin(view.base_rowid + begin + row, g);
+          }
+        }
+      });
+      auto offset = (view.base_rowid + begin) * per_row;
+      gpu->Predict(values, rows, margins, {result.data() + offset, rows * per_row});
+    }
+  };
+  LaunchShap(ctx, data, model, process);
+}
+}  // namespace
+void ShapValues(Context const* ctx, DMatrix* data, HostDeviceVector<float>* output,
+                gbm::GBTreeModel const& model, bst_tree_t tree_end,
+                std::vector<float> const* weights, int condition, unsigned feature) {
+  CHECK_EQ(condition, 0) << "Metal QuadratureTreeSHAP does not support conditional SHAP.";
+  CHECK_EQ(feature, 0) << "Metal QuadratureTreeSHAP does not support conditional SHAP.";
+  PredictShap(ctx, data, output, model, tree_end, weights, false);
+}
+void ShapInteractionValues(Context const* ctx, DMatrix* data, HostDeviceVector<float>* output,
+                           gbm::GBTreeModel const& model, bst_tree_t tree_end,
+                           std::vector<float> const* weights) {
+  PredictShap(ctx, data, output, model, tree_end, weights, true);
+}
+}  // namespace metal_impl
+#endif  // defined(XGBOOST_USE_METAL)
 
 namespace cpu_impl {
 void QuadratureTreeShapValues(Context const *ctx, DMatrix *p_fmat,

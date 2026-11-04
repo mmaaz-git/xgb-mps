@@ -4858,3 +4858,178 @@ kernel void xgb_sketch_finalize(device const float4* entries [[buffer(0)]],
   count = xgb_sketch_prune_parallel(a, count, task.final_budget, b, tid, state);
   if (!tid) sizes[column] = count;
 }
+
+// Fixed eight-point QuadratureTreeSHAP, matching the vendored CPU recurrence.
+// Each lane owns one row/group and traverses trees in their original order.
+// The runtime-sized stack avoids a compile-time depth ceiling.
+struct ShapNode { PredictionNode node; float left_weight, right_weight; };
+struct ShapTree { uint root, group, target; float weight; };
+struct ShapFrame {
+  uint node, stage, feature;
+  float p_enter, p_exit, w_prod;
+  float c[8], h[8];
+};
+struct ShapParams {
+  uint features, groups, trees, depth, interactions, margin;
+  float quad_nodes[8], quad_weights[8];
+};
+inline float xgb_shap_basis(float alpha, float node) {
+  return xgb_fadd_preserve(1.f, xgb_fmul_preserve(alpha, node));
+}
+inline float xgb_shap_delta(constant ShapParams& p, device const float* h,
+                            float enter, float exit) {
+  float acc = 0;
+  if (enter != 1.f) {
+    float alpha = xgb_fsub_preserve(enter, 1.f);
+    for (uint i = 0; i < 8; ++i) {
+      acc = xgb_fadd_preserve(acc, xgb_fdiv_preserve(xgb_fmul_preserve(alpha, h[i]),
+                                                   xgb_shap_basis(alpha, p.quad_nodes[i])));
+    }
+  }
+  if (exit != 1.f) {
+    float alpha = xgb_fsub_preserve(exit, 1.f);
+    for (uint i = 0; i < 8; ++i) {
+      acc = xgb_fsub_preserve(acc, xgb_fdiv_preserve(xgb_fmul_preserve(alpha, h[i]),
+                                                   xgb_shap_basis(alpha, p.quad_nodes[i])));
+    }
+  }
+  return acc;
+}
+inline float xgb_shap_pair(constant ShapParams& p, device const float* h,
+                           float enter, float exit, float partner) {
+  if (partner == 1.f) return 0;
+  float alpha = xgb_fsub_preserve(enter, 1.f), old = xgb_fsub_preserve(exit, 1.f);
+  float other = xgb_fsub_preserve(partner, 1.f), acc = 0;
+  for (uint i = 0; i < 8; ++i) {
+    float edge = xgb_fdiv_preserve(alpha, xgb_shap_basis(alpha, p.quad_nodes[i]));
+    if (exit != 1.f)
+      edge = xgb_fsub_preserve(edge, xgb_fdiv_preserve(old, xgb_shap_basis(old, p.quad_nodes[i])));
+    float term = xgb_fmul_preserve(xgb_fmul_preserve(other, h[i]), edge);
+    acc = xgb_fadd_preserve(acc, xgb_fdiv_preserve(term, xgb_shap_basis(other, p.quad_nodes[i])));
+  }
+  return acc;
+}
+inline bool xgb_shap_left(PredictionNode node, float value, device const uint* categories) {
+  uint bits = as_type<uint>(value);
+  if ((bits & 0x7fffffffu) > 0x7f800000u) return node.missing == node.left;
+  if (!node.categorical) return xgb_float_less(bits, as_type<uint>(node.split));
+  if (xgb_float_less(bits, 0u) || !xgb_float_less(bits, as_type<uint>(16777216.f))) return true;
+  uint category = uint(value), word = category / 32;
+  return word >= node.category_size ||
+         (categories[node.category_begin + word] & (1u << (31 - category % 32))) == 0;
+}
+kernel void xgb_shap(device const float* data [[buffer(0)]],
+                     device const ShapNode* nodes [[buffer(1)]],
+                     device const ShapTree* trees [[buffer(2)]],
+                     device const uint* categories [[buffer(3)]],
+                     device const float* leaves [[buffer(4)]],
+                     device const float* roots [[buffer(5)]],
+                     device const float* bases [[buffer(6)]],
+                     device float* output [[buffer(7)]],
+                     device ShapFrame* frames [[buffer(8)]],
+                     device float* temporary [[buffer(9)]],
+                     constant ShapParams& p [[buffer(10)]],
+                     uint task [[thread_position_in_grid]]) {
+  uint row = task / p.groups, group = task % p.groups;
+  ulong columns = ulong(p.features) + 1;
+  ulong width = p.interactions ? columns * columns : columns;
+  device float* phi = output + ulong(task) * width;
+  device float* diag = temporary + ulong(task) * columns;
+  device ShapFrame* stack = frames + ulong(task) * p.depth;
+  for (ulong i = 0; i < width; ++i) phi[i] = 0;
+  for (ulong i = 0; i < columns; ++i) diag[i] = 0;
+  for (uint t = 0; t < p.trees; ++t) {
+    ShapTree tree = trees[t];
+    if (tree.group != group) continue;
+    if (!p.interactions) {
+      for (ulong i = 0; i < columns; ++i) diag[i] = 0;
+    }
+    stack[0].node = tree.root;
+    stack[0].stage = 0;
+    stack[0].w_prod = 1.f;
+    for (uint i = 0; i < 8; ++i) stack[0].c[i] = 1.f;
+    uint depth = 0;
+    while (true) {
+      device ShapFrame& frame = stack[depth];
+      ShapNode node = nodes[frame.node];
+      if (node.node.left >= 0 && frame.stage < 2) {
+        bool left = frame.stage++ == 0;
+        bool goes_left = xgb_shap_left(node.node, data[ulong(row) * p.features + node.node.feature],
+                                       categories);
+        float weight = left ? node.left_weight : node.right_weight;
+        float previous = 1.f;
+        // Edges hold the path probability after each split. The newest occurrence
+        // is the active one when a feature is split more than once.
+        for (uint d = depth; d > 0; --d) {
+          if (stack[d].feature == node.node.feature) {
+            previous = stack[d].p_enter;
+            break;
+          }
+        }
+        float enter = left == goes_left ? xgb_fdiv_preserve(previous, weight) : 0.f;
+        device ShapFrame& child = stack[depth + 1];
+        child.node = tree.root + uint(left ? node.node.left : node.node.right);
+        child.stage = 0;
+        child.feature = node.node.feature;
+        child.p_enter = enter;
+        child.p_exit = previous;
+        child.w_prod = xgb_fmul_preserve(frame.w_prod, weight);
+        float alpha = xgb_fsub_preserve(enter, 1.f), old = xgb_fsub_preserve(previous, 1.f);
+        for (uint i = 0; i < 8; ++i) {
+          child.c[i] = xgb_fmul_preserve(frame.c[i], xgb_shap_basis(alpha, p.quad_nodes[i]));
+          if (previous != 1.f)
+            child.c[i] = xgb_fdiv_preserve(child.c[i], xgb_shap_basis(old, p.quad_nodes[i]));
+        }
+        ++depth;
+        continue;
+      }
+      if (node.node.left < 0) {
+        float scale = xgb_fmul_preserve(frame.w_prod, leaves[node.node.leaf_begin + tree.target]);
+        for (uint i = 0; i < 8; ++i)
+          frame.h[i] = xgb_fmul_preserve(xgb_fmul_preserve(frame.c[i], scale), p.quad_weights[i]);
+      }
+      if (!depth) break;
+      float delta = xgb_shap_delta(p, frame.h, frame.p_enter, frame.p_exit);
+      uint feature = frame.feature;
+      diag[feature] = xgb_fadd_preserve(diag[feature], p.interactions
+          ? xgb_fmul_preserve(tree.weight, delta) : delta);
+      if (p.interactions) {
+        for (uint d = depth - 1; d > 0; --d) {
+          uint partner = stack[d].feature;
+          bool shadowed = false;
+          for (uint newer = depth; newer > d; --newer) {
+            if (stack[newer].feature == partner) { shadowed = true; break; }
+          }
+          if (shadowed) continue;
+          float pair = xgb_shap_pair(p, frame.h, frame.p_enter, frame.p_exit, stack[d].p_enter);
+          ulong at = ulong(feature) * columns + partner;
+          phi[at] = xgb_fadd_preserve(phi[at], xgb_fmul_preserve(tree.weight, pair));
+        }
+      }
+      device ShapFrame& parent = stack[depth - 1];
+      for (uint i = 0; i < 8; ++i)
+        parent.h[i] = parent.stage == 1 ? frame.h[i] : xgb_fadd_preserve(parent.h[i], frame.h[i]);
+      --depth;
+    }
+    if (!p.interactions) {
+      for (uint i = 0; i < p.features; ++i)
+        phi[i] = xgb_fadd_preserve(phi[i], xgb_fmul_preserve(diag[i], tree.weight));
+    }
+  }
+  float bias = xgb_fadd_preserve(roots[group], bases[p.margin ? task : group]);
+  if (!p.interactions) { phi[p.features] = bias; return; }
+  diag[p.features] = bias;
+  for (ulong r = 0; r < columns; ++r) {
+    for (ulong c = r + 1; c < columns; ++c) {
+      float sym = xgb_fmul_preserve(.5f, xgb_fadd_preserve(phi[r * columns + c], phi[c * columns + r]));
+      phi[r * columns + c] = sym;
+      phi[c * columns + r] = sym;
+    }
+  }
+  for (ulong r = 0; r < columns; ++r) {
+    float value = diag[r];
+    for (ulong c = 0; c < columns; ++c)
+      if (r != c) value = xgb_fsub_preserve(value, phi[r * columns + c]);
+    phi[r * columns + r] = value;
+  }
+}

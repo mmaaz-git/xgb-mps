@@ -24,6 +24,7 @@
 #include "metal_reduction.h"
 #include "metal_sampling.h"
 #include "metal_shader.h"
+#include "metal_shap.h"
 #include "metal_sketch.h"
 #include "metal_split.h"
 #include "metal_survival.h"
@@ -45,6 +46,7 @@ std::atomic<std::uint64_t> sketch_finalize_dispatches{0}, sketch_finalize_column
 std::atomic<std::uint64_t> expectile_init_dispatches{0}, prediction_init_dispatches{0},
     initialization_gpu_time_ns{0};
 std::atomic<std::uint64_t> label_validation_dispatches{0}, label_validation_gpu_time_ns{0};
+std::atomic<std::uint64_t> shap_dispatches{0}, shap_interaction_dispatches{0}, shap_gpu_time_ns{0};
 std::atomic<std::uint64_t> base_score_dispatches{0}, base_score_gpu_time_ns{0};
 std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches{0},
     column_sampling_gpu_time_ns{0};
@@ -138,7 +140,7 @@ class Runtime {
   id<MTLComputePipelineState> uniform_sampling_pipeline, sketch_finalize_pipeline;
   id<MTLComputePipelineState> expectile_init_pipeline, broadcast_targets_pipeline;
   id<MTLComputePipelineState> label_validation_pipeline;
-  id<MTLComputePipelineState> base_score_pipeline;
+  id<MTLComputePipelineState> base_score_pipeline, shap_pipeline;
   id<MTLComputePipelineState> column_iota_pipeline, column_rng_pipeline, column_keys_pipeline,
       column_select_pipeline, column_sort_small_pipeline, column_output_pipeline,
       column_sample_small_pipeline;
@@ -217,6 +219,7 @@ class Runtime {
       broadcast_targets_pipeline = make_pipeline(@"xgb_broadcast_targets");
       label_validation_pipeline = make_pipeline(@"xgb_validate_labels");
       base_score_pipeline = make_pipeline(@"xgb_base_score");
+      shap_pipeline = make_pipeline(@"xgb_shap");
       column_iota_pipeline = make_pipeline(@"xgb_column_iota");
       column_rng_pipeline = make_pipeline(@"xgb_column_rng");
       column_keys_pipeline = make_pipeline(@"xgb_column_keys");
@@ -1061,7 +1064,10 @@ Statistics GetStatistics() {
           label_validation_dispatches.load(std::memory_order_relaxed),
           label_validation_gpu_time_ns.load(std::memory_order_relaxed),
           base_score_dispatches.load(std::memory_order_relaxed),
-          base_score_gpu_time_ns.load(std::memory_order_relaxed)};
+          base_score_gpu_time_ns.load(std::memory_order_relaxed),
+          shap_dispatches.load(std::memory_order_relaxed),
+          shap_interaction_dispatches.load(std::memory_order_relaxed),
+          shap_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -3626,6 +3632,122 @@ class MetalPrediction final : public Prediction {
 }  // namespace
 std::unique_ptr<Prediction> MakePrediction(PredictionModel const& model) {
   return std::make_unique<MetalPrediction>(model);
+}
+
+namespace {
+class MetalShap final : public Shap {
+  Runtime& rt_;
+  id<MTLBuffer> nodes_, trees_, categories_, leaves_, roots_, bases_;
+  struct Params {
+    std::uint32_t features, groups, trees, depth, interactions, margin;
+    float quad_nodes[8], quad_weights[8];
+  } params_{};
+  std::size_t batch_rows_, row_output_, row_stack_;
+  static constexpr std::size_t kFrameBytes = 88;
+
+ public:
+  MetalShap(ShapModel const& model, std::uint32_t features, std::uint32_t groups, bool interactions)
+      : rt_{GetRuntime()} {
+    static_assert(sizeof(ShapNode) == 48 && sizeof(ShapTree) == 16 && sizeof(Params) == 88);
+    CHECK_GT(groups, 0);
+    CHECK_GT(model.depth, 0);
+    CHECK_LT(features, std::numeric_limits<std::uint32_t>::max());
+    CHECK_LE(model.trees.size(), std::numeric_limits<std::uint32_t>::max());
+    CHECK_EQ(model.root_means.size(), groups);
+    CHECK_EQ(model.base_scores.size(), groups);
+    params_ = {features,
+               groups,
+               static_cast<std::uint32_t>(model.trees.size()),
+               model.depth,
+               static_cast<std::uint32_t>(interactions),
+               0,
+               {},
+               {}};
+    std::copy_n(model.quadrature_nodes, 8, params_.quad_nodes);
+    std::copy_n(model.quadrature_weights, 8, params_.quad_weights);
+    auto product = [](std::size_t a, std::size_t b) {
+      CHECK_LE(a, std::numeric_limits<std::size_t>::max() / b);
+      return a * b;
+    };
+    auto columns = static_cast<std::size_t>(features) + 1;
+    row_output_ = product(product(interactions ? product(columns, columns) : columns, groups), 4);
+    row_stack_ = product(product(model.depth, groups), kFrameBytes);
+    auto row_temporary = product(product(columns, groups), 4);
+    auto row_input = product(columns, 4);
+    auto row_margin = product(groups, 4);
+    // Bound both the sum of scratch allocations and each Metal buffer, even for
+    // interaction matrices much wider than ordinary prediction output.
+    std::size_t row_bytes = 0;
+    for (auto bytes : {row_output_, row_stack_, row_temporary, row_input, row_margin}) {
+      CHECK_LE(bytes, rt_.device.maxBufferLength);
+      CHECK_LE(bytes, std::numeric_limits<std::size_t>::max() - row_bytes);
+      row_bytes += bytes;
+    }
+    auto budget = std::min<std::size_t>(64ull << 20, rt_.device.maxBufferLength);
+    batch_rows_ = std::max<std::size_t>(1, budget / row_bytes);
+    batch_rows_ = std::min<std::size_t>(batch_rows_, 4096);
+    batch_rows_ =
+        std::min<std::size_t>(batch_rows_, std::numeric_limits<std::uint32_t>::max() / groups);
+    @autoreleasepool {
+      // Metal validates the pointed-to struct size even when there are no trees.
+      ShapNode empty{};
+      nodes_ = Upload(rt_, model.nodes.empty() ? &empty : model.nodes.data(),
+                      std::max<std::size_t>(1, model.nodes.size()) * sizeof(ShapNode));
+      trees_ = Upload(rt_, model.trees.data(), model.trees.size() * sizeof(ShapTree));
+      categories_ = Upload(rt_, model.categories.data(), model.categories.size() * 4);
+      leaves_ = Upload(rt_, model.leaves.data(), model.leaves.size() * 4);
+      roots_ = Upload(rt_, model.root_means.data(), model.root_means.size() * 4);
+      bases_ = Upload(rt_, model.base_scores.data(), model.base_scores.size() * 4);
+    }
+  }
+  std::size_t MaxBatchRows() const override { return batch_rows_; }
+  void Predict(Span<float const> data, std::size_t rows, Span<float const> base_margin,
+               Span<float> output) override {
+    CHECK_LE(rows, batch_rows_);
+    CHECK_EQ(data.size(), rows * params_.features);
+    CHECK_EQ(output.size_bytes(), rows * row_output_);
+    CHECK(base_margin.empty() || base_margin.size() == rows * params_.groups);
+    if (!rows) return;
+    @autoreleasepool {
+      auto input = Upload(rt_, data.data(), data.size_bytes());
+      auto bases =
+          base_margin.empty() ? bases_ : Upload(rt_, base_margin.data(), base_margin.size_bytes());
+      auto result = Allocate(rt_, output.size_bytes());
+      auto frames = Allocate(rt_, rows * row_stack_);
+      auto temporary =
+          Allocate(rt_, rows * params_.groups * (std::size_t(params_.features) + 1) * 4);
+      auto command = [rt_.queue commandBuffer];
+      CHECK(command);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      auto p = params_;
+      p.margin = !base_margin.empty();
+      [e setComputePipelineState:rt_.shap_pipeline];
+      [e setBuffer:input offset:0 atIndex:0];
+      [e setBuffer:nodes_ offset:0 atIndex:1];
+      [e setBuffer:trees_ offset:0 atIndex:2];
+      [e setBuffer:categories_ offset:0 atIndex:3];
+      [e setBuffer:leaves_ offset:0 atIndex:4];
+      [e setBuffer:roots_ offset:0 atIndex:5];
+      [e setBuffer:bases offset:0 atIndex:6];
+      [e setBuffer:result offset:0 atIndex:7];
+      [e setBuffer:frames offset:0 atIndex:8];
+      [e setBuffer:temporary offset:0 atIndex:9];
+      [e setBytes:&p length:sizeof(p) atIndex:10];
+      [e dispatchThreads:MTLSizeMake(rows * params_.groups, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command,
+                        params_.interactions ? &shap_interaction_dispatches : &shap_dispatches,
+                        &shap_gpu_time_ns);
+      std::memcpy(output.data(), result.contents, output.size_bytes());
+    }
+  }
+};
+}  // namespace
+std::unique_ptr<Shap> MakeShap(ShapModel const& model, std::uint32_t features, std::uint32_t groups,
+                               bool interactions) {
+  return std::make_unique<MetalShap>(model, features, groups, interactions);
 }
 
 void AddLeafValues(Span<std::int32_t const> ids, Span<float const> weights, std::uint32_t targets,

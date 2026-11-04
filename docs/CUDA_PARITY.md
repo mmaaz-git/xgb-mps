@@ -29,10 +29,10 @@ measurements, including regressions, remain available.
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation use Metal; other initialization work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; biased top-k/mean pair construction, gradients, MAP prefixes and query normalization execute on Metal. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients and prediction/base-score transforms; GPU identifies small censored probabilities for original CPU gradient recomputation, exposed through correction counters/time. Full GPU coverage remains incomplete |
-| Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; other initialization work and leaf fitting remain CPU |
+| Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting with separate value gradients remains CPU (`MultiTargetHistBuilder::ExpandTreeLeaf`); other initialization/state work still requires porting/audit |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; CPU input views stage dense chunks and recode categories |
 | Prediction cache from leaf IDs | `predictor/predictor.cu` | Metal; supports strided target slices and negated sampling positions |
-| SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | CPU |
+| SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA; dense input staging/category recoding remain host |
 | RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | Metal loss calculation and scaled block reductions; final small reduction in host FP64 |
 | Multiclass error and logloss | `metric/multiclass_metric.cu` | Metal loss calculation and scaled block reductions; final small reduction in host FP64 |
 | Quantile and expectile metrics | `metric/elementwise_metric.cu` | Metal loss calculation, subnormal-preserving products and binary64 block reductions; small final host sum |
@@ -88,7 +88,7 @@ interaction constraints, vector leaves and external-memory pages. Column samplin
 now uses GPU initialization, random draws, selection and ordering. Remaining
 training-state updates and more efficient external-memory staging are still required.
 
-Sensitive AFT gradient corrections, SHAP, remaining sketch
+Sensitive AFT gradient corrections, remaining sketch
 construction, linear training and collectives are separate coverage requirements.
 The observed prediction speedups do not establish any of those as complete.
 
@@ -372,3 +372,46 @@ checked. Public tests cover raw margins, serialization and validation errors.
 `label_validation_*` and `base_score_*` expose independent dispatch counts and
 GPU times, including completed error paths. Identity conversions require no
 dispatch. Model storage, input staging and error reporting remain host-side.
+
+
+## SHAP contributions and interactions
+
+The vendored CPU and CUDA implementations use a fixed eight-point
+QuadratureTreeSHAP recurrence. Metal now performs that traversal, edge-return
+calculation, repeated-feature bookkeeping, contribution accumulation and
+interaction finalization on the GPU. It preserves CPU tree/edge accumulation
+order, including dropout weights. Missing and categorical decisions, vector-leaf
+targets, base margins, bias addition, interaction symmetry and diagonal subtraction
+are included. This ports the upstream quadrature semantics; the API's “exact”
+setting does not imply mathematically exact integration for every deep tree.
+
+Traversal uses a runtime-sized stack, tested through depth 130, rather than
+CUDA's current depth-127 limit. Rows are batched against a 64 MiB workspace target
+and the device's per-buffer limit; at least one row is processed, so an unusually
+wide interaction row may exceed the target. The output still occupies its full
+host array. Uploaded model buffers are reused across these batches. Commands are
+synchronous, and no performance claim is made for this implementation.
+
+Model compression, branch-cover ratios, root-mean calculation and quadrature-rule
+construction stay on the host, matching CUDA's model-preparation approach.
+Sparse/quantized page decoding and categorical recoding also remain host-side;
+those are separate unfinished input/metadata operations. Approximate-contribution
+requests retain the existing CPU implementation; CUDA rejects those requests, so
+they are not missing CUDA-accelerated SHAP coverage. Conditional exact SHAP is
+rejected as it is by the upstream CPU and CUDA implementations.
+
+Native validation covers 576 cases and 424,350,144 output entries, including
+unused zero entries, against independent one-feature Shapley values. Maximum
+absolute error is `2.38418579e-7`; guards, input preservation, overlapping storage,
+empty inputs, shape rejection and batch sizing are checked. Public validation
+covers 87 cases: identical-model CPU comparisons at `rtol=atol=2e-5`, independent
+feature-subset enumeration on small trees at `2e-6`, scalar/vector/multiclass/forest/
+dropout models, missing and categorical data, recoding, external pages, quantized
+input, base margins, tree limits, zero/negative/tiny covers, depth 130 and wide
+interaction batches. Interaction matrices must be symmetric and sum by row to
+CPU additive contributions within the stated tolerance.
+
+`shap_dispatches` and `shap_interaction_dispatches` expose completed GPU batches;
+`shap_gpu_time_ns` reports their combined GPU duration separately from ordinary
+prediction timing. These measurements exclude host model/input preparation,
+staging and result copying.
