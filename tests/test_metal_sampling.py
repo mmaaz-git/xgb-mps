@@ -5,6 +5,7 @@ import xgboost as xgb
 from cuda_uniform_reference import UniformSquaredError
 from cuda_gradient_reference import GradientSquaredError
 from xgboost.objective import TreeObjective
+from cuda_split_reference import RecordedSquaredError, audit_recorded
 
 
 @pytest.mark.parametrize("subsample", [0.0, 0.1, 0.7, 1.0])
@@ -23,10 +24,14 @@ def test_uniform_gpu_sampling(metal, subsample, strategy, threads):
     cpu = xgb.train(p | {"device": "cpu", "subsample": 1.}, d, 4,
                     obj=UniformSquaredError(p))
     assert xgb.metal_info()["sampling_dispatches"] == before
-    gpu = xgb.train(p | {"device": "mps"}, d, 4)
+    recorded = RecordedSquaredError() if strategy == "one_output_per_tree" else None
+    gpu = xgb.train(p | {"device": "mps"}, d, 4, obj=recorded)
     delta = xgb.metal_info()["sampling_dispatches"] - before
     assert (delta > 0) == (subsample < 1)
-    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+    if recorded is not None:
+        audit_recorded(gpu,d,x,recorded,p)
+    else:
+        np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
     # A fresh booster with the same seed must replay the same sampling decisions.
     again = xgb.train(p | {"device": "mps"}, d, 4)
     np.testing.assert_array_equal(gpu.predict(d), again.predict(d))
@@ -78,10 +83,14 @@ def test_gradient_gpu_sampling(metal, subsample, strategy, threads):
     cpu = xgb.train(p | {"device": "cpu", "subsample": 1.}, d, 4,
                     obj=GradientSquaredError(p))
     assert xgb.metal_info()["gradient_sampling_dispatches"] == before
-    gpu = xgb.train(p | {"device": "mps"}, d, 4)
+    recorded = RecordedSquaredError() if strategy == "one_output_per_tree" else None
+    gpu = xgb.train(p | {"device": "mps"}, d, 4, obj=recorded)
     after = xgb.metal_info()["gradient_sampling_dispatches"]
     assert (after > before) == (subsample < 1)
-    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+    if recorded is not None:
+        audit_recorded(gpu,d,x,recorded,p)
+    else:
+        np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
     again = xgb.train(p | {"device": "mps"}, d, 4)
     np.testing.assert_array_equal(gpu.predict(d), again.predict(d))
 

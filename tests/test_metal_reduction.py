@@ -22,7 +22,8 @@ def test_root_reductions_execute_on_gpu(metal, layout, targets, strategy):
     weights[::13] = 0
     d = xgb.DMatrix(x, label=y, weight=weights)
     p = dict(tree_method="hist", nthread=2, multi_strategy=strategy, base_score=0,
-             max_depth=4, max_bin=31, subsample=0.63, seed=29, seed_per_iteration=True)
+             max_depth=4, max_bin=31, subsample=0.63, seed=29, seed_per_iteration=True,
+             gamma=1e30)  # Isolate roots: CPU and CUDA have different split tie rules.
     cpu = xgb.train(p | {"device": "cpu", "subsample": 1.}, d, 5,
                     obj=UniformSquaredError(p))
     before = xgb.metal_info()

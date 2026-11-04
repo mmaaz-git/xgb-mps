@@ -55,6 +55,7 @@ std::atomic<std::uint64_t> expectile_init_dispatches{0}, prediction_init_dispatc
     initialization_gpu_time_ns{0};
 std::atomic<std::uint64_t> label_validation_dispatches{0}, label_validation_gpu_time_ns{0};
 std::atomic<std::uint64_t> leaf_integer_sum_dispatches{0};
+std::atomic<std::uint64_t> cuda_integer_split_dispatches{0};
 std::atomic<std::uint64_t> leaf_sum_init_dispatches{0}, leaf_sum_dispatches{0},
     leaf_weight_dispatches{0}, leaf_fitting_gpu_time_ns{0};
 std::atomic<std::uint64_t> linear_gradient_dispatches{0}, linear_residual_dispatches{0},
@@ -137,7 +138,7 @@ class Runtime {
   id<MTLDevice> device;
   id<MTLCommandQueue> queue;
   id<MTLComputePipelineState> pipeline;
-  id<MTLComputePipelineState> split_pipeline, multi_split_pipeline;
+  id<MTLComputePipelineState> split_pipeline, multi_split_pipeline, quantized_split_pipeline;
   id<MTLComputePipelineState> dequantize_hist_pipeline, subtract_hist_pipeline,
       gather_hist_pipeline;
   id<MTLComputePipelineState> store_integer_hist_pipeline, subtract_integer_hist_pipeline,
@@ -238,6 +239,7 @@ class Runtime {
       leaf_positions_pipeline = make_pipeline(@"xgb_leaf_positions");
       transpose_index_pipeline = make_pipeline(@"xgb_transpose_index");
       split_pipeline = make_pipeline(@"xgb_evaluate_splits");
+      quantized_split_pipeline = make_pipeline(@"xgb_evaluate_quantized_splits");
       multi_split_pipeline = make_pipeline(@"xgb_evaluate_multi_splits");
       dequantize_hist_pipeline = make_pipeline(@"xgb_histogram_dequantize");
       subtract_hist_pipeline = make_pipeline(@"xgb_histogram_subtract");
@@ -378,7 +380,7 @@ class MetalHistogramBuffer final : public HistogramBuffer {
  public:
   id<MTLBuffer> buffer;
   // Integers remain authoritative after the first quantized build. `buffer` is
-  // its materialized binary64 view for host orchestration and split evaluation.
+  // its materialized binary64 view for host orchestration/legacy split APIs.
   id<MTLBuffer> integers, scale;
   void UseQuantization(id<MTLBuffer> quantization) {
     CHECK(buffer);
@@ -449,7 +451,7 @@ id<MTLBuffer> Scratch(Runtime const& rt, id<MTLBuffer> __strong* buffer, std::si
 }
 id<MTLBuffer> GatherHistograms(Runtime const& rt, Span<HistogramInput const> inputs,
                                std::size_t size, id<MTLCommandBuffer> command,
-                               MetalSplitWorkspace* workspace) {
+                               MetalSplitWorkspace* workspace, bool quantized = false) {
   static_assert(sizeof(HistogramGather) == 24);
   auto output = Scratch(rt, &workspace->hist, size * sizeof(GradientPairPrecise));
   workspace->metadata.resize(inputs.size());
@@ -458,7 +460,9 @@ id<MTLBuffer> GatherHistograms(Runtime const& rt, Span<HistogramInput const> inp
     auto& metadata = workspace->metadata[index++].value;
     if (input.segments.empty()) continue;
     CHECK(input.source);
-    auto source = static_cast<MetalHistogramBuffer const*>(input.source)->buffer;
+    auto storage = static_cast<MetalHistogramBuffer const*>(input.source);
+    auto source = quantized ? storage->integers : storage->buffer;
+    CHECK(source);
     for (auto const& segment : input.segments) {
       CHECK_LE(segment.source + segment.bins, input.source->Data().size());
       CHECK_GT(segment.stride, 0);
@@ -1135,12 +1139,15 @@ class MetalQuantizedGradients final : public QuantizedGradients {
   }
   std::size_t Rows() const override { return rows_; }
   std::size_t Targets() const override { return columns.size(); }
-  void Sum(linalg::VectorView<GradientPairPrecise> output) const override {
+  void Sum(linalg::VectorView<GradientPairPrecise> output,
+           Span<GradientPairInt64> integers) const override {
     CHECK_EQ(output.Size(), columns.size());
+    CHECK(integers.empty() || integers.size() == columns.size());
     @autoreleasepool {
       std::uint64_t n = rows_, blocks = (n + 255) / 256;
       auto partial = Allocate(rt_, blocks * sizeof(QuantizedPair));
       auto result = Allocate(rt_, columns.size() * sizeof(GradientPairPrecise));
+      auto exact = Allocate(rt_, columns.size() * sizeof(GradientPairInt64));
       auto command = [rt_.queue commandBuffer];
       CHECK(command);
       for (std::size_t t = 0; t < columns.size(); ++t) {
@@ -1162,6 +1169,7 @@ class MetalQuantizedGradients final : public QuantizedGradients {
         [e setBuffer:result offset:t * sizeof(GradientPairPrecise) atIndex:1];
         [e setBytes:&blocks length:sizeof(blocks) atIndex:2];
         [e setBuffer:column.gradient_scale_ offset:0 atIndex:3];
+        [e setBuffer:exact offset:t * sizeof(GradientPairInt64) atIndex:4];
         [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [e endEncoding];
       }
@@ -1170,6 +1178,7 @@ class MetalQuantizedGradients final : public QuantizedGradients {
       CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
       auto values = static_cast<GradientPairPrecise const*>(result.contents);
       for (std::size_t t = 0; t < columns.size(); ++t) output(t) = values[t];
+      if (!integers.empty()) std::memcpy(integers.data(), exact.contents, integers.size_bytes());
       gradient_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
       quantized_gradient_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
       auto elapsed = command.GPUEndTime - command.GPUStartTime;
@@ -1626,7 +1635,8 @@ Statistics GetStatistics() {
           quantized_gradient_sum_dispatches.load(std::memory_order_relaxed),
           cuda_uniform_sampling_dispatches.load(std::memory_order_relaxed),
           cuda_gradient_sampling_dispatches.load(std::memory_order_relaxed),
-          leaf_integer_sum_dispatches.load(std::memory_order_relaxed)};
+          leaf_integer_sum_dispatches.load(std::memory_order_relaxed),
+          cuda_integer_split_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -5056,6 +5066,82 @@ std::array<double, 2> MetricSums(char const* name, Span<float const> predictions
         sum[k] += static_cast<double>(values[i * 4 + k]) * scale;
       }
     return sum;
+  }
+}
+
+void EvaluateQuantizedSplits(Span<HistogramInput const> histograms,
+                             Span<QuantizedSplitTask const> tasks,
+                             SplitParameters const& parameters,
+                             std::vector<QuantizedSplitResult>* results,
+                             std::vector<std::uint32_t>* sorted_categories,
+                             SplitWorkspace* workspace) {
+  static_assert(sizeof(QuantizedSplitTask) == 48 && sizeof(QuantizedSplitResult) == 80);
+  static_assert(sizeof(GradientPairInt64) == 16);
+  results->resize(tasks.size());
+  auto bins = tasks.empty() ? 0 : tasks.back().end;
+  bool categorical =
+      std::any_of(tasks.begin(), tasks.end(), [](auto const& task) { return task.kind == 2; });
+  sorted_categories->resize(categorical ? bins : 0);
+  if (tasks.empty()) return;
+  CHECK(workspace);
+  CHECK_EQ(histograms.size(), 1);
+  CHECK(histograms[0].source);
+  auto storage = static_cast<MetalHistogramBuffer const*>(histograms[0].source);
+  CHECK(storage->integers);
+  CHECK(storage->scale);
+  CHECK_LE(tasks.size(), std::numeric_limits<std::uint32_t>::max());
+  std::uint32_t previous = 0;
+  for (auto const& task : tasks) {
+    CHECK_EQ(task.begin, previous);
+    CHECK_GE(task.end, task.begin);
+    CHECK_LE(task.end - task.begin, std::numeric_limits<std::int32_t>::max());
+    CHECK_LE(task.kind, 2);
+    previous = task.end;
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto scratch = static_cast<MetalSplitWorkspace*>(workspace);
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto hist = GatherHistograms(rt, histograms, bins, command, scratch, true);
+    auto input = Scratch(rt, &scratch->input, tasks.size_bytes(), tasks.data());
+    auto output = Scratch(rt, &scratch->output, tasks.size() * sizeof(QuantizedSplitResult));
+    auto order = Scratch(rt, &scratch->order, (categorical ? bins : 0) * sizeof(std::uint32_t));
+    auto weights = Scratch(rt, &scratch->weights, (categorical ? bins : 0) * sizeof(float));
+    auto scans = Scratch(rt, &scratch->scans, bins * sizeof(GradientPairInt64));
+    auto encoder = [command computeCommandEncoder];
+    CHECK(encoder);
+    [encoder setComputePipelineState:rt.quantized_split_pipeline];
+    [encoder setBuffer:hist offset:0 atIndex:0];
+    [encoder setBuffer:input offset:0 atIndex:1];
+    [encoder setBytes:&parameters length:sizeof(parameters) atIndex:2];
+    [encoder setBuffer:output offset:0 atIndex:3];
+    [encoder setBuffer:order offset:0 atIndex:4];
+    [encoder setBuffer:weights offset:0 atIndex:5];
+    [encoder setBuffer:scans offset:0 atIndex:6];
+    [encoder setBuffer:storage->scale offset:0 atIndex:7];
+    CHECK_EQ(rt.quantized_split_pipeline.threadExecutionWidth, 32);
+    CHECK_GE(rt.quantized_split_pipeline.maxTotalThreadsPerThreadgroup, 32);
+    [encoder dispatchThreadgroups:MTLSizeMake(tasks.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    std::memcpy(results->data(), output.contents, tasks.size() * sizeof(QuantizedSplitResult));
+    for (auto const& task : tasks)
+      if (task.kind == 2) {
+        std::memcpy(sorted_categories->data() + task.begin,
+                    static_cast<std::uint32_t const*>(order.contents) + task.begin,
+                    (task.end - task.begin) * sizeof(std::uint32_t));
+      }
+    split_dispatches.fetch_add(1, std::memory_order_relaxed);
+    resident_split_dispatches.fetch_add(1, std::memory_order_relaxed);
+    cuda_integer_split_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0)
+      split_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                  std::memory_order_relaxed);
   }
 }
 

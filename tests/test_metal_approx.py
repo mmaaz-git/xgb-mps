@@ -12,7 +12,7 @@ import xgboost as xgb
 from cuda_uniform_reference import UniformSquaredError
 
 
-def matrices(layout, kind, tmp_path):
+def matrices(layout, kind, tmp_path, positive_weights=False):
     rng = np.random.default_rng(845)
     x = rng.normal(size=(521, 7)).astype(np.float32)
     y = x[:, 0] * 2 + x[:, 1] ** 2 - x[:, 2]
@@ -39,7 +39,8 @@ def matrices(layout, kind, tmp_path):
         x[rng.random(x.shape) < .65] = 0
         x = sp.csr_matrix(x)
     weight = rng.uniform(.1, 3, len(y)).astype(np.float32)
-    weight[::19] = 0
+    if not positive_weights:
+        weight[::19] = 0
 
     class Pages(xgb.DataIter):
         def __init__(self, device):
@@ -79,7 +80,9 @@ def compare(cpu, gpu, data):
 @pytest.mark.parametrize("subsample,sampling", [(1., "uniform"), (.7, "gradient_based")])
 @pytest.mark.parametrize("growth", ["depthwise", "lossguide"])
 def test_approx_training(metal, layout, kind, subsample, sampling, growth, tmp_path):
-    data, objective, groups = matrices(layout, kind, tmp_path)
+    # Keep independent CPU/MPS model comparisons away from zero-weight
+    # missing-direction ties. Sampled cases and CUDA tree oracles retain zeros.
+    data, objective, groups = matrices(layout, kind, tmp_path, positive_weights=subsample == 1.)
     params = dict(tree_method="approx", max_bin=17, nthread=2, eta=.3, seed=37,
                   seed_per_iteration=True, subsample=subsample, sampling_method=sampling,
                   grow_policy=growth, max_depth=3 if growth == "depthwise" else 0,

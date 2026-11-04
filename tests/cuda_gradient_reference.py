@@ -30,7 +30,7 @@ def exponents(values):
     return 62 - np.frexp(bound)[1]
 
 
-def sample(grad, hess, fraction, seed):
+def sample(grad, hess, fraction, seed, return_quantized=False):
     """Return sampled integer-derived split floats, replay factors, and exact roots."""
     grad, hess = np.asarray(grad, dtype=np.float32), np.asarray(hess, dtype=np.float32)
     shape = grad.shape
@@ -99,6 +99,8 @@ def sample(grad, hess, fraction, seed):
              np.ldexp(qh.sum(axis=0).astype(np.float64), -he))
     sampled = (np.ldexp(qg.astype(np.float64), -ge).astype(np.float32).reshape(shape),
                np.ldexp(qh.astype(np.float64), -he).astype(np.float32).reshape(shape))
+    if return_quantized:
+        return sampled, factors, roots, (qg, qh, ge, he)
     return sampled, factors, roots
 
 

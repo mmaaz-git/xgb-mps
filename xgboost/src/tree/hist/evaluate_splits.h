@@ -38,6 +38,10 @@ class HistEvaluator {
     GradStats stats;
     /*! \brief loss of this node, without split */
     bst_float root_gain{0.0f};
+#if defined(XGBOOST_USE_METAL)
+    // Persist winners by node ID: loss-guide entries can outlive split scratch.
+    GradientPairInt64 quantized, quantized_left, quantized_right;
+#endif
   };
 
  private:
@@ -286,7 +290,7 @@ class HistEvaluator {
     if (ctx_->IsMPS()) {
       if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
       auto evaluator = tree_evaluator_.GetEvaluator();
-      std::vector<common::metal::SplitTask> tasks;
+      std::vector<common::metal::QuantizedSplitTask> tasks;
       std::size_t bins = 0;
       std::vector<common::metal::HistogramInput> inputs{{hist.MetalBuffer(), {}}};
       std::vector<std::pair<std::size_t, bst_feature_t>> mapping;
@@ -303,8 +307,7 @@ class HistEvaluator {
               categorical ? (common::UseOneHot(n, param_->max_cat_to_onehot) ? 1 : 2) : 0;
           tasks.push_back({static_cast<std::uint32_t>(bins), static_cast<std::uint32_t>(bins + n),
                            kind, static_cast<std::uint32_t>(param_->max_cat_threshold),
-                           snode_[nid].stats.GetGrad(), snode_[nid].stats.GetHess(),
-                           snode_[nid].root_gain,
+                           snode_[nid].quantized,
                            evaluator.has_constraint ? evaluator.lower[nid]
                                                     : -std::numeric_limits<float>::infinity(),
                            evaluator.has_constraint ? evaluator.upper[nid]
@@ -318,26 +321,36 @@ class HistEvaluator {
       }
       common::metal::SplitParameters parameters{param_->reg_lambda, param_->reg_alpha,
                                                 param_->max_delta_step, param_->min_child_weight};
-      std::vector<common::metal::SplitResult> results;
+      std::vector<common::metal::QuantizedSplitResult> results;
       std::vector<std::uint32_t> order;
-      common::metal::EvaluateSplits(inputs, tasks, parameters, &results, &order,
-                                    metal_workspace_.get());
+      common::metal::EvaluateQuantizedSplits(inputs, tasks, parameters, &results, &order,
+                                             metal_workspace_.get());
+      // CUDA reduces raw child gains in sampled-feature order, then subtracts
+      // the parent gain once. Subtracting first can create artificial FP32 ties.
+      std::vector<std::size_t> winners(entries.size(), tasks.size());
       for (std::size_t i = 0; i < tasks.size(); ++i) {
-        auto const &r = results[i];
-        if (r.bin < 0) continue;
-        auto [entry, f] = mapping[i];
+        if (results[i].bin < 0) continue;
+        auto& winner = winners[mapping[i].first];
+        if (winner == tasks.size() || results[i].gain > results[winner].gain) winner = i;
+      }
+      for (std::size_t entry = 0; entry < entries.size(); ++entry) {
+        auto i = winners[entry];
+        if (i == tasks.size()) continue;
+        auto const& r = results[i];
+        auto f = mapping[i].second;
+        auto nid = entries[entry].nid;
         auto const &task = tasks[i];
         float split;
         if (task.kind == 2)
           split = std::numeric_limits<float>::quiet_NaN();
-        else if (task.kind == 0 && r.default_left)
-          split = common::HistogramCuts::NumericBinLowerBound(ptr, cut.Values(), f, ptr[f] + r.bin);
+        else if (task.kind == 0)
+          split = r.bin == 0 ? -std::numeric_limits<float>::infinity()
+                             : cut.Values()[ptr[f] + r.bin - 1];
         else
           split = cut.Values()[ptr[f] + r.bin];
         SplitEntry candidate;
-        candidate.Update(r.gain, f, split, r.default_left, task.kind != 0,
-                         GradStats{r.left_grad, r.left_hess},
-                         GradStats{r.right_grad, r.right_hess});
+        candidate.Update(r.gain - snode_[nid].root_gain, f, split, r.default_left, task.kind != 0,
+                         GradStats{r.left_sum}, GradStats{r.right_sum});
         if (task.kind) {
           candidate.cat_bits.resize(common::CatBitField::ComputeStorageSize(cut.MaxCategory() + 1),
                                     0);
@@ -348,7 +361,10 @@ class HistEvaluator {
             for (std::uint32_t j = 0; j < r.partition; ++j)
               bits.Set(cut.Values()[ptr[f] + order[task.begin + j]]);
         }
-        entries[entry].split.Update(candidate);
+        if (entries[entry].split.Update(candidate)) {
+          snode_[nid].quantized_left = r.left;
+          snode_[nid].quantized_right = r.right;
+        }
       }
       return;
     }
@@ -421,6 +437,11 @@ class HistEvaluator {
 
     GradStats parent_sum = candidate.split.left_sum;
     parent_sum.Add(candidate.split.right_sum);
+#if defined(XGBOOST_USE_METAL)
+    // CUDA converts (integer left + integer right) only once for parent weight
+    // and cover. Adding the two rounded views can lose cancellation bits.
+    if (ctx_->IsMPS()) parent_sum = snode_[candidate.nid].stats;
+#endif
     auto base_weight = evaluator.CalcWeight(candidate.nid, *param_, GradStats{parent_sum});
     auto left_weight =
         evaluator.CalcWeight(candidate.nid, *param_, GradStats{candidate.split.left_sum});
@@ -449,6 +470,12 @@ class HistEvaluator {
     evaluator = tree_evaluator_.GetEvaluator();
 
     snode_.resize(tree.Size());
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      snode_[left_child].quantized = snode_[candidate.nid].quantized_left;
+      snode_[right_child].quantized = snode_[candidate.nid].quantized_right;
+    }
+#endif
     snode_.at(left_child).stats = candidate.split.left_sum;
     snode_.at(left_child).root_gain =
         evaluator.CalcGain(candidate.nid, *param_, GradStats{candidate.split.left_sum});
@@ -463,8 +490,14 @@ class HistEvaluator {
   [[nodiscard]] auto Evaluator() const { return tree_evaluator_.GetEvaluator(); }
   [[nodiscard]] auto const &Stats() const { return snode_; }
 
-  float InitRoot(GradStats const &root_sum) {
+  float InitRoot(GradStats const& root_sum, GradientPairInt64 const* quantized = nullptr) {
     snode_.resize(1);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      CHECK(quantized);
+      snode_[0].quantized = *quantized;
+    }
+#endif
     auto root_evaluator = tree_evaluator_.GetEvaluator();
 
     snode_[0].stats = GradStats{root_sum.GetGrad(), root_sum.GetHess()};

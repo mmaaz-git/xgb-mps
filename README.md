@@ -14,16 +14,18 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **CUDA-ordered integer reduced-leaf fitting**. Original
-value-gradient scales are retained before float sampling; leaf sums and external-page
-accumulation stay integer until materialized for final weights. The full suite passes
-**1,310 Python tests**, all native checks and the CPU-only build/API check.
-[Validation](validation/integer-leaf-sums-m3.txt). NVIDIA execution equivalence
-remains unverified.
+Latest validated step: **CUDA-order scalar integer splits**. Numeric and
+categorical candidates retain integer parent/prefix/missing/child sums, and scalar
+trees use CUDA's enumeration and missing-direction tie rules. Independent native
+checks pass **792 cases / 123,984 bins** exactly. The full suite passes **1,395 Python
+tests**, all native suites and the CPU-only build/API check; a stricter leaf-stop
+audit also passes all 222 affected tests.
+[Validation](validation/cuda-integer-splits-m3.txt). Vector-leaf integer split
+alignment and NVIDIA execution equivalence remain unfinished.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
-remaining objective initialization and training-state operations,
-CUDA algorithm alignment, categorical/metadata operations, Apple GPU array
+vector-leaf integer split scans, remaining objective initialization and training-state
+operations, CUDA algorithm alignment, categorical/metadata operations, Apple GPU array
 interoperability and distributed collectives. AFT still has CPU corrections;
 some long-run ranking and Covertype comparisons have numerical differences.
 Persistent GPU ownership and less synchronization also remain unfinished.
@@ -101,15 +103,15 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | --- | --- |
 | Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; both sampling methods/roots share integer state; weighted sketches still need CUDA alignment |
 | Gradient state | Shared per-tree integer gradients/scales for both sampling methods, all roots and histograms; GPU target/layout copies and bit-preserving Hessian extraction |
-| Histograms | Dense/sparse indices, external pages, scaled integer sums and shared-memory accumulation; resident integer cache retains page additions/subtractions, with a binary64 view for split evaluation |
-| Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps interaction masks |
+| Histograms | Dense/sparse indices, external pages, scaled integer sums and shared-memory accumulation; resident integer cache retains page additions/subtractions; scalar split scans read integers directly, with a binary64 view for host/vector consumers |
+| Split evaluation | Scalar CUDA-order integer scans/children, numeric and categorical candidates, strict missing-direction ties; vector evaluation retains CPU-order binary64 scans. Regularization and monotonic bounds supported; feature-winner reduction/interaction metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; adapter-built QuantileDMatrix bins remain CPU |
 | Feature sketches | GPU group/Hessian weighting, sorted-column weighted summaries, streaming level compaction and final numeric merging/pruning; row queues and value sorting remain CPU; final cut materialization remains host, as in CUDA |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
-| Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; split scans/child statistics still need integer alignment |
+| Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; scalar split statistics retain integers, while vector split statistics still need alignment |
 | Root statistics / stump fitting | All scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; objective stump fitting retains its separate binary64 GPU reduction |
 | Reduced-gradient leaf fitting | Original value scales → float sampling replay → per-row integer conversion → integer leaf/page sums; binary64 view for regularized/clipped final weights; host tree receives completed leaves |
 | Linear coordinate descent | GPU bias/feature gradient sums and residual updates; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
@@ -1865,8 +1867,8 @@ passes **1,218 Python tests (one skipped)**, every native suite and the CPU-only
 build/check. No tolerance was widened and no performance benchmark was run.
 
 At this cache checkpoint, quantization order and shared root state remained
-unfinished; the next update below implements them for uniform training. Leaf
-statistics, split scans and gradient-based sampling still need integer alignment.
+unfinished; later updates below implement shared state, both sampling methods,
+integer reduced leaves and scalar splits. Vector split statistics remain unfinished.
 
 
 ### Shared quantized state and CUDA uniform sampling
@@ -1932,6 +1934,33 @@ outlier. The full run passes **1,310 Python tests (one skipped)**, all native su
 and the independent CPU-only build/API check, without widening tolerances.
 
 The previous binary64 low-level API retains regression coverage; production reduced
-leaf fitting uses the integer path. Split scans and child statistics still require
-integer alignment. Other ledger gaps and actual NVIDIA execution validation remain;
+leaf fitting uses the integer path. At this checkpoint, split scans and child
+statistics still required integer alignment; the next update addresses scalar
+splits. Other ledger gaps and actual NVIDIA execution validation remain;
 no new performance measurements accompany this checkpoint.
+
+
+### CUDA-order scalar integer splits
+
+Scalar `hist` and `approx` training now preserve integers through histogram scans,
+missing-value subtraction, candidate selection and persistent child-node statistics.
+Numeric scans are exclusive, missing-direction gain ties go right, and categorical
+partitions retain CUDA's stable ordering and enumeration. Feature selection uses
+raw child gains before subtracting parent gain. Tiny category weights/gains use
+IEEE-preserving comparisons after exact tests exposed Metal's native flush-to-zero
+behavior. Host tree orchestration remains; vector-leaf integer splits are next.
+
+Independent native checks cover 792 cases, including 72 cancellation cases. New
+public tests audit complete trees against CUDA-derived host formulas, including
+cache eviction, external pages, constraints, sampling and deeper child cancellation.
+Existing scalar column/sampling/cache tests use those references where CPU split
+rules differ. Strict CPU comparisons remain for compatible positive-weight
+fixtures; zero-weight coverage remains in CUDA-source audits. The initial full run
+exposed 28 CPU-model-identity failures; no tolerance was widened to hide them.
+Final validation passes **1,395 Python tests (one skipped)**, all native suites and
+the CPU-only build/API check. A final oracle improvement also checks premature
+leaf stops; all 222 affected tests pass.
+
+[Scope and remaining work](docs/CUDA_PARITY.md#scalar-cuda-order-integer-splits).
+This is local source-derived validation, not measured NVIDIA equivalence. No new
+performance benchmark was run.

@@ -13,6 +13,26 @@ class SplitWorkspace {
 };
 std::unique_ptr<SplitWorkspace> MakeSplitWorkspace();
 
+// CUDA scalar split semantics: integer prefixes/missing/children, exclusive
+// numeric scans, strict missing-direction comparison (ties go right).
+struct QuantizedSplitTask {
+  std::uint32_t begin, end, kind, limit;
+  GradientPairInt64 parent;
+  float lower, upper;
+  std::int32_t monotone;
+  std::uint32_t padding{0};
+};
+struct QuantizedSplitResult {
+  GradientPairInt64 left, right;
+  // Raw child gain: choose the winning feature BEFORE subtracting parent gain.
+  float gain;
+  // Numeric: exclusive prefix position, including position zero (-infinity).
+  // Categorical: category index or sorted partition boundary.
+  std::int32_t bin;
+  std::uint32_t default_left, partition;
+  GradientPairPrecise left_sum, right_sum;
+};
+
 struct SplitTask {
   std::uint32_t begin, end, kind, limit;
   double parent_grad, parent_hess;
@@ -22,6 +42,12 @@ struct SplitTask {
 struct SplitParameters {
   float reg_lambda, reg_alpha, max_delta_step, min_child_weight;
 };
+void EvaluateQuantizedSplits(Span<HistogramInput const> histograms,
+                             Span<QuantizedSplitTask const> tasks,
+                             SplitParameters const& parameters,
+                             std::vector<QuantizedSplitResult>* results,
+                             std::vector<std::uint32_t>* sorted_categories,
+                             SplitWorkspace* workspace);
 struct SplitResult {
   double left_grad, left_hess, right_grad, right_hess;
   float gain;

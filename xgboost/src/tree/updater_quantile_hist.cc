@@ -569,9 +569,10 @@ class HistUpdater {
 
     {
       GradientPairPrecise grad_stat;
+      GradientPairInt64 quantized_root;
 #if defined(XGBOOST_USE_METAL)
       if (ctx_->IsMPS()) {
-        quantized_->Sum(linalg::MakeVec(&grad_stat, 1));
+        quantized_->Sum(linalg::MakeVec(&grad_stat, 1), {&quantized_root, 1});
       } else
 #endif
           if (p_fmat->IsDense() && !collective::IsDistributed()) {
@@ -604,7 +605,7 @@ class HistUpdater {
         collective::SafeColl(rc);
       }
 
-      auto weight = evaluator_->InitRoot(GradStats{grad_stat});
+      auto weight = evaluator_->InitRoot(GradStats{grad_stat}, &quantized_root);
       p_tree->Stat(RegTree::kRoot).sum_hess = grad_stat.GetHess();
       p_tree->Stat(RegTree::kRoot).base_weight = weight;
       (*p_tree)[RegTree::kRoot].SetLeaf(param_->learning_rate * weight);

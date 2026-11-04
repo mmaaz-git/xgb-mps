@@ -1,0 +1,95 @@
+Scalar CUDA-order integer split validation
+Apple M3 MacBook Air, 8 CPU / 10 GPU cores, 16 GB; macOS 26.6.2
+2026-11-04 UTC (local November 4, America/Los_Angeles)
+
+RESULT: Metal build, ALL native suites, full Python suite and CPU-only build/API
+checks PASS. No NVIDIA execution comparison; no performance benchmark performed.
+
+Production changes:
+- Scalar hist/approx split gathering reads original integer histogram buffers.
+- Root sums return exact integers alongside their rounded view. Persistent per-node
+  integer parent/child sums survive loss-guide queues and histogram scratch reuse.
+- CUDA exclusive numeric prefixes; integer missing/child differences; strict
+  missing-left versus missing-right comparison, with ties right for numeric/OHE.
+- Stable categorical weights, forward/backward partition order and threshold limit.
+- Raw child-gain selection before subtracting parent gain once; first candidate
+  in CUDA enumeration/feature order wins ties.
+- Tiny category weights/gains and bounds retain IEEE comparisons; no native Metal
+  comparison flush-to-zero in the new evaluator. Shared weight helper now also
+  preserves subnormal max-delta and bound predicates.
+- QuantizedSplitResult includes exact children plus materialized binary64 sums.
+- cuda_integer_split_dispatches exposes the actual production scalar dispatch;
+  CPU-only builds expose zero. Statistics/internal Sum ABI changed: all native
+  test executables were rebuilt before execution.
+
+Exact source-derived native checks:
+  792 split cases / 123,984 bins / 72 cancellation cases.
+  Compare integer children, materialized sums, FP32 gains, bins, directions,
+  category order, partition sizes and output guards exactly.
+  Covers empty/partial/multiple warps, 0-1027 bins, regularization/clipping,
+  monotone bounds, missing/zero Hessians, ties, stable categories and wide scales.
+  228 shared-state cases / 4,319,326 input pairs now also check exact returned
+  root integers and guards against independently quantized/sampled sums.
+  All existing native suites passed, including previous CUDA quantizer/samplers,
+  integer caches/leaf sums, binary64 math, legacy scalar/vector splits, objective,
+  metric, row/column, sketch, prediction and SHAP checks.
+
+New public coverage: 85 tests
+  64 complete-tree cases: numeric/OHE/partition/external layouts; regularization,
+  monotonic/interaction constraints; depthwise/loss-guide; cache sizes 1/64.
+  12 sampled/unsampled weighted hist/approx cases (including zero-weight rows).
+  3 explicit missing-direction tie cases.
+  6 deeper child cancellation cases, one page/external pages, exponents 0/54/60.
+  Independent Python oracle checks the best allowed feature/candidate, exact
+  integer row membership, gain, cover, base/leaf weights and valid leaf stopping.
+  Column-sampled tests audit the best candidate within each selected feature;
+  they do not claim to reproduce CUDA column sampling.
+
+Validation chronology and logs (results/ files are local, not committed):
+  08:25:09 UTC: results/run-integer-splits-full-v1.sh
+    Metal build PASS: results/build-integer-splits-full-v1.log
+    All native suites PASS: results/test-integer-splits-full-v1.log
+    Initial Python result: 28 failed, 1367 passed, 1 skipped, 308 warnings.
+    The combined driver exited 1 at Python; CPU stages were not run in this job.
+  Those failures exposed invalid CPU-model-identity assumptions: scalar CUDA
+  missing-direction/candidate order differs, particularly with zero-weight or
+  sampled-out rows and with changing data. No tolerance was widened.
+    Strict CPU-identity fixtures now use positive weights. Zero-weight coverage
+    remains in CUDA-source audits. Scalar column/sampling/resident-cache checks
+    audit recorded gradients and original integer state. Gradient-based tests
+    expose exact host-reference integers instead of requantizing rounded FP32.
+    Sampling/cache tests also compare recorded-objective and built-in-objective
+    training exactly. Changing-data workspaces compare the same model on CPU/MPS.
+    Vector tests retain their existing CPU comparisons.
+  08:33:33-08:34:16 UTC: results/test-integer-splits-migration-v1.log
+    393 passed, 1 skipped, 1 warning in 40.67 seconds.
+  08:34:32-08:34:39 UTC: results/run-integer-splits-cpu-v1.sh
+    CPU-only build PASS: results/build-cpu-integer-splits-v1.log
+    CPU-only API/device error PASS: results/check-cpu-integer-splits-v1.log
+  08:34:53-08:36:02 UTC: results/run-integer-splits-python-v2.sh
+    COMPLETE PYTHON SUITE: 1395 passed, 1 skipped, 308 warnings in 67.12 seconds.
+    Log: results/test-integer-splits-python-v2.log
+  08:37:11-08:37:43 UTC: final oracle-review improvement checks premature leaf stops
+    All affected tests rerun: 222 passed in 29.98 seconds.
+    Log: results/test-integer-splits-leaf-audit-v1.log
+  No production source changes after the native/full-build run. Subsequent changes
+  were test-reference migration/strengthening and documentation.
+
+Issues caught during development:
+  Metal does not support 64-bit SIMD broadcast directly: broadcast both 32-bit
+  halves, preserving the full integer carry.
+  Subnormal categorical weights initially compared as zero using native floats:
+  fixed with IEEE-preserving comparisons, retaining exact expectations.
+  The initial full-tree oracle expected unscaled base_weights at terminal children;
+  RegTree stores eta-scaled weights there. Corrected the oracle's serialization
+  interpretation; production arithmetic was unchanged.
+
+Limits / remaining work:
+  Vector-leaf scans and child statistics still use the legacy binary64 path.
+  Feature winner reduction, constraint/interaction metadata and scalar final
+  weight application remain host operations. CUDA sketch/column RNG alignment
+  and other ledger gaps are unfinished. Extreme nonfinite gain/host expansion
+  behavior is not resolved. Explicit separately rounded binary64 gain arithmetic
+  and default IEEE comparison behavior are source-derived models; NVCC contraction
+  and CUDA build/hardware variation still require actual NVIDIA comparisons.
+  These local exact tests do not establish full CUDA parity.

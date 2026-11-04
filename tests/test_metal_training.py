@@ -4,6 +4,7 @@ import pytest
 import scipy.sparse as sp
 import xgboost as xgb
 from cuda_uniform_reference import UniformSquaredError
+from cuda_split_reference import RecordedSquaredError, audit_recorded, audit_tree, dense_values, trees
 
 @pytest.mark.parametrize("layout", ["dense", "missing", "sparse"])
 @pytest.mark.parametrize("growth", ["depthwise", "lossguide"])
@@ -22,7 +23,8 @@ def test_resident_rows_and_page_cache(metal, layout, growth):
     cpu = xgb.train(p | {"device": "cpu", "subsample": 1.}, d, 7,
                     obj=UniformSquaredError(p))
     before = xgb.metal_info()
-    gpu = xgb.train(p | {"device": "mps"}, d, 7)
+    recorded = RecordedSquaredError()
+    gpu = xgb.train(p | {"device": "mps"}, d, 7, obj=recorded)
     after = xgb.metal_info()
     assert after["index_uploads"] - before["index_uploads"] == 1
     assert after["row_init_dispatches"] - before["row_init_dispatches"] == 7
@@ -30,7 +32,7 @@ def test_resident_rows_and_page_cache(metal, layout, growth):
     assert after["partition_dispatches"] > before["partition_dispatches"]
     assert after["split_dispatches"] > before["split_dispatches"]
     assert after["resident_histogram_dispatches"] - before["resident_histogram_dispatches"] == after["histogram_dispatches"] - before["histogram_dispatches"]
-    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+    assert min(audit_recorded(gpu,d,x,recorded,p)) > 0
     # Reuse the source page in a different booster without reuploading immutable bins.
     before = xgb.metal_info()["index_uploads"]
     fresh = xgb.train(p | {"device": "mps"}, d, 7)
@@ -74,6 +76,18 @@ def test_row_workspace_resize_and_reuse(metal, layout, targets):
     params = dict(tree_method="hist", max_depth=3, nthread=2, base_score=.2,
                    multi_strategy="multi_output_tree")
     models = {}
+    recorded = RecordedSquaredError() if targets == 1 else None
+
+    def check_current_tree():
+        if recorded is None:
+            np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
+                                       rtol=2e-5, atol=2e-5)
+        else:
+            g,h=recorded.gradients[-1]
+            audit_tree(trees(models["mps"])[-1],dense_values(x),d.get_quantile_cut(),["q"]*x.shape[1],
+                       g.reshape(-1),h.reshape(-1),params)
+            host=xgb.Booster(params={"device":"cpu"},model_file=models["mps"].save_raw())
+            np.testing.assert_array_equal(models["mps"].predict(d),host.predict(d))
     for iteration, rows in enumerate([257, 2049, 65, 4097, 129]):
         x = rng.normal(size=(rows, 8)).astype(np.float32)
         y = x[:, :targets] * 2 + x[:, -1, None]
@@ -84,20 +98,19 @@ def test_row_workspace_resize_and_reuse(metal, layout, targets):
         if not models:
             models = {device: xgb.Booster(params | {"device": device}, cache=[d])
                        for device in ["cpu", "mps"]}
-        for model in models.values():
-            model.update(d, iteration)
-        np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
-                                   rtol=2e-5, atol=2e-5)
+        for device,model in models.items():
+            model.update(d, iteration, fobj=recorded if device == "mps" else None)
+        check_current_tree()
     before = xgb.metal_info()
     for iteration in range(5, 8):
-        for model in models.values():
-            model.update(d, iteration)
+        for device,model in models.items():
+            model.update(d, iteration, fobj=recorded if device == "mps" else None)
+        check_current_tree()
     after = xgb.metal_info()
     allocations = after["row_workspace_allocations"] - before["row_workspace_allocations"]
     reuses = after["row_workspace_reuses"] - before["row_workspace_reuses"]
     assert reuses > allocations
-    np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
-                               rtol=2e-5, atol=2e-5)
+    check_current_tree()
 
 
 @pytest.mark.parametrize("targets", [1, 3])

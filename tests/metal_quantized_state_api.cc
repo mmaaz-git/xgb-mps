@@ -43,7 +43,8 @@ int Exponent(linalg::MatrixView<GradientPair const> input, std::size_t t, bool h
   return 62 - exp;
 }
 GradientPairPrecise Oracle(linalg::MatrixView<GradientPair const> input, std::size_t target,
-                           float probability, std::uint32_t seed) {
+                           float probability, std::uint32_t seed,
+                           GradientPairInt64* integers = nullptr) {
   auto ge = Exponent(input, target, false), he = Exponent(input, target, true);
   std::int64_t gs = 0, hs = 0;
   for (std::size_t r = 0; r < input.Shape(0); ++r) {
@@ -55,6 +56,7 @@ GradientPairPrecise Oracle(linalg::MatrixView<GradientPair const> input, std::si
     gs += g;
     hs += h;
   }
+  if (integers) *integers = {gs, hs};
   return {std::ldexp(double(gs), -ge), std::ldexp(double(hs), -he)};
 }
 void Run(std::size_t rows, std::size_t targets, unsigned layout, float p, std::uint32_t seed) {
@@ -93,15 +95,21 @@ void Run(std::size_t rows, std::size_t targets, unsigned layout, float p, std::u
     }
   auto saved = source;
   std::vector<GradientPairPrecise> expected(targets), result(targets * 2 + 4, {13, 17});
-  for (std::size_t t = 0; t < targets; ++t) expected[t] = Oracle(input, t, p, seed);
+  std::vector<GradientPairInt64> expected_integer(targets), exact(targets + 2, {19, 23});
+  for (std::size_t t = 0; t < targets; ++t)
+    expected[t] = Oracle(input, t, p, seed, &expected_integer[t]);
   auto before = metal::GetStatistics();
   auto state = metal::MakeQuantizedGradients(input);
   Check(state->Rows() == rows && state->Targets() == targets, "State shape changed");
   state->SampleUniform(p, seed);
   linalg::VectorView<GradientPairPrecise> out{
       {result.data() + 2, targets * 2}, {targets}, {std::size_t{2}}, DeviceOrd::CPU()};
-  state->Sum(out);
+  state->Sum(out, {exact.data() + 1, targets});
   for (std::size_t t = 0; t < targets; ++t) Same(out(t), expected[t]);
+  Check(std::equal(expected_integer.begin(), expected_integer.end(), exact.begin() + 1),
+        "Exact root integers differ from CUDA-formula sums");
+  Check(exact.front() == GradientPairInt64{19, 23} && exact.back() == GradientPairInt64{19, 23},
+        "Exact root output guards changed");
   Same(result.front(), {13, 17});
   Same(result.back(), {13, 17});
   for (std::size_t t = 0; t < targets; ++t) Same(result[3 + 2 * t], {13, 17});

@@ -120,10 +120,11 @@ class GlobalApproxBuilder {
     best.nid = RegTree::kRoot;
     best.depth = 0;
     GradStats root_sum;
+    GradientPairInt64 quantized_root;
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       GradientPairPrecise sum;
-      quantized_->Sum(linalg::MakeVec(&sum, 1));
+      quantized_->Sum(linalg::MakeVec(&sum, 1), {&quantized_root, 1});
       root_sum = GradStats{sum};
     } else
 #endif
@@ -139,7 +140,7 @@ class GlobalApproxBuilder {
                                            linalg::MakeTensorView(ctx_, gpair, gpair.size(), 1),
                                            best, BatchSpec(*param_, hess));
 
-    auto weight = evaluator_.InitRoot(root_sum);
+    auto weight = evaluator_.InitRoot(root_sum, &quantized_root);
     p_tree->Stat(RegTree::kRoot).sum_hess = root_sum.GetHess();
     p_tree->Stat(RegTree::kRoot).base_weight = weight;
     (*p_tree)[RegTree::kRoot].SetLeaf(param_->learning_rate * weight);

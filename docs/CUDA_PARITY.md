@@ -32,8 +32,9 @@ work, not accepted substitutes for CUDA behavior:
   both integer sampling methods, histogram caches and all scalar/vector/hist/approx
   root reductions now share GPU-owned integer state. Gradient-based sampling follows
   the CUDA pipeline described below. Reduced value-leaf sums now quantize sampled
-  floats with original value scales and accumulate integers across pages. Split
-  scans/child statistics still need integer-state alignment.
+  floats with original value scales and accumulate integers across pages. Scalar
+  split scans and persistent child statistics now retain integers as well; vector
+  split scans/child statistics still need that alignment.
 - Row/column/ranking sampling: uniform row sampling targets CUDA's modern
   `<cuda/std/random>` Philox4x64 branch, including seed consumption and replay.
   The older Thrust branch is not an equivalent stream. Gradient-based sampling now
@@ -48,9 +49,10 @@ work, not accepted substitutes for CUDA behavior:
   reductions and unchanged host selector snapshot.
 - Ranking metric edge cases: some degenerate-query fallbacks currently preserve
   CPU semantics where CUDA differs.
-- Split tie-breaking, reduction order, quantile statistics and objective edge
-  cases still need a complete source audit; GPU dispatch coverage alone is not
-  an algorithm-parity claim.
+- Scalar split enumeration now follows CUDA's exclusive numeric scan and strict
+  missing-direction comparison; vector split tie rules, other reduction order,
+  quantile statistics and objective edge cases still need a complete source audit.
+  GPU dispatch coverage alone is not an algorithm-parity claim.
 
 Architecture-specific mechanics may differ where Metal requires them. Algorithm
 changes must be explicit and justified, and any observed numerical differences
@@ -60,9 +62,9 @@ must be reported rather than hidden by widening test tolerances.
 | --- | --- | --- |
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
 | Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Both sampling methods and all roots share quantized state; weighted sketches still differ from CUDA; preprocessing remains hybrid |
-| Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Original per-tree scales feed both integer sampling methods, all roots and histograms; reduced value leaves now use original scales and integer sums; split statistics need integer alignment |
-| Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned integer cache; external-page accumulation and subtraction retain exact quantized sums, with a binary64 view materialized for existing split evaluators. GPU growth copies both buffers, empty first pages overwrite reused ranges, and feature gathering remains GPU. Host cache policy/metadata and binary64 split scans remain |
-| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host interaction masks and tree updates |
+| Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Original per-tree scales feed both integer sampling methods, all roots and histograms; reduced value leaves now use original scales and integer sums; scalar split statistics retain integers; vector split statistics need integer alignment |
+| Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned integer cache; external-page accumulation and subtraction retain exact quantized sums, with a binary64 view for host orchestration/legacy vector evaluation. GPU growth copies both buffers, empty first pages overwrite reused ranges, and feature gathering remains GPU. Scalar split gathering now reads integer buffers; host cache policy/metadata and vector binary64 scans remain |
+| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector evaluation still uses CPU-order binary64 scans, monotonic bounds and pooled weights. Feature winner reduction, interaction masks, constraint metadata and tree updates remain host |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; column initialization/selection/order run on Metal but still need CUDA RNG alignment |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
@@ -706,7 +708,7 @@ intended CUDA behavior in these cases.
 This validates the quantizer formulas on Metal, not actual NVIDIA execution or
 the whole CUDA training pipeline. Backend reduction topology can change FP64
 bound sums near rounding boundaries. Shared integer state now feeds both sampling
-methods and every root layout. Remaining work includes integer split scans/child statistics. Reduced value-leaf
+methods and every root layout. Remaining work includes vector integer split scans/child statistics. Reduced value-leaf
 sums now use original value quantizers and integer page accumulation. Histogram cache page
 addition/subtraction now retain integer statistics, as described below. Full Python regression validation passes without tolerance
 changes. See [validation](../validation/cuda-quantizer-m3.txt).
@@ -717,8 +719,8 @@ changes. See [validation](../validation/cuda-quantizer-m3.txt).
 Metal histogram caches now preserve quantized 64-bit gradient/Hessian pairs
 through page accumulation, growth, slot reuse and subtraction, matching the
 integer arithmetic in `tree/gpu_hist/histogram.cuh::SubtractionTrick`. A separate
-binary64 view is materialized for the existing split evaluator and host tree
-orchestration. Rounded values are never fed back into integer cache arithmetic.
+binary64 view is materialized for the legacy vector split evaluator and host tree
+orchestration. Scalar split evaluation reads the integer cache directly. Rounded values are never fed back into integer cache arithmetic.
 The buffers share a retained quantizer scale. This doubles persistent histogram
 storage from 16 to 32 bytes per bin while the binary64 view remains necessary.
 
@@ -733,11 +735,11 @@ hist root sums also reduce one feature's integer bins before conversion.
 This distinction matters with cancellation: `(2^61+3) - (2^61+1)` must give 2;
 subtracting the binary64 views gives 0. Similarly, accumulating page sums before
 conversion retains small terms that would disappear beside a large page sum.
-The current split scans and child statistics still consume binary64 views. All
-roots share integer state and both sampling methods follow original-gradient
-quantization. Reduced value-leaf sums now have their own original quantizers and
-integer cache, as described below. The remaining split gaps are not resolved by
-histogram/leaf cache arithmetic.
+Vector split scans and child statistics still consume binary64 views; scalar
+splits now retain integers through winner selection and child-node propagation.
+All roots share integer state and both sampling methods follow original-gradient
+quantization. Reduced value-leaf sums have their own original quantizers and
+integer cache. Vector split gaps are not resolved by histogram/leaf cache arithmetic.
 
 Native shader tests check **75 page/subtraction cases, 5,013,975 stored/subtracted
 pairs and 225 integer root reductions**, including cancellation, signed carries,
@@ -879,3 +881,83 @@ Float replay does not count again. CPU-only builds expose the counter as zero.
 The [validation record](../validation/cuda-gradient-sampling-m3.txt) records results.
 Full CUDA coverage and NVIDIA execution validation remain unfinished; performance
 benchmarking remains deferred.
+
+
+## Scalar CUDA-order integer splits
+
+The scalar `hist` and `approx` builders now gather the histogram's original
+integer buffer, using its retained quantizer. Root reduction returns both the
+integer sum and its binary64 view in one GPU command. Each node retains its exact
+integer parent and winning child sums; loss-guide entries cannot lose their
+statistics when split scratch or histogram-cache slots are reused. Base weight
+and parent cover use the materialized original parent, rather than adding two
+rounded child views.
+
+The source authority is `gpu_hist/evaluate_splits.cu`, `gpu_hist/evaluator.cu`,
+`updater_gpu_common.cuh` and `split_evaluator.h`:
+
+- Numeric candidates use exclusive integer prefixes, including the boundary at
+  negative infinity. Missing sums and both children are formed in integers;
+  only gain/weight inputs convert to binary64.
+- Numeric and one-hot candidates compare missing-left and missing-right gains
+  with strict `>`; ties go right. Candidate ties retain the first CUDA enumeration
+  position. Partition candidates retain forward-before-backward order, the
+  `max_cat_threshold - 1` candidate limit, and stable category-weight ordering.
+- Candidates compare raw FP32 child gains. Host feature reduction preserves
+  sampled-feature order on ties, then subtracts parent gain once. The old
+  conservative FP32 screening path is not used by this scalar CUDA-order kernel.
+- IEEE subnormal category weights and gains retain their ordering through integer
+  comparison keys/software-binary64 comparisons. Native Metal FP32 comparisons
+  flush these inputs; exact tests exposed and prevented that difference. Shared
+  scalar weight comparisons now also preserve tiny bounds/max-delta parameters.
+
+Local verification uses independent host CUDA-formula oracles, not CPU-booster
+identity. The native shader test compares **792 cases / 123,984 bins**, including
+**72 cancellation cases**, with exact integer children, materialized sums, gains,
+selected bins/directions, category order, partitions and output guards. Native
+shared-state tests also compare returned root integers directly with independent
+quantization/sampling sums.
+
+**85 new public training cases** audit complete scalar trees: the best feature
+and candidate across all allowed features, integer row/child membership, gains,
+cover, leaf weights and premature stopping below growth limits. They cover
+numeric/one-hot/partition features, missing and
+empty columns, regularization, monotonic and interaction constraints, depthwise/
+loss-guide growth, cache capacities 1/64, external pages, uniform sampling and
+`hist`/`approx`. Six cancellation cases force a deeper split to recover small
+child sums from an integer parent whose binary64 view lost them. Predictions and
+CPU-loaded model predictions agree exactly in these cancellation cases.
+
+The existing column-sampled scalar split tests now audit the best CUDA candidate
+within each selected feature; they do not claim to validate CUDA's column RNG.
+Vector split tests retain their prior CPU comparisons. Root-reduction tests now
+prevent splitting so CPU comparisons test root arithmetic independently of
+incompatible split tie rules. No numerical tolerance was widened.
+
+Remaining scope: vector-leaf integer splits; GPU feature-winner reduction,
+constraint/interaction metadata and scalar final-weight application; CUDA sketch
+and column-RNG differences; extreme nonfinite gain/host expansion semantics; and
+actual NVIDIA execution. Gain arithmetic currently uses explicit separately
+rounded binary64 operations with an FP32 leaf-weight square. NVCC contraction
+and build-dependent floating-point behavior have not been compared on NVIDIA;
+local exact results are not a hardware equivalence claim. No performance
+benchmarks were run for this change.
+
+Validation: [scalar integer splits on M3](../validation/cuda-integer-splits-m3.txt).
+
+Regression migration is explicit: the first complete run passed every native
+suite but reported 28 CPU-model-identity failures (1,367 Python tests passed).
+Strict CPU identity fixtures now use positive weights where zero-weight missing
+rows previously created different legitimate default directions. Zero-weight
+coverage remains in the CUDA-source training audits, including weighted `approx`.
+Scalar row/column sampling and resident-cache tests now audit the recorded raw
+gradients against exact source-derived integer states/candidates. Gradient sampling
+exposes its original host-oracle integers, avoiding a lossy FP32 bridge. Repeated
+built-in-objective training still matches recorded-objective training exactly in
+the sampling/cache tests. Changing-data workspace tests compare predictions for
+the same serialized model on CPU/MPS and audit each new scalar tree. Vector tests
+retain their CPU model comparisons. The focused migration run passes 393 tests
+(one skipped). The complete final suite passes **1,395 Python tests (one skipped)**,
+all native suites and the CPU-only build/API check. A final strengthening of the
+oracle's leaf-stopping conditions passes all 222 affected tests. See the validation
+file for separate logs and the initial failure record.

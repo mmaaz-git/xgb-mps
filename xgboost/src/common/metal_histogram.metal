@@ -1046,15 +1046,15 @@ inline float xgb_split_weight(DoublePair sum, SplitParameters p, float lower, fl
   else if (xgb_dlt(sum.g, xgb_dneg(alpha)))
     threshold = xgb_dadd(sum.g, alpha);
   XGBDouble weight = xgb_ddiv(xgb_dneg(threshold), xgb_dadd(sum.h, xgb_dfrom_float(p.reg_lambda)));
-  if (p.max_delta_step != 0.0f) {
+  if ((as_type<uint>(p.max_delta_step) & 0x7fffffffu) != 0) {
     XGBDouble delta = xgb_dfrom_float(p.max_delta_step);
     if (xgb_dlt(delta, {weight.bits & ~kDoubleSign}))
       weight = {delta.bits | (weight.bits & kDoubleSign)};
   }
   float value = xgb_dto_float(weight);
-  if (value < lower)
+  if (xgb_dlt(xgb_dfrom_float(value), xgb_dfrom_float(lower)))
     value = lower;
-  else if (value > upper)
+  else if (xgb_dlt(xgb_dfrom_float(upper), xgb_dfrom_float(value)))
     value = upper;
   return value;
 }
@@ -5378,6 +5378,7 @@ kernel void xgb_quantized_sum_finish(device const ulong2* partial [[buffer(0)]],
                                      device ulong2* output [[buffer(1)]],
                                      constant ulong& blocks [[buffer(2)]],
                                      device const GradientScale& scale [[buffer(3)]],
+                                     device ulong2* exact [[buffer(4)]],
                                      uint tid [[thread_index_in_threadgroup]]) {
   threadgroup ulong2 sums[256];
   ulong2 sum(0);
@@ -5387,9 +5388,11 @@ kernel void xgb_quantized_sum_finish(device const ulong2* partial [[buffer(0)]],
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (tid < width) sums[tid] += sums[tid + width];
   }
-  if (!tid)
+  if (!tid) {
+    exact[0] = sums[0];
     output[0] = ulong2(xgb_scaled_integer(sums[0].x, -scale.grad_exponent),
                        xgb_scaled_integer(sums[0].y, -scale.hess_exponent));
+  }
 }
 
 // CUDA RandomWeight's <cuda/std/random> branch: Philox4x64-10 seeded with
@@ -5753,5 +5756,154 @@ kernel void xgb_leaf_integer_sum_finish(
     GradientScale scale = scales[group.y];
     output[at] = ulong2(xgb_scaled_integer(value.x, -scale.grad_exponent),
                         xgb_scaled_integer(value.y, -scale.hess_exponent));
+  }
+}
+
+// Scalar CUDA histogram splits. Unlike the legacy binary64/CPU-order evaluator,
+// all scan, missing, parent and child arithmetic stays in the original integers.
+// Source: tree/gpu_hist/evaluate_splits.cu, EvaluateSplitAgent (32 lanes).
+struct QuantizedSplitTask {
+  uint begin, end, kind, limit;
+  ulong pg, ph;
+  float lower, upper;
+  int monotone;
+  uint padding;
+};
+struct QuantizedSplitResult {
+  ulong lg, lh, rg, rh;
+  float gain;
+  int bin;
+  uint missing, partition;
+  ulong flg, flh, frg, frh;
+};
+inline DoublePair xgb_split_dequantize(ulong2 value, GradientScale scale) {
+  return {{xgb_scaled_integer(value.x, -scale.grad_exponent)},
+          {xgb_scaled_integer(value.y, -scale.hess_exponent)}};
+}
+// Metal native FP32 comparisons can flush subnormals. CUDA's default IEEE
+// comparisons retain them, including stable category ordering and gain ties.
+inline bool xgb_cuda_float_lt(float a, float b) {
+  return xgb_dlt(xgb_dfrom_float(a), xgb_dfrom_float(b));
+}
+inline bool xgb_cuda_float_le(float a, float b) {
+  uint aa = as_type<uint>(a) & 0x7fffffffu, bb = as_type<uint>(b) & 0x7fffffffu;
+  return aa <= 0x7f800000u && bb <= 0x7f800000u && !xgb_cuda_float_lt(b, a);
+}
+inline uint xgb_cuda_gain_key(float gain) {
+  uint bits = as_type<uint>(gain);
+  if (!(bits & 0x7fffffffu)) bits = 0;  // +/-zero compare equal.
+  return bits & 0x80000000u ? ~bits : bits ^ 0x80000000u;
+}
+inline float xgb_quantized_split_gain(ulong2 left, ulong2 right, GradientScale scale,
+                                      QuantizedSplitTask task, SplitParameters p) {
+  DoublePair l = xgb_split_dequantize(left, scale), r = xgb_split_dequantize(right, scale);
+  XGBDouble minimum = xgb_dfrom_float(p.min_child_weight);
+  if (!xgb_dlt({0}, l.h) || !xgb_dlt({0}, r.h) || xgb_dlt(l.h, minimum) || xgb_dlt(r.h, minimum))
+    return -INFINITY;
+  float lw = xgb_split_weight(l, p, task.lower, task.upper);
+  float rw = xgb_split_weight(r, p, task.lower, task.upper);
+  if ((task.monotone > 0 && !xgb_cuda_float_le(lw, rw)) ||
+      (task.monotone < 0 && !xgb_cuda_float_le(rw, lw)))
+    return -INFINITY;
+  return xgb_fadd_preserve(xgb_split_gain_weight(l, lw, p), xgb_split_gain_weight(r, rw, p));
+}
+inline void xgb_quantized_split_update(float gain, ulong2 left, ulong2 right, uint bin,
+                                       uint missing, uint partition,
+                                       thread QuantizedSplitResult& best) {
+  // CUDA selects on raw child gain, before subtracting the parent gain. Keep
+  // negative/zero raw gains and strict updates; NaNs never win this comparison.
+  if (xgb_cuda_float_lt(best.gain, gain))
+    best = {left.x, left.y, right.x, right.y, gain, int(bin), missing, partition, 0, 0, 0, 0};
+}
+kernel void xgb_evaluate_quantized_splits(
+    device const ulong2* hist [[buffer(0)]], device const QuantizedSplitTask* tasks [[buffer(1)]],
+    constant SplitParameters& p [[buffer(2)]], device QuantizedSplitResult* results [[buffer(3)]],
+    device uint* order [[buffer(4)]], device float* weights [[buffer(5)]],
+    device ulong2* scans [[buffer(6)]], device const GradientScale& scale [[buffer(7)]],
+    uint task_id [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]) {
+  QuantizedSplitTask task = tasks[task_id];
+  uint n = task.end - task.begin;
+  ulong2 parent(task.pg, task.ph);
+  if (task.kind == 2) {
+    for (uint i = lane; i < n; i += 32) {
+      order[task.begin + i] = i;
+      weights[task.begin + i] = xgb_split_weight(xgb_split_dequantize(hist[task.begin + i], scale),
+                                                 p, -INFINITY, INFINITY);
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+  if (lane == 0 && task.kind == 2) {
+    // CUDA's stable category-weight ordering retains bin order on equal keys.
+    for (uint i = 1; i < n; ++i) {
+      uint value = order[task.begin + i], j = i;
+      float key = weights[task.begin + value];
+      while (j && xgb_cuda_float_lt(key, weights[task.begin + order[task.begin + j - 1]])) {
+        order[task.begin + j] = order[task.begin + j - 1];
+        --j;
+      }
+      order[task.begin + j] = value;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+  ulong2 carry(0);
+  for (uint base = 0; base < n; base += 32) {
+    uint i = base + lane;
+    ulong2 value(0);
+    if (i < n) {
+      uint bin = task.kind == 2 ? order[task.begin + i] : i;
+      value = hist[task.begin + bin];
+    }
+    ulong2 prefix(xgb_simd_prefix64(value.x), xgb_simd_prefix64(value.y));
+    prefix += carry;
+    if (i < n) scans[task.begin + i] = prefix;
+    uint2 lo = simd_broadcast(uint2(prefix), 31);
+    uint2 hi = simd_broadcast(uint2(prefix >> 32), 31);
+    carry = ulong2(lo) | (ulong2(hi) << 32);
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+  ulong2 missing = parent - carry;
+  QuantizedSplitResult best{0, 0, 0, 0, -MAXFLOAT, -1, 0, 0, 0, 0, 0, 0};
+  if (task.kind < 2) {
+    for (uint i = lane; i < n; i += 32) {
+      // Numeric: EXCLUSIVE prefix. One-hot: all nonmissing bins except i.
+      ulong2 scan = task.kind == 0 ? (i ? scans[task.begin + i - 1] : ulong2(0))
+                                   : carry - hist[task.begin + i];
+      ulong2 left_missing = scan + missing;
+      float gl = xgb_quantized_split_gain(left_missing, parent - left_missing, scale, task, p);
+      float gr = xgb_quantized_split_gain(scan, parent - scan, scale, task, p);
+      // CUDA LossChangeMissing uses strict >; equal gains send missing RIGHT.
+      bool ml = xgb_cuda_float_lt(gr, gl);
+      ulong2 left = ml ? left_missing : scan;
+      xgb_quantized_split_update(ml ? gl : gr, left, parent - left, i, uint(ml), 0, best);
+    }
+  } else {
+    uint limit = min(n, task.limit);
+    // Forward sorted prefixes form the RIGHT child, with missing on the left.
+    for (uint i = lane; i + 1 < limit; i += 32) {
+      ulong2 right = scans[task.begin + i];
+      float gain = xgb_quantized_split_gain(parent - right, right, scale, task, p);
+      xgb_quantized_split_update(gain, parent - right, right, i, 1, i + 1, best);
+    }
+    // Backward suffixes form the LEFT child, with missing on the right.
+    for (int i = int(n) - 1 - int(lane); i > int(n - limit); i -= 32) {
+      ulong2 left = carry - scans[task.begin + uint(i) - 1];
+      float gain = xgb_quantized_split_gain(left, parent - left, scale, task, p);
+      xgb_quantized_split_update(gain, left, parent - left, uint(i), 0, uint(i), best);
+    }
+  }
+  uint rank = best.bin < 0 ? 0xffffffffu : uint(best.bin);
+  if (best.bin >= 0 && task.kind == 2 && !best.missing) rank = 2 * n - 1 - uint(best.bin);
+  // cub::ArgMax chooses the first lane in each warp; strict candidate updates
+  // across chunks then preserve the first bin (forward before backward).
+  uint key = xgb_cuda_gain_key(best.gain), top = simd_max(key);
+  uint first = simd_min(key == top ? rank : 0xffffffffu);
+  if ((best.bin >= 0 && key == top && rank == first) || (first == 0xffffffffu && lane == 0)) {
+    DoublePair left = xgb_split_dequantize(ulong2(best.lg, best.lh), scale);
+    DoublePair right = xgb_split_dequantize(ulong2(best.rg, best.rh), scale);
+    best.flg = left.g.bits;
+    best.flh = left.h.bits;
+    best.frg = right.g.bits;
+    best.frh = right.h.bits;
+    results[task_id] = best;
   }
 }

@@ -5,6 +5,8 @@ import numpy as np
 import pytest
 import xgboost as xgb
 
+from cuda_split_reference import RecordedSquaredError, audit_tree, trees
+
 
 @pytest.mark.parametrize("strategy", ["one_output_per_tree", "multi_output_tree"])
 @pytest.mark.parametrize("layout", ["numeric", "categorical_onehot", "categorical_partition"])
@@ -28,7 +30,7 @@ def test_gpu_split_selection(metal, strategy, layout, constraints, tmp_path):
     # Row RNGs intentionally differ. Isolate splits/column sampling here;
     # test_metal_sampling supplies explicit CUDA row masks for sampled training.
     p = dict(tree_method="hist", multi_strategy=strategy, max_depth=4,
-             max_bin=33, nthread=2, seed=7, subsample=1.,
+             max_bin=33, nthread=2, seed=7, subsample=1., base_score=0,
              colsample_bytree=0.9, colsample_bylevel=0.9,
              max_cat_to_onehot=16 if layout == "categorical_onehot" else 2,
              max_cat_threshold=6)
@@ -42,17 +44,35 @@ def test_gpu_split_selection(metal, strategy, layout, constraints, tmp_path):
     before = xgb.metal_info()["split_dispatches"]
     cpu = xgb.train(p | {"device": "cpu"}, d, 5)
     assert xgb.metal_info()["split_dispatches"] == before
-    gpu = xgb.train(p | {"device": "mps"}, d, 5)
+    recorded = RecordedSquaredError() if strategy == "one_output_per_tree" else None
+    integer_before = xgb.metal_info()["cuda_integer_split_dispatches"]
+    gpu = xgb.train(p | {"device": "mps"}, d, 5, obj=recorded)
     assert xgb.metal_info()["split_dispatches"] > before
-    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+    if recorded is not None:
+        assert xgb.metal_info()["cuda_integer_split_dispatches"] > integer_before
+        checked = [0, 0]
+        for i, tree in enumerate(trees(gpu)):
+            g, h = recorded.gradients[i // y.shape[1]]
+            counts = audit_tree(tree, x, d.get_quantile_cut(), types,
+                                g[:, i % y.shape[1]], h[:, i % y.shape[1]], p,
+                                selected_feature_only=True)
+            checked = [a + b for a, b in zip(checked, counts, strict=True)]
+        assert min(checked) > 0
+    else:
+        # The vector path still uses CPU-order scans; retain its CPU regression.
+        np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
     cpu_trees = json.loads(cpu.save_raw(raw_format="json"))["learner"]["gradient_booster"]["model"]["trees"]
     gpu_trees = json.loads(gpu.save_raw(raw_format="json"))["learner"]["gradient_booster"]["model"]["trees"]
-    # Verify selected topology, features, directions and categories, not only loss.
-    for a, b in zip(cpu_trees, gpu_trees, strict=True):
-        for key in ["left_children", "right_children", "split_indices", "default_left",
-                    "categories", "categories_nodes", "categories_segments", "categories_sizes"]:
-            assert a[key] == b[key]
+    if recorded is None:
+        # Verify selected topology, features, directions and categories, not only loss.
+        for a, b in zip(cpu_trees, gpu_trees, strict=True):
+            for key in ["left_children", "right_children", "split_indices", "default_left",
+                        "categories", "categories_nodes", "categories_segments", "categories_sizes"]:
+                assert a[key] == b[key]
     path = tmp_path / "model.ubj"
     gpu.save_model(path)
     loaded = xgb.Booster(params={"device": "cpu"}, model_file=path)
-    np.testing.assert_allclose(loaded.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+    if recorded is None:
+        np.testing.assert_allclose(loaded.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+    else:
+        np.testing.assert_array_equal(loaded.predict(d), gpu.predict(d))
