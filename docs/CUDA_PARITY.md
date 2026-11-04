@@ -49,8 +49,9 @@ work, not accepted substitutes for CUDA behavior:
 - Linear reductions now use FP32 pairs, CUDA Hessian/residual rules and unchanged
   selector snapshots. CUB tile ordering, NVCC contraction and actual NVIDIA
   execution remain unverified; they are not cross-device bitwise guarantees.
-- Ranking metric edge cases: some degenerate-query fallbacks currently preserve
-  CPU semantics where CUDA differs.
+- Precision/NDCG/MAP now follow CUDA-source arithmetic and degenerate-query
+  weighting. Parallel scan/reduction association remains architecture-dependent;
+  grouped ROC/PR scoring still needs its separate CUDA-source audit.
 - Scalar split enumeration now follows CUDA's exclusive numeric scan and strict
   missing-direction comparison; vector scans now preserve CUDA inclusive scans,
   double chunk argmax and FP32 updates. Other reduction order, quantile statistics
@@ -86,7 +87,7 @@ must be reported rather than hidden by widening test tolerances.
 | AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and binary64 block sums; small final host reduction |
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and tied-score trapezoids on Metal; per-output normalization and aggregation remain host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel stable batched sorting, weighted binary64 prefixes and stable continuous integration on Metal; final per-output degeneracy checks and aggregation remain host |
-| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision sorting, weighted query scoring and query-sum reduction execute in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses GPU label validation, stable score order, segmented binary64 prefixes, continuous PR integration, valid-query checks and aggregation |
+| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses GPU label validation, stable score order, segmented binary64 prefixes, continuous PR integration, valid-query checks and aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Group/Hessian weighting, sorted-column weighted summaries, streaming level compaction, final numeric merging, rank repair and pruning use Metal. Row ingestion/queue folding, value sorting and category collection remain CPU. Final cut materialization is host-side in both CUDA and Metal. SparsePage bin assignment and hit counts use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
@@ -172,23 +173,47 @@ preserving a defensible numerical contract remains required for full AFT coverag
 
 ## Ranking metric numerical behavior
 
-Precision preserves CPU FP32 label × query-weight products before binary64 summation.
-NDCG preserves the CPU's unweighted fallback when inverse ideal gain is nonpositive;
-MAP's zero-hit fallback is multiplied by the query weight. These details can differ
-from upstream CUDA degeneracy handling. The current tests use upstream CPU;
-those differences remain to be corrected and validated against CUDA formulas.
+Precision, NDCG and MAP now follow `metric/rank_metric.cu`:
 
-MAP uses parallel integer hit counts/prefixes for exact binary labels. Upstream
-validation also admits labels within epsilon of zero or one, including tiny negatives.
-For those queries, the GPU uses the CPU's sequential binary64 evaluation order:
-reordering near-zero signed terms could otherwise change whether the zero-hit fallback
-is selected. This path remains on the GPU and is slower for long nonbinary queries.
-Empty-query and top-k-zero native tests preserve CPU NaN/fallback behavior; the
-existing public metric finalization still reports invalid scores.
+- Precision forms each term as `double(label) / double(n) * double(weight)` before
+  reduction. Empty queries and top-k zero contribute zero while retaining their
+  weight in the denominator. This replaces the CPU-style FP32 product and final
+  division, which lost small terms and produced NaN for empty queries.
+- NDCG first reduces `discount * gain`, then computes `(DCG * inverse_IDCG) * weight`.
+  Its nonpositive-inverse fallback remains unweighted, as in CUDA. The `<= 0`
+  predicate allows NaN inverse gains to propagate instead of selecting the fallback.
+- MAP scans actual sorted labels in binary64, reduces `prefix / rank * label`,
+  then computes `(area * weight) / min(total_relevance, topk)`. Empty/nonpositive
+  relevance uses the **unweighted** one/zero fallback; CPU weights that fallback.
+  Positive relevance with top-k zero still yields NaN, matching the CUDA formula.
 
-The fused metric command reads back only score and weight totals. NDCG cache
-creation and grouped ROC/PR calculation also execute on Metal; their completion
-does not establish coverage of the other training, data and prediction operations.
+MAP now uses the existing recursive segmented binary64 GPU prefix scan, replacing
+integer hit prefixes and the CPU-ordered serial soft-label path. Accepted labels
+near zero/one, including tiny negatives, retain their actual values. Empty groups
+reset segment keys correctly, and prefixes cover the entire query even for top-k
+metrics. Sort, scan, query scoring and final sum share one command; only the final
+score and weight return to host. The existing `ranking_metric_dispatches` counter
+counts completed commands, including the new scan. No statistics ABI changed.
+
+These changes target source algorithms, **not a particular NVIDIA reduction tree**.
+Severe cancellation can change MAP's zero-hit branch under different legal FP64
+scan associations. The three-label cancellation tests explicitly document the
+current Metal result and its difference from serial CPU; they do not establish
+NVIDIA execution equivalence. The public finalizer still rejects NaN or excessive
+scores according to upstream rules. This vendored version defaults bare `map`
+(and other unqualified ranking metrics) to 32 ranks; explicit top-k tests also
+exercise whole queries.
+
+Validation includes 15 exact edge/order cases that distinguish the old CPU-based
+implementation, plus 896 source-formula cases over 9,511,680 rows with strides,
+empty groups, ties, zero/extreme weights and multi-level prefixes. Maximum scaled
+source-reference error is `1.135e-13`, within the unchanged `2e-12` tolerance.
+All 101 public ranking tests pass, including 16 added cases. Compatible CPU
+comparisons remain; zero-relevance MAP expectations and precision terms use CUDA
+formulas. Full validation passes **1,619 Python tests (one skipped)**, every rebuilt
+native suite and the CPU-only build/API check. NDCG cache checks remain separate
+below.
+[Validation record](../validation/cuda-ranking-metrics-m3.txt).
 
 Grouped ranking ROC now sorts labels stably on GPU and counts concordant/tied
 pairs during parallel merges of prediction keys. This preserves the CPU rule that

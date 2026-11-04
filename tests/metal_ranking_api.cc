@@ -15,6 +15,66 @@
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
+// Source oracle: metric/rank_metric.cu. Small, exactly reducible fixtures isolate
+// operation order and branch rules; they do not assume a particular CUB tree.
+void CheckCudaRules() {
+  using namespace xgboost;
+  using common::metal::RankingMetricKind;
+  size_t checked = 0;
+  auto run = [&](RankingMetricKind kind, std::vector<float> labels, std::vector<bst_group_t> groups,
+                 std::vector<float> weights, uint32_t topk, bool minus,
+                 std::vector<double> discounts, std::vector<double> inverse, double expected,
+                 char const* message) {
+    std::vector<float> scores(labels.size());
+    for (size_t i = 0; i < scores.size(); ++i) scores[i] = -float(i);
+    auto score_view =
+        linalg::MakeTensorView(DeviceOrd::CPU(), common::Span<float const>{scores}, scores.size());
+    auto label_view =
+        linalg::MakeTensorView(DeviceOrd::CPU(), common::Span<float const>{labels}, labels.size());
+    auto result = common::metal::RankingScore(kind, score_view, label_view, groups, weights, topk,
+                                              minus, false, discounts, inverse);
+    Check(result.score == expected || (std::isnan(result.score) && std::isnan(expected)), message);
+    double sum_weight = weights.empty() ? groups.size() - 1 : 0;
+    for (float w : weights) sum_weight += w;
+    Check(result.weight == sum_weight, "CUDA metric weight denominator changed");
+    ++checked;
+  };
+  run(RankingMetricKind::kPrecision, {}, {0, 0, 0}, {2, 3}, 10, false, {}, {}, 0,
+      "CUDA precision: empty queries must contribute zero");
+  run(RankingMetricKind::kPrecision, {1}, {0, 1}, {2}, 0, false, {}, {}, 0,
+      "CUDA precision: topk zero must contribute zero");
+  float tiny = std::numeric_limits<float>::denorm_min();
+  run(RankingMetricKind::kPrecision, {tiny}, {0, 1}, {.5f}, 1, false, {}, {}, double(tiny) * .5,
+      "CUDA precision must retain FP64 label/weight terms");
+  float y = .99999994f, w = .7f;
+  run(RankingMetricKind::kPrecision, {y, 0, 0}, {0, 3}, {w}, 3, false, {}, {},
+      double(y) / 3 * double(w), "CUDA precision must divide each term before weighting");
+  for (bool minus : {false, true}) {
+    for (float weight : {0.f, 2.f}) {
+      run(RankingMetricKind::kMAP, {0, 0}, {0, 0, 2, 2}, {weight, weight, weight}, 10, minus, {},
+          {}, minus ? 0 : 3, "CUDA MAP fallback must be unweighted, including empties");
+    }
+  }
+  double area = 2.75;
+  Check(area * double(w) / 3 != area / 3 * double(w), "MAP order fixture no longer distinguishes");
+  run(RankingMetricKind::kMAP, {1, 1, 0, 1}, {0, 4}, {w}, 4, false, {}, {}, area * double(w) / 3,
+      "CUDA MAP must multiply weight before dividing by relevance");
+  run(RankingMetricKind::kMAP, {1}, {0, 1}, {2}, 0, false, {}, {}, NAN,
+      "CUDA MAP positive relevance with topk zero must produce NaN");
+  run(RankingMetricKind::kMAP, {0}, {0, 1}, {2}, 0, false, {}, {}, 1,
+      "CUDA MAP no relevance with topk zero must use unweighted fallback");
+  Check((1. + .1) * .3 != .3 + .1 * .3, "NDCG order fixture no longer distinguishes");
+  run(RankingMetricKind::kNDCG, {1, 1}, {0, 2}, {}, 2, false, {1, .1}, {.3}, (1. + .1) * .3,
+      "CUDA NDCG must apply inverse IDCG after DCG reduction");
+  run(RankingMetricKind::kNDCG, {1}, {0, 1}, {2}, 1, false, {1}, {NAN}, NAN,
+      "CUDA NDCG NaN inverse must propagate");
+  for (double inverse : {0., -1.}) {
+    run(RankingMetricKind::kNDCG, {1}, {0, 1}, {2}, 1, false, {1}, {inverse}, 1,
+        "CUDA NDCG nonpositive inverse fallback must remain unweighted");
+  }
+  std::printf("PASS %zu exact CUDA-source ranking edge/order cases\n", checked);
+  std::fflush(stdout);
+}
 void CheckScores() {
   using namespace xgboost;
   using common::metal::RankingMetricKind;
@@ -89,17 +149,15 @@ void CheckScores() {
                   hits += y;
                   if (i < k) score += hits / double(i + 1) * y;
                 }
-                score = hits > 0 ? score / std::min(hits, double(topk)) : (minus ? 0 : 1);
-                score *= w;
+                score =
+                    hits > 0 ? (score * double(w)) / std::min(hits, double(topk)) : (minus ? 0 : 1);
               } else {
                 for (size_t i = 0; i < k; ++i) {
                   auto y = labels(begin + order[i]);
-                  score += kind == 0 ? double(y * w) : discounts[i] * gain(y) * inverse[g];
+                  score += kind == 0 ? double(y) / double(k) * double(w) : discounts[i] * gain(y);
                 }
-                if (kind == 0)
-                  score /= double(k);
-                else
-                  score = inverse[g] <= 0 ? (minus ? 0 : 1) : score * w;
+                if (kind != 0)
+                  score = inverse[g] <= 0 ? (minus ? 0 : 1) : (score * inverse[g]) * double(w);
               }
               expected_score += score;
               expected_weight += w;
@@ -124,7 +182,7 @@ void CheckScores() {
                 std::fprintf(stderr,
                              "score rows=%zu kind=%d stride=%zu k=%u mode=%d: %.17g != %.17g\n", n,
                              kind, stride, topk, mode, actual, expected);
-                throw std::runtime_error("Ranking score differs from CPU");
+                throw std::runtime_error("Ranking score differs from CUDA-source formulas");
               }
             };
             close(result.score, expected_score);
@@ -138,12 +196,14 @@ void CheckScores() {
     std::printf("Checked %zu ranking score cases / %zu rows\n", cases, checked);
     std::fflush(stdout);
   }
-  std::printf("PASS %zu precision/NDCG/MAP cases / %zu rows; max scaled CPU difference %.9g\n",
-              cases, checked, max_difference);
+  std::printf(
+      "PASS %zu precision/NDCG/MAP cases / %zu rows; max scaled CUDA-source difference %.9g\n",
+      cases, checked, max_difference);
 }
 
 int main() {
   try {
+    CheckCudaRules();
     using namespace xgboost;
     std::vector<std::vector<bst_group_t>> cases{{},
                                                 {0, 0, 0},

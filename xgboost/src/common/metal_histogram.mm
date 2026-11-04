@@ -167,8 +167,9 @@ class Runtime {
       prefix_u32_pipeline, prefix_add_pipeline, quantile_cdf_pipeline, quantile_select_pipeline;
   id<MTLComputePipelineState> roc_sort_init_pipeline, roc_counts_pipeline, roc_area_pipeline,
       pr_area_pipeline, prefix_double_pair_pipeline, prefix_double_pair_add_pipeline;
-  id<MTLComputePipelineState> group_sort_small_pipeline, group_sort_medium_pipeline, group_sort_key_pipeline,
-      group_sort_export_pipeline, ranking_score_pipeline;
+  id<MTLComputePipelineState> group_sort_small_pipeline, group_sort_medium_pipeline,
+      group_sort_key_pipeline, group_sort_export_pipeline, ranking_score_pipeline,
+      ranking_map_labels_pipeline;
   id<MTLComputePipelineState> ranking_labels_pipeline, ndcg_discount_pipeline, ndcg_ideal_pipeline;
   id<MTLComputePipelineState> ranking_map_stats_pipeline, ranking_pairs_pipeline,
       ranking_normalize_pipeline, ranking_gather_pipeline, ranking_mean_labels_pipeline,
@@ -349,6 +350,7 @@ class Runtime {
       group_sort_key_pipeline = make_pipeline(@"xgb_group_sort_key");
       group_sort_export_pipeline = make_pipeline(@"xgb_group_sort_export");
       ranking_score_pipeline = make_pipeline(@"xgb_ranking_score");
+      ranking_map_labels_pipeline = make_pipeline(@"xgb_ranking_map_labels");
       ranking_labels_pipeline = make_pipeline(@"xgb_ranking_labels");
       ndcg_discount_pipeline = make_pipeline(@"xgb_ndcg_discount");
       ndcg_ideal_pipeline = make_pipeline(@"xgb_ndcg_ideal");
@@ -3460,6 +3462,12 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
   }
 }
 
+namespace {
+id<MTLBuffer> EncodeSegmentedDoublePrefix(Runtime& rt, id<MTLCommandBuffer> command,
+                                          id<MTLBuffer> input, id<MTLBuffer> ids,
+                                          std::uint32_t rows);
+}  // namespace
+
 RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const> predictions,
                          linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
                          Span<float const> weights, std::uint32_t topk, bool minus,
@@ -3505,6 +3513,23 @@ RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const>
         static_cast<std::uint32_t>(minus),
         static_cast<std::uint32_t>(exponential)};
     static_assert(sizeof(p) == 40);
+    id<MTLBuffer> prefix = Allocate(rt, 16);
+    if (kind == RankingMetricKind::kMAP && p.rows) {
+      auto ids = Allocate(rt, p.rows * sizeof(std::uint32_t));
+      auto values = Allocate(rt, p.rows * 2 * sizeof(double));
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.ranking_map_labels_pipeline];
+      [e setBuffer:order.records offset:0 atIndex:0];
+      [e setBuffer:response offset:0 atIndex:1];
+      [e setBuffer:offsets offset:0 atIndex:2];
+      [e setBuffer:ids offset:0 atIndex:3];
+      [e setBuffer:values offset:0 atIndex:4];
+      [e setBytes:&p length:sizeof(p) atIndex:5];
+      [e dispatchThreads:MTLSizeMake(p.rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      prefix = EncodeSegmentedDoublePrefix(rt, command, values, ids, p.rows);
+    }
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.ranking_score_pipeline];
@@ -3516,6 +3541,7 @@ RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const>
     [e setBuffer:inverse offset:0 atIndex:5];
     [e setBuffer:partial offset:0 atIndex:6];
     [e setBytes:&p length:sizeof(p) atIndex:7];
+    [e setBuffer:prefix offset:0 atIndex:8];
     [e dispatchThreadgroups:MTLSizeMake((n_groups + 7) / 8, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];

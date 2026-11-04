@@ -3140,85 +3140,55 @@ kernel void xgb_ndcg_ideal(device const uint2* records [[buffer(0)]],
   }
   if (lane == 0) inverse[group] = (xgb_dzero(sum) ? zero : one / sum).bits;
 }
+// CUDA MAP scans the actual labels in binary64, including accepted near-binary
+// labels. Sorted rows and segment keys feed the reusable inclusive GPU scan.
+kernel void xgb_ranking_map_labels(device const uint2* records [[buffer(0)]],
+                                   device const uint* labels [[buffer(1)]],
+                                   device const uint* offsets [[buffer(2)]],
+                                   device uint* ids [[buffer(3)]],
+                                   device ulong2* values [[buffer(4)]],
+                                   constant RankingScoreParams& p [[buffer(5)]],
+                                   uint row [[thread_position_in_grid]]) {
+  uint low = 0, high = p.groups;
+  while (low + 1 < high) {
+    uint middle = low + (high - low) / 2;
+    if (offsets[middle] <= row)
+      low = middle;
+    else
+      high = middle;
+  }
+  ids[row] = low;
+  values[row] = ulong2(
+      xgb_dfrom_float(as_type<float>(labels[ulong(records[row].y) * p.label_stride])).bits, 0);
+}
 // One SIMD group per query. Eight queries share a threadgroup without barriers;
 // sorted records stay on the GPU and only the final (score, weight) is read back.
-kernel void xgb_ranking_score(device const uint2* records [[buffer(0)]],
-                               device const uint* labels [[buffer(1)]],
-                               device const uint* offsets [[buffer(2)]],
-                               device const uint* weights [[buffer(3)]],
-                               device const ulong* discounts [[buffer(4)]],
-                               device const ulong* inverse_idcg [[buffer(5)]],
-                               device ulong2* partial [[buffer(6)]],
-                               constant RankingScoreParams& p [[buffer(7)]],
-                               uint block [[threadgroup_position_in_grid]],
-                               uint lane [[thread_index_in_simdgroup]],
-                               uint simd [[simdgroup_index_in_threadgroup]]) {
+kernel void xgb_ranking_score(
+    device const uint2* records [[buffer(0)]], device const uint* labels [[buffer(1)]],
+    device const uint* offsets [[buffer(2)]], device const uint* weights [[buffer(3)]],
+    device const ulong* discounts [[buffer(4)]], device const ulong* inverse_idcg [[buffer(5)]],
+    device ulong2* partial [[buffer(6)]], constant RankingScoreParams& p [[buffer(7)]],
+    device const ulong2* prefix [[buffer(8)]], uint block [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]) {
   uint group = block * 8 + simd;
   if (group >= p.groups) return;
   using namespace xgb_survival;
   uint begin = offsets[group], count = offsets[group + 1] - begin, n = min(count, p.topk);
   D weight = p.weighted ? From(as_type<float>(weights[group])) : one;
-  if (p.kind == 2) {
-    uint local_hits = 0;
-    bool soft_label = false;
-    for (ulong i = lane; i < count; i += 32) {
-      uint bits = labels[ulong(records[ulong(begin) + i].y) * p.label_stride];
-      local_hits += uint(bits == 0x3f800000u);
-      soft_label |= (bits & 0x7fffffffu) != 0 && bits != 0x3f800000u;
-    }
-    // Upstream validation admits labels within epsilon of zero/one, including
-    // tiny negative values. Cancellation can change the zero-hit fallback. Keep
-    // CPU's sequential order for these queries, still entirely on the GPU.
-    if (simd_any(soft_label)) {
-      if (lane == 0) {
-        D hits = zero, area = zero;
-        for (ulong i = 0; i < count; ++i) {
-          D label = From(as_type<float>(labels[ulong(records[ulong(begin) + i].y) * p.label_stride]));
-          hits = hits + label;
-          if (i < n) area = area + (hits / D{xgb_scaled_integer(i + 1, 0)}) * label;
-        }
-        D limit{xgb_scaled_integer(p.topk, 0)};
-        area = hits > zero ? area / (hits < limit ? hits : limit) : (p.minus ? zero : one);
-        partial[group] = ulong2((area * weight).bits, weight.bits);
-      }
-      return;
-    }
-    uint total_hits = simd_sum(local_hits), preceding = 0;
-    D area = zero;
-    for (ulong base = 0; base < n; base += 32) {
-      ulong i = base + lane;
-      uint hit = i < n ? uint(labels[ulong(records[ulong(begin) + i].y) * p.label_stride] == 0x3f800000u) : 0;
-      uint prefix = simd_prefix_exclusive_sum(hit) + hit;
-      if (hit) area = area + D{xgb_scaled_integer(preceding + prefix, 0)} /
-                                D{xgb_scaled_integer(i + 1, 0)};
-      preceding += simd_sum(hit);
-    }
-    for (uint distance = 16; distance; distance >>= 1) {
-      D other = xgb_shuffle_down_double(area, distance);
-      if (lane + distance < 32) area = area + other;
-    }
-    if (lane == 0) {
-      area = total_hits ? area / D{xgb_scaled_integer(min(total_hits, p.topk), 0)}
-                        : (p.minus ? zero : one);
-      partial[group] = ulong2((area * weight).bits, weight.bits);
-    }
-    return;
-  }
-  D inverse = p.kind == 1 ? D{inverse_idcg[group]} : one;
   D sum = zero;
-  if (p.kind == 0 || inverse > zero) {
-    for (ulong i = lane; i < n; i += 32) {
-      uint bits = labels[ulong(records[ulong(begin) + i].y) * p.label_stride];
-      D label = From(as_type<float>(bits));
-      if (p.kind == 0) {
-        // CPU precision multiplies labels and query weights in FP32 before
-        // accumulating in binary64. Preserve even subnormal product bits.
-        sum = sum + From(xgb_dto_float(label * weight));
-      } else {
-        D gain = p.exponential ? D{xgb_scaled_integer((1u << uint(as_type<float>(bits))) - 1, 0)}
-                               : label;
-        sum = sum + (D{discounts[i]} * gain) * inverse;
-      }
+  for (ulong i = lane; i < n; i += 32) {
+    uint bits = labels[ulong(records[ulong(begin) + i].y) * p.label_stride];
+    D label = From(as_type<float>(bits));
+    if (p.kind == 0) {
+      // rank_metric.cu::PreScore divides each binary64 label before weighting.
+      // Empty/topk-zero queries have no terms and therefore contribute zero.
+      sum = sum + (label / D{xgb_scaled_integer(n, 0)}) * weight;
+    } else if (p.kind == 1) {
+      D gain =
+          p.exponential ? D{xgb_scaled_integer((1u << uint(as_type<float>(bits))) - 1, 0)} : label;
+      sum = sum + D{discounts[i]} * gain;
+    } else {
+      sum = sum + (D{prefix[ulong(begin) + i].x} / D{xgb_scaled_integer(i + 1, 0)}) * label;
     }
   }
   for (uint distance = 16; distance; distance >>= 1) {
@@ -3226,9 +3196,18 @@ kernel void xgb_ranking_score(device const uint2* records [[buffer(0)]],
     if (lane + distance < 32) sum = sum + other;
   }
   if (lane == 0) {
-    if (p.kind == 0) sum = sum / D{xgb_scaled_integer(n, 0)};
-    // Preserve upstream CPU's unweighted zero-IDCG fallback for NDCG.
-    else sum = inverse > zero ? sum * weight : (p.minus ? zero : one);
+    if (p.kind == 1) {
+      D inverse{inverse_idcg[group]};
+      // CUDA tests <= 0, so a NaN inverse must propagate through multiplication.
+      sum = (inverse < zero || xgb_dzero(inverse)) ? (p.minus ? zero : one)
+                                                   : (sum * inverse) * weight;
+    } else if (p.kind == 2) {
+      D hits = count ? D{prefix[ulong(begin) + count - 1].x} : zero;
+      D limit{xgb_scaled_integer(p.topk, 0)};
+      // MAP's degenerate-query fallback is unweighted in CUDA. Weighting precedes
+      // division for nondegenerate queries; topk zero then yields 0/0, as upstream.
+      sum = hits > zero ? (sum * weight) / (hits < limit ? hits : limit) : (p.minus ? zero : one);
+    }
     partial[group] = ulong2(sum.bits, weight.bits);
   }
 }

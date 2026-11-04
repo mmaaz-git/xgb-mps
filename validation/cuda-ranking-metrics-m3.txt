@@ -1,0 +1,76 @@
+CUDA-source precision, NDCG and MAP on Apple M3
+Date: 2026-11-04
+Source base: 8aff777 plus the ranking-metric alignment accompanying this record.
+
+Authority: xgboost/src/metric/rank_metric.cu PreScore/NDCGScore/MAPScore and
+  common/ranking_utils.cu CalcQueriesDCG/CalcQueriesInvIDCG.
+
+Changes:
+  Precision: each term double(label)/double(n)*double(query_weight), followed by
+  reduction. No FP32 product. Empty and topk-zero queries contribute score zero.
+  NDCG: reduce discount*gain, then multiply by inverse and query weight. Inverse
+  <=0 selects an unweighted fallback. NaN does not satisfy that predicate.
+  MAP: inclusive segmented binary64 scan of actual sorted labels; reduce
+  prefix/(rank+1)*label for rank<topk, then (area*weight)/min(total_relevance,topk).
+  Empty/nonpositive-relevance fallback is unweighted. Positive relevance at
+  topk zero gives 0/0. Weight denominator includes every query in all three metrics.
+  Reuse recursive GPU segmented pair scan, sorted-label initialization kernel,
+  query scoring and final aggregation within one command. Final totals only
+  return to host. Existing metric counters retained; no statistics ABI change.
+  Previous CPU-ordered serial soft-label path and integer hit path removed.
+  CPU and CUDA source files unchanged.
+
+Before/after evidence:
+  results/test-ranking-cuda-before-v1.log: new exact fixture FAILED on old library,
+  "CUDA precision: empty queries must contribute zero". New implementation passes.
+
+Native: tests/metal_ranking_api.cc with Metal API Validation enabled
+  PASS 15 exact edge/order cases: empty/topk-zero precision, subnormal/fractional
+  FP64 terms, zero/nonunit MAP fallback weights including empty queries, MAP
+  weight-before-divide ULP fixture, MAP topk-zero NaN/fallback, NDCG post-sum inverse
+  ULP fixture, NaN inverse propagation and unchanged nonpositive inverse fallback.
+  PASS 896 precision/NDCG/MAP source-formula cases / 9,511,680 rows.
+  Maximum scaled reference error 1.13464793e-13; existing 2e-12 threshold unchanged.
+  Layouts include empty groups, strides 1/3, stable ties, up to 65,537-row groups,
+  multi-level segmented scans, exact/near-binary labels, signed tiny terms,
+  subnormals, linear/exponential gains, weights 0 and powers 2^-120 through 2^120,
+  topk 0/1/10/UINT32_MAX, both fallback modes. Existing sort checks retained: 120 cases / 7,518,270 rows.
+
+Public: tests/test_metal_ranking.py
+  PASS 101 cases, including 16 new cases. Existing training/model and compatible
+  CPU metric comparisons retained at their original tolerances. Zero-relevance
+  MAP histories apply the exact source-derived unweighted-fallback correction;
+  standalone scores also compare with independent host CUDA formulas.
+  New cases cover zero/fractional/nonunit fallback weights, empty queries,
+  FP64 precision terms, actual soft-label scans across 65,537-row and empty groups,
+  truncation and explicit whole-query metrics. Dispatch counters prove Metal use.
+  Initial new host oracle assumed unqualified map meant all ranks; this vendored
+  source instead defaults to 32. Source, saved configuration and map@32 verified
+  that test-oracle error; oracle corrected and explicit all-rank cases added.
+
+Limits:
+  No actual NVIDIA execution or cross-Apple validation. Independent source
+  formulas do not specify a CUB architecture's scan/reduction association or
+  NVCC contraction. Ill-conditioned signed near-zero MAP sums can change the
+  fallback branch with association: existing three-label tests pin current Metal
+  behavior and explicitly show its difference from serial CPU, without claiming
+  a matching NVIDIA branch. NDCG software-log/cancellation limits remain in the
+  coverage ledger. Public finalization still follows upstream score validation.
+  AUC ROC/PR, ranking gradients/RNG and other operation families remain separate
+  source audits. Full CUDA parity is NOT complete; no performance benchmark run.
+
+Focused runs:
+  results/run-ranking-cuda-focused-v1.sh 11:04:27-11:04:36 UTC exit 0.
+  results/build-ranking-cuda-v1.log PASS.
+  results/test-ranking-cuda-native-v1.log PASS.
+  results/test-ranking-cuda-python-v2.log 101 passed in 3.28s.
+
+Full regression:
+  results/run-ranking-cuda-full-v1.sh 11:06:31-11:10:42 UTC exit 0.
+  results/build-ranking-cuda-final-v1.log PASS.
+  results/test-ranking-cuda-full-v1.log: EVERY native executable/reference plugin
+  rebuilt and passed; 1619 Python passed, 1 skipped, 373 warnings in 97.67s.
+  results/build-cpu-ranking-cuda-v1.log PASS.
+  results/check-cpu-ranking-cuda-v1.log PASS: unavailable/zero counters and clear
+  device=mps error in the CPU-only build.
+  No production/test changes after this run; only documentation updated.

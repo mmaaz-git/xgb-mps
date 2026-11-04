@@ -14,13 +14,13 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **CUDA-source linear coordinate descent**. Metal now uses
-FP32 sums, CUDA residual/Hessian rules and the original gradient snapshot for
-feature selection. Explicit tests catch CPU/CUDA algorithm differences.
-Final validation passes **1,603 Python tests**, every rebuilt native suite and the
-CPU-only build/API check. Linear validation includes 49 native cases and 158
-public cases, with the existing public tolerance unchanged.
-[Validation](validation/cuda-linear-m3.txt) · [Scope](docs/CUDA_PARITY.md#linear-coordinate-descent).
+Latest validated step: **CUDA-source ranking metrics**. Precision, NDCG and MAP
+now follow CUDA's arithmetic order and empty-query weighting rules. MAP scans
+actual labels in parallel on the GPU. Final validation passes **1,619 Python tests
+(one skipped)**, every rebuilt native suite and the CPU-only build/API check.
+Ranking checks include 101 public cases, 896 native formula cases and 15 exact
+edge/order checks.
+[Validation](validation/cuda-ranking-metrics-m3.txt) · [Scope](docs/CUDA_PARITY.md#ranking-metric-numerical-behavior).
 Actual NVIDIA execution equivalence remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
@@ -133,7 +133,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Column sampling | GPU feature initialization, CPU-compatible MT19937 draws, uniform/weighted selection, stable priority ordering and integer feature sorting; tree/level/node caches remain host |
 | Grouped ranking PR-AUC | GPU label validation, stable prediction ordering, segmented binary64 prefixes, continuous PR integration, degenerate-query handling and aggregation |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
-| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision; GPU label validation and NDCG cache initialization |
+| Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision with CUDA-source arithmetic/fallbacks; GPU label validation and NDCG cache initialization |
 
 AFT gradient evaluation is still hybrid for numerically sensitive censored rows.
 The GPU flags interval probabilities at or below `1e-5`; the host recomputes those
@@ -561,6 +561,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port exact SHAP contributions and interactions.
 - [x] Implement Metal coordinate-descent reductions and residual updates.
 - [x] Align linear FP32 arithmetic and selector snapshots with CUDA source.
+- [x] Align precision/NDCG/MAP arithmetic, prefixes and degenerate-query weighting with CUDA source.
 - [ ] Align sketch algorithms and column/ranking streams with CUDA.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
@@ -2156,3 +2157,24 @@ CUB tile policy. CUB's floating-point reduction order can vary by GPU architectu
 see the [coverage ledger](docs/CUDA_PARITY.md#linear-coordinate-descent) for the
 source contract and validation limits. Actual NVIDIA execution and compiler
 contraction remain unverified. No performance benchmark was run.
+
+
+### CUDA ranking-metric alignment
+
+Precision now divides and weights each label in binary64 before reduction; empty
+queries contribute zero. NDCG applies inverse ideal gain after reducing DCG, and
+retains CUDA's unweighted nonpositive-inverse fallback. MAP now scans actual labels
+in parallel, multiplies weight before normalization and uses CUDA's unweighted
+zero-relevance fallback. These replace earlier CPU-specific behavior.
+
+Validation includes **15 exact edge/order checks**, **896 native formula cases over
+9.5 million rows**, and **101 public ranking cases**. Existing comparison tolerances
+remain unchanged. Tests distinguish CPU/CUDA rules, exercise empty and strided
+queries, and cover recursive prefixes and near-binary labels. Catastrophic signed
+cancellation can select different branches under different parallel scan orders;
+we document the current Metal behavior without claiming NVIDIA bitwise equivalence.
+[Validation](validation/cuda-ranking-metrics-m3.txt) · [Scope](docs/CUDA_PARITY.md#ranking-metric-numerical-behavior).
+
+Full validation passes **1,619 Python tests (one skipped)**, every rebuilt native
+suite and the CPU-only build/API check. Grouped AUC, ranking gradients/RNG and the
+other coverage-ledger gaps remain separate work. No performance benchmark or NVIDIA execution comparison was run.
