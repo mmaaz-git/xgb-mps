@@ -1,0 +1,26 @@
+Apple M3, 2026-11-03. Metal API Validation enabled.
+Full native/Python suites and independent CPU-only build.
+Gradient comparisons are bitwise except NaN classification; broadcasts preserve all bits.
+
+Checking objective initialization against exact CPU gradients and broadcasts
+Checked 18 initialization cases / 0 gradient pairs / 0 copied floats
+2026-11-03 20:48:17.749 metal_initialization_api_test[50758:43217331] Metal API Validation Enabled
+Checked 36 initialization cases / 246 gradient pairs / 492 copied floats
+Checked 54 initialization cases / 7872 gradient pairs / 15744 copied floats
+Checked 72 initialization cases / 15744 gradient pairs / 31488 copied floats
+Checked 90 initialization cases / 23862 gradient pairs / 47724 copied floats
+Checked 108 initialization cases / 86592 gradient pairs / 173184 copied floats
+Checked 126 initialization cases / 149568 gradient pairs / 299136 copied floats
+Checked 144 initialization cases / 212790 gradient pairs / 425580 copied floats
+Checked 162 initialization cases / 1220652 gradient pairs / 2441304 copied floats
+PASS 164 initialization cases / 7220670 exact gradient pairs / 14441340 bitwise copied floats
+
+715 passed, 1 skipped, 33 warnings in 20.76s
+CPU-only build verified: Metal reports unavailable and device=mps raises a clear error.
+
+Wed Nov  4 04:47:30 UTC 2026
+Building formatted initialization implementation
+Running full native and Python suites
+Building and checking CPU-only library
+Full initialization validation finished: 0
+Wed Nov  4 04:49:38 UTC 2026

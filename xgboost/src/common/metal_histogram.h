@@ -60,6 +60,7 @@ struct Statistics {
   std::uint64_t ranking_pr_auc_dispatches, ranking_pr_auc_gpu_time_ns;
   std::uint64_t column_init_dispatches, column_sampling_dispatches, column_sampling_gpu_time_ns;
   std::uint64_t sketch_finalize_dispatches, sketch_finalize_columns, sketch_finalize_gpu_time_ns;
+  std::uint64_t expectile_init_dispatches, prediction_init_dispatches, initialization_gpu_time_ns;
 };
 
 class Histogram {

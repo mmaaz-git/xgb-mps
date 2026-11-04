@@ -46,4 +46,9 @@ void Gradients(Objective objective, Span<float const> predictions, Span<float co
                Span<float const> weights, std::uint32_t targets, float parameter,
                float scale_pos_weight, Span<float const> alpha, Span<GradientPair> output);
 void TransformPredictions(Transform transform, Span<float> values, std::uint32_t targets = 1);
+// Per-row objective initialization, separate from transformed-margin gradients.
+void InitExpectileGradients(float mean, Span<float const> labels, Span<float const> weights,
+                           Span<float const> alpha, Span<GradientPair> output);
+// Repeat a target vector across contiguous rows; preserves the input float bits.
+void BroadcastTargets(Span<float const> targets, Span<float> output);
 }  // namespace xgboost::common::metal

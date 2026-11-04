@@ -89,6 +89,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights; other leaf fitting still uses CPU |
 | Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
 | Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; other objective-specific initialization work remains CPU |
+| Objective initialization | GPU expectile initial gradients/Hessians and absolute-error target-mean broadcast; small final base-score adjustments remain host, as in CUDA |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
 | AFT survival | GPU normal/logistic/extreme gradients, prediction/base-score transforms, likelihood and interval-accuracy metrics; numerically sensitive censored gradient rows are corrected on CPU and counted explicitly |
@@ -128,6 +129,9 @@ The corresponding `ranking_pr_auc_*` counters are subsets of PR-AUC and metric t
 `sketch_finalize_dispatches`, `sketch_finalize_columns` and
 `sketch_finalize_gpu_time_ns` report final numeric sketch processing, excluding
 host ingestion, staging and final cut materialization.
+`expectile_init_dispatches` and `prediction_init_dispatches` expose the new
+objective-specific initialization work. Their combined GPU duration is reported
+by `initialization_gpu_time_ns`, separately from ordinary objective GPU time.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
@@ -143,7 +147,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **700 passed, 1 skipped**. The skip requires a machine without an
+- Python: **715 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
@@ -232,6 +236,11 @@ On Apple M3, 2026-11-03:
   bit patterns, all exponent pairs, pruning denominators and subnormal rounding
   ties; NaNs are checked by classification. This replaces software binary64
   division in sketch pruning without changing its rounding contract.
+- Objective initialization: **164 native cases / 7,220,670 gradient pairs /
+  14,441,340 copied floats**. Gradients match CPU bits except NaNs, which are
+  checked by classification; broadcasts preserve every bit, including NaN
+  payloads. Checks include empty/million-row inputs, multiple targets, zero/tiny/
+  overflowing weights, guards and aliased broadcast inputs.
 - Grouped ranking PR-AUC: **297 production cases / 14,198,354 rows / 4,660 query
   results**, checked against CPU and independent continuous-integral references.
   Includes irregular/empty queries, recursive scan carries, widely differing query
@@ -1549,3 +1558,22 @@ faster than its first GPU version, while the wide sketch stage regresses from
 55.5 to 79.8 ms. Neither final training median beats CPU. Further optimization
 is deferred in favor of completing missing GPU operations; all three experiments
 are retained.
+
+### Objective initialization coverage update
+
+Expectile's initial per-row gradients/Hessians now run on Metal, as does the
+absolute-error initializer's broadcast of each target mean to its prediction
+column. These use separate completed-dispatch counters. Means, weight sums and
+stump fitting were already on Metal; the small final intercept additions and
+ordering stay on the host, as they do in the CUDA source.
+
+Public checks compare estimated intercepts and predictions with CPU, including
+weighted/constant/multiple-target data and continued training from saved models.
+Explicit intercepts and zero-total-weight absolute-error inputs must skip the
+new initialization operations. Full CUDA coverage remains incomplete; this update
+closes two specific initialization gaps. No new performance experiments accompany
+this coverage work.
+
+[Validation](validation/objective-initialization-m3.txt): all native suites,
+**715 Python tests (one skipped)** and the independent CPU-only build pass with
+Metal API Validation enabled for GPU tests.

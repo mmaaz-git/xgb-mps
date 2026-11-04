@@ -550,17 +550,25 @@ class ExpectileRegression : public FitIntercept {
     alpha_.SetDevice(ctx_->Device());
     auto alpha = ctx_->IsCPU() ? alpha_.ConstHostSpan() : alpha_.ConstDeviceSpan();
 
-    linalg::ElementWiseKernel(ctx_, gpair_view,
-                              [=] XGBOOST_DEVICE(std::size_t i, std::size_t j) mutable {
-                                auto diff = mean - labels(i, 0);
-                                auto expectile = alpha[j];
-                                auto weight_scale = diff >= 0.0f ? (1.0f - expectile) : expectile;
-                                auto sample_weight = weights[i];
-                                auto grad = weight_scale * diff * sample_weight;
-                                auto hess = weight_scale * sample_weight;
-                                gpair_view(i, j) = GradientPair{grad, hess};
-                              });
-
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::InitExpectileGradients(mean, info.labels.Data()->ConstHostSpan(),
+                                            info.weights_.ConstHostSpan(), alpha_.ConstHostSpan(),
+                                            gpair.Data()->HostSpan());
+    } else
+#endif
+    {
+      linalg::ElementWiseKernel(ctx_, gpair_view,
+                                [=] XGBOOST_DEVICE(std::size_t i, std::size_t j) mutable {
+                                  auto diff = mean - labels(i, 0);
+                                  auto expectile = alpha[j];
+                                  auto weight_scale = diff >= 0.0f ? (1.0f - expectile) : expectile;
+                                  auto sample_weight = weights[i];
+                                  auto grad = weight_scale * diff * sample_weight;
+                                  auto hess = weight_scale * sample_weight;
+                                  gpair_view(i, j) = GradientPair{grad, hess};
+                                });
+    }
     tree::FitStump(ctx_, gpair, n_targets, base_score);
 
     auto out = base_score->HostView();
@@ -1060,10 +1068,17 @@ class MeanAbsoluteError : public ObjFunction {
     auto predt_view = linalg::MakeTensorView(ctx_, &predt, info.num_row_, n_targets);
     mean.SetDevice(ctx_->Device());
     auto mean_view = mean.View(ctx_->Device());
-    linalg::ElementWiseKernel(ctx_, predt_view,
-                              [=] XGBOOST_DEVICE(std::size_t i, std::size_t j) mutable {
-                                predt_view(i, j) = mean_view(j);
-                              });
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::BroadcastTargets(mean.Data()->ConstHostSpan(), predt.HostSpan());
+    } else
+#endif
+    {
+      linalg::ElementWiseKernel(ctx_, predt_view,
+                                [=] XGBOOST_DEVICE(std::size_t i, std::size_t j) mutable {
+                                  predt_view(i, j) = mean_view(j);
+                                });
+    }
 
     Json config{Object{}};
     this->SaveConfig(&config);

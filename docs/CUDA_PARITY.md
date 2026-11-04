@@ -10,17 +10,22 @@ Current architecture: CPU owns XGBoost's data structures and orchestrates traini
 selected stages dispatch Metal kernels. Remaining CPU execution is explicitly
 listed below. This is not yet a complete GPU backend.
 
+Current priority is complete operation coverage and correctness. Performance
+experiments are deferred until the missing GPU paths are implemented; existing
+measurements, including regressions, remain available.
+
 | CUDA subsystem | Principal upstream source | Metal status |
 | --- | --- | --- |
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
+| Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` is rejected for MPS; Hessian-weighted resketching and the corresponding GPU training path remain unimplemented |
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | Implemented with a different bounded fixed-point scheme; GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales remain in GPU buffers; eligible raw gradients are read through guarded shared host views |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | Metal uniform and gradient-based row sampling/replay, including CPU-compatible draws, norms, sorted thresholds and rescaling; scalar/vector root-gradient sums and dense root histogram sums on Metal; column initialization, uniform/weighted selection and final feature ordering now use Metal |
-| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means and Newton stump fitting use Metal; label validation and other objective-specific initialization remain CPU |
+| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, expectile initial gradients/Hessians and Newton stump fitting use Metal; label validation and other initialization work remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
-| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means/stump fitting and initial quantile estimation use Metal; other initialization work remains CPU |
+| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation use Metal; other initialization work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; biased top-k/mean pair construction, gradients, MAP prefixes and query normalization execute on Metal. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients and prediction/base-score transforms; GPU identifies small censored probabilities for original CPU gradient recomputation, exposed through correction counters/time. Full GPU coverage remains incomplete |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; other initialization work and leaf fitting remain CPU |
@@ -58,8 +63,9 @@ For each ported operation:
    upstream CPU behavior, including edge cases and documented tolerances.
 2. Check a completed-operation counter so a CPU fallback cannot pass the test.
 3. Validate the integrated API, model persistence, and CPU-only build.
-4. Measure cold and warm time, transfers/staging, dispatches and GPU duration where
-   useful. Compare identical inputs and parameters, including preprocessing.
+4. Keep dispatch instrumentation for coverage checks. When performance work
+   resumes, measure cold/warm time and staging costs on identical inputs and
+   parameters, including preprocessing.
 5. Keep limitations visible. A feature's training output matching CPU does not mean
    its gradients, prediction, metrics, or preprocessing have been ported.
 
@@ -303,3 +309,27 @@ dispatch numeric sketch work. See [validation](../validation/sketch-finalization
 `sketch_finalize_gpu_time_ns` expose completed work. The GPU duration excludes
 host ingestion, staging, waiting and cut materialization; it cannot be used as
 an end-to-end preprocessing time or speedup.
+
+## Objective-specific initialization
+
+Expectile initialization now computes per-row/per-level gradient and Hessian
+pairs on Metal using the previously computed label mean. This is a distinct
+formula from the ordinary transformed-margin expectile gradient kernel. FP32
+subtraction, multiplication order, subnormal comparisons and underflow behavior
+are preserved. Absolute-error initialization now broadcasts target means into
+its prediction matrix with a GPU bitwise-copy kernel. Inputs are staged before
+output is written, including when broadcast source and destination overlap.
+
+Native checks cover 164 cases, 7,220,670 gradient pairs and 14,441,340 copied
+floats. Gradients match CPU bits, with NaNs checked by classification; copied
+NaN payloads and signed zeros must match exactly. Empty inputs skip dispatch,
+and tests include million-row inputs, multiple levels/targets, tiny/overflowing
+weights and output guards. Public checks compare intercepts, predictions,
+saved-model continuation and the conditions that skip initialization.
+
+`expectile_init_dispatches` and `prediction_init_dispatches` count completed
+commands. `initialization_gpu_time_ns` measures these commands separately from
+ordinary objective/transform GPU durations. The small final intercept additions
+and expectile ordering remain on the host, matching the CUDA source. Generic
+state allocation/filling, label validation and other initialization paths still
+require audit; this is not a claim that all initialization is GPU-resident.

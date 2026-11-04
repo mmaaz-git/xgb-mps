@@ -4662,6 +4662,33 @@ inline uint xgb_sketch_prune(device const float4* input, uint count, uint budget
   if (last != count - 1) output[written++] = input[count - 1];
   return written;
 }
+struct ObjectiveInitParams {
+  ulong count;
+  uint targets, weighted;
+  float mean;
+  uint padding;
+};
+kernel void xgb_expectile_init(device const float* labels [[buffer(0)]],
+                               device const float* weights [[buffer(1)]],
+                               device const float* alpha [[buffer(2)]],
+                               device float2* output [[buffer(3)]],
+                               constant ObjectiveInitParams& p [[buffer(4)]],
+                               uint index [[thread_position_in_grid]]) {
+  uint row = index / p.targets, target = index % p.targets;
+  float diff = xgb_fsub_preserve(p.mean, labels[row]);
+  uint bits = as_type<uint>(diff);
+  bool nonnegative = xgb_float_less(0u, bits) || (bits & 0x7fffffffu) == 0;
+  float scale = nonnegative ? xgb_fsub_preserve(1.f, alpha[target]) : alpha[target];
+  float weight = p.weighted ? weights[row] : 1.f;
+  output[index] = float2(xgb_fmul_preserve(xgb_fmul_preserve(scale, diff), weight),
+                         xgb_fmul_preserve(scale, weight));
+}
+kernel void xgb_broadcast_targets(device const uint* targets [[buffer(0)]],
+                                  device uint* output [[buffer(1)]],
+                                  constant uint& count [[buffer(2)]],
+                                  uint index [[thread_position_in_grid]]) {
+  output[index] = targets[index % count];
+}
 struct SketchFinalizeTask {
   ulong begin, end, workspace;
   uint capacity, intermediate_budget, final_budget, padding;
