@@ -256,9 +256,10 @@ class MultiTargetHistBuilder {
 
     auto n_targets = gpair.Shape(1);
     auto root_sum = linalg::Empty<GradientPairPrecise>(ctx_, n_targets);
+    std::vector<GradientPairInt64> quantized_root(n_targets);
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS())
-      quantized_->Sum(root_sum.HostView());
+      quantized_->Sum(root_sum.HostView(), quantized_root);
     else
 #endif
       cpu_impl::SumGradients(ctx_, gpair, root_sum.HostView());
@@ -272,7 +273,7 @@ class MultiTargetHistBuilder {
     histogram_builder_->BuildRootHist(p_fmat, p_tree->HostMtView(), partitioner_, gpair, best,
                                       HistBatch(param_));
 
-    auto weight = evaluator_->InitRoot(h_root_sum);
+    auto weight = evaluator_->InitRoot(h_root_sum, quantized_root);
     auto weight_t = weight.HostView();
     std::transform(linalg::cbegin(weight_t), linalg::cend(weight_t), linalg::begin(weight_t),
                    [&](float w) { return w * param_->learning_rate; });

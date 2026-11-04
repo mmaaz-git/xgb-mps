@@ -69,6 +69,27 @@ struct MultiSplitTask {
 struct SplitBounds {
   float lower, upper;
 };
+// Vector CUDA evaluation selects each 32-bin chunk in binary64, narrows the
+// winner to FP32, then compares chunk winners. Root gain is subtracted only
+// after the winning feature has been chosen. one_pass is a CUDA test hook:
+// 0 = both numeric directions, 1 = forward only, 2 = backward only.
+struct QuantizedMultiSplitTask {
+  std::uint32_t begin, end, kind, limit, parent_begin, targets;
+  std::int32_t monotone;
+  std::uint32_t constrained, one_pass{0}, padding{0};
+};
+struct QuantizedMultiSplitResult {
+  float gain;
+  std::int32_t bin;
+  std::uint32_t default_left, partition;
+};
+void EvaluateQuantizedMultiSplits(
+    Span<HistogramInput const> histograms, Span<QuantizedMultiSplitTask const> tasks,
+    Span<GradientPairInt64 const> parents, Span<SplitBounds const> bounds,
+    SplitParameters const& parameters, std::vector<QuantizedMultiSplitResult>* results,
+    std::vector<GradientPairInt64>* integer_children, std::vector<GradientPairPrecise>* children,
+    std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace);
+
 void EvaluateMultiSplits(Span<HistogramInput const> histograms, Span<MultiSplitTask const> tasks,
                          Span<GradientPairPrecise const> parents, Span<SplitBounds const> bounds,
                          SplitParameters const& parameters, std::vector<SplitResult>* results,

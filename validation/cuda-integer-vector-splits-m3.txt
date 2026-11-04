@@ -1,0 +1,97 @@
+Vector CUDA-order integer split validation
+Apple M3 MacBook Air, 8 CPU / 10 GPU cores, 16 GB; macOS 26.6.2
+2026-11-04 UTC, America/Los_Angeles
+
+RESULT: Metal build, all native suites, full Python suite and CPU-only build/API
+checks PASS. Direct native and focused training checks also PASS.
+No NVIDIA execution comparison and no performance benchmark performed.
+
+Production changes:
+- Multi-output hist training gathers authoritative integer histogram buffers and
+  each target's original quantizer scale. Exact parent and selected child sums
+  persist by node ID across loss-guide queues and cache/workspace reuse.
+- CUDA inclusive numeric forward/backward scans; one-hot missing-right pass then
+  missing-left pass; stable projected categorical ordering and prefix/suffix
+  partitions, with max_cat_threshold-1 candidates per direction.
+- Binary64 argmax within each 32-bin chunk, then FP32 strict updates between
+  chunks. Feature ties choose lower feature ID. Parent gain is recomputed using
+  current bounds and subtracted in binary64 only after choosing the raw winner.
+- Constrained per-target float weights/squares and pooled float regularization;
+  bounds apply even when one target has zero Hessian and the average is valid.
+- Bit-based max-delta/alpha predicates preserve subnormal parameters.
+- New cuda_integer_multi_split_dispatches counter identifies the production
+  path and is zero in CPU builds. Statistics ABI changed; all native API test
+  executables rebuilt before use.
+- Original value-gradient quantizers and float sampling replay remain separate
+  from split-gradient integer sampling; reduced leaf fitting uses its own sums.
+
+Direct native oracle: tests/metal_cuda_multi_split.mm and
+  tests/cuda_multi_split_reference.h. Compiled with -ffp-contract=off and run
+  against the production Metal shader with MTL_DEBUG_LAYER=1.
+  PASS 1528 tasks / 76102 exact child pairs.
+  Targets 1,2,3,17,33,65,129; bins 0..131 including partial/multiple warps.
+  Exact gains, selected bins/directions, partition size/category order, integer
+  children, binary64 views and guards. Missing/zero Hessians, monotone bounds,
+  clipping/penalties, per-target scales, cancellation and subnormal cases.
+  A dedicated fixture selects bin 1: global double selection would choose bin33,
+  early per-bin float selection would choose bin0. Both wrong implementations
+  are distinguished from CUDA's two-stage choice.
+
+New public coverage: 94 tests in tests/test_metal_cuda_multi_splits.py
+  64 complete-tree layout/constraint/growth/cache cases.
+  9 uniform/gradient-sampled cases, including zero subsampling.
+  6 zero-Hessian-target cases with 2,3,17 targets, with/without constraints.
+  6 cancellation cases across deeper children and depthwise/loss-guide growth.
+  3 duplicate-feature tie / capped loss-guide cases.
+  6 reduced-gradient cases with 1/2 split targets, 3 value targets, independently
+    replayed sampling and value-gradient quantization with original scales.
+  Host CUDA-source reference checks best allowed feature/candidate, exact integer
+  row/child membership, gain, cover, base/leaf weights and premature leaf stops.
+  Model serialization and CPU-loaded predictions checked without retraining.
+  Column-sampled tests audit candidates within selected features; CUDA column
+  random-stream equivalence is not claimed.
+
+Validation logs (results/ is local, not committed):
+  results/build-vector-splits-v1.log:
+    Initial build failed: unqualified Span in the new InitRoot signature. Fixed.
+  results/build-vector-splits-v2.log:
+    Metal build PASS; public training smoke PASS (4 new vector dispatches).
+    Native reference initially failed compile due to ADL ambiguity with scalar
+    Weight helper; renamed vector helper without changing arithmetic.
+  results/test-vector-splits-native-v1.log:
+    PASS 1528 tasks / 76102 child pairs.
+  results/test-vector-splits-python-v1.log:
+    Existing suite: 1 failed, 1394 passed, 1 skipped, 307 warnings, 69.39 seconds.
+    Failure was a strict CPU categorical default-direction topology assertion.
+    Vector split tests now record raw gradients and use exact CUDA-source audits;
+    existing CPU numerical prediction checks retain their original tolerances.
+    No production behavior or numerical tolerance changed to hide this mismatch.
+  results/test-vector-splits-oracle-v1.log:
+    First 85 fulltree cases PASS, 5.65 seconds.
+  results/test-vector-splits-oracle-v2.log:
+    Expanded 94 new cases +24 split regressions PASS, 13.63 seconds.
+  results/build-vector-splits-final-v1.log: Metal build PASS.
+  results/test-vector-splits-full-v1.log: all native suites rebuilt and PASS;
+    1489 Python passed, 1 skipped, 309 warnings in 102.59 seconds.
+    Full driver ran 09:02:22-09:09:20 UTC and exited 0, including CPU stages.
+    results/build-cpu-vector-splits-v1.log and check-cpu-vector-splits-v1.log PASS.
+  Final source review changed host parent gain to recompute from current bounds
+  exactly as CUDA does. Native shader/API source unchanged after the full build.
+  Python reference also uses explicitly sequential target-Hessian summation
+  (Python 3.12+ sum(float) uses compensated summation, unlike CUDA).
+  results/vector-splits-integration-driver-v2.log: 09:09:37-09:11:06 UTC, exit 0.
+    results/build-vector-splits-integration-v2.log: final Metal build PASS.
+    results/test-vector-splits-python-v2.log: 1489 passed, 1 skipped, 308 warnings
+      in 76.83 seconds.
+    results/build-cpu-vector-splits-v2.log: CPU build PASS (already current).
+    results/check-cpu-vector-splits-v2.log: CPU API/device check PASS.
+  No production or test changes after these final checks; documentation only.
+
+Remaining scope:
+  Feature-winner reduction, final node weights and constraint/interaction metadata
+  are still host operations. CUDA sketch/column/ranking random-stream differences
+  and other coverage-ledger gaps remain. Extreme nonfinite gains and host expansion
+  semantics require alignment. Binary64 gain operations are separately rounded;
+  NVCC contraction and CUDA build/hardware differences remain unverified.
+  These local tests establish source-derived checks, not full CUDA parity or
+  measured NVIDIA equivalence. Performance work remains deferred.

@@ -1411,7 +1411,7 @@ inline XGBDouble xgb_weight_precise(DoublePair sum, SplitParameters p) {
     threshold = xgb_dadd(sum.g, alpha);
   XGBDouble w = xgb_ddiv(xgb_dneg(threshold), xgb_dadd(sum.h, xgb_dfrom_float(p.reg_lambda)));
   XGBDouble delta = xgb_dfrom_float(p.max_delta_step);
-  if (p.max_delta_step && xgb_dlt(delta, {w.bits & ~kDoubleSign}))
+  if ((as_type<uint>(p.max_delta_step) & 0x7fffffffu) && xgb_dlt(delta, {w.bits & ~kDoubleSign}))
     w = {delta.bits | (w.bits & kDoubleSign)};
   return w;
 }
@@ -1426,9 +1426,9 @@ inline XGBDouble xgb_gain_precise(DoublePair sum, XGBDouble w, XGBDouble square,
 }
 inline XGBDouble xgb_unconstrained_gain(DoublePair sum, SplitParameters p) {
   if (!xgb_dlt({0}, sum.h)) return {0};
-  if (p.max_delta_step == 0.0f) {
+  if ((as_type<uint>(p.max_delta_step) & 0x7fffffffu) == 0) {
     XGBDouble g = sum.g, alpha = xgb_dfrom_float(p.reg_alpha);
-    if (p.reg_alpha) {
+    if (as_type<uint>(p.reg_alpha) & 0x7fffffffu) {
       if (xgb_dlt(alpha, g))
         g = xgb_dsub(g, alpha);
       else if (xgb_dlt(g, xgb_dneg(alpha)))
@@ -5905,5 +5905,216 @@ kernel void xgb_evaluate_quantized_splits(
     best.frg = right.g.bits;
     best.frh = right.h.bits;
     results[task_id] = best;
+  }
+}
+
+// CUDA multi_evaluate_splits.cu: inclusive integer scans in both directions,
+// binary64 argmax within each 32-candidate chunk, then FP32 winner updates.
+struct QuantizedMultiSplitTask {
+  uint begin, end, kind, limit, parent_begin, targets;
+  int monotone;
+  uint constrained, one_pass, padding;
+};
+struct QuantizedMultiSplitResult {
+  float gain;
+  int bin;
+  uint missing, partition;
+};
+inline float xgb_cuda_bounded_weight(DoublePair sum, SplitParameters p, float2 bounds) {
+  // A target can have zero curvature while the average trace still permits a
+  // vector split. CUDA applies bounds even to the zero unbounded weight.
+  float w = xgb_split_weight(sum, p, -INFINITY, INFINITY);
+  if (xgb_cuda_float_lt(w, bounds.x)) return bounds.x;
+  if (xgb_cuda_float_lt(bounds.y, w)) return bounds.y;
+  return w;
+}
+inline void xgb_quantized_multi_sums(QuantizedMultiSplitTask task, uint scan_bin, uint missing,
+                                     uint target, device const ulong2* hist,
+                                     device const ulong4* scans, device const ulong2* parents,
+                                     thread ulong2& left, thread ulong2& right) {
+  uint idx = task.begin + scan_bin * task.targets + target;
+  ulong2 parent = parents[task.parent_begin + target];
+  if (task.kind == 0) {
+    if (missing) {
+      right = scans[idx].zw;
+      left = parent - right;
+    } else {
+      left = scans[idx].xy;
+      right = parent - left;
+    }
+  } else if (task.kind == 1) {
+    if (missing) {
+      right = hist[idx];
+      left = parent - right;
+    } else {
+      ulong2 total = scans[task.end - task.targets + target].xy;
+      left = total - hist[idx];
+      right = parent - left;
+    }
+  } else {
+    if (missing) {
+      right = scans[idx].xy;
+      left = parent - right;
+    } else {
+      left = scans[idx].zw;
+      right = parent - left;
+    }
+  }
+}
+inline XGBDouble xgb_quantized_multi_gain(QuantizedMultiSplitTask task, SplitParameters p,
+                                          uint scan_bin, uint missing, device const ulong2* hist,
+                                          device const ulong4* scans, device const ulong2* parents,
+                                          device const float2* bounds,
+                                          device const GradientScale* scales) {
+  XGBDouble gain{0}, lh{0}, rh{0};
+  for (uint t = 0; t < task.targets; ++t) {
+    ulong2 li, ri;
+    xgb_quantized_multi_sums(task, scan_bin, missing, t, hist, scans, parents, li, ri);
+    DoublePair l = xgb_split_dequantize(li, scales[t]), r = xgb_split_dequantize(ri, scales[t]);
+    lh = xgb_dadd(lh, l.h);
+    rh = xgb_dadd(rh, r.h);
+    if (!task.constrained) {
+      gain = xgb_dadd(gain, xgb_unconstrained_gain(l, p));
+      gain = xgb_dadd(gain, xgb_unconstrained_gain(r, p));
+    }
+  }
+  XGBDouble count{xgb_scaled_integer(ulong(task.targets), 0)};
+  XGBDouble minimum = xgb_dfrom_float(p.min_child_weight);
+  lh = xgb_ddiv(lh, count);
+  rh = xgb_ddiv(rh, count);
+  if (!xgb_dlt({0}, lh) || !xgb_dlt({0}, rh) || xgb_dlt(lh, minimum) || xgb_dlt(rh, minimum))
+    return {kDoubleSign | kDoubleInf};
+  if (task.constrained) {
+    for (uint t = 0; t < task.targets; ++t) {
+      ulong2 li, ri;
+      xgb_quantized_multi_sums(task, scan_bin, missing, t, hist, scans, parents, li, ri);
+      DoublePair l = xgb_split_dequantize(li, scales[t]), r = xgb_split_dequantize(ri, scales[t]);
+      float2 b = bounds[task.parent_begin + t];
+      float lw = xgb_cuda_bounded_weight(l, p, b), rw = xgb_cuda_bounded_weight(r, p, b);
+      if ((task.monotone > 0 && !xgb_cuda_float_le(lw, rw)) ||
+          (task.monotone < 0 && !xgb_cuda_float_le(rw, lw))) {
+        SplitParameters pooled = p;
+        pooled.reg_alpha = xgb_fmul_preserve(2.f, p.reg_alpha);
+        pooled.reg_lambda = xgb_fmul_preserve(2.f, p.reg_lambda);
+        // CUDA adds the two dequantized views here, not integer parent sum.
+        lw = xgb_cuda_bounded_weight(xgb_pair_add(l, r), pooled, b);
+        rw = lw;
+      }
+      gain = xgb_dadd(gain, xgb_vector_gain_weight(l, lw, p));
+      gain = xgb_dadd(gain, xgb_vector_gain_weight(r, rw, p));
+    }
+  }
+  return gain;
+}
+kernel void xgb_evaluate_quantized_multi_splits(
+    device const ulong2* hist [[buffer(0)]],
+    device const QuantizedMultiSplitTask* tasks [[buffer(1)]],
+    constant SplitParameters& p [[buffer(2)]],
+    device QuantizedMultiSplitResult* results [[buffer(3)]], device uint* order [[buffer(4)]],
+    device ulong* scores [[buffer(5)]], device ulong4* scans [[buffer(6)]],
+    device const ulong2* parents [[buffer(7)]], device const float2* bounds [[buffer(8)]],
+    device ulong2* children [[buffer(9)]], device const GradientScale* scales [[buffer(10)]],
+    device ulong2* exact [[buffer(11)]], uint task_id [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]]) {
+  QuantizedMultiSplitTask task = tasks[task_id];
+  uint n = (task.end - task.begin) / task.targets;
+  if (task.kind == 2) {
+    for (uint i = lane; i < n; i += 32) {
+      order[task.begin + i] = i;
+      XGBDouble score{0};
+      for (uint t = 0; t < task.targets; ++t) {
+        float pw = xgb_split_weight(xgb_split_dequantize(parents[task.parent_begin + t], scales[t]),
+                                    p, -INFINITY, INFINITY);
+        float cw = xgb_split_weight(
+            xgb_split_dequantize(hist[task.begin + i * task.targets + t], scales[t]), p, -INFINITY,
+            INFINITY);
+        XGBDouble product =
+            xgb_dfrom_float(xgb_dto_float(xgb_dmul(xgb_dfrom_float(cw), xgb_dfrom_float(pw))));
+        score = xgb_dadd(score, product);
+      }
+      scores[task.begin + i] = score.bits;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+  if (lane == 0 && task.kind == 2) {
+    for (uint i = 1; i < n; ++i) {
+      uint value = order[task.begin + i], j = i;
+      XGBDouble key{scores[task.begin + value]};
+      while (j && xgb_dlt(key, {scores[task.begin + order[task.begin + j - 1]]})) {
+        order[task.begin + j] = order[task.begin + j - 1];
+        --j;
+      }
+      order[task.begin + j] = value;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+  // Targets are independent. Integer associativity makes these scans identical
+  // to CUDA's warp scans without imposing a floating-point reduction topology.
+  for (uint t = lane; t < task.targets; t += 32) {
+    ulong2 forward(0), backward(0);
+    for (uint i = 0; i < n; ++i) {
+      uint f = task.kind == 2 ? order[task.begin + i] : i;
+      uint r = task.kind == 2 ? order[task.begin + n - 1 - i] : n - 1 - i;
+      forward += hist[task.begin + f * task.targets + t];
+      backward += hist[task.begin + r * task.targets + t];
+      scans[task.begin + i * task.targets + t] = ulong4(forward, backward);
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_device);
+  float best = -MAXFLOAT;
+  uint best_scan = 0xffffffffu, best_missing = 0;
+  uint limit = task.kind == 2 ? (min(n, task.limit) > 0 ? min(n, task.limit) - 1 : 0) : n;
+  for (uint phase = 0; phase < 2; ++phase) {
+    if (task.kind == 0 &&
+        ((phase == 0 && task.one_pass == 2) || (phase == 1 && task.one_pass == 1)))
+      continue;
+    uint missing = task.kind == 2 ? uint(phase == 0) : uint(phase == 1);
+    for (uint base = 0; base < limit; base += 32) {
+      uint i = base + lane;
+      XGBDouble gain = i < limit ? xgb_quantized_multi_gain(task, p, i, missing, hist, scans,
+                                                            parents, bounds, scales)
+                                 : XGBDouble{kDoubleSign | kDoubleInf};
+      // cub::ArgMax compares DOUBLE within this chunk, breaking ties by lane.
+      // Preserve +/-zero equality and use 32-bit reductions for each key half.
+      ulong bits = xgb_dzero(gain) ? 0ul : gain.bits;
+      ulong key = bits & kDoubleSign ? ~bits : bits ^ kDoubleSign;
+      uint hi = uint(key >> 32), lo = uint(key);
+      uint high = simd_max(hi), low = simd_max(hi == high ? lo : 0u);
+      uint winner = simd_min(hi == high && lo == low ? lane : 0xffffffffu);
+      uint selected = simd_broadcast(as_type<uint>(xgb_dto_float(gain)), ushort(winner));
+      uint finite = simd_broadcast(uint((gain.bits & ~kDoubleSign) != kDoubleInf), ushort(winner));
+      float candidate = as_type<float>(selected);
+      // CUDA's MultiSplitCandidate::Update takes FLOAT; do not choose the
+      // global double maximum or compare individual bins after early rounding.
+      if (lane == 0 && finite && xgb_cuda_float_lt(best, candidate)) {
+        best = candidate;
+        best_scan = base + winner;
+        best_missing = missing;
+      }
+    }
+  }
+  uint scan = simd_broadcast(best_scan, 0), missing = simd_broadcast(best_missing, 0);
+  if (lane == 0) {
+    QuantizedMultiSplitResult result{best, -1, 0, 0};
+    if (scan != 0xffffffffu) {
+      uint bin =
+          task.kind == 1 ? scan : ((task.kind == 0 ? missing : !missing) ? n - 1 - scan : scan);
+      result.bin = int(bin);
+      result.missing = missing;
+      result.partition = task.kind == 2 ? bin + missing : 0;
+    }
+    results[task_id] = result;
+  }
+  if (scan != 0xffffffffu) {
+    for (uint t = lane; t < task.targets; t += 32) {
+      ulong2 li, ri;
+      xgb_quantized_multi_sums(task, scan, missing, t, hist, scans, parents, li, ri);
+      DoublePair l = xgb_split_dequantize(li, scales[t]), r = xgb_split_dequantize(ri, scales[t]);
+      uint left_idx = 2 * task.parent_begin + t, right_idx = left_idx + task.targets;
+      exact[left_idx] = li;
+      exact[right_idx] = ri;
+      children[left_idx] = ulong2(l.g.bits, l.h.bits);
+      children[right_idx] = ulong2(r.g.bits, r.h.bits);
+    }
   }
 }

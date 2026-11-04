@@ -1,11 +1,10 @@
 """GPU split-selection coverage independent of the histogram dispatch checks."""
-import json
-
 import numpy as np
 import pytest
 import xgboost as xgb
 
 from cuda_split_reference import RecordedSquaredError, audit_tree, trees
+from cuda_multi_split_reference import audit_recorded as audit_vector
 
 
 @pytest.mark.parametrize("strategy", ["one_output_per_tree", "multi_output_tree"])
@@ -44,12 +43,14 @@ def test_gpu_split_selection(metal, strategy, layout, constraints, tmp_path):
     before = xgb.metal_info()["split_dispatches"]
     cpu = xgb.train(p | {"device": "cpu"}, d, 5)
     assert xgb.metal_info()["split_dispatches"] == before
-    recorded = RecordedSquaredError() if strategy == "one_output_per_tree" else None
-    integer_before = xgb.metal_info()["cuda_integer_split_dispatches"]
+    recorded = RecordedSquaredError()
+    counter = ("cuda_integer_split_dispatches" if strategy == "one_output_per_tree"
+               else "cuda_integer_multi_split_dispatches")
+    integer_before = xgb.metal_info()[counter]
     gpu = xgb.train(p | {"device": "mps"}, d, 5, obj=recorded)
     assert xgb.metal_info()["split_dispatches"] > before
-    if recorded is not None:
-        assert xgb.metal_info()["cuda_integer_split_dispatches"] > integer_before
+    assert xgb.metal_info()[counter] > integer_before
+    if strategy == "one_output_per_tree":
         checked = [0, 0]
         for i, tree in enumerate(trees(gpu)):
             g, h = recorded.gradients[i // y.shape[1]]
@@ -59,20 +60,12 @@ def test_gpu_split_selection(metal, strategy, layout, constraints, tmp_path):
             checked = [a + b for a, b in zip(checked, counts, strict=True)]
         assert min(checked) > 0
     else:
-        # The vector path still uses CPU-order scans; retain its CPU regression.
+        # CUDA's chunk selection/missing ties can differ from CPU. Check the
+        # complete CUDA-source tree within the sampled feature, while retaining
+        # the existing numerical CPU prediction comparison on these fixtures.
+        assert min(audit_vector(gpu, d, x, recorded, p)) > 0
         np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
-    cpu_trees = json.loads(cpu.save_raw(raw_format="json"))["learner"]["gradient_booster"]["model"]["trees"]
-    gpu_trees = json.loads(gpu.save_raw(raw_format="json"))["learner"]["gradient_booster"]["model"]["trees"]
-    if recorded is None:
-        # Verify selected topology, features, directions and categories, not only loss.
-        for a, b in zip(cpu_trees, gpu_trees, strict=True):
-            for key in ["left_children", "right_children", "split_indices", "default_left",
-                        "categories", "categories_nodes", "categories_segments", "categories_sizes"]:
-                assert a[key] == b[key]
     path = tmp_path / "model.ubj"
     gpu.save_model(path)
     loaded = xgb.Booster(params={"device": "cpu"}, model_file=path)
-    if recorded is None:
-        np.testing.assert_allclose(loaded.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
-    else:
-        np.testing.assert_array_equal(loaded.predict(d), gpu.predict(d))
+    np.testing.assert_array_equal(loaded.predict(d), gpu.predict(d))

@@ -51,6 +51,10 @@ echo "Checking scalar integer splits against independent CUDA-source formulas"
 clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_cuda_split.mm \
   -framework Metal -framework Foundation -o results/metal_cuda_split_test
 MTL_DEBUG_LAYER=1 results/metal_cuda_split_test xgboost/src/common/metal_histogram.metal
+echo "Checking vector integer splits against independent CUDA-source formulas"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_cuda_multi_split.mm \
+  -framework Metal -framework Foundation -o results/metal_cuda_multi_split_test
+MTL_DEBUG_LAYER=1 results/metal_cuda_multi_split_test xgboost/src/common/metal_histogram.metal
 echo "Checking scalar and vector split kernels against independent CPU references"
 clang++ -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_split.mm \
   -framework Metal -framework Foundation -o results/metal_split_test
