@@ -40,7 +40,7 @@ class Progress(xgb.callback.TrainingCallback):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rows", type=int, nargs="+", default=[10_000, 100_000, 1_000_000])
-    parser.add_argument("--objective", choices=["reg:squarederror", "reg:absoluteerror", "reg:quantileerror", "binary:logistic"],
+    parser.add_argument("--objective", choices=["reg:squarederror", "reg:absoluteerror", "reg:quantileerror", "binary:logistic", "rank:pairwise", "rank:ndcg", "rank:map"],
                         default="reg:squarederror")
     parser.add_argument("--quantile-levels", type=float, nargs="+", default=[0.5])
     parser.add_argument("--eval-metric", help="Evaluate this training metric after every round")
@@ -48,6 +48,8 @@ def main():
     parser.add_argument("--weighted", action="store_true")
     parser.add_argument("--features", type=int, default=32)
     parser.add_argument("--max-depth", type=int, default=6)
+    parser.add_argument("--query-size", type=int, default=128, help="Rows per query for ranking objectives")
+    parser.add_argument("--rank-pairs", type=int, default=32)
     parser.add_argument("--progress-every", type=int, default=0)
     parser.add_argument("--float32-generation", action="store_true",
                         help="Generate large feature arrays directly as FP32, avoiding FP64 temporaries")
@@ -58,22 +60,29 @@ def main():
     args = parser.parse_args()
     if args.output.exists():
         parser.error(f"{args.output} exists; inspect it or choose a new output name")
+    if args.query_size < 1 or args.rank_pairs < 1:
+        parser.error("query-size and rank-pairs must be positive")
+    is_ranking = args.objective.startswith("rank:")
     assert xgb.metal_info()["available"], "A visible Metal GPU is required"
     p = dict(tree_method="hist", objective=args.objective, max_depth=args.max_depth,
              max_bin=256, nthread=args.threads, seed=7, subsample=args.subsample)
+    if is_ranking:
+        p.update(lambdarank_pair_method="topk", lambdarank_num_pair_per_sample=args.rank_pairs)
     if args.eval_metric:
         p["eval_metric"] = args.eval_metric
     if args.objective == "reg:quantileerror":
         p["quantile_alpha"] = args.quantile_levels
     # Compile the shader and initialize the runtime before timing either device.
-    warm_labels = np.arange(32) % 2 if args.objective == "binary:logistic" else np.arange(32)
+    warm_labels = np.arange(32) % 2 if args.objective in {"binary:logistic", "rank:map"} else np.arange(32)
     warm = xgb.DMatrix(np.arange(64, dtype=np.float32).reshape(32, 2), label=warm_labels,
-                       weight=np.ones(32) if args.weighted else None)
+                       weight=np.ones(1 if is_ranking else 32) if args.weighted else None,
+                       group=[32] if is_ranking else None)
     for device in ["cpu", "mps"]:
         xgb.train(p | {"device": device}, warm, num_boost_round=1)
     report = dict(status="in_progress", platform=platform.platform(), cpu_threads=args.threads, features=args.features,
                   rounds=args.rounds, repeats=args.repeats, weighted=args.weighted, params=p, cases=[],
                   float32_generation=args.float32_generation, progress_every=args.progress_every,
+                  query_size=args.query_size if is_ranking else None,
                   memory_note="RSS is the process lifetime peak; swap is system-wide, not isolated to this benchmark",
                   timing="DMatrix construction + training with quantization; warmed Metal runtime; data generation excluded")
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -85,7 +94,12 @@ def main():
         y = (x[:, 0] * 2 - x[:, 1] + x[:, 2] ** 2 + rng.normal(scale=0.1, size=n)).astype(np.float32)
         if args.objective == "binary:logistic":
             y = (rng.random(n) < 1 / (1 + np.exp(-.5 * (y - 1)))).astype(np.float32)
-        weights = rng.uniform(0.1, 3, n).astype(np.float32) if args.weighted else None
+        groups = None
+        if is_ranking:
+            groups = np.diff(np.r_[np.arange(0, n, args.query_size), n]).astype(np.uint32)
+            y = ((y > 1).astype(np.float32) if args.objective == "rank:map" else
+                 np.digitize(y, [-2, -1, 0, 1, 2, 4, 6]).astype(np.float32))
+        weights = rng.uniform(0.1, 3, len(groups) if is_ranking else n).astype(np.float32) if args.weighted else None
         timings = {"cpu": [], "mps": []}
         preds = {}
         metric_histories = {"cpu": [], "mps": []}
@@ -99,7 +113,7 @@ def main():
                 memory_before = memory_snapshot()
                 wall_start = time.time()
                 start = time.perf_counter()
-                d = xgb.DMatrix(x, label=y, weight=weights, nthread=args.threads)
+                d = xgb.DMatrix(x, label=y, weight=weights, group=groups, nthread=args.threads)
                 history = {}
                 model = xgb.train(p | {"device": device}, d, num_boost_round=args.rounds,
                                   evals=[(d, "train")] if args.eval_metric else [],
@@ -125,6 +139,8 @@ def main():
                 metric_histories[device].append(history)
                 if args.eval_metric == "auc":
                     assert stats["roc_auc_dispatches"] == (args.rounds if device == "mps" else 0)
+                if is_ranking:
+                    assert stats["ranking_gradient_dispatches"] == (args.rounds + 1 if device == "mps" else 0)
                 completed = after["histogram_dispatches"] - before["histogram_dispatches"]
                 gpu_seconds = (after.get("gpu_time_ns", 0) - before.get("gpu_time_ns", 0)) / 1e9
                 assert (completed > 0) == (device == "mps")

@@ -66,7 +66,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
-| Ranking sorts | Stable per-query prediction order for pairwise/NDCG/MAP training and NDCG/MAP/precision metrics; NDCG ideal-label order and query-weight sums also use Metal; pair construction and gradients remain CPU |
+| Ranking training | Stable grouped sorting, NDCG cache/label checks and biased top-k pairwise/NDCG/MAP pair construction, gradients and normalization on Metal; mean-sampled and unbiased gradients remain CPU |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision; GPU label validation and NDCG cache initialization |
@@ -949,3 +949,46 @@ limit explicitly. The cancellation test uses an independent 80-digit Decimal
 reference. On this Apple arm64 build, `long double` itself has only 53 significant
 bits, so the earlier long-double PR checks should not be read as higher-precision
 oracles. Ranking pair construction, gradients and grouped ROC/PR-AUC remain to port.
+
+
+### Top-k ranking gradients
+
+Biased top-k pairwise, NDCG and MAP objectives now construct pairs, compute
+per-pair gradients, normalize queries and accumulate gradients on Metal. MAP
+prefix statistics also execute on GPU. Pair storage is reused in 64 MiB batches;
+a single larger query can exceed that budget up to the device buffer limit.
+Mean-sampled and unbiased ranking gradients still use the explicit CPU path.
+
+The full suite passes **573 Python tests**, the native suites under Metal API
+Validation and CPU-only build checks; one Python test is skipped. The new native
+objective tests compare **721 cases / 1,222,100 rows / 21,101,380 candidate pairs**
+with CPU, including normalization switches, ties, long queries, query weights,
+linear NDCG, near-binary MAP, extreme scores and multiple storage batches.
+**1,122,600 gradient pairs are bit-exact**, with maximum scaled error `1.91e-6`.
+A further check covers **257,952 subnormal gradient/Hessian fields** with an
+absolute allowance of two FP32 subnormal ULPs plus a relative tolerance.
+
+Clean training benchmarks use one million rows, 32 features, query size 128,
+32 top-k pairs, 20 rounds, depth 6, eight CPU threads and three alternating
+repeats. Timings include DMatrix construction and training; data generation is
+excluded and the Metal runtime is warmed.
+
+| Objective | CPU median | MPS median | CPU / MPS |
+| --- | ---: | ---: | ---: |
+| [Pairwise](validation/benchmark-ranking-training-pairwise-v2-m3.json) | 2.282 s | 2.508 s | 0.91× |
+| [NDCG](validation/benchmark-ranking-training-ndcg-v1-m3.json) | 2.322 s | 3.203 s | 0.73× |
+| [MAP](validation/benchmark-ranking-training-map-v1-m3.json) | 2.069 s | 3.439 s | 0.60× |
+
+These training cases are slower on MPS. Maximum prediction differences are
+`2.63e-6`, `1.23e-5` and `4.77e-7`, respectively. The NDCG/MAP reports also retain
+the slower 100,000-row cases. System-wide swap was approximately 17.3 GiB;
+other applications were left running. The wall/monotonic clock discrepancy is
+below 0.04 ms in these published runs. A previous run interrupted by laptop
+sleep was rejected by the timing guard and is not used for this table.
+
+`ranking_gradient_dispatches` counts completed gradient calls;
+`ranking_pairs` counts candidate pairs including equal-label pairs that contribute
+zero; `ranking_pair_batches` counts storage batches. `ranking_gradient_gpu_time_ns`
+measures the fused command and overlaps grouped-sort and objective durations.
+Do not add those timings. Broad CUDA parity and large training speedups remain
+unfinished.

@@ -3126,3 +3126,223 @@ kernel void xgb_ranking_score(device const uint2* records [[buffer(0)]],
     partial[group] = ulong2(sum.bits, weight.bits);
   }
 }
+
+// Ranking gradients retain CPU FP32 accumulation and multiplication boundaries.
+// Native arithmetic handles normal results; the integer binary64 path preserves
+// inputs/results that Metal is permitted to flush to zero.
+inline uint xgb_rank_fadd(uint a, uint b) {
+  uint ma = a & 0x7fffffffu, mb = b & 0x7fffffffu;
+  if ((!ma || ma >= 0x00800000u) && (!mb || mb >= 0x00800000u)) {
+    uint result = as_type<uint>(as_type<float>(a) + as_type<float>(b));
+    if ((result & 0x7fffffffu) >= 0x00800000u ||
+        (ma == mb && ((a ^ b) & 0x80000000u)) || (!ma && !mb)) return result;
+  }
+  return as_type<uint>(xgb_dto_float(xgb_dadd(xgb_dfrom_float(as_type<float>(a)),
+                                            xgb_dfrom_float(as_type<float>(b)))));
+}
+inline uint xgb_rank_fmul(uint a, uint b) {
+  uint ma = a & 0x7fffffffu, mb = b & 0x7fffffffu;
+  if ((!ma || ma >= 0x00800000u) && (!mb || mb >= 0x00800000u)) {
+    uint result = as_type<uint>(as_type<float>(a) * as_type<float>(b));
+    if ((result & 0x7fffffffu) >= 0x00800000u || !ma || !mb) return result;
+  }
+  return as_type<uint>(xgb_dto_float(xgb_dmul(xgb_dfrom_float(as_type<float>(a)),
+                                            xgb_dfrom_float(as_type<float>(b)))));
+}
+struct RankingPairTask {
+  ulong pair_begin, tile_begin;
+  uint begin, count, topk, padding;
+};
+struct RankingGradientParams {
+  ulong rows, label_stride, pair_base, tile_base;
+  uint group_begin, group_end, row_begin, kind;
+  uint normalized, score_normalized, exponential, weighted;
+  uint weight_norm, padding;
+};
+inline ulong xgb_rank_pair_start(ulong i, ulong count) { return i * count - i * (i + 1) / 2; }
+
+// MAP's relevance/precision prefixes. Exact binary labels use parallel integer
+// hit prefixes; other accepted labels preserve CPU's ordered arithmetic.
+kernel void xgb_ranking_map_stats(device const uint2* records [[buffer(0)]],
+                                   device const uint* labels [[buffer(1)]],
+                                   device const uint* offsets [[buffer(2)]],
+                                   device ulong2* stats [[buffer(3)]],
+                                   constant RankingScoreParams& p [[buffer(4)]],
+                                   uint block [[threadgroup_position_in_grid]],
+                                   uint lane [[thread_index_in_simdgroup]],
+                                   uint simd [[simdgroup_index_in_threadgroup]]) {
+  uint group = block * 8 + simd;
+  if (group >= p.groups) return;
+  using namespace xgb_survival;
+  uint begin = offsets[group], count = offsets[group + 1] - begin;
+  bool soft = false;
+  for (ulong i = lane; i < count; i += 32) {
+    uint bits = labels[ulong(records[ulong(begin) + i].y) * p.label_stride];
+    soft |= (bits & 0x7fffffffu) != 0 && bits != 0x3f800000u;
+  }
+  if (simd_any(soft)) {
+    if (lane == 0) {
+      D hits = zero, acc = zero;
+      for (ulong i = 0; i < count; ++i) {
+        D label = From(as_type<float>(labels[ulong(records[ulong(begin) + i].y) * p.label_stride]));
+        hits = hits + label;
+        acc = acc + label / D{xgb_scaled_integer(i + 1, 0)};
+        stats[ulong(begin) + i] = ulong2(hits.bits, acc.bits);
+      }
+    }
+    return;
+  }
+  uint preceding = 0;
+  D carry = zero;
+  for (ulong base = 0; base < count; base += 32) {
+    ulong i = base + lane;
+    uint hit = i < count ? uint(labels[ulong(records[ulong(begin) + i].y) * p.label_stride] == 0x3f800000u) : 0;
+    uint prefix = simd_prefix_exclusive_sum(hit) + hit;
+    D acc = hit ? one / D{xgb_scaled_integer(i + 1, 0)} : zero;
+    for (uint distance = 1; distance < 32; distance <<= 1) {
+      ulong2 other = xgb_dpair_shuffle_up(ulong2(acc.bits, 0), distance);
+      if (lane >= distance) acc = acc + D{other.x};
+    }
+    acc = carry + acc;
+    if (i < count) stats[ulong(begin) + i] = ulong2(xgb_scaled_integer(preceding + prefix, 0), acc.bits);
+    uint lo = simd_broadcast(uint(acc.bits), 31), hi = simd_broadcast(uint(acc.bits >> 32), 31);
+    carry = D{(ulong(hi) << 32) | lo};
+    preceding += simd_sum(hit);
+  }
+}
+
+kernel void xgb_ranking_pairs(device const uint2* records [[buffer(0)]],
+                               device const uint* predictions [[buffer(1)]],
+                               device const uint* labels [[buffer(2)]],
+                               device const RankingPairTask* tasks [[buffer(3)]],
+                               device const ulong* discounts [[buffer(4)]],
+                               device const ulong* inverse [[buffer(5)]],
+                               device const ulong2* map_stats [[buffer(6)]],
+                               device uint2* pairs [[buffer(7)]],
+                               constant RankingGradientParams& p [[buffer(8)]],
+                               uint tile [[threadgroup_position_in_grid]],
+                               uint tid [[thread_index_in_threadgroup]]) {
+  threadgroup uint query;
+  if (tid == 0) {
+    uint lo = p.group_begin, hi = p.group_end;
+    ulong global_tile = p.tile_base + tile;
+    while (lo < hi) {
+      uint mid = lo + (hi - lo) / 2;
+      if (tasks[mid].tile_begin <= global_tile) lo = mid + 1;
+      else hi = mid;
+    }
+    query = lo - 1;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  uint group = query;
+  RankingPairTask task = tasks[group];
+  ulong index = (p.tile_base + tile - task.tile_begin) * 256 + tid;
+  ulong count = xgb_rank_pair_start(task.topk, task.count);
+  if (index >= count) return;
+  uint lo = 0, hi = task.topk;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (xgb_rank_pair_start(mid, task.count) <= index) lo = mid + 1;
+    else hi = mid;
+  }
+  uint i = lo - 1, j = uint(i + 1 + index - xgb_rank_pair_start(i, task.count));
+  uint row_i = records[ulong(task.begin) + i].y, row_j = records[ulong(task.begin) + j].y;
+  using namespace xgb_survival;
+  D yi = From(as_type<float>(labels[ulong(row_i) * p.label_stride]));
+  D yj = From(as_type<float>(labels[ulong(row_j) * p.label_stride]));
+  ulong output = task.pair_begin - p.pair_base + index;
+  if (xgb_deq(yi, yj)) { pairs[output] = uint2(0); return; }
+  bool swap = yi < yj;
+  uint high = swap ? row_j : row_i, low = swap ? row_i : row_j;
+  uint diff_bits = xgb_rank_fadd(predictions[high], predictions[low] ^ 0x80000000u);
+  D sigmoid = From(xgb_sigmoid(as_type<float>(diff_bits)));
+  D delta = one;
+  if (p.kind == 1) {
+    D gi = p.exponential ? D{xgb_scaled_integer((1u << uint(xgb_dto_float(yi))) - 1, 0)} : yi;
+    D gj = p.exponential ? D{xgb_scaled_integer((1u << uint(xgb_dto_float(yj))) - 1, 0)} : yj;
+    D di{discounts[i]}, dj{discounts[j]};
+    // CPU evaluates high-relevance terms first, regardless of prediction rank.
+    D original = swap ? gj * dj + gi * di : gi * di + gj * dj;
+    D changed = swap ? gi * dj + gj * di : gj * di + gi * dj;
+    delta = Abs((original - changed) * D{inverse[group]});
+  } else if (p.kind == 2) {
+    D n{map_stats[ulong(task.begin) + i].x}, m{map_stats[ulong(task.begin) + j].x};
+    D b = D{map_stats[ulong(task.begin) + j - 1].y} - D{map_stats[ulong(task.begin) + i].y};
+    D ri{xgb_scaled_integer(ulong(i) + 1, 0)}, rj{xgb_scaled_integer(ulong(j) + 1, 0)};
+    D total{map_stats[ulong(task.begin) + task.count - 1].x};
+    delta = Abs((swap ? (m / rj - (n + one) / ri) - b : (n / ri - m / rj) + b) / total);
+  }
+  D best = From(as_type<float>(predictions[records[task.begin].y]));
+  D worst = From(as_type<float>(predictions[records[ulong(task.begin) + task.count - 1].y]));
+  if (p.score_normalized && !xgb_deq(best, worst)) {
+    delta = delta / (From(as_type<float>(diff_bits & 0x7fffffffu)) + D{0x3f847ae147ae147bul});
+  }
+  D gradient = (sigmoid - one) * delta;
+  D hessian = sigmoid * (one - sigmoid), epsilon{0x3c9cd2b297d889bcul};  // CPU 1e-16
+  if (hessian < epsilon) hessian = epsilon;
+  hessian = (hessian * delta) * two;
+  uint g = as_type<uint>(xgb_dto_float(gradient));
+  pairs[output] = uint2(swap ? g ^ 0x80000000u : g, as_type<uint>(xgb_dto_float(hessian)));
+}
+
+kernel void xgb_ranking_normalize(device const uint2* pairs [[buffer(0)]],
+                                   device const RankingPairTask* tasks [[buffer(1)]],
+                                   device uint* norms [[buffer(2)]],
+                                   constant RankingGradientParams& p [[buffer(3)]],
+                                   uint block [[threadgroup_position_in_grid]],
+                                   uint lane [[thread_index_in_simdgroup]],
+                                   uint simd [[simdgroup_index_in_threadgroup]]) {
+  uint group = p.group_begin + block * 8 + simd;
+  if (group >= p.group_end) return;
+  using namespace xgb_survival;
+  RankingPairTask task = tasks[group];
+  ulong count = xgb_rank_pair_start(task.topk, task.count);
+  D sum = zero;
+  if (p.normalized) {
+    for (ulong i = lane; i < count; i += 32) {
+      uint bits = pairs[task.pair_begin - p.pair_base + i].x & 0x7fffffffu;
+      sum = sum + two * From(as_type<float>(bits));
+    }
+    for (uint distance = 16; distance; distance >>= 1) {
+      D other = xgb_shuffle_down_double(sum, distance);
+      if (lane + distance < 32) sum = sum + other;
+    }
+  }
+  if (lane == 0) {
+    D norm = sum > zero ? (Log(one + sum) / D{0x3fe62e42fefa39eful}) / sum : one;
+    norms[group] = as_type<uint>(xgb_dto_float(norm));
+  }
+}
+
+kernel void xgb_ranking_gather(device const uint2* records [[buffer(0)]],
+                                device const RankingPairTask* tasks [[buffer(1)]],
+                                device const uint2* pairs [[buffer(2)]],
+                                device const uint* norms [[buffer(3)]],
+                                device const uint* weights [[buffer(4)]],
+                                device uint2* output [[buffer(5)]],
+                                constant RankingGradientParams& p [[buffer(6)]],
+                                uint tid [[thread_position_in_grid]]) {
+  ulong index = ulong(p.row_begin) + tid;
+  uint2 record = records[index];
+  uint group = record.x;
+  RankingPairTask task = tasks[group];
+  uint rank = uint(index - task.begin);
+  uint2 sum(0);
+  for (uint i = 0; i < min(rank, task.topk); ++i) {
+    ulong offset = task.pair_begin - p.pair_base + xgb_rank_pair_start(i, task.count) + rank - i - 1;
+    uint2 value = pairs[offset];
+    sum = uint2(xgb_rank_fadd(sum.x, value.x ^ 0x80000000u), xgb_rank_fadd(sum.y, value.y));
+  }
+  if (rank < task.topk) {
+    for (ulong j = ulong(rank) + 1; j < task.count; ++j) {
+      ulong offset = task.pair_begin - p.pair_base + xgb_rank_pair_start(rank, task.count) + j - rank - 1;
+      uint2 value = pairs[offset];
+      sum = uint2(xgb_rank_fadd(sum.x, value.x), xgb_rank_fadd(sum.y, value.y));
+    }
+  }
+  // GradientPair::operator* accepts float, even when callers pass a double.
+  uint w = p.weighted ? weights[group] : 0x3f800000u, norm = norms[group];
+  sum = uint2(xgb_rank_fmul(sum.x, norm), xgb_rank_fmul(sum.y, norm));
+  sum = uint2(xgb_rank_fmul(sum.x, w), xgb_rank_fmul(sum.y, w));
+  output[record.y] = uint2(xgb_rank_fmul(sum.x, p.weight_norm), xgb_rank_fmul(sum.y, p.weight_norm));
+}

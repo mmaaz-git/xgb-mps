@@ -35,6 +35,7 @@ def test_ranking_training(metal, objective, method, largest):
     # NDCG also builds a temporary objective cache for intercept estimation.
     assert after["ranking_cache_dispatches"] - before["ranking_cache_dispatches"] == (3 if objective == "rank:ndcg" else 1)
     assert after["ranking_label_dispatches"] > before["ranking_label_dispatches"]
+    assert after["ranking_gradient_dispatches"] - before["ranking_gradient_dispatches"] == (6 if method == "topk" else 0)
     assert (after["radix_sort_dispatches"] > before["radix_sort_dispatches"]) == (largest > 4096)
     np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
                                rtol=2e-5, atol=2e-5)
@@ -152,3 +153,22 @@ def test_ndcg_linear_cache_and_reuse(metal):
     assert after["ranking_cache_dispatches"] == before["ranking_cache_dispatches"] + 1
     assert after["ranking_label_dispatches"] == before["ranking_label_dispatches"]
     assert after["group_sort_dispatches"] == before["group_sort_dispatches"] + 4
+
+
+@pytest.mark.parametrize("objective", ["rank:pairwise", "rank:ndcg", "rank:map"])
+def test_unbiased_gradient_path_is_explicit(metal, objective):
+    rng = np.random.default_rng(913)
+    x = rng.normal(size=(96, 4)).astype(np.float32)
+    labels = np.tile(np.r_[np.ones(8), np.zeros(24)], 3).astype(np.float32)
+    d = xgb.DMatrix(x, label=labels, group=[32, 32, 32], nthread=2)
+    params = dict(objective=objective, tree_method="hist", max_depth=3, nthread=2,
+                  lambdarank_unbiased=True, lambdarank_pair_method="topk",
+                  lambdarank_num_pair_per_sample=8, base_score=0)
+    cpu = xgb.train(params | {"device": "cpu"}, d, 3)
+    before = xgb.metal_info()
+    gpu = xgb.train(params | {"device": "mps"}, d, 3)
+    after = xgb.metal_info()
+    assert after["group_sort_dispatches"] > before["group_sort_dispatches"]
+    # This mode is still an explicit CPU-gradient gap; sorting/cache are Metal.
+    assert after["ranking_gradient_dispatches"] == before["ranking_gradient_dispatches"]
+    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)

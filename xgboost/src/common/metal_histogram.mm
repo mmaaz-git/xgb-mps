@@ -47,6 +47,8 @@ std::atomic<std::uint64_t> roc_auc_dispatches{0}, roc_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> pr_auc_dispatches{0}, pr_auc_gpu_time_ns{0};
 std::atomic<std::uint64_t> group_sort_dispatches{0}, group_sort_gpu_time_ns{0};
 std::atomic<std::uint64_t> ranking_metric_dispatches{0}, ranking_metric_gpu_time_ns{0};
+std::atomic<std::uint64_t> ranking_gradient_dispatches{0}, ranking_gradient_gpu_time_ns{0},
+    ranking_pairs{0}, ranking_pair_batches{0};
 std::atomic<std::uint64_t> ranking_label_dispatches{0}, ranking_label_gpu_time_ns{0},
     ranking_cache_dispatches{0}, ranking_cache_gpu_time_ns{0};
 std::atomic<std::uint64_t> float_sum_dispatches{0}, float_sum_gpu_time_ns{0};
@@ -114,6 +116,8 @@ class Runtime {
   id<MTLComputePipelineState> group_sort_small_pipeline, group_sort_medium_pipeline, group_sort_key_pipeline,
       group_sort_export_pipeline, ranking_score_pipeline;
   id<MTLComputePipelineState> ranking_labels_pipeline, ndcg_discount_pipeline, ndcg_ideal_pipeline;
+  id<MTLComputePipelineState> ranking_map_stats_pipeline, ranking_pairs_pipeline,
+      ranking_normalize_pipeline, ranking_gather_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
@@ -209,6 +213,10 @@ class Runtime {
       ranking_labels_pipeline = make_pipeline(@"xgb_ranking_labels");
       ndcg_discount_pipeline = make_pipeline(@"xgb_ndcg_discount");
       ndcg_ideal_pipeline = make_pipeline(@"xgb_ndcg_ideal");
+      ranking_map_stats_pipeline = make_pipeline(@"xgb_ranking_map_stats");
+      ranking_pairs_pipeline = make_pipeline(@"xgb_ranking_pairs");
+      ranking_normalize_pipeline = make_pipeline(@"xgb_ranking_normalize");
+      ranking_gather_pipeline = make_pipeline(@"xgb_ranking_gather");
       prefix_double_pair_pipeline = make_pipeline(@"xgb_prefix_double_pair");
       prefix_double_pair_add_pipeline = make_pipeline(@"xgb_prefix_double_pair_add");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
@@ -968,7 +976,11 @@ Statistics GetStatistics() {
           ranking_label_dispatches.load(std::memory_order_relaxed),
           ranking_label_gpu_time_ns.load(std::memory_order_relaxed),
           ranking_cache_dispatches.load(std::memory_order_relaxed),
-          ranking_cache_gpu_time_ns.load(std::memory_order_relaxed)};
+          ranking_cache_gpu_time_ns.load(std::memory_order_relaxed),
+          ranking_gradient_dispatches.load(std::memory_order_relaxed),
+          ranking_gradient_gpu_time_ns.load(std::memory_order_relaxed),
+          ranking_pairs.load(std::memory_order_relaxed),
+          ranking_pair_batches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1575,6 +1587,166 @@ void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> gr
     if (elapsed > 0)
       ranking_cache_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                           std::memory_order_relaxed);
+  }
+}
+
+void RankingGradient(RankingLossKind kind, Span<float const> predictions,
+                      linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
+                      Span<float const> weights, std::uint32_t pairs, bool normalization,
+                      bool score_normalization, bool exponential, double weight_norm,
+                      Span<double const> discounts, Span<double const> inverse_idcg,
+                      Span<GradientPair> output) {
+  auto values = linalg::MakeTensorView(DeviceOrd::CPU(), predictions, predictions.size());
+  auto max_group_size = CheckGroupSort(values, groups);
+  auto n_groups = groups.size() - 1;
+  CHECK_GE(pairs, 1);
+  CHECK_EQ(labels.Size(), predictions.size());
+  CHECK_EQ(output.size(), predictions.size());
+  CHECK(weights.empty() || weights.size() == n_groups);
+  CHECK(kind == RankingLossKind::kPairwise || kind == RankingLossKind::kNDCG || kind == RankingLossKind::kMAP);
+  if (kind == RankingLossKind::kNDCG) {
+    CHECK_GE(discounts.size(), max_group_size);
+    CHECK_EQ(inverse_idcg.size(), n_groups);
+  }
+  if (predictions.empty()) return;
+  static_assert(sizeof(GradientPair) == 8);
+  struct Task {
+    std::uint64_t pair_begin, tile_begin;
+    std::uint32_t begin, count, topk, padding;
+  };
+  static_assert(sizeof(Task) == 32);
+  std::vector<Task> tasks(n_groups + 1);
+  std::uint64_t total_pairs = 0, total_tiles = 0;
+  for (std::size_t g = 0; g < n_groups; ++g) {
+    auto count = groups[g + 1] - groups[g], k = std::min(count, pairs);
+    tasks[g] = {total_pairs, total_tiles, groups[g], count, k, 0};
+    auto n = std::uint64_t{k} * count - std::uint64_t{k} * (k + 1ull) / 2;
+    total_pairs += n;
+    total_tiles += (n + 255) / 256;
+  }
+  tasks.back() = {total_pairs, total_tiles, groups.back(), 0, 0, 0};
+  // Host work is query-size/launch metadata only. Actual pair indices, labels
+  // and gradients are generated on GPU. Reuse a 64 MiB pair buffer across
+  // batches; a single larger query is allowed up to the device buffer limit.
+  constexpr std::uint64_t budget_pairs = (64ull << 20) / sizeof(GradientPair);
+  std::vector<std::uint32_t> batches{0};
+  std::uint64_t max_pairs = 0;
+  for (std::size_t g = 0; g < n_groups; ++g) {
+    if (g != batches.back() && tasks[g + 1].pair_begin - tasks[batches.back()].pair_begin > budget_pairs) {
+      max_pairs = std::max(max_pairs, tasks[g].pair_begin - tasks[batches.back()].pair_begin);
+      batches.push_back(g);
+    }
+  }
+  max_pairs = std::max(max_pairs, total_pairs - tasks[batches.back()].pair_begin);
+  batches.push_back(n_groups);
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    CHECK_LE(max_pairs, rt.device.maxBufferLength / sizeof(GradientPair))
+        << "A ranking query needs more pair storage than this Metal device supports.";
+    auto input = Upload(rt, predictions.data(), predictions.size_bytes());
+    auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto offsets = Upload(rt, groups.data(), groups.size_bytes());
+    auto task_buffer = Upload(rt, tasks.data(), tasks.size() * sizeof(Task));
+    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto discount = Upload(rt, discounts.data(), discounts.size_bytes());
+    auto inverse = Upload(rt, inverse_idcg.data(), inverse_idcg.size_bytes());
+    auto pair_buffer = Allocate(rt, max_pairs * sizeof(GradientPair));
+    auto norms = Allocate(rt, n_groups * sizeof(float));
+    auto result = Allocate(rt, output.size_bytes());
+    auto map_stats = Allocate(rt, kind == RankingLossKind::kMAP ? predictions.size() * 2 * sizeof(double) : 16);
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto order = EncodeGroupSort(rt, command, input, offsets, predictions.size(), 1, n_groups, max_group_size);
+    if (kind == RankingLossKind::kMAP) {
+      struct {
+        std::uint64_t rows, label_stride;
+        std::uint32_t groups, topk, kind, weighted, minus, exponential;
+      } p{predictions.size(), labels.Stride(0), static_cast<std::uint32_t>(n_groups), 0, 0, 0, 0, 0};
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.ranking_map_stats_pipeline];
+      [e setBuffer:order.records offset:0 atIndex:0];
+      [e setBuffer:response offset:0 atIndex:1];
+      [e setBuffer:offsets offset:0 atIndex:2];
+      [e setBuffer:map_stats offset:0 atIndex:3];
+      [e setBytes:&p length:sizeof(p) atIndex:4];
+      [e dispatchThreadgroups:MTLSizeMake((n_groups + 7) / 8, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    for (std::size_t b = 1; b < batches.size(); ++b) {
+      auto begin = batches[b - 1], end = batches[b];
+      float norm_float = static_cast<float>(weight_norm);
+      std::uint32_t norm_bits;
+      std::memcpy(&norm_bits, &norm_float, sizeof(norm_bits));
+      struct {
+        std::uint64_t rows, label_stride, pair_base, tile_base;
+        std::uint32_t group_begin, group_end, row_begin, kind;
+        std::uint32_t normalized, score_normalized, exponential, weighted;
+        std::uint32_t weight_norm, padding;
+      } p{predictions.size(), labels.Stride(0), tasks[begin].pair_begin, tasks[begin].tile_begin,
+           begin, end, groups[begin], static_cast<std::uint32_t>(kind),
+           static_cast<std::uint32_t>(normalization), static_cast<std::uint32_t>(score_normalization),
+           static_cast<std::uint32_t>(exponential), static_cast<std::uint32_t>(!weights.empty()), norm_bits, 0};
+      static_assert(sizeof(p) == 72);
+      auto tiles = tasks[end].tile_begin - tasks[begin].tile_begin;
+      if (tiles) {
+        auto e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt.ranking_pairs_pipeline];
+        [e setBuffer:order.records offset:0 atIndex:0];
+        [e setBuffer:input offset:0 atIndex:1];
+        [e setBuffer:response offset:0 atIndex:2];
+        [e setBuffer:task_buffer offset:0 atIndex:3];
+        [e setBuffer:discount offset:0 atIndex:4];
+        [e setBuffer:inverse offset:0 atIndex:5];
+        [e setBuffer:map_stats offset:0 atIndex:6];
+        [e setBuffer:pair_buffer offset:0 atIndex:7];
+        [e setBytes:&p length:sizeof(p) atIndex:8];
+        [e dispatchThreadgroups:MTLSizeMake(tiles, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+      }
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.ranking_normalize_pipeline];
+      [e setBuffer:pair_buffer offset:0 atIndex:0];
+      [e setBuffer:task_buffer offset:0 atIndex:1];
+      [e setBuffer:norms offset:0 atIndex:2];
+      [e setBytes:&p length:sizeof(p) atIndex:3];
+      [e dispatchThreadgroups:MTLSizeMake((end - begin + 7) / 8, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      auto rows = std::uint64_t{groups[end]} - groups[begin];
+      if (rows) {
+        e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt.ranking_gather_pipeline];
+        [e setBuffer:order.records offset:0 atIndex:0];
+        [e setBuffer:task_buffer offset:0 atIndex:1];
+        [e setBuffer:pair_buffer offset:0 atIndex:2];
+        [e setBuffer:norms offset:0 atIndex:3];
+        [e setBuffer:weight offset:0 atIndex:4];
+        [e setBuffer:result offset:0 atIndex:5];
+        [e setBytes:&p length:sizeof(p) atIndex:6];
+        [e dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+      }
+    }
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    std::memcpy(output.data(), result.contents, output.size_bytes());
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    RecordGroupSort(order.radix, elapsed);
+    ranking_gradient_dispatches.fetch_add(1, std::memory_order_relaxed);
+    ranking_pairs.fetch_add(total_pairs, std::memory_order_relaxed);
+    ranking_pair_batches.fetch_add(batches.size() - 1, std::memory_order_relaxed);
+    objective_dispatches.fetch_add(1, std::memory_order_relaxed);
+    if (elapsed > 0) {
+      auto ns = static_cast<std::uint64_t>(elapsed * 1e9);
+      ranking_gradient_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+      objective_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+    }
   }
 }
 
