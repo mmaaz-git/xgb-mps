@@ -1,4 +1,4 @@
-"""Native Metal DLPack ownership and descriptors (no tensor payload readback)."""
+"""Native Metal tensor ownership, descriptors and explicit output readback."""
 
 import ctypes as C
 import json
@@ -7,6 +7,10 @@ import warnings
 import weakref
 from collections.abc import Mapping
 from typing import Any
+
+import numpy as np
+
+from ._c_api import _LIB, _check_call
 
 
 class _Device(C.Structure):
@@ -372,3 +376,125 @@ def capture_tensors(*arrays: Any) -> tuple:
         else:
             result.append(array)
     return tuple(result)
+
+
+class MetalOutput:
+    """An owned float32 Metal prediction, exported through DLPack.
+
+    Request with ``predict(..., output_device="mps")`` or
+    ``inplace_predict(..., output_device="mps")``. Use ``torch.from_dlpack(result)``
+    or ``mlx.core.from_dlpack(result)`` to consume the buffer on GPU, or
+    :py:meth:`numpy` for an explicit host copy. There is no implicit NumPy
+    conversion. The allocation survives model deletion and subsequent predictions.
+
+    Each DLPack export retains the allocation independently. Default exports
+    share writable storage; consumer writes are visible through other exports.
+    ``__dlpack__(copy=True)`` instead makes an independent GPU copy. Generic
+    consumers must finish writes before re-export or host readback; loaded
+    PyTorch/MLX runtimes are synchronized automatically. Metal stream handles
+    have no portable DLPack handshake, so only ``stream=None`` is supported.
+    """
+
+    def __init__(self) -> None:
+        raise TypeError("MetalOutput is created by XGBoost prediction methods.")
+
+    @classmethod
+    def _from_prediction(cls, shape: Any, dims: Any, values: Any) -> "MetalOutput":
+        result = object.__new__(cls)
+        result._shape = tuple(int(shape[i]) for i in range(dims.value))
+        result._size = 1
+        for length in result._shape:
+            result._size *= length
+        handle = C.c_void_p()
+        _check_call(_LIB.XGMetalOutputCreate(values, shape, dims, C.byref(handle)))
+        result._handle = handle
+        result._release = weakref.finalize(result, _LIB.XGMetalOutputFree, handle)
+        return result
+
+    @property
+    def shape(self) -> tuple:
+        """Prediction shape, identical to the corresponding NumPy result."""
+        return self._shape
+
+    @property
+    def size(self) -> int:
+        """Number of float32 values."""
+        return self._size
+
+    @property
+    def ndim(self) -> int:
+        """Number of dimensions."""
+        return len(self._shape)
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Float32, as in XGBoost's prediction C API."""
+        return np.dtype(np.float32)
+
+    def __dlpack_device__(self) -> tuple:
+        return (8, 0)
+
+    def __dlpack__(
+        self, stream=None, *, max_version=None, dl_device=None, copy=None
+    ) -> Any:
+        if stream is not None:
+            raise BufferError("Metal DLPack export requires stream=None.")
+        if dl_device is not None and tuple(dl_device) != (8, 0):
+            raise BufferError(
+                "MetalOutput supports DLPack exports only on Metal device 0."
+            )
+        if copy is not None and not isinstance(copy, bool):
+            raise TypeError("copy must be None, True or False.")
+        if max_version is not None and (
+            not isinstance(max_version, tuple)
+            or len(max_version) != 2
+            or any(not isinstance(v, int) or v < 0 for v in max_version)
+        ):
+            raise TypeError("max_version must be a pair of nonnegative integers.")
+        versioned = max_version is not None and max_version >= (1, 0)
+        _synchronize()
+        destructor = C.c_void_p()
+        _check_call(_LIB.XGMetalOutputCapsuleDestructor(C.byref(destructor)))
+        managed, name = C.c_void_p(), C.c_char_p()
+        _check_call(
+            _LIB.XGMetalOutputExportDLPack(
+                self._handle,
+                int(versioned),
+                int(copy is True),
+                C.byref(managed),
+                C.byref(name),
+            )
+        )
+        new_capsule = C.pythonapi.PyCapsule_New
+        new_capsule.argtypes, new_capsule.restype = (
+            [C.c_void_p, C.c_char_p, C.c_void_p],
+            C.py_object,
+        )
+        try:
+            # Use the native static name pointer, not a temporary Python bytes
+            # buffer; capsules can outlive Python module/global teardown.
+            return new_capsule(managed, name, destructor)
+        except BaseException:
+            typ = _Versioned if versioned else _Legacy
+            value = C.cast(managed, C.POINTER(typ)).contents
+            C.CFUNCTYPE(None, C.c_void_p)(value.deleter)(managed)
+            raise
+
+    def numpy(self) -> np.ndarray:
+        """Synchronize consumers and copy the result to a new host array."""
+        _synchronize()
+        result = np.empty(self.shape, dtype=np.float32)
+        _check_call(
+            _LIB.XGMetalOutputRead(
+                self._handle,
+                result.ctypes.data_as(C.POINTER(C.c_float)),
+                C.c_uint64(self.size),
+            )
+        )
+        return result
+
+    def __repr__(self) -> str:
+        return f"MetalOutput(shape={self.shape}, dtype=float32, device=mps)"
+
+    def __array__(self, *args, **kwargs):
+        raise TypeError("Use MetalOutput.numpy() for an explicit host copy.")

@@ -49,8 +49,8 @@ metal::ShapModel Model(unsigned groups, float scale) {
   std::copy_n(rule.weights, 8, m.quadrature_weights);
   return m;
 }
-void Run(unsigned features, unsigned groups, float scale, bool interactions, bool margin,
-         bool alias, std::size_t requested_rows) {
+void Run(unsigned features, unsigned groups, float scale, bool interactions,
+         bool margin, int alias, std::size_t requested_rows) {
   auto model = Model(groups, scale);
   auto gpu = metal::MakeShap(model, features, groups, interactions);
   auto rows = std::min(requested_rows, gpu->MaxBatchRows());
@@ -67,19 +67,29 @@ void Run(unsigned features, unsigned groups, float scale, bool interactions, boo
   }
   auto original = data;
   float* input = data.data();
-  if (alias) {
+  if (alias == 1) {
     Check(data.size() <= count, "Alias storage too small");
     std::copy(data.begin(), data.end(), output.begin() + 1);
     input = output.data() + 1;
   }
+  xgboost::common::Span<float const> base_margin{margins};
+  if (alias == 2) {
+    std::copy(margins.begin(), margins.end(), output.begin() + 1);
+    base_margin = {output.data() + 1, margins.size()};
+  }
   auto before = metal::GetStatistics();
-  gpu->Predict({input, data.size()}, rows, margins, {output.data() + 1, count});
+  gpu->Predict({input, data.size()}, rows, base_margin,
+               {output.data() + 1, count});
   auto after = metal::GetStatistics();
   auto dispatches = interactions
                         ? after.shap_interaction_dispatches - before.shap_interaction_dispatches
                         : after.shap_dispatches - before.shap_dispatches;
   Check(dispatches == bool(rows), "Wrong SHAP dispatch count");
   Check(!rows || after.shap_gpu_time_ns > before.shap_gpu_time_ns, "Missing GPU time");
+  Check(after.prediction_device_copy_bytes -
+                before.prediction_device_copy_bytes ==
+            (alias == 2 ? margins.size() * 4 : 0),
+        "Overlapping margins require a GPU snapshot");
   Check(output.front() == -971.f && output.back() == -971.f, "Output guard overwritten");
   Check(data.empty() || !std::memcmp(data.data(), original.data(), data.size() * 4),
         "Input modified");
@@ -110,6 +120,10 @@ int main() {
               for (bool alias : {false, true})
                 for (std::size_t rows : {0ul, 1ul, 33ul, 4097ul})
                   Run(features, groups, scale, interactions, margin, alias, rows);
+    for (bool interactions : {false, true})
+      for (unsigned groups : {1u, 3u})
+        for (std::size_t rows : {0ul, 1ul, 33ul, 4097ul})
+          Run(7, groups, .25f, interactions, true, 2, rows);
     auto model = Model(1, 1);
     auto gpu = metal::MakeShap(model, 1, 1, false);
     std::vector<float> wrong(3), output(4);

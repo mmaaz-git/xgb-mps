@@ -123,6 +123,11 @@ struct Statistics {
       csr_input_copy_bytes;
   std::uint64_t columnar_imports, columnar_pack_bytes, columnar_gpu_time_ns,
       category_import_dispatches, category_import_shared_bytes, category_import_copy_bytes;
+  std::uint64_t prediction_shared_output_bytes, prediction_host_input_bytes,
+      prediction_host_output_bytes, prediction_device_copy_bytes, output_snapshot_dispatches,
+      output_snapshot_shared_input_bytes, output_snapshot_host_copy_bytes, output_snapshot_bytes,
+      output_gpu_time_ns, output_host_readback_bytes, output_dlpack_exports, output_live_buffers,
+      output_live_exports;
 };
 
 class Histogram {

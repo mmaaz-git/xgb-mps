@@ -6,6 +6,15 @@ libomp_root="${LIBOMP_ROOT:-$(brew --prefix libomp)}"
 # PyTorch wheels bundle another libomp. Use one runtime for all linked clients;
 # mixing their internal weak symbols can crash macOS OpenMP worker threads.
 export DYLD_LIBRARY_PATH="$libomp_root/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+echo "Checking owned private prediction outputs, DLPack lifetimes and byte-exact copies"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_output_api.mm \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -framework Metal -framework Foundation -Wl,-rpath,"$PWD/xgboost/lib" \
+  -o results/metal_output_api_test
+MTL_DEBUG_LAYER=1 results/metal_output_api_test
 echo "Checking native Metal tensors, private buffers, snapshots, strides and float16"
 clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

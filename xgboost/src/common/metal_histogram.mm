@@ -1,6 +1,7 @@
 /** Copyright 2026, XGBoost Contributors */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <atomic>
@@ -38,6 +39,7 @@
 #include "metal_metadata.h"
 #include "metal_model.h"
 #include "metal_ops.h"
+#include "metal_output.h"
 #include "metal_predictor.h"
 #include "metal_quantile.h"
 #include "metal_ranking.h"
@@ -153,6 +155,19 @@ std::atomic<std::uint64_t> tensor_csr_dispatches{0}, tensor_csr_values{0},
     csr_shared_input_bytes{0}, csr_input_copy_bytes{0};
 std::atomic<std::uint64_t> columnar_imports{0}, columnar_pack_bytes{0}, columnar_gpu_time_ns{0},
     category_import_dispatches{0}, category_import_shared_bytes{0}, category_import_copy_bytes{0};
+std::atomic<std::uint64_t> prediction_shared_output_bytes{0},
+    prediction_host_input_bytes{0},
+    prediction_host_output_bytes{0},
+    prediction_device_copy_bytes{0},
+    output_snapshot_dispatches{0},
+    output_snapshot_shared_input_bytes{0},
+    output_snapshot_host_copy_bytes{0},
+    output_snapshot_bytes{0},
+    output_gpu_time_ns{0},
+    output_host_readback_bytes{0},
+    output_dlpack_exports{0},
+    output_live_buffers{0},
+    output_live_exports{0};
 std::atomic<std::uint64_t> ellpack_csr_dispatches{0}, ellpack_csr_values{0}, ellpack_csr_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
     ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
@@ -1996,7 +2011,20 @@ Statistics GetStatistics() {
           columnar_gpu_time_ns.load(std::memory_order_relaxed),
           category_import_dispatches.load(std::memory_order_relaxed),
           category_import_shared_bytes.load(std::memory_order_relaxed),
-          category_import_copy_bytes.load(std::memory_order_relaxed)};
+          category_import_copy_bytes.load(std::memory_order_relaxed),
+          prediction_shared_output_bytes.load(std::memory_order_relaxed),
+          prediction_host_input_bytes.load(std::memory_order_relaxed),
+          prediction_host_output_bytes.load(std::memory_order_relaxed),
+          prediction_device_copy_bytes.load(std::memory_order_relaxed),
+          output_snapshot_dispatches.load(std::memory_order_relaxed),
+          output_snapshot_shared_input_bytes.load(std::memory_order_relaxed),
+          output_snapshot_host_copy_bytes.load(std::memory_order_relaxed),
+          output_snapshot_bytes.load(std::memory_order_relaxed),
+          output_gpu_time_ns.load(std::memory_order_relaxed),
+          output_host_readback_bytes.load(std::memory_order_relaxed),
+          output_dlpack_exports.load(std::memory_order_relaxed),
+          output_live_buffers.load(std::memory_order_relaxed),
+          output_live_exports.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2011,6 +2039,182 @@ void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>*
     duration->fetch_add(static_cast<std::uint64_t>(elapsed * 1e9), std::memory_order_relaxed);
 }
 }  // namespace
+namespace {
+struct PredictionOutput {
+  Span<float> host;
+  BorrowedMemory memory;
+  bool shared;
+  PredictionOutput(Runtime const& rt, Span<float> values, bool initialize) : host{values} {
+    memory = TryBorrowMemory(rt.device, values.data(), values.size_bytes(), alignof(float));
+    shared = memory.buffer != nil;
+    if (shared) {
+      prediction_shared_output_bytes.fetch_add(values.size_bytes(), std::memory_order_relaxed);
+    } else if (initialize) {
+      memory = {Upload(rt, values.data(), values.size_bytes()), 0};
+      prediction_host_input_bytes.fetch_add(values.size_bytes(), std::memory_order_relaxed);
+    } else {
+      memory = {Allocate(rt, values.size_bytes()), 0};
+    }
+  }
+  void Publish(std::size_t count) {
+    CHECK_LE(count, host.size());
+    if (!shared && count) {
+      std::memcpy(host.data(), memory.buffer.contents, count * sizeof(float));
+      prediction_host_output_bytes.fetch_add(count * sizeof(float), std::memory_order_relaxed);
+    }
+  }
+};
+
+class MetalOutput final : public Output {
+  id<MTLBuffer> buffer_;
+  std::vector<std::int64_t> shape_, strides_;
+  std::size_t size_{1};
+
+ public:
+  explicit MetalOutput(Span<bst_ulong const> shape) {
+    CHECK_LE(shape.size(), std::numeric_limits<std::int32_t>::max());
+    shape_.resize(shape.size());
+    strides_.resize(shape.size());
+    std::uint64_t stride{1};
+    for (std::size_t i = shape.size(); i != 0; --i) {
+      CHECK_LE(shape[i - 1], std::numeric_limits<std::int64_t>::max());
+      CHECK_LE(stride, std::numeric_limits<std::int64_t>::max());
+      shape_[i - 1] = shape[i - 1];
+      strides_[i - 1] = stride;
+      CHECK(!shape[i - 1] || stride <= std::numeric_limits<std::int64_t>::max() / shape[i - 1]);
+      stride *= shape[i - 1];
+    }
+    size_ = stride;
+    auto& rt = GetRuntime();
+    CHECK_LE(size_, rt.device.maxBufferLength / sizeof(float));
+    buffer_ = [rt.device newBufferWithLength:std::max<std::size_t>(16, size_ * sizeof(float))
+                                    options:MTLResourceStorageModePrivate];
+    CHECK(buffer_);
+    output_live_buffers.fetch_add(1, std::memory_order_relaxed);
+  }
+  ~MetalOutput() override { output_live_buffers.fetch_sub(1, std::memory_order_relaxed); }
+  std::size_t Size() const override { return size_; }
+  DLTensor View() const override {
+    return {(__bridge void*)buffer_, {kDLMetal, 0}, static_cast<std::int32_t>(shape_.size()),
+            {kDLFloat, 32, 1}, const_cast<std::int64_t*>(shape_.data()),
+            const_cast<std::int64_t*>(strides_.data()), 0};
+  }
+  void CopyFrom(BorrowedMemory source) {
+    if (!size_) return;
+    auto& rt = GetRuntime();
+    auto command = [rt.queue commandBuffer];
+    auto blit = [command blitCommandEncoder];
+    [blit copyFromBuffer:source.buffer sourceOffset:source.offset toBuffer:buffer_
+      destinationOffset:0 size:size_ * sizeof(float)];
+    [blit endEncoding];
+    CompleteOperation(command, &output_snapshot_dispatches, &output_gpu_time_ns);
+    output_snapshot_bytes.fetch_add(size_ * sizeof(float), std::memory_order_relaxed);
+  }
+  void Readback(Span<float> output) const override {
+    CHECK_EQ(output.size(), size_);
+    if (!size_) return;
+    @autoreleasepool {
+      auto& rt = GetRuntime();
+      auto target = TryBorrowMemory(rt.device, output.data(), output.size_bytes(), alignof(float));
+      bool shared = target.buffer != nil;
+      if (!shared) target = {Allocate(rt, output.size_bytes()), 0};
+      auto command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      [blit copyFromBuffer:buffer_ sourceOffset:0 toBuffer:target.buffer
+        destinationOffset:target.offset size:output.size_bytes()];
+      [blit endEncoding];
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      if (!shared) std::memcpy(output.data(), target.buffer.contents, output.size_bytes());
+      output_host_readback_bytes.fetch_add(output.size_bytes(), std::memory_order_relaxed);
+    }
+  }
+  std::shared_ptr<Output> Clone() const override {
+    @autoreleasepool {
+      std::vector<bst_ulong> shape(shape_.begin(), shape_.end());
+      auto result = std::make_shared<MetalOutput>(Span<bst_ulong const>{shape});
+      result->CopyFrom({buffer_, 0});
+      return result;
+    }
+  }
+};
+
+template <typename Managed>
+struct OutputExport {
+  Managed tensor{};
+  std::shared_ptr<Output> owner;
+  explicit OutputExport(std::shared_ptr<Output> value, bool copied) : owner{std::move(value)} {
+    tensor.dl_tensor = owner->View();
+    tensor.manager_ctx = this;
+    tensor.deleter = [](Managed* ptr) { delete static_cast<OutputExport*>(ptr->manager_ctx); };
+    if constexpr (std::is_same_v<Managed, DLManagedTensorVersioned>) {
+      tensor.version = {1, 0};
+      tensor.flags = copied ? DLPACK_FLAG_BITMASK_IS_COPIED : 0;
+    }
+    output_live_exports.fetch_add(1, std::memory_order_relaxed);
+    output_dlpack_exports.fetch_add(1, std::memory_order_relaxed);
+  }
+  ~OutputExport() { output_live_exports.fetch_sub(1, std::memory_order_relaxed); }
+};
+
+// The destructor runs under CPython's GIL and never calls back into Python code.
+// It therefore survives Python module/global teardown and unconsumed capsules.
+// The Metal library has no link-time dependency on a particular Python version.
+struct CapsuleAPI {
+  int (*valid)(void*, char const*);
+  void* (*pointer)(void*, char const*);
+};
+CapsuleAPI const& PythonCapsuleAPI() {
+  static CapsuleAPI const api{
+      reinterpret_cast<decltype(CapsuleAPI::valid)>(dlsym(RTLD_DEFAULT, "PyCapsule_IsValid")),
+      reinterpret_cast<decltype(CapsuleAPI::pointer)>(dlsym(RTLD_DEFAULT, "PyCapsule_GetPointer"))};
+  return api;
+}
+void DropOutputCapsule(void* capsule) noexcept {
+  auto const& api = PythonCapsuleAPI();
+  if (api.valid(capsule, "dltensor")) {
+    auto ptr = static_cast<DLManagedTensor*>(api.pointer(capsule, "dltensor"));
+    if (ptr && ptr->deleter) ptr->deleter(ptr);
+  } else if (api.valid(capsule, "dltensor_versioned")) {
+    auto ptr = static_cast<DLManagedTensorVersioned*>(api.pointer(capsule, "dltensor_versioned"));
+    if (ptr && ptr->deleter) ptr->deleter(ptr);
+  }
+  // used_dltensor[_versioned] is owned by the consumer, not the capsule.
+}
+}  // namespace
+
+std::shared_ptr<Output> MakeOutput(float const* values, Span<bst_ulong const> shape) {
+  @autoreleasepool {
+    auto result = std::make_shared<MetalOutput>(shape);
+    auto bytes = result->Size() * sizeof(float);
+    CHECK(values || !bytes);
+    if (bytes) {
+      auto& rt = GetRuntime();
+      auto source = TryBorrowMemory(rt.device, values, bytes, alignof(float));
+      if (source.buffer) {
+        output_snapshot_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+      } else {
+        source = {Upload(rt, values, bytes), 0};
+        output_snapshot_host_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+      }
+      result->CopyFrom(source);
+    }
+    return result;
+  }
+}
+void* ExportOutput(std::shared_ptr<Output> output, bool versioned, bool copy) {
+  CHECK(output);
+  if (copy) output = output->Clone();
+  if (versioned) return &(new OutputExport<DLManagedTensorVersioned>(std::move(output), copy))->tensor;
+  return &(new OutputExport<DLManagedTensor>(std::move(output), copy))->tensor;
+}
+void* OutputCapsuleDestructor() {
+  auto const& api = PythonCapsuleAPI();
+  CHECK(api.valid && api.pointer) << "CPython capsule API is not available in this process.";
+  return reinterpret_cast<void*>(&DropOutputCapsule);
+}
+
 namespace {
 struct CategoryColumn {
   std::uint64_t values{0}, offsets{0};
@@ -5661,22 +5865,21 @@ void SurvivalTransform(bool to_margin, Span<float> values) {
   CHECK_LE(values.size(), std::numeric_limits<std::uint32_t>::max());
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, values.data(), values.size_bytes());
-    auto output = Allocate(rt, values.size_bytes());
+    PredictionOutput output{rt, values, true};
     auto command = [rt.queue commandBuffer];
     CHECK(command);
     auto e = [command computeCommandEncoder];
     CHECK(e);
     std::uint32_t kind = to_margin;
     [e setComputePipelineState:rt.aft_transform_pipeline];
-    [e setBuffer:input offset:0 atIndex:0];
-    [e setBuffer:output offset:0 atIndex:1];
+    [e setBuffer:output.memory.buffer offset:output.memory.offset atIndex:0];
+    [e setBuffer:output.memory.buffer offset:output.memory.offset atIndex:1];
     [e setBytes:&kind length:sizeof(kind) atIndex:2];
     [e dispatchThreads:MTLSizeMake(values.size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     CompleteOperation(command, &transform_dispatches);
-    std::memcpy(values.data(), output.contents, values.size_bytes());
+    output.Publish(values.size());
   }
 }
 
@@ -6030,10 +6233,20 @@ void TransformPredictions(Transform transform, Span<float> values, std::uint32_t
     CHECK(queue);
     auto command = [queue commandBuffer];
     CHECK(command);
+    PredictionOutput out{rt, values, true};
+    auto in = out.memory;
+    // Argmax compacts rows into the prefix and would race with later rows if
+    // input and output aliased. Snapshot on GPU before dispatching that kernel.
+    if (transform == Transform::kArgmax) {
+      in = {Allocate(rt, values.size_bytes()), 0};
+      auto blit = [command blitCommandEncoder];
+      [blit copyFromBuffer:out.memory.buffer sourceOffset:out.memory.offset toBuffer:in.buffer
+        destinationOffset:0 size:values.size_bytes()];
+      [blit endEncoding];
+      prediction_device_copy_bytes.fetch_add(values.size_bytes(), std::memory_order_relaxed);
+    }
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
-    auto in = Upload(rt, values.data(), values.size_bytes());
-    auto out = Allocate(rt, values.size_bytes());
     auto kind = static_cast<std::uint32_t>(transform);
     auto n = kind >= 4 ? values.size() / targets : values.size();
     struct {
@@ -6043,14 +6256,14 @@ void TransformPredictions(Transform transform, Span<float> values, std::uint32_t
     bool multiclass = transform == Transform::kSoftmax || transform == Transform::kArgmax;
     [encoder setComputePipelineState:multiclass ? rt.multiclass_transform_pipeline
                                                 : rt.transform_pipeline];
-    [encoder setBuffer:in offset:0 atIndex:0];
-    [encoder setBuffer:out offset:0 atIndex:1];
+    [encoder setBuffer:in.buffer offset:in.offset atIndex:0];
+    [encoder setBuffer:out.memory.buffer offset:out.memory.offset atIndex:1];
     [encoder setBytes:&p length:sizeof(p) atIndex:2];
     [encoder dispatchThreads:MTLSizeMake(n, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
     CompleteOperation(command, &transform_dispatches);
     auto count = transform == Transform::kArgmax ? n : values.size();
-    std::memcpy(values.data(), out.contents, count * sizeof(float));
+    out.Publish(count);
   }
 }
 
@@ -7923,7 +8136,7 @@ class MetalPrediction final : public Prediction {
     CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
     if (!rows || !n_trees_) return;
     @autoreleasepool {
-      auto output = Upload(rt_, predictions.data(), predictions.size_bytes());
+      PredictionOutput output{rt_, predictions, true};
       auto command = [queue_ commandBuffer];
       CHECK(command);
       auto encoder = [command computeCommandEncoder];
@@ -7938,7 +8151,7 @@ class MetalPrediction final : public Prediction {
       [encoder setBuffer:trees_ offset:0 atIndex:2];
       [encoder setBuffer:categories_ offset:0 atIndex:3];
       [encoder setBuffer:leaves_ offset:0 atIndex:4];
-      [encoder setBuffer:output offset:0 atIndex:5];
+      [encoder setBuffer:output.memory.buffer offset:output.memory.offset atIndex:5];
       [encoder setBytes:&p length:sizeof(p) atIndex:6];
       [encoder dispatchThreads:MTLSizeMake(rows, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -7946,7 +8159,7 @@ class MetalPrediction final : public Prediction {
       [command commit];
       [command waitUntilCompleted];
       CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-      std::memcpy(predictions.data(), output.contents, predictions.size_bytes());
+      output.Publish(predictions.size());
       prediction_dispatches.fetch_add(1, std::memory_order_relaxed);
       auto elapsed = command.GPUEndTime - command.GPUStartTime;
       if (elapsed > 0)
@@ -8045,14 +8258,30 @@ class MetalShap final : public Shap {
     CHECK(base_margin.empty() || base_margin.size() == rows * params_.groups);
     if (!rows) return;
     @autoreleasepool {
-      auto bases =
-          base_margin.empty() ? bases_ : Upload(rt_, base_margin.data(), base_margin.size_bytes());
-      auto result = Allocate(rt_, output.size_bytes());
+      PredictionOutput result{rt_, output, false};
+      BorrowedMemory bases{bases_, 0};
+      if (!base_margin.empty()) {
+        bases = TryBorrowMemory(rt_.device, base_margin.data(), base_margin.size_bytes(), 4);
+        if (!bases.buffer) {
+          bases = {Upload(rt_, base_margin.data(), base_margin.size_bytes()), 0};
+          prediction_host_input_bytes.fetch_add(base_margin.size_bytes(), std::memory_order_relaxed);
+        }
+      }
       auto frames = Allocate(rt_, rows * row_stack_);
       auto temporary =
           Allocate(rt_, rows * params_.groups * (std::size_t(params_.features) + 1) * 4);
       auto command = [rt_.queue commandBuffer];
       CHECK(command);
+      if (MemoryRangesOverlap(base_margin.data(), base_margin.size_bytes(), output.data(),
+                              output.size_bytes())) {
+        auto snapshot = Allocate(rt_, base_margin.size_bytes());
+        auto blit = [command blitCommandEncoder];
+        [blit copyFromBuffer:bases.buffer sourceOffset:bases.offset toBuffer:snapshot
+          destinationOffset:0 size:base_margin.size_bytes()];
+        [blit endEncoding];
+        bases = {snapshot, 0};
+        prediction_device_copy_bytes.fetch_add(base_margin.size_bytes(), std::memory_order_relaxed);
+      }
       auto e = [command computeCommandEncoder];
       CHECK(e);
       auto p = params_;
@@ -8064,8 +8293,8 @@ class MetalShap final : public Shap {
       [e setBuffer:categories_ offset:0 atIndex:3];
       [e setBuffer:leaves_ offset:0 atIndex:4];
       [e setBuffer:roots_ offset:0 atIndex:5];
-      [e setBuffer:bases offset:0 atIndex:6];
-      [e setBuffer:result offset:0 atIndex:7];
+      [e setBuffer:bases.buffer offset:bases.offset atIndex:6];
+      [e setBuffer:result.memory.buffer offset:result.memory.offset atIndex:7];
       [e setBuffer:frames offset:0 atIndex:8];
       [e setBuffer:temporary offset:0 atIndex:9];
       [e setBytes:&p length:sizeof(p) atIndex:10];
@@ -8075,7 +8304,7 @@ class MetalShap final : public Shap {
       CompleteOperation(command,
                         params_.interactions ? &shap_interaction_dispatches : &shap_dispatches,
                         &shap_gpu_time_ns);
-      std::memcpy(output.data(), result.contents, output.size_bytes());
+      result.Publish(output.size());
     }
   }
 };

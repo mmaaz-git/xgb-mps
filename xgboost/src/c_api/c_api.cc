@@ -55,6 +55,7 @@
 #include "../common/metal_gradient.h"
 #include "../common/metal_histogram.h"
 #include "../common/metal_metadata.h"
+#include "../common/metal_output.h"
 #include "../common/metal_tensor.h"
 #endif
 
@@ -66,6 +67,71 @@ void ValidateCAPIDataSplitMode(std::int64_t data_split_mode) {
       << "Column-wise data split has been removed. Please use row-wise data split instead.";
 }
 }  // namespace
+
+XGB_DLL int XGMetalOutputCreate(float const *values, bst_ulong const *shape, bst_ulong ndim,
+                              void **output) {
+  API_BEGIN();
+  xgboost_CHECK_C_ARG_PTR(output);
+  *output = nullptr;
+#if defined(XGBOOST_USE_METAL)
+  CHECK(shape || !ndim);
+  auto result = common::metal::MakeOutput(values, {shape, static_cast<std::size_t>(ndim)});
+  *output = new std::shared_ptr<common::metal::Output>(std::move(result));
+#else
+  LOG(FATAL) << "Metal output requires XGBoost built with USE_METAL=ON.";
+#endif
+  API_END();
+}
+XGB_DLL int XGMetalOutputFree(void *output) {
+  API_BEGIN();
+#if defined(XGBOOST_USE_METAL)
+  delete static_cast<std::shared_ptr<common::metal::Output> *>(output);
+#else
+  CHECK(!output) << "Metal output requires XGBoost built with USE_METAL=ON.";
+#endif
+  API_END();
+}
+XGB_DLL int XGMetalOutputRead(void *output, float *values, bst_ulong size) {
+  API_BEGIN();
+#if defined(XGBOOST_USE_METAL)
+  xgboost_CHECK_C_ARG_PTR(output);
+  CHECK(values || !size);
+  auto const &tensor = *static_cast<std::shared_ptr<common::metal::Output> *>(output);
+  tensor->Readback({values, static_cast<std::size_t>(size)});
+#else
+  LOG(FATAL) << "Metal output requires XGBoost built with USE_METAL=ON.";
+#endif
+  API_END();
+}
+XGB_DLL int XGMetalOutputExportDLPack(void *output, int versioned, int copy, void **managed,
+                                    char const **name) {
+  API_BEGIN();
+  xgboost_CHECK_C_ARG_PTR(managed);
+  *managed = nullptr;
+  if (name) *name = nullptr;
+#if defined(XGBOOST_USE_METAL)
+  xgboost_CHECK_C_ARG_PTR(output);
+  CHECK(versioned == 0 || versioned == 1);
+  CHECK(copy == 0 || copy == 1);
+  *managed = common::metal::ExportOutput(
+      *static_cast<std::shared_ptr<common::metal::Output> *>(output), versioned, copy);
+  if (name) *name = versioned ? "dltensor_versioned" : "dltensor";
+#else
+  LOG(FATAL) << "Metal output requires XGBoost built with USE_METAL=ON.";
+#endif
+  API_END();
+}
+XGB_DLL int XGMetalOutputCapsuleDestructor(void **destructor) {
+  API_BEGIN();
+  xgboost_CHECK_C_ARG_PTR(destructor);
+  *destructor = nullptr;
+#if defined(XGBOOST_USE_METAL)
+  *destructor = common::metal::OutputCapsuleDestructor();
+#else
+  LOG(FATAL) << "Metal output requires XGBoost built with USE_METAL=ON.";
+#endif
+  API_END();
+}
 
 XGB_DLL void XGBoostVersion(int *major, int *minor, int *patch) {
   if (major) {
@@ -325,6 +391,27 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.category_import_shared_bytes)};
   info["category_import_copy_bytes"] =
       Integer{static_cast<std::int64_t>(stats.category_import_copy_bytes)};
+  info["prediction_shared_output_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.prediction_shared_output_bytes)};
+  info["prediction_host_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.prediction_host_input_bytes)};
+  info["prediction_host_output_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.prediction_host_output_bytes)};
+  info["prediction_device_copy_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.prediction_device_copy_bytes)};
+  info["output_snapshot_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.output_snapshot_dispatches)};
+  info["output_snapshot_shared_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.output_snapshot_shared_input_bytes)};
+  info["output_snapshot_host_copy_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.output_snapshot_host_copy_bytes)};
+  info["output_snapshot_bytes"] = Integer{static_cast<std::int64_t>(stats.output_snapshot_bytes)};
+  info["output_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.output_gpu_time_ns)};
+  info["output_host_readback_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.output_host_readback_bytes)};
+  info["output_dlpack_exports"] = Integer{static_cast<std::int64_t>(stats.output_dlpack_exports)};
+  info["output_live_buffers"] = Integer{static_cast<std::int64_t>(stats.output_live_buffers)};
+  info["output_live_exports"] = Integer{static_cast<std::int64_t>(stats.output_live_exports)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -611,6 +698,19 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["category_import_dispatches"] = Integer{0};
   info["category_import_shared_bytes"] = Integer{0};
   info["category_import_copy_bytes"] = Integer{0};
+  info["prediction_shared_output_bytes"] = Integer{0};
+  info["prediction_host_input_bytes"] = Integer{0};
+  info["prediction_host_output_bytes"] = Integer{0};
+  info["prediction_device_copy_bytes"] = Integer{0};
+  info["output_snapshot_dispatches"] = Integer{0};
+  info["output_snapshot_shared_input_bytes"] = Integer{0};
+  info["output_snapshot_host_copy_bytes"] = Integer{0};
+  info["output_snapshot_bytes"] = Integer{0};
+  info["output_gpu_time_ns"] = Integer{0};
+  info["output_host_readback_bytes"] = Integer{0};
+  info["output_dlpack_exports"] = Integer{0};
+  info["output_live_buffers"] = Integer{0};
+  info["output_live_exports"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};

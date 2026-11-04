@@ -81,6 +81,32 @@ XGB_DLL int XGBuildInfo(char const **out);
  */
 XGB_DLL int XGBMetalInfo(char const **out);
 
+/** Snapshot a contiguous FP32 prediction span into an independently owned Metal
+ * allocation. Shape is host metadata. The input span must remain valid through
+ * this synchronous call; eligible unified-memory spans are copied on GPU.
+ * Other spans use a counted host upload. The output handle is null on failure.
+ */
+XGB_DLL int XGMetalOutputCreate(float const *values, bst_ulong const *shape, bst_ulong ndim,
+                              void **output);
+/** Release a snapshot handle. Existing DLPack consumers retain the allocation. */
+XGB_DLL int XGMetalOutputFree(void *output);
+/** Explicit synchronous host readback; size must equal the shape's product. */
+XGB_DLL int XGMetalOutputRead(void *output, float *values, bst_ulong size);
+/** Export a new DLManagedTensor or DLManagedTensorVersioned (v1.0) descriptor.
+ * Device is kDLMetal, data is an MTLBuffer handle, and dtype is float32. Each
+ * export must be released exactly once by its standard DLPack deleter. copy=1
+ * creates an independent GPU allocation and sets the versioned IS_COPIED flag.
+ * The optional name output points to a process-lifetime capsule name string.
+ */
+XGB_DLL int XGMetalOutputExportDLPack(void *output, int versioned, int copy, void **managed,
+                                    char const **name);
+/** Optional CPython bridge: obtain a native capsule destructor for these exports.
+ * Resolves the running interpreter's capsule C API without linking libpython.
+ * Attach it to a capsule named dltensor or dltensor_versioned. Consumed capsules
+ * must be renamed used_dltensor[_versioned] as required by DLPack.
+ */
+XGB_DLL int XGMetalOutputCapsuleDestructor(void **destructor);
+
 /** Import a native Metal feature tensor or columnar table into a proxy.
  * A tensor's `data` is a JSON descriptor
  * with device_type=8, device_id=0, buffer (valid id<MTLBuffer> address), byte_offset,

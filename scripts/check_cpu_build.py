@@ -59,6 +59,22 @@ finally:
     check(lib.XGBoosterFree(booster))
 print("CPU-only native Metal tensor entry points reject input explicitly.")
 
+# Output APIs remain exported without Metal, with deterministic unset handles.
+result, managed, destructor = ctypes.c_void_p(1), ctypes.c_void_p(1), ctypes.c_void_p(1)
+name = ctypes.c_char_p(b"sentinel")
+for call, output in [
+    (lambda: lib.XGMetalOutputCreate(None, None, ctypes.c_uint64(0), ctypes.byref(result)), result),
+    (lambda: lib.XGMetalOutputExportDLPack(None, 0, 0, ctypes.byref(managed), ctypes.byref(name)), managed),
+    (lambda: lib.XGMetalOutputCapsuleDestructor(ctypes.byref(destructor)), destructor),
+]:
+    assert call() != 0 and b"USE_METAL=ON" in lib.XGBGetLastError()
+    assert output.value is None
+assert name.value is None
+assert lib.XGMetalOutputRead(None, None, ctypes.c_uint64(0)) != 0
+assert b"USE_METAL=ON" in lib.XGBGetLastError()
+check(lib.XGMetalOutputFree(None))
+print("CPU-only Metal output APIs reject explicitly and leave output handles unset.")
+
 # The new construction selector must be usable for CPU and fail clearly for MPS.
 proxy = ctypes.c_void_p()
 check(lib.XGProxyDMatrixCreate(ctypes.byref(proxy)))

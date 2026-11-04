@@ -14,7 +14,28 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **native Metal columnar input**. `xgb.MetalColumnar` accepts named or
+Latest step: **owned GPU prediction outputs**. Request
+`predict(..., output_device="mps")` or `inplace_predict(..., output_device="mps")`
+to get an `xgb.MetalOutput`. PyTorch and MLX consume it through DLPack; `.numpy()`
+explicitly copies it to a host array. Existing default return types are unchanged.
+Outputs include values, margins, leaves, SHAP contributions and interactions.
+
+Each result owns a private Metal buffer independently of the model and prediction
+cache. Multiple consumers can share it; an explicit DLPack `copy=True` export
+creates another GPU allocation. Eligible prediction and transform buffers now
+use guarded unified-memory views before the GPU snapshot. Generic prediction
+state remains host-owned, so this does **not** complete device ownership across
+the training/prediction pipeline. Known PyTorch/MLX queues synchronize; arbitrary
+consumer writes must be completed before sharing or reading back.
+
+Focused validation passes **100 new Python tests**, **12 native output cases /
+3,389 field checks / 13 rejected calls**, and **592 native SHAP cases**, including
+overlapping margins. Full regression passes **3,301 Python tests, one skip**,
+all **84 rebuilt native check groups**, and the CPU-only build/API checks.
+[Output validation](validation/cuda-metal-output-m3.txt).
+No performance benchmark or NVIDIA execution comparison was run for this step.
+
+The preceding step added **native Metal columnar input**. `xgb.MetalColumnar` accepts named or
 unnamed PyTorch/MLX columns with independent datatypes. `xgb.MetalColumn` adds
 packed validity masks and integer or UTF-8 categorical dictionaries. Ordinary
 and quantile matrices, external iterators, reference-category recoding, inplace
@@ -70,8 +91,8 @@ passing.
 
 Packing writes through safe shared destination views, with a counted copy
 fallback. Generic gradient allocation remains host-owned; callback predictions
-still arrive as NumPy arrays. GPU output tensors and end-to-end device ownership
-remain open. No new benchmark.
+still arrive as NumPy arrays. Explicit GPU prediction outputs are implemented
+above; end-to-end device ownership remains open. No new benchmark.
 
 The preceding step added **native Metal metadata imports**. PyTorch/MLX labels, weights,
 base margins, survival bounds, feature weights and ranking groups/query IDs now
@@ -102,8 +123,8 @@ legacy/versioned capsule ownership and all 65,536 float16 bit patterns.
 Focused validation passes **93 Python tests** and **105 native cases / 145,567
 field checks / nine rejected descriptors**. Full regression passes **2,459 Python
 tests, one skip**, every rebuilt native suite and the CPU-only build/API checks.
-Native metadata and ordinary `DMatrix` inputs are covered above. GPU output
-tensors remain open; prediction results still return NumPy.
+Native metadata, ordinary `DMatrix` inputs and explicit GPU prediction outputs
+are covered above. Default Metal prediction results still return NumPy.
 PyTorch coexistence requires a single OpenMP runtime, configured below.
 No new benchmark. [Tensor validation](validation/cuda-metal-tensor-m3.txt).
 
@@ -358,8 +379,8 @@ The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
-The major remaining areas are GPU output tensor interoperability, general metadata/state ownership and manipulation,
-remaining initialization/state operations,
+The major remaining areas are general metadata/state ownership and manipulation,
+persistent dictionary storage, remaining initialization/state operations,
 CUDA algorithm alignment and distributed collectives. Compressed disk caches,
 internal ELLPACK save/load and optional Snappy compute compression are implemented.
 Sensitive AFT tails and some
@@ -455,6 +476,22 @@ train = xgb.QuantileDMatrix(X_gpu, y_gpu, max_bin=256)
 model = xgb.train({"device": "mps", "max_bin": 256}, train)
 prediction = model.inplace_predict(X_gpu)  # NumPy output
 ```
+
+To keep the result in GPU storage:
+
+```python
+result = model.inplace_predict(X_gpu, output_device="mps")
+prediction_gpu = torch.from_dlpack(result)  # shares the owned Metal buffer
+prediction_cpu = result.numpy()            # explicit host copy
+
+# Also supported by batch prediction, including SHAP and leaf outputs:
+contributions = model.predict(train, pred_contribs=True, output_device="mps")
+# MLX consumer: mlx.core.from_dlpack(result)
+```
+
+Consumer writes are shared across exports. To get independent storage, consume
+`result.__dlpack__(copy=True)`. Results remain valid after model deletion and
+later predictions. Output selection does not change the model's execution device.
 
 MLX GPU arrays work through the same interface. `xgb.DMatrix(X_gpu, y_gpu)` and
 ordinary `DataIter` batches also accept native feature tensors. The Python bridge completes
@@ -556,9 +593,10 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; explicit MPS quantile adapters also bin on GPU; ordinary in-memory and quantile matrices plus external compressed caches create quantized host mirrors only for explicit CPU batch access; disk-backed ordinary pages retain host bins |
 | Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Host dense/columnar and native Metal quantile inputs feed resident sketches; distributed sketches remain open |
-| Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Model dictionary copies, persistent storage and row-level map application remain host |
+| Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Row-code mapping and native dictionary gathers run on GPU. Model dictionary copies and persistent storage remain host |
 | Quantized data cache | Ordinary in-memory DMatrix pages use raw CSR-to-ELLPACK compression. Quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly; CPU access explicitly materializes host mirrors. Compressed disk storage, internal ELLPACK save/load and optional native Snappy compression are implemented |
-| Native Apple feature tensors | Metal DLPack inputs for ordinary and quantile matrices, external iterators and inplace prediction/CPU fallback; GPU sparse entry packing, strided snapshots, half decoding and PyTorch/MLX synchronization. Native columnar masks and integer/string dictionaries now use the same consumers. GPU outputs and persistent dictionary ownership remain open |
+| Native Apple feature tensors | Metal DLPack inputs for ordinary and quantile matrices, external iterators and inplace prediction/CPU fallback; GPU sparse entry packing, strided snapshots, half decoding and PyTorch/MLX synchronization. Native columnar masks and integer/string dictionaries use the same consumers; persistent dictionary ownership remains open |
+| Native prediction outputs | Explicit `output_device="mps"` returns owned private Metal results, with legacy/versioned DLPack exports to PyTorch/MLX, independent copy support and explicit host readback. Values, margins, leaves and SHAP outputs are supported; generic prediction state remains host-owned |
 | Native custom-gradient imports | CUDA typed casts and GPU pair packing for regular and split/value entry points; real PyTorch/MLX and legacy/versioned capsules. Safe shared destinations or counted copy fallback; generic allocation remains host-owned |
 | Native metadata imports | GPU typed copies/conversion and CUDA label/weight predicates; GPU query-ID RLE/prefix scans. Scalars, vectors, matrices, empty/strided data and half supported. Final group boundaries and group-size prefix sums remain host as in CUDA; general allocation/slicing/concatenation remain host |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
@@ -1136,15 +1174,17 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Compress ordinary in-memory DMatrix raw CSR directly; retain separate CPU views and cache-generation rules.
 - [x] Port compressed MPS-origin disk caches and internal ELLPACK save/load.
 - [x] Complete ordinary external host-cache selection.
-- [ ] Port optional Snappy cache compression.
-- [ ] Complete native device arrays and remaining metadata/state operations.
+- [x] Port optional Snappy cache compression under the native opt-in.
+- [x] Add native Metal feature/metadata/gradient tensors and columnar masks/dictionaries.
+- [x] Add owned GPU prediction outputs and PyTorch/MLX DLPack consumers.
+- [ ] Complete remaining metadata/state operations and persistent dictionary ownership.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.
 - [x] Port query maxima/counts/prefixes and reuse GPU metadata through ranking caches.
 - [x] Port remaining elementwise/survival metric sums and CUDA FP32 row arithmetic; validate multiclass labels on GPU.
 - [x] Evaluate every AFT gradient row on GPU; validate upstream expressions and report sensitive-tail numerical differences.
 - [x] Port multiclass class-prior initialization, shared vector arithmetic and scalar FP32 mean accumulation.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
-- [ ] Add Apple-device array interoperability and distributed GPU collectives.
+- [ ] Complete asynchronous stream interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.
 - [ ] Reach complete CUDA-operation coverage and competitive training performance.
 

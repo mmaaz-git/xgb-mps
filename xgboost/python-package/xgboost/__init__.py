@@ -9,7 +9,7 @@ from . import (
     tracker,  # noqa
 )
 from ._c_api import _py_version
-from ._metal import MetalColumn, MetalColumnar
+from ._metal import MetalColumn, MetalColumnar, MetalOutput
 from .core import (
     Booster,
     DataIter,
@@ -47,6 +47,7 @@ __all__ = [
     "ExtMemQuantileDMatrix",
     "MetalColumn",
     "MetalColumnar",
+    "MetalOutput",
     "Booster",
     "DataIter",
     "train",

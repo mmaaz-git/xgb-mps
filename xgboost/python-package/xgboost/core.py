@@ -92,6 +92,8 @@ from .objective import Objective, TreeObjective, _grad_arrinf
 if TYPE_CHECKING:
     from pandas import DataFrame as PdDataFrame
 
+    from ._metal import MetalOutput
+
 
 XGBoostError = _XGBoostError
 
@@ -298,13 +300,23 @@ def c_array(
 
 
 def _prediction_output(
-    shape: CNumericPtr, dims: c_bst_ulong, predts: CFloatPtr, is_cuda: bool
-) -> NumpyOrCupy:
+    shape: CNumericPtr,
+    dims: c_bst_ulong,
+    predts: CFloatPtr,
+    is_cuda: bool,
+    output_device: Optional[str] = None,
+) -> Union[NumpyOrCupy, MetalOutput]:
+    if output_device == "mps":
+        if is_cuda:
+            raise ValueError("Direct CUDA-to-Metal prediction output is not supported.")
+        from ._metal import MetalOutput
+
+        return MetalOutput._from_prediction(shape, dims, predts)
     arr_shape = tuple(ctypes2numpy(shape, dims.value, np.uint64).flatten())
     array = from_array_interface(
         make_array_interface(predts, arr_shape, np.float32, is_cuda)
     )
-    return array
+    return array.get() if is_cuda and output_device == "cpu" else array
 
 
 class DataIter(ABC):  # pylint: disable=too-many-instance-attributes
@@ -2515,7 +2527,8 @@ class Booster:
         training: bool = False,
         iteration_range: IterationRange = (0, 0),
         strict_shape: bool = False,
-    ) -> np.ndarray:
+        output_device: Optional[str] = None,
+    ) -> Union[np.ndarray, MetalOutput]:
         """Predict with data.  The full model will be used unless `iteration_range` is
         specified, meaning users have to either slice the model or use the
         ``best_iteration`` attribute to get prediction from best model returned from
@@ -2591,11 +2604,19 @@ class Booster:
 
             .. versionadded:: 1.4.0
 
+        output_device :
+            Metal fork extension. ``"mps"`` returns an owned :py:class:`MetalOutput`
+            with DLPack support, including leaf and SHAP outputs. ``None`` (default)
+            or ``"cpu"`` returns NumPy. This selects output storage independently
+            of the booster device; it does not change prediction algorithms.
+
         Returns
         -------
-        prediction : numpy array
+        prediction : numpy.ndarray or MetalOutput
 
         """
+        if output_device not in (None, "cpu", "mps"):
+            raise ValueError("output_device must be None, 'cpu' or 'mps'.")
         if not isinstance(data, DMatrix):
             raise TypeError("Expecting data to be a DMatrix object, got: ", type(data))
         if validate_features:
@@ -2635,7 +2656,7 @@ class Booster:
                 ctypes.byref(preds),
             )
         )
-        return _prediction_output(shape, dims, preds, False)
+        return _prediction_output(shape, dims, preds, False, output_device)
 
     # pylint: disable=too-many-statements
     @_deprecate_positional_args
@@ -2649,7 +2670,8 @@ class Booster:
         validate_features: bool = True,
         base_margin: Any = None,
         strict_shape: bool = False,
-    ) -> NumpyOrCupy:
+        output_device: Optional[str] = None,
+    ) -> Union[NumpyOrCupy, MetalOutput]:
         """Run prediction in-place when possible, Unlike :py:meth:`predict` method,
         inplace prediction does not cache the prediction result.
 
@@ -2696,13 +2718,22 @@ class Booster:
 
             .. versionadded:: 1.4.0
 
+        output_device :
+            Metal fork extension. ``"mps"`` returns an owned :py:class:`MetalOutput`
+            that PyTorch/MLX can consume through DLPack. The default preserves
+            existing NumPy results for host/Metal input and CuPy results for CUDA
+            input. ``"cpu"`` requests a NumPy result. Direct CUDA-to-Metal transfer
+            is unsupported.
+
         Returns
         -------
-        prediction : numpy.ndarray/cupy.ndarray
-            The prediction result.  When input data is on GPU, prediction result is
-            stored in a cupy array.
+        prediction : numpy.ndarray/cupy.ndarray/MetalOutput
+            The prediction result, with storage selected by ``output_device``.
+            The default uses CuPy for CUDA input and NumPy for host/Metal input.
 
         """
+        if output_device not in (None, "cpu", "mps"):
+            raise ValueError("output_device must be None, 'cpu' or 'mps'.")
         preds = ctypes.POINTER(ctypes.c_float)()
 
         # once caching is supported, we can pass id(data) as cache id.
@@ -2800,7 +2831,7 @@ class Booster:
                     ctypes.byref(preds),
                 )
             )
-            return _prediction_output(shape, dims, preds, False)
+            return _prediction_output(shape, dims, preds, False, output_device)
         if _is_np_array_like(data):
             data, _ = _ensure_np_dtype(data, data.dtype)
             _check_call(
@@ -2814,7 +2845,7 @@ class Booster:
                     ctypes.byref(preds),
                 )
             )
-            return _prediction_output(shape, dims, preds, False)
+            return _prediction_output(shape, dims, preds, False, output_device)
         if isinstance(data, (ArrowTransformed, PandasTransformed)):
             _check_call(
                 _LIB.XGBoosterPredictFromColumnar(
@@ -2827,7 +2858,7 @@ class Booster:
                     ctypes.byref(preds),
                 )
             )
-            return _prediction_output(shape, dims, preds, False)
+            return _prediction_output(shape, dims, preds, False, output_device)
         if isinstance(data, scipy.sparse.csr_matrix):
             from .data import transform_scipy_sparse
 
@@ -2846,7 +2877,7 @@ class Booster:
                     ctypes.byref(preds),
                 )
             )
-            return _prediction_output(shape, dims, preds, False)
+            return _prediction_output(shape, dims, preds, False, output_device)
         if _is_cupy_alike(data):
             from .data import _transform_cupy_array
 
@@ -2863,7 +2894,7 @@ class Booster:
                     ctypes.byref(preds),
                 )
             )
-            return _prediction_output(shape, dims, preds, True)
+            return _prediction_output(shape, dims, preds, True, output_device)
         if _is_cudf_df(data):
             from .data import _transform_cudf_df
 
@@ -2881,7 +2912,7 @@ class Booster:
                     ctypes.byref(preds),
                 )
             )
-            return _prediction_output(shape, dims, preds, True)
+            return _prediction_output(shape, dims, preds, True, output_device)
 
         raise TypeError(
             "Data type:" + str(type(data)) + " not supported by inplace prediction."
