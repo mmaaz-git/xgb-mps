@@ -82,6 +82,7 @@ struct Statistics {
   std::uint64_t split_finalize_dispatches, split_bounds_dispatches;
   std::uint64_t model_weight_copy_dispatches, model_category_copy_dispatches, model_copy_words;
   std::uint64_t model_scale_dispatches, model_state_gpu_time_ns;
+  std::uint64_t split_category_dispatches, split_category_nodes;
 };
 
 class Histogram {

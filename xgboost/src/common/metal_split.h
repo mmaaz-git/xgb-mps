@@ -42,6 +42,8 @@ struct SplitTask {
 struct SplitParameters {
   float reg_lambda, reg_alpha, max_delta_step, min_child_weight;
 };
+// Quantized evaluators accept nullptr for sorted_categories to retain category
+// order only on the GPU (BuildSplitCategories consumes that resident order).
 void EvaluateQuantizedSplits(Span<HistogramInput const> histograms,
                              Span<QuantizedSplitTask const> tasks,
                              SplitParameters const& parameters,
@@ -125,4 +127,14 @@ void UpdateSplitBounds(Span<float> lower, Span<float> upper, std::uint32_t paren
                        std::uint32_t left, std::uint32_t right, std::int32_t monotone,
                        Span<float const> left_weight, Span<float const> right_weight,
                        bool vector_leaf);
+
+struct SplitCategoryTask {
+  std::uint32_t candidate, cut_begin;
+};
+// Build one zero-initialized LBitField32 per requested candidate from the latest
+// successful quantized evaluation. Reads resident results and sorted bin indices.
+// Numeric and invalid candidates produce empty bitsets; tasks can be reordered.
+void BuildSplitCategories(Span<float const> cuts, Span<SplitCategoryTask const> tasks,
+                          std::uint32_t words_per_node, std::vector<std::uint32_t>* output,
+                          SplitWorkspace* workspace);
 }  // namespace xgboost::common::metal

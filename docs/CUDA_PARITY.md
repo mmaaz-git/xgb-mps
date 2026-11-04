@@ -43,6 +43,12 @@ work, not accepted substitutes for CUDA behavior:
 - Quantile sketches: CPU row queues, `SetPruneSorted`, ordered summary merging
   and pruning differ from CUDA's sorted weighted scan and GPU sketch pipeline.
   Existing exact CPU cut tests do not validate that CUDA pipeline.
+- Interaction constraints: current Metal training uses the CPU history-based
+  intersection of compatible groups. CUDA accumulates the union of groups
+  containing each split feature, and its nonroot query emits ascending feature
+  IDs. Overlapping groups can therefore differ. The existing split oracles also
+  retain CPU constraint filtering; their disjoint-group cases do not test this
+  difference. Both implementation and reference require CUDA alignment.
 - Linear coordinate descent: binary64 reductions, filtering, residual arithmetic
   and fresh host gradients for greedy/thrifty selectors differ from CUDA's FP32
   reductions and unchanged host selector snapshot.
@@ -64,7 +70,7 @@ must be reported rather than hidden by widening test tolerances.
 | Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Both sampling methods and all roots share quantized state; weighted sketches still differ from CUDA; preprocessing remains hybrid |
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Original per-tree scales feed both integer sampling methods, all roots and histograms; reduced value leaves now use original scales and integer sums; scalar/vector split statistics retain integers |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned integer cache; external-page accumulation and subtraction retain exact quantized sums, with a binary64 view for host orchestration. GPU growth copies both buffers, empty first pages overwrite reused ranges, and feature gathering remains GPU. Scalar/vector split gathering now reads integer buffers; host cache policy/metadata remain |
-| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights and monotonic-bound updates; interaction masks, category bitset assembly, staging and tree metadata remain host |
+| Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly from resident sorted indices; interaction masks, staging and tree metadata remain host |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; column initialization/selection/order run on Metal but still need CUDA RNG alignment |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
@@ -1086,8 +1092,9 @@ suite passes 1,502 tests (one skipped). Final validation also passes **1,502
 Python tests**, every native suite and the CPU-only build/API check.
 [Validation record](../validation/split-finalization-m3.txt).
 
-Remaining work includes interaction masks, categorical bitset materialization,
-constraint allocation/initialization and persistent GPU ownership. Finalization
+Remaining work includes interaction masks, constraint allocation/initialization
+and persistent GPU ownership. Categorical bitset materialization, missing at this
+checkpoint, is covered by the later update below. Finalization
 currently uses a separate synchronous command: candidate readback/staging has not
 been eliminated. Host tree orchestration remains. Vector model-buffer copies and
 learning-rate application were the next missing operations, addressed below.
@@ -1142,5 +1149,61 @@ suite and the CPU-only build/API check. [Validation record](../validation/model-
 
 This completes the two operations in that CUDA translation unit, not all model
 state handling. Model allocation/growth remains host-owned and both operations
-are synchronous. Category bitset **assembly**, interaction masks, generic state
-ownership and the other ledger gaps remain unfinished. No benchmark was run.
+are synchronous. Category bitset assembly was the next gap, addressed below.
+Interaction masks, generic state ownership and the other ledger gaps remain
+unfinished. No benchmark was run.
+
+## Categorical split bitset assembly
+
+`BuildSplitCategories` now builds the winning one-hot/partition bitsets on Metal
+for scalar and vector training. Its source authority is scalar
+`gpu_hist/evaluate_splits.cu::SetCategoricalSplit`, vector
+`gpu_hist/multi_evaluate_splits.cu` and `common/bitfield.h`. Category zero occupies
+the most significant bit of the first 32-bit word. One-hot uses the selected cut;
+partition mode consumes the sorted prefix length already calculated at CUDA's
+direction-dependent threshold boundary by the split kernel.
+
+The operation reads the resident quantized candidate records and sorted indices.
+Each workgroup first clears its entire bitset, synchronizes device memory, then
+sets selected bits with atomic OR. Numeric and invalid candidates leave zeroed
+storage, including on reuse. Cuts and request metadata are staged; completed
+bitsets return to host-owned tree metadata. The two production quantized split
+evaluators now accept a null sorted-index output, avoiding their previous order
+readback in scalar/vector training. Other candidate readbacks remain.
+
+Host checks validate candidate IDs and cut extents against logical input sizes,
+including stale-workspace rejection after empty or nonquantized evaluation.
+GPU checks catch malformed bin/partition/order indices, invalid categories and
+insufficient output capacity before any out-of-bounds access. Category checks
+use raw float bits so negative subnormals cannot disappear through Metal FTZ;
+valid fractional values retain upstream `AsCat` truncation. Signed zero maps to
+category zero. A reported GPU error leaves the caller's output vector unchanged.
+
+`split_category_dispatches` counts completed GPU commands and
+`split_category_nodes` counts requested bitset slots, including commands that
+complete with a reported validation error. Timing joins `split_gpu_time_ns`.
+Empty requests dispatch nothing. CPU-only builds expose zero counters, and the
+statistics ABI change requires rebuilding native API executables.
+
+Native checks pass **864 category slots / 33,738,112 exact words / 16 successful
+production API calls**, including deliberate malformed-input cases. They cover
+scalar/vector layouts, 1/3/33 targets, 1–513 feature bins, shuffled requests and
+category orders, both partition directions, empty/invalid candidates, reused
+dirty buffers, output guards, unchanged input arrays, word boundaries and
+category `2^24 - 1`.
+Production API tests mutate returned host orders/results and still obtain the
+original GPU bitsets, check the no-readback path, validate stale/range errors and
+recover after GPU-reported errors. Twenty-four public tests audit complete trees,
+check dispatch coverage, and compare predictions from a CPU-loaded model. They
+cover scalar/vector trees, both growth policies, both categorical split modes,
+missing/zero-weight rows and sparse category IDs through 4,095. The maximum valid
+ID is tested directly at the kernel layer: current public cut construction emits
+every ID through the maximum, so that ID would require `2^24` training bins.
+Final validation passes **1,545 Python tests (one skipped)**, every rebuilt native
+suite and the CPU-only build/API check.
+[Validation record](../validation/split-categories-m3.txt).
+
+Interaction masks and their CUDA algorithm alignment, constraint initialization,
+generic metadata/category recoding, sketch ingestion, persistent ownership and
+other ledger gaps remain. This operation is a separate synchronous command; no
+performance benchmark or NVIDIA hardware comparison was run.

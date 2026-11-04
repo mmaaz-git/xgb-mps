@@ -6279,3 +6279,72 @@ kernel void xgb_scale_model_weights(device uint* weights [[buffer(0)]],
       xgb_dmul(xgb_dfrom_float(as_type<float>(weights[i])), xgb_dfrom_float(as_type<float>(p.eta)));
   weights[i] = as_type<uint>(xgb_dto_float(product));
 }
+
+struct SplitCategoryTask {
+  uint candidate, cut_begin;
+};
+struct SplitCategoryParams {
+  uint words, multi;
+};
+kernel void xgb_build_split_categories(
+    device const SplitCategoryTask* requests [[buffer(0)]], device const void* inputs [[buffer(1)]],
+    device const void* results [[buffer(2)]], device const uint* order [[buffer(3)]],
+    device const uint* cuts [[buffer(4)]], device atomic_uint* bits [[buffer(5)]],
+    constant SplitCategoryParams& p [[buffer(6)]], device atomic_uint* error [[buffer(7)]],
+    uint node [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) {
+  auto output = bits + ulong(node) * p.words;
+  for (ulong word = tid; word < p.words; word += 256)
+    atomic_store_explicit(output + word, 0u, memory_order_relaxed);
+  threadgroup_barrier(mem_flags::mem_device);
+  auto request = requests[node];
+  uint begin, count, kind, partition;
+  int bin;
+  if (p.multi) {
+    auto task = reinterpret_cast<device const QuantizedMultiSplitTask*>(inputs)[request.candidate];
+    auto result =
+        reinterpret_cast<device const QuantizedMultiSplitResult*>(results)[request.candidate];
+    begin = task.begin;
+    count = (task.end - task.begin) / task.targets;
+    kind = task.kind;
+    bin = result.bin;
+    partition = result.partition;
+  } else {
+    auto task = reinterpret_cast<device const QuantizedSplitTask*>(inputs)[request.candidate];
+    auto result = reinterpret_cast<device const QuantizedSplitResult*>(results)[request.candidate];
+    begin = task.begin;
+    count = task.end - task.begin;
+    kind = task.kind;
+    bin = result.bin;
+    partition = result.partition;
+  }
+  // CUDA clears vector storage even when the winning candidate is invalid.
+  if (!kind || bin < 0) return;
+  if (uint(bin) >= count || (kind == 2 && (!partition || partition > count))) {
+    if (!tid) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+    return;
+  }
+  // The split kernels already converted CUDA's direction-dependent threshold
+  // to a prefix length. Sorted indices are local to the feature's cut slice.
+  uint selected = kind == 1 ? 1u : partition;
+  for (uint i = tid; i < selected; i += 256) {
+    uint index = kind == 1 ? uint(bin) : order[begin + i];
+    if (index >= count) {
+      atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+      continue;
+    }
+    uint value = cuts[request.cut_begin + index], magnitude = value & 0x7fffffffu;
+    // CUDA AsCat truncates; reject negatives (except -0), NaNs/infinities and
+    // values >= 2^24. Integer checks also catch negative subnormals under FTZ.
+    if (((value >> 31) && magnitude) || magnitude >= 0x4b800000u) {
+      atomic_fetch_or_explicit(error, 4u, memory_order_relaxed);
+      continue;
+    }
+    uint category = uint(as_type<float>(value));
+    if (category / 32 >= p.words) {
+      atomic_fetch_or_explicit(error, 4u, memory_order_relaxed);
+      continue;
+    }
+    atomic_fetch_or_explicit(output + category / 32, 1u << (31u - category % 32),
+                             memory_order_relaxed);
+  }
+}

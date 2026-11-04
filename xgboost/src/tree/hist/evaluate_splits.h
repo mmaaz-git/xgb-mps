@@ -334,14 +334,29 @@ class HistEvaluator {
       common::metal::SplitParameters parameters{param_->reg_lambda, param_->reg_alpha,
                                                 param_->max_delta_step, param_->min_child_weight};
       std::vector<common::metal::QuantizedSplitResult> results;
-      std::vector<std::uint32_t> order;
-      common::metal::EvaluateQuantizedSplits(inputs, tasks, parameters, &results, &order,
+      common::metal::EvaluateQuantizedSplits(inputs, tasks, parameters, &results, nullptr,
                                              metal_workspace_.get());
       std::vector<common::metal::SplitNodeResult> finalized;
       std::vector<common::metal::SplitNodeWeights> node_weights;
       common::metal::FinalizeSplitNodes(nodes, final_features, final_parents, final_bounds,
                                         parameters, false, &finalized, &node_weights,
                                         metal_workspace_.get());
+      std::vector<common::metal::SplitCategoryTask> category_tasks;
+      std::vector<std::size_t> category_slot(entries.size());
+      for (std::size_t entry = 0; entry < entries.size(); ++entry) {
+        auto i = finalized[entry].winner;
+        if (i == std::numeric_limits<std::uint32_t>::max() || !tasks[i].kind) continue;
+        category_slot[entry] = category_tasks.size();
+        category_tasks.push_back({i, ptr[mapping[i].second]});
+      }
+      auto category_words =
+          category_tasks.empty()
+              ? 0u
+              : static_cast<std::uint32_t>(
+                    common::CatBitField::ComputeStorageSize(cut.MaxCategory() + 1));
+      std::vector<std::uint32_t> category_bits;
+      common::metal::BuildSplitCategories(cut.Values(), category_tasks, category_words,
+                                          &category_bits, metal_workspace_.get());
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
         auto i = finalized[entry].winner;
         if (i == std::numeric_limits<std::uint32_t>::max()) continue;
@@ -361,14 +376,8 @@ class HistEvaluator {
         candidate.Update(finalized[entry].loss_chg, f, split, r.default_left, task.kind != 0,
                          GradStats{r.left_sum}, GradStats{r.right_sum});
         if (task.kind) {
-          candidate.cat_bits.resize(common::CatBitField::ComputeStorageSize(cut.MaxCategory() + 1),
-                                    0);
-          common::CatBitField bits{candidate.cat_bits};
-          if (task.kind == 1)
-            bits.Set(split);
-          else
-            for (std::uint32_t j = 0; j < r.partition; ++j)
-              bits.Set(cut.Values()[ptr[f] + order[task.begin + j]]);
+          auto begin = category_bits.begin() + category_slot[entry] * category_words;
+          candidate.cat_bits.assign(begin, begin + category_words);
         }
         if (entries[entry].split.Update(candidate)) {
           snode_[nid].quantized_left = r.left;
@@ -845,15 +854,30 @@ class HistMultiEvaluator {
       std::vector<common::metal::QuantizedMultiSplitResult> results;
       std::vector<GradientPairInt64> integer_children;
       std::vector<GradientPairPrecise> children;
-      std::vector<std::uint32_t> order;
       common::metal::EvaluateQuantizedMultiSplits(inputs, tasks, parents, bounds, parameters,
-                                                  &results, &integer_children, &children, &order,
+                                                  &results, &integer_children, &children, nullptr,
                                                   metal_workspace_.get());
       std::vector<common::metal::SplitNodeResult> finalized;
       std::vector<common::metal::SplitNodeWeights> node_weights;
       common::metal::FinalizeSplitNodes(nodes, final_features, final_parents, final_bounds,
                                         parameters, true, &finalized, &node_weights,
                                         metal_workspace_.get());
+      std::vector<common::metal::SplitCategoryTask> category_tasks;
+      std::vector<std::size_t> category_slot(entries.size());
+      for (std::size_t entry = 0; entry < entries.size(); ++entry) {
+        auto i = finalized[entry].winner;
+        if (i == std::numeric_limits<std::uint32_t>::max() || !tasks[i].kind) continue;
+        category_slot[entry] = category_tasks.size();
+        category_tasks.push_back({i, ptr[mapping[i].second]});
+      }
+      auto category_words =
+          category_tasks.empty()
+              ? 0u
+              : static_cast<std::uint32_t>(
+                    common::CatBitField::ComputeStorageSize(cut.MaxCategory() + 1));
+      std::vector<std::uint32_t> category_bits;
+      common::metal::BuildSplitCategories(cut.Values(), category_tasks, category_words,
+                                          &category_bits, metal_workspace_.get());
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
         auto i = finalized[entry].winner;
         if (i == std::numeric_limits<std::uint32_t>::max()) continue;
@@ -874,14 +898,8 @@ class HistMultiEvaluator {
         candidate.Update(finalized[entry].loss_chg, f, split, r.default_left, task.kind != 0, left,
                          right);
         if (task.kind) {
-          candidate.cat_bits.resize(common::CatBitField::ComputeStorageSize(cut.MaxCategory() + 1),
-                                    0);
-          common::CatBitField bits{candidate.cat_bits};
-          if (task.kind == 1)
-            bits.Set(split);
-          else
-            for (std::uint32_t j = 0; j < r.partition; ++j)
-              bits.Set(cut.Values()[ptr[f] + order[task.begin + j]]);
+          auto begin = category_bits.begin() + category_slot[entry] * category_words;
+          candidate.cat_bits.assign(begin, begin + category_words);
         }
         if (entries[entry].split.Update(candidate)) {
           auto offset = std::size_t(nid) * 2 * targets;

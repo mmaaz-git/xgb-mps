@@ -1,0 +1,86 @@
+Categorical split bitset assembly on Apple M3
+Date: 2026-11-04
+Source base: c743c55 plus the categorical assembly change accompanying this record.
+
+Authority and scope:
+  CUDA scalar gpu_hist/evaluate_splits.cu SetCategoricalSplit, CUDA vector
+  gpu_hist/multi_evaluate_splits.cu finalization, common/categorical.h AsCat and
+  common/bitfield.h LBitField32 define the category selection and bit layout.
+  One-hot selects its cut; partitions use the direction-adjusted prefix length
+  already calculated by the quantized split kernels. Category 0 is bit 31 of
+  word 0. Host tree metadata and generic category recoding remain host-owned.
+  No NVIDIA hardware comparison or performance benchmark was run.
+
+Implementation:
+  BuildSplitCategories reads the current resident quantized candidate records
+  and sorted category indices. Each 256-thread group clears all output words,
+  synchronizes device memory, then uses atomic OR for selected categories.
+  Invalid/numeric candidates leave zeros; reused storage cannot retain old bits.
+  Scalar/vector training batches winning categorical requests and copies back
+  the completed bitsets. Sorted-index readback is now optional and disabled in
+  both production quantized evaluator calls. Other candidate readbacks remain.
+  Cut values/request metadata are staged; GPU scratch buffers persist/reuse.
+  Logical candidate/cut extents checked on host; GPU checks bins, prefix lengths,
+  order indices, category domain and output capacity. Raw-bit domain checks catch
+  negative subnormals despite FTZ. Valid fractions truncate like upstream AsCat.
+  A GPU-reported error leaves caller output unchanged. Empty requests dispatch
+  nothing. split_category_dispatches and split_category_nodes report completed
+  commands/requested slots, including completed commands that report an error.
+  GPU time joins split_gpu_time_ns. CPU-only builds report zero counters.
+
+Native validation: tests/metal_split_categories.mm
+  PASS 864 category slots / 33,738,112 exact words / 16 successful API calls.
+  Counts include deliberately malformed input slots; exact-word comparisons
+  apply to valid calls. Metal API Validation enabled; fastMath disabled.
+  Independent reference uses upstream host CatBitField and AsCat.
+  Scalar T=1 and vector T=1/3/33, feature bins 1/2/31/32/33/65/257/513;
+  shuffled candidate requests and order arrays, interleaved vector-bin offsets,
+  one-hot, both partition directions, invalid and numeric candidates.
+  Dirty output reused without host clearing; output guards and input cut/order
+  arrays preserved.
+  Bit boundaries, fractional truncation, -0, positive subnormals, sparse IDs and
+  maximum valid category 2^24-1. Deliberate errors: negative/-subnormal, infinity,
+  NaN, 2^24, insufficient words, invalid bin/partition/order indices.
+  Production quantized histogram/evaluator -> bitset path tested with scalar
+  and vector layouts; mutated CPU result/order copies cannot affect GPU output.
+  Null sorted-index output path, exact counters, metadata rejection, GPU error
+  output preservation/recovery, empty requests and stale-workspace rejection.
+
+Public validation: tests/test_metal_split_categories.py
+  PASS 24 cases. Both tree strategies, growth policies and categorical split
+  modes; sparse IDs across word boundaries, missing/zero-weight rows, cache=1,
+  complete source-derived split/tree oracles and CPU-loaded prediction equality.
+  Explicit dispatch/node counters and no-dispatch checks for numeric winners or
+  max_cat_threshold=1 (no partition candidate). High-ID integration uses 4095.
+  One-hot thresholds exceed the full cut range to actually select that branch.
+  The maximum valid ID is tested at the kernel layer, not in whole training:
+  current quantile.cc AddCategories emits every ID through the maximum, implying
+  2^24 training bins for ID 2^24-1. Public fixtures therefore use practical ranges.
+
+Development logs (local results/, not benchmark timings):
+  build-category-v1.log: Metal build PASS.
+  category-build-driver-v1.log: 09:57:53-09:58:35 UTC, exit 0.
+  test-category-existing-v1.log: 179 existing scalar/vector CUDA-source cases
+    passed in 18.31 seconds.
+  test-category-native-v1.log: all new native checks PASS, exit 0.
+  test-category-python-v1.log: manually interrupted after 13 passes / 125.59 s;
+    not a test timeout or failure. Large sparse category IDs made the scalar
+    oracle enumerate dense cut ranges. Replaced public fixture maxima with
+    1023/4095 while retaining direct maximum-ID kernel coverage; also made
+    one-hot thresholds exceed the full cut range.
+  test-category-python-v2.log: all 24 public cases PASS in 5.98 seconds.
+  run-category-full-v1.sh: 10:05:49-10:12:17 UTC, exit 0.
+    build-category-final-v1.log: final Metal build PASS.
+    test-category-full-v1.log: every native suite rebuilt and PASS;
+      1545 Python passed, 1 skipped, 310 warnings in 117.73 seconds.
+    build-cpu-category-v1.log: CPU-only build PASS.
+    check-cpu-category-v1.log: unavailable/zero-counters/device-error checks PASS.
+  No production/test changes after this full run; only documentation edits.
+
+Remaining scope:
+  Interaction masks and CUDA semantics (overlapping groups/feature order),
+  constraint allocation/initialization, generic category/metadata operations,
+  CUDA sketch alignment, other ledger gaps and persistent device ownership.
+  Current split reference interaction filtering follows CPU group intersections;
+  disjoint-group tests do not expose CUDA's cumulative union behavior. The next
+  constraint port must align both the implementation and its oracle explicitly.

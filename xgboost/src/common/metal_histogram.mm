@@ -59,6 +59,7 @@ std::atomic<std::uint64_t> leaf_integer_sum_dispatches{0};
 std::atomic<std::uint64_t> cuda_integer_split_dispatches{0};
 std::atomic<std::uint64_t> cuda_integer_multi_split_dispatches{0};
 std::atomic<std::uint64_t> split_finalize_dispatches{0}, split_bounds_dispatches{0};
+std::atomic<std::uint64_t> split_category_dispatches{0}, split_category_nodes{0};
 std::atomic<std::uint64_t> model_weight_copy_dispatches{0}, model_category_copy_dispatches{0},
     model_copy_words{0}, model_scale_dispatches{0}, model_state_gpu_time_ns{0};
 std::atomic<std::uint64_t> leaf_sum_init_dispatches{0}, leaf_sum_dispatches{0},
@@ -147,6 +148,7 @@ class Runtime {
   id<MTLComputePipelineState> quantized_multi_split_pipeline;
   id<MTLComputePipelineState> split_finalize_pipeline, split_bounds_pipeline;
   id<MTLComputePipelineState> model_scale_pipeline;
+  id<MTLComputePipelineState> split_category_pipeline;
   id<MTLComputePipelineState> dequantize_hist_pipeline, subtract_hist_pipeline,
       gather_hist_pipeline;
   id<MTLComputePipelineState> store_integer_hist_pipeline, subtract_integer_hist_pipeline,
@@ -252,6 +254,7 @@ class Runtime {
       split_finalize_pipeline = make_pipeline(@"xgb_finalize_split_nodes");
       split_bounds_pipeline = make_pipeline(@"xgb_update_split_bounds");
       model_scale_pipeline = make_pipeline(@"xgb_scale_model_weights");
+      split_category_pipeline = make_pipeline(@"xgb_build_split_categories");
       multi_split_pipeline = make_pipeline(@"xgb_evaluate_multi_splits");
       dequantize_hist_pipeline = make_pipeline(@"xgb_histogram_dequantize");
       subtract_hist_pipeline = make_pipeline(@"xgb_histogram_subtract");
@@ -455,6 +458,7 @@ class MetalSplitWorkspace final : public SplitWorkspace {
   id<MTLBuffer> hist, input, output, order, weights, scans, parent, bounds, children;
   id<MTLBuffer> scales, integer_children;
   id<MTLBuffer> node_input, feature_input, node_parents, node_bounds, node_results, node_weights;
+  id<MTLBuffer> category_input, category_cuts, category_output, category_error;
   std::size_t candidate_count{0};
   std::size_t candidate_child_count{0};
   bool vector_candidates{false};
@@ -1661,7 +1665,9 @@ Statistics GetStatistics() {
           model_category_copy_dispatches.load(std::memory_order_relaxed),
           model_copy_words.load(std::memory_order_relaxed),
           model_scale_dispatches.load(std::memory_order_relaxed),
-          model_state_gpu_time_ns.load(std::memory_order_relaxed)};
+          model_state_gpu_time_ns.load(std::memory_order_relaxed),
+          split_category_dispatches.load(std::memory_order_relaxed),
+          split_category_nodes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -5199,7 +5205,7 @@ void EvaluateQuantizedSplits(Span<HistogramInput const> histograms,
   auto bins = tasks.empty() ? 0 : tasks.back().end;
   bool categorical =
       std::any_of(tasks.begin(), tasks.end(), [](auto const& task) { return task.kind == 2; });
-  sorted_categories->resize(categorical ? bins : 0);
+  if (sorted_categories) sorted_categories->resize(categorical ? bins : 0);
   if (tasks.empty()) return;
   CHECK(workspace);
   CHECK_EQ(histograms.size(), 1);
@@ -5248,7 +5254,7 @@ void EvaluateQuantizedSplits(Span<HistogramInput const> histograms,
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
     std::memcpy(results->data(), output.contents, tasks.size() * sizeof(QuantizedSplitResult));
     for (auto const& task : tasks)
-      if (task.kind == 2) {
+      if (sorted_categories && task.kind == 2) {
         std::memcpy(sorted_categories->data() + task.begin,
                     static_cast<std::uint32_t const*>(order.contents) + task.begin,
                     (task.end - task.begin) * sizeof(std::uint32_t));
@@ -5341,6 +5347,81 @@ void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
     CompleteOperation(command, &split_finalize_dispatches, &split_gpu_time_ns);
     std::memcpy(results->data(), out.contents, results->size() * sizeof(SplitNodeResult));
     std::memcpy(weights->data(), weight.contents, weights->size() * sizeof(SplitNodeWeights));
+  }
+}
+
+void BuildSplitCategories(Span<float const> cuts, Span<SplitCategoryTask const> tasks,
+                          std::uint32_t words_per_node, std::vector<std::uint32_t>* output,
+                          SplitWorkspace* workspace) {
+  static_assert(sizeof(SplitCategoryTask) == 8);
+  CHECK(output);
+  if (tasks.empty()) {
+    output->clear();
+    return;
+  }
+  CHECK(workspace);
+  CHECK(cuts.data() || cuts.empty());
+  auto scratch = static_cast<MetalSplitWorkspace*>(workspace);
+  CHECK_GT(scratch->candidate_count, 0)
+      << "Category assembly requires current quantized candidates";
+  CHECK_GT(words_per_node, 0);
+  CHECK_LE(tasks.size(), std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(tasks.size(), std::numeric_limits<std::size_t>::max() / 4 / words_per_node);
+  CHECK_LE(cuts.size(), std::numeric_limits<std::uint32_t>::max());
+  // Check metadata extents against logical input sizes, not buffer capacities.
+  // No category selection or bit assembly is performed on the host.
+  for (auto const& request : tasks) {
+    CHECK_LT(request.candidate, scratch->candidate_count);
+    std::uint32_t bins, kind;
+    if (scratch->vector_candidates) {
+      auto task =
+          static_cast<QuantizedMultiSplitTask const*>(scratch->input.contents)[request.candidate];
+      bins = (task.end - task.begin) / task.targets;
+      kind = task.kind;
+    } else {
+      auto task =
+          static_cast<QuantizedSplitTask const*>(scratch->input.contents)[request.candidate];
+      bins = task.end - task.begin;
+      kind = task.kind;
+    }
+    if (kind) {
+      CHECK_LE(request.cut_begin, cuts.size());
+      CHECK_LE(bins, cuts.size() - request.cut_begin);
+    }
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto count = tasks.size() * words_per_node;
+    auto requests = Scratch(rt, &scratch->category_input, tasks.size_bytes(), tasks.data());
+    auto values = Scratch(rt, &scratch->category_cuts, cuts.size_bytes(), cuts.data());
+    auto bits = Scratch(rt, &scratch->category_output, count * sizeof(std::uint32_t));
+    std::uint32_t zero = 0;
+    auto error = Scratch(rt, &scratch->category_error, sizeof(zero), &zero);
+    struct {
+      std::uint32_t words, multi;
+    } p{words_per_node, scratch->vector_candidates};
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto encoder = [command computeCommandEncoder];
+    CHECK(encoder);
+    [encoder setComputePipelineState:rt.split_category_pipeline];
+    [encoder setBuffer:requests offset:0 atIndex:0];
+    [encoder setBuffer:scratch->input offset:0 atIndex:1];
+    [encoder setBuffer:scratch->output offset:0 atIndex:2];
+    [encoder setBuffer:scratch->order offset:0 atIndex:3];
+    [encoder setBuffer:values offset:0 atIndex:4];
+    [encoder setBuffer:bits offset:0 atIndex:5];
+    [encoder setBytes:&p length:sizeof(p) atIndex:6];
+    [encoder setBuffer:error offset:0 atIndex:7];
+    [encoder dispatchThreadgroups:MTLSizeMake(tasks.size(), 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder endEncoding];
+    CompleteOperation(command, &split_category_dispatches, &split_gpu_time_ns);
+    split_category_nodes.fetch_add(tasks.size(), std::memory_order_relaxed);
+    CHECK_EQ(*static_cast<std::uint32_t const*>(error.contents), 0)
+        << "Invalid category, partition, sorted index or bitset extent";
+    output->resize(count);
+    std::memcpy(output->data(), bits.contents, count * sizeof(std::uint32_t));
   }
 }
 
@@ -5468,7 +5549,7 @@ void EvaluateQuantizedMultiSplits(
   auto bins = tasks.empty() ? 0 : tasks.back().end;
   bool categorical =
       std::any_of(tasks.begin(), tasks.end(), [](auto const& task) { return task.kind == 2; });
-  sorted_categories->resize(categorical ? bins : 0);
+  if (sorted_categories) sorted_categories->resize(categorical ? bins : 0);
   CHECK_LE(parents.size(), std::numeric_limits<std::uint32_t>::max() / 2);
   children->resize(parents.size() * 2);
   integer_children->resize(parents.size() * 2);
@@ -5554,7 +5635,7 @@ void EvaluateQuantizedMultiSplits(
                     static_cast<GradientPairInt64 const*>(exact.contents) + 2 * task.parent_begin,
                     2 * task.targets * sizeof(GradientPairInt64));
       }
-      if (task.kind == 2)
+      if (sorted_categories && task.kind == 2)
         std::memcpy(sorted_categories->data() + task.begin,
                     static_cast<std::uint32_t const*>(order.contents) + task.begin,
                     ((task.end - task.begin) / task.targets) * sizeof(std::uint32_t));
