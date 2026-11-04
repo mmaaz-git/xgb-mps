@@ -14,20 +14,29 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **multiclass gradients, softmax and argmax now follow CUDA's
-source calculation order**. Softmax sums FP32 exponential terms sequentially in
-software binary64, then rounds the denominator to FP32 once. Gradient kernels
-process each row once, removing the former repeated scan for every class. Argmax
-now preserves source behavior for leading NaNs and subnormal values.
+Latest step: **regression, hinge and expectile gradients now preserve CUDA's
+source arithmetic**, alongside sigmoid, exponential, hinge, expectile and
+quantile prediction transforms. Squared-log Hessians retain the source's
+binary64 denominator and division; hinge retains its binary64 label expression
+and comparison. Shared arithmetic preserves subnormal values and source NaN
+handling.
 
-New native checks pass **192 cases / 12,181,658 fields**, including **1,236
-witnesses** that distinguish the previous compensated FP32 sum. Thirty new
-public prediction cases cover extreme margins, ties, tiny values and model
-reload. The host-source softmax helper differs from the explicitly rounded math
-oracle by at most two FP32 ULP in this corpus; NVIDIA execution remains untested.
-Full regression passes **1,841 Python tests**, every rebuilt native suite and
-the CPU-only build/check.
-[Multiclass arithmetic validation](validation/cuda-multiclass-softmax-m3.txt).
+New extracted-source checks pass **624 cases / 14,305,782 fields**, including
+**25,205 squared-log denominator witnesses**, **6,089 hinge witnesses** and
+**545,836 subnormal fields**. Fifteen public transform cases cover CPU comparison,
+tiny/extreme margins and model reload. The reference substitutes explicitly
+rounded math primitives into vendored expressions; actual NVIDIA execution
+remains unverified. Extreme stress cases retain documented CPU-math differences
+from signaling NaNs and cancellation with very large weights; ordinary training
+comparisons keep their existing tolerances. Full regression passes **1,856
+Python tests**, every rebuilt native suite and the CPU-only build/check.
+[Objective arithmetic validation](validation/cuda-objective-arithmetic-m3.txt).
+
+The preceding multiclass step aligned softmax with CUDA's sequential binary64
+sum of FP32 terms and removed repeated class scans. Argmax preserves source
+behavior for leading NaNs and subnormal values. Its native checks cover **192
+cases / 12,181,658 fields**.
+[Multiclass validation](validation/cuda-multiclass-softmax-m3.txt).
 
 The preceding step moved multiclass base-score histograms, normalization,
 logarithms and centering to Metal. **CUDA packs observed class sums into consecutive
@@ -163,9 +172,9 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Objective initialization | GPU multiclass packed class-weight histogram, normalization/logarithm/centering, expectile initial gradients/Hessians and absolute-error target-mean broadcast; quantile vector normalization also runs on GPU; generic allocation/state remain host |
 | Objective validation / base scores | GPU logistic, gamma, squared-log, Poisson/Tweedie and multiclass label checks; checked logistic/gamma intercepts and logarithm/logit conversion, including Cox base-score conversion |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
-| Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
+| Gradients | CUDA-source FP32/FP64 expressions for squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass and expectile; adaptive absolute-error and quantile gradients have GPU residual scales but still need a source-arithmetic audit |
 | AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU |
-| Prediction transforms | Sigmoid, exponential, hinge, cumulative expectile and quantile row sorting; multiclass softmax uses CUDA sequential binary64 sums of FP32 terms, and argmax preserves source NaN/subnormal comparisons |
+| Prediction transforms | CUDA-source sigmoid, exponential, hinge, cumulative expectile and quantile insertion sorting with preserved subnormals; multiclass softmax uses sequential binary64 sums of FP32 terms, and argmax preserves source NaN/subnormal comparisons |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input staging and category recoding remain host |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
@@ -314,6 +323,11 @@ On Apple M3, validated through 2026-11-04:
   subnormals and wide exponent ranges. These retain low-level binary64 reduction
   coverage; production scalar means now use the CUDA-derived FP32 path tested
   separately by the class-prior/vector suite below.
+- Regression/hinge/expectile gradients and scalar/row transforms: **624 cases /
+  14,305,782 fields** against extracted source expressions, including **545,836
+  subnormal fields**, 25,205 double-denominator witnesses and 6,089 double-hinge
+  witnesses. Fifteen public transform cases also pass; native-libm differences
+  are recorded separately. [Validation](validation/cuda-objective-arithmetic-m3.txt).
 - Multiclass gradients/transforms: **192 cases / 12,181,658 exact fields**,
   including 2,828,230 nonfinite classification checks, 1,236 compensated-FP32
   denominator witnesses, alias/guard checks and empty/invalid-shape handling.

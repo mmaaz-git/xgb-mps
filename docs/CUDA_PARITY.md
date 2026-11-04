@@ -166,6 +166,71 @@ Historical performance measurements of the ordered FP32 prefix and its checkpoin
 optimization describe that earlier implementation. They have not been rerun for
 the integer sampler and are not performance claims for the current path.
 
+## Regression, hinge and expectile arithmetic
+
+The generic objective kernel now evaluates the source FP32 expressions through
+the shared preserving arithmetic helpers. This covers squared error,
+logistic/logitraw, squared log, gamma, pseudo-Huber, Poisson, Tweedie and expectile.
+Source multiplication and accumulation boundaries are explicit. Logistic keeps
+`std::min` semantics for the exponent cap; loss floors use CUDA `fmaxf` semantics.
+Expectile retains the source cumulative softplus margins, per-target gradient
+and Hessian sums, ordered residual comparison and final sigmoid factors.
+
+Squared-log Hessians use an FP32 numerator, a binary64 denominator and binary64
+division before narrowing to FP32 and applying the floor. The source's
+`std::pow(float, int)` promotes to double under the configured C++17 standard.
+This was confirmed in NVIDIA 12.8.93 headers' modern GCC/libc++ overloads and GCC's
+promotion traits. The square of an FP32 value is exactly representable in
+binary64; the port uses that exact product. Actual NVIDIA compiler lowering and
+libdevice results are not asserted. The numerator now spells the source order;
+its isolated rewrite produces zero corpus differences, whereas retaining the
+wider denominator changes 25,205 checked Hessians.
+
+Hinge follows the source's double literals: label mapping, margin comparison and
+weighted gradient are binary64 before the gradient narrows to FP32. The satisfied
+margin branch retains the unweighted minimum-normal FP32 Hessian, including
+unordered NaN comparisons. There are 6,089 witnesses against the previous FP32
+calculation. Other objectives retain their respective FP32 formulas.
+
+Sigmoid, exponential, hinge, cumulative expectile and quantile prediction
+transforms now also preserve subnormals. Quantile retains the source insertion
+sort, including strict comparisons, equal-value order and NaN barriers; it does
+not replace that loop with a differently ordered sort. Identity and empty
+operations remain dispatch-free. Existing guarded input sharing, alias-safe
+output staging and counters are unchanged.
+
+`tests/build_objective_reference.py` extracts actual scalar methods and device
+lambda bodies from five vendored source files. The generated reference changes
+view bindings and math callbacks, retaining the expressions, casts and branches.
+Math callbacks round host binary64 exp/log1p/sqrt to FP32, evaluate pow in
+binary64 and apply documented CUDA fmaxf NaN rules. A separate reference keeps
+native host libm, so those differences are visible. Apple `std::fmax` propagates
+a signaling NaN in a reproduced case, while CUDA documents choosing the numeric
+argument. This is why native host fmax is not the CUDA edge-case oracle.
+[NVIDIA fmaxf contract](https://docs.nvidia.com/cuda/archive/13.0.1/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html).
+
+The separate host-libm replay differs in 6,893 gradient/Hessian fields. Twelve
+classification differences and eight finite tolerance failures come from
+signaling-NaN clamps; another 27 finite tolerance failures come from cancellation
+with weights of `1e20` or `1e30`. For example, a Poisson gradient can be zero with
+native host expf and approximately `-5.96e22` with the explicitly rounded math
+oracle after a `1e30` weight. These real cross-library differences remain
+explicit; the port does not force CPU agreement by correcting rows on the host.
+The detailed validation record reports the full diagnostics.
+
+Native checks pass 624 cases / 14,305,782 result fields, including 545,836
+subnormal and 236,211 nonfinite fields. They cover weighted/unweighted and
+multi-target rows, all-bit random inputs, singularities, cancellation, slope/rho
+boundaries, aliasing, guards and empty calls. NaNs compare by classification,
+signed zero by equality; identity/quantile copies additionally preserve every
+bit. Fifteen public transform cases cover CPU comparisons, raw margins,
+dispatches and model reload. Existing mathematical and training comparison
+tolerances are unchanged. NVIDIA/libdevice/NVCC contraction and cross-Apple
+execution remain unverified; performance has not been benchmarked. Full
+regression passes **1,856 Python tests, one skip**, every rebuilt native suite
+and the CPU-only build/device check (2026-11-04, 14:59:14–15:03:58 UTC).
+[Validation record](../validation/cuda-objective-arithmetic-m3.txt).
+
 ## Multiclass gradient and transform arithmetic
 
 `multiclass_obj.cu::GetGradient` now has a dedicated Metal kernel with one thread

@@ -1,0 +1,144 @@
+CUDA-source generic objective and prediction-transform arithmetic
+Date: 2026-11-04. Apple M3 Air, 8 CPU / 10 GPU cores, 16 GB.
+
+Source authority and changes
+----------------------------
+Vendored objective/regression_loss.h, regression_obj.cu, hinge.cu,
+quantile_obj.cu and common/math.h define the expressions.
+
+xgb_objective and xgb_transform moved after the existing numerical helpers.
+The previous xgb_multiclass_math namespace is now xgb_objective_math; shared
+FMax, Sigmoid and SoftPlus implement the source comparison/branch rules.
+Unused early native-float sigmoid/log1p/softplus helpers were removed.
+No host API, dispatch, memory-sharing or statistics ABI change.
+
+Generic objectives preserve FP32 boundaries, weight multiplication, scale_pos_weight
+where passed by the production RegLossObj, and source branch semantics. Gamma
+first transforms by FP32 exp. Pseudo-Huber retains its separate FP32 squares,
+root and denominator. Poisson/Tweedie retain source terms and weight order.
+Expectile retains cumulative FP32 margins, alpha selection (NaN >=0 is false),
+FP32 sums, sigmoid gradient factor and squared sigmoid Hessian factor.
+
+Squared-log: fmaxf clamp, FP32 log1p terms; FP32 numerator in source order;
+binary64 pow(base,2) denominator and division; FP32 narrowing then fmaxf floor.
+An FP32 base squared is exactly representable in binary64, so Metal uses the
+software-double product. This differs from the former FP32 denominator in 25,205
+weighted/unweighted corpus fields. Rewriting the numerator alone is algebraically
+consistent under these rounding rules and produces ZERO corpus witnesses; this
+part is source-order alignment, not an independent numerical bug fix.
+
+Overload evidence: CUDA C++17 is configured in xgboost/cmake/Utils.cmake. NVIDIA
+12.8.93 crt/math_functions.h around 5282 declares std::pow(_Tp,_Up) via
+__gnu_cxx::__promote_2 for modern GCC/C++11+. GCC 14.2 ext/type_traits.h maps int to
+double and combines it with float, yielding double. Modern libc++/MSVC overloads
+also promote. The header's old float,int overload and NVRTC/global powif wrapper
+are different conditional branches and are not the configured std::pow call.
+NVIDIA wheel (headers inspected only, not installed/executed):
+https://files.pythonhosted.org/packages/86/0a/962e9c861541b08d62ee38a9e9776a46f75b979c75e7236fa7e09b024470/nvidia_cuda_nvcc_cu12-12.8.93-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+SHA256 2d6dc36fb7cb5ac9c0b8825bc13d193c35487a315664007287d0126531238011
+GCC promotion traits:
+https://github.com/gcc-mirror/gcc/blob/releases/gcc-14.2.0/libstdc%2B%2B-v3/include/ext/type_traits.h
+Actual libdevice pow/compiler lowering on NVIDIA remains unverified.
+
+Hinge label*2.0-1.0, p*y<1.0 and -y*w now use binary64, then narrow the gradient.
+The other branch returns zero gradient and unweighted FLT_MIN Hessian. Native
+checks distinguish the old FP32 version in 6,089 cases, including tiny fractional
+labels near margin boundaries. Public label-validation behavior is unchanged.
+
+Transforms preserve source FP32 sigmoid/exp/softplus and ordered comparisons.
+Quantile keeps the source insertion sort, including NaN barriers, first equal
+values, subnormal ordering and bit-preserving moves. Identity/empty calls do
+not dispatch. No CPU correction path was added and no performance benchmark run.
+
+Validation design and limits
+----------------------------
+tests/build_objective_reference.py extracts actual scalar loss methods and device
+lambda bodies, rebinding views and substituting math callbacks only. Generated
+source hashes are written to results/cuda_objective_reference_generated.h.
+The reference rounds host binary64 exp/log1p/sqrt to FP32 and keeps pow binary64.
+FP32 arithmetic is compiled with contraction off. Exact sampled result matches
+are source-expression evidence, NOT libdevice/NVCC or cross-GPU bit equivalence.
+
+CUDA fmaxf documents choosing the numeric operand when the other is NaN:
+https://docs.nvidia.com/cuda/archive/13.0.1/cuda-math-api/cuda_math_api/group__CUDA__MATH__SINGLE.html
+The first reference used Apple std::fmax, which propagates a signaling NaN:
+  fmax(bits0x7fac34ed,-.999999f) -> NaN bits0x7fec34ed;
+  fmax(bits0x7fec34ed,-.999999f) -> -.999999f bits0xbf7fffef.
+That caused a test-reference failure (Metal clamped the NaN as documented for
+CUDA). The CUDA reference now explicitly applies the documented missing-NaN
+rule. A second reference retains native libm/fmax and records the differences.
+No production change or numerical-tolerance increase was made for this failure.
+
+Native tests/metal_objective_api.cc calls production APIs:
+  432 gradient cases, 1/3/17 targets, 257/4097 rows, weighted/unweighted;
+  192 transform cases, 1/3/17/257 targets, six transforms (including identity).
+  14,305,782 exact fields; 545,836 subnormal, 236,211 nonfinite fields.
+  25,205 denominator witnesses; 6,089 hinge witnesses; 0 numerator-only witnesses.
+  NaNs by classification, signed zero by equality; identity/sort bit-for-bit.
+  Zero/subnormal/large weights, full-bit random inputs, NaNs/infinities, margins
+  near clamps/cancellation/saturation, tiny/large/negative slopes, rho near1/2,
+  output guards, aliased prediction/gradient storage, unchanged inputs and empty
+  dispatch counters. Existing direct math checks retain their 3e-5 tolerance.
+
+Native-host-libm diagnostics (gradient fields only):
+  6,893 differing fields; 12 classification differences; 35 finite fields exceed
+  3e-5*max(1,abs(native)). Across all finite differences, maximum absolute error
+  is 2.02824096e31 and maximum scaled error is 5.96046457e22.
+  Per-kind differences / classification / beyond finite tolerance:
+    square 0/0/0, logistic 633/0/5, squared log 35/12/8, gamma 1533/0/8,
+    pseudo-Huber 0/0/0, Poisson 1631/0/10, Tweedie 2204/0/4, hinge 0/0/0,
+    expectile 857/0/0.
+  A host-only diagnostic replay (results/objective-native-diagnostic.log)
+  isolates all 12 classification and 8 finite squared-log tolerance differences to
+  signaling-NaN clamps. The other 27 finite tolerance differences are cancellation
+  cases multiplied by weights 1e20/1e30. Example: Poisson margin=-.0744905472,
+  label=.928216279, weight 1e30 gives oracle/Metal gradient=-5.96046457e22 while
+  native-host expf yields exactly zero. This is a real cross-library distinction,
+  not hidden by an enlarged test tolerance or a CPU correction.
+  The maximum absolute error over all fields is not specifically the maximum
+  among tolerance failures; large-scale finite values can have small relative
+  error. Actual NVIDIA results for these cases remain unmeasured.
+These are explicit stress-corpus differences, not a replacement CPU-equivalence
+claim. The ordinary production-training comparisons keep their tolerances.
+
+15 new Python cases: scalar sigmoid/exp/hinge and quantile/expectile row transforms,
+ordinary/tiny/extreme margins, exact hinge/quantile CPU outputs, other finite
+transforms within 4 FP32 ULP, GPU counters, unchanged raw margins, model reload.
+The first row fixtures omitted required labels and failed on CPU configuration;
+adding single-target labels fixed the fixtures, with no production changes.
+
+Build v1 PASS, ended 14:50:26 UTC.
+Focused v1 test compilation failed on ambiguous helper name Value; renamed.
+v2/v3 exposed the signaling-NaN reference issue above; v4 passed arithmetic but
+failed an incorrect test assertion demanding a numerator-rewrite witness.
+That assertion was removed after confirming no such numerical change; the
+actual denominator, hinge and subnormal witness requirements remain enforced.
+Focused v5 PASS 14:57:33 UTC:
+  624 native cases / 14,305,782 fields; existing 20 mathematical cases / 131,968 pairs;
+  113 Python passed, 3.11s. Publictransform focused v2: 15 passed, 0.27s.
+Empty API checks, additional native-libm diagnostic reporting and row model
+reload assertions were added before the full run. No tolerances changed.
+
+Final full validation PASS, 14:59:14–15:03:58 UTC, FULL_EXIT=0:
+  Metal build and all rebuilt native suites/reference updater passed.
+  New native suite: 624 cases / 14,305,782 fields, results above.
+  Python: 1,856 passed / 1 skipped / 372 warnings, 94.64s.
+  CPU-only configure/build/API/device check passed: Metal unavailable and
+  device=mps raises the expected clear error.
+No production/test edits after this full run started; documentation only.
+Logs:
+ results/build-objective-arithmetic-v1.log
+ results/test-objective-arithmetic-focused-v1.log through-v5.log
+ results/test-objective-transforms-v1.log and-v2.log
+ results/objective-arithmetic-full-driver-v1.log
+ results/build-objective-arithmetic-final-v1.log
+ results/test-objective-arithmetic-full-v1.log
+ results/configure-cpu-objective-arithmetic-v1.log
+ results/build-cpu-objective-arithmetic-v1.log
+ results/check-cpu-objective-arithmetic-v1.log
+
+Remaining: adaptive absolute/quantile objectives and residual scales, initialization
+and other state helpers still need source audits. Wider adapter preprocessing,
+metadata/category operations, device storage/interop, distributed collectives,
+persistent asynchronous ownership and actual NVIDIA/cross-Apple validation are
+unfinished. Full CUDA parity is not claimed.

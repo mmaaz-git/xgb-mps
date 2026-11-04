@@ -219,135 +219,10 @@ struct ObjectiveParams {
   uint targets, kind, weighted, label_targets;
   float parameter, scale_pos_weight;
 };
-// Metal has no log1p intrinsic. Correct the rounding of 1+x for small x.
-inline float xgb_log1p(float x) {
-  float u = 1.0f + x;
-  if (u == 1.0f) return x;
-  if (u == 0.0f || isinf(u)) return log(u);
-  return log(u) * (x / (u - 1.0f));
-}
-inline float xgb_sigmoid(float x) { return 1.0f / (exp(min(-x, 88.7f)) + 1.0f + 1e-16f); }
-inline float xgb_softplus(float x) { return x > 0.0f ? x + xgb_log1p(exp(-x)) : xgb_log1p(exp(x)); }
-
-kernel void xgb_objective(device const float* predictions [[buffer(0)]],
-                          device const float* labels [[buffer(1)]],
-                          device const float* weights [[buffer(2)]],
-                          device const float* alpha [[buffer(3)]],
-                          device float2* output [[buffer(4)]],
-                          constant ObjectiveParams& p [[buffer(5)]],
-                          uint tid [[thread_position_in_grid]]) {
-  if (ulong(tid) >= p.n) return;
-  ulong row = tid / p.targets;
-  uint target = tid % p.targets;
-  float raw = predictions[tid];
-  float y = labels[row * p.label_targets + (p.label_targets == 1 ? 0 : target)];
-  float w = p.weighted ? weights[row] : 1.0f;
-  if (y == 1.0f) w *= p.scale_pos_weight;
-  float g = 0.0f, h = 0.0f;
-  switch (p.kind) {
-    case 0:
-      g = raw - y;
-      h = 1.0f;
-      break;
-    case 1: {
-      float prob = xgb_sigmoid(raw);
-      g = prob - y;
-      h = max(prob * (1.0f - prob), 1e-16f);
-      break;
-    }
-    case 2: {
-      float pred = max(raw, -0.999999f);
-      float diff = xgb_log1p(pred) - xgb_log1p(y);
-      g = diff / (pred + 1.0f);
-      h = max((1.0f - diff) / ((pred + 1.0f) * (pred + 1.0f)), 1e-6f);
-      break;
-    }
-    case 3: {
-      float ratio = y / exp(raw);
-      g = 1.0f - ratio;
-      h = ratio;
-      break;
-    }
-    case 4: {
-      float z = raw - y, slope2 = p.parameter * p.parameter;
-      float root = sqrt(1.0f + z * z / slope2);
-      g = z / root;
-      h = slope2 / ((slope2 + z * z) * root);
-      break;
-    }
-    case 5:
-      g = exp(raw) - y;
-      h = exp(raw + p.parameter);
-      break;
-    case 6: {
-      float a = 1.0f - p.parameter, b = 2.0f - p.parameter;
-      g = -y * exp(a * raw) + exp(b * raw);
-      h = -y * a * exp(a * raw) + b * exp(b * raw);
-      break;
-    }
-    case 7: {
-      float sign = y * 2.0f - 1.0f;
-      // The Hessian floor is NOT multiplied by the sample weight upstream.
-      output[tid] = raw * sign < 1.0f ? float2(-sign * w, w) : float2(0.0f, FLT_MIN);
-      return;
-    }
-    case 9: {
-      float pred = predictions[row * p.targets];
-      for (uint k = 0; k < p.targets; ++k) {
-        if (k) pred += 1e-6f + xgb_softplus(predictions[row * p.targets + k]);
-        if (k >= target) {
-          float diff = pred - y;
-          float a = diff >= 0.0f ? 1.0f - alpha[k] : alpha[k];
-          g += a * diff * w;
-          h += a * w;
-        }
-      }
-      float scale = target == 0 ? 1.0f : xgb_sigmoid(raw);
-      output[tid] = float2(scale * g, scale * scale * h);
-      return;
-    }
-  }
-  output[tid] = float2(g * w, h * w);
-}
-
 struct TransformParams {
   ulong n;
   uint targets, kind;
 };
-kernel void xgb_transform(device const float* input [[buffer(0)]],
-                          device float* output [[buffer(1)]],
-                          constant TransformParams& p [[buffer(2)]],
-                          uint tid [[thread_position_in_grid]]) {
-  if (ulong(tid) >= p.n) return;
-  if (p.kind == 1)
-    output[tid] = xgb_sigmoid(input[tid]);
-  else if (p.kind == 2)
-    output[tid] = exp(input[tid]);
-  else if (p.kind == 3)
-    output[tid] = input[tid] > 0.0f ? 1.0f : 0.0f;
-  else {
-    ulong begin = ulong(tid) * p.targets;
-    if (p.kind == 7) {
-      for (uint k = 0; k < p.targets; ++k) output[begin + k] = input[begin + k];
-      for (uint k = 1; k < p.targets; ++k) {
-        float value = output[begin + k];
-        uint j = k;
-        while (j && output[begin + j - 1] > value) {
-          output[begin + j] = output[begin + j - 1];
-          --j;
-        }
-        output[begin + j] = value;
-      }
-    } else if (p.kind == 6) {
-      float value = input[begin];
-      output[begin] = value;
-      for (uint k = 1; k < p.targets; ++k) {
-        value += 1e-6f + xgb_softplus(input[begin + k]);
-        output[begin + k] = value;
-      }
-    }
-  }
-}
 
 inline bool xgb_float_less(uint a, uint b);
 inline float xgb_fadd_preserve(float a, float b);
@@ -3379,7 +3254,7 @@ inline uint2 QuantileTerm(F prediction, F label, F a, F w, bool expectile) {
 // multiclass_obj.cu and common::Softmax both accumulate FP32 exp terms in
 // sequential binary64, then round the denominator to FP32 exactly once. Metal
 // has no native binary64; use the existing software arithmetic for that sum.
-namespace xgb_multiclass_math {
+namespace xgb_objective_math {
 using namespace xgb_metric_math;
 inline F FMax(F a, F b) {
   // CUDA fmaxf ignores one NaN, unlike std::max. Signed-zero ties do not affect
@@ -3389,14 +3264,159 @@ inline F FMax(F a, F b) {
   if (((a.bits | b.bits) & 0x7fffffffu) == 0) return F{a.bits & b.bits};
   return a < b ? b : a;
 }
-}  // namespace xgb_multiclass_math
+inline F Sigmoid(F x) {
+  F neg = -x, cap = From(88.7f), one = From(1.f);
+  // std::min keeps its first argument when that argument is NaN.
+  return one / ((Exp(cap < neg ? cap : neg) + one) + From(1e-16f));
+}
+inline F SoftPlus(F x) {
+  return x > From(0.f) ? x + Log1p(Exp(-x)) : Log1p(Exp(x));
+}
+}  // namespace xgb_objective_math
+
+// Preserve the CUDA source's FP32 expressions, explicit FP64 promotions and
+// ordered comparisons. Transcendentals use the shared software math helpers;
+// NVIDIA libdevice and compiler contraction are separate validation targets.
+kernel void xgb_objective(device const float* predictions [[buffer(0)]],
+                          device const float* labels [[buffer(1)]],
+                          device const float* weights [[buffer(2)]],
+                          device const float* alpha [[buffer(3)]],
+                          device float2* output [[buffer(4)]],
+                          constant ObjectiveParams& p [[buffer(5)]],
+                          uint tid [[thread_position_in_grid]]) {
+  using namespace xgb_objective_math;
+  if (ulong(tid) >= p.n) return;
+  ulong row = tid / p.targets;
+  uint target = tid % p.targets;
+  F raw = From(predictions[tid]);
+  F y = From(labels[row * p.label_targets + (p.label_targets == 1 ? 0 : target)]);
+  F zero = From(0.f), one = From(1.f), two = From(2.f);
+  F w = p.weighted ? From(weights[row]) : one;
+  if (y == one) w = w * From(p.scale_pos_weight);
+  F g = zero, h = zero;
+  switch (p.kind) {
+    case 0:
+      g = raw - y;
+      h = one;
+      break;
+    case 1: {
+      F prob = Sigmoid(raw);
+      g = prob - y;
+      h = FMax(prob * (one - prob), From(1e-16f));
+      break;
+    }
+    case 2: {
+      F pred = FMax(raw, From(-0.999999f));
+      F log_pred = Log1p(pred), log_y = Log1p(y), base = pred + one;
+      g = (log_pred - log_y) / base;
+      // std::pow(float, int) promotes to double in the CUDA C++17 std overload.
+      // A squared FP32 operand is exactly representable in binary64. Keep the
+      // numerator's separate FP32 additions and narrow only after division.
+      D denominator = Wide(base) * Wide(base);
+      h = FMax(Narrow(Wide((-log_pred + log_y) + one) / denominator), From(1e-6f));
+      break;
+    }
+    case 3: {
+      F ratio = y / Exp(raw);
+      g = one - ratio;
+      h = ratio;
+      break;
+    }
+    case 4: {
+      F z = raw - y, slope = From(p.parameter), slope2 = slope * slope;
+      F root = Sqrt(one + (z * z) / slope2);
+      g = z / root;
+      h = slope2 / ((slope2 + z * z) * root);
+      break;
+    }
+    case 5:
+      g = Exp(raw) - y;
+      h = Exp(raw + From(p.parameter));
+      break;
+    case 6: {
+      F a = one - From(p.parameter), b = two - From(p.parameter);
+      F first = Exp(a * raw), second = Exp(b * raw);
+      g = (-y) * first + second;
+      h = ((-y) * a) * first + b * second;
+      break;
+    }
+    case 7: {
+      // hinge.cu uses double literals for label*2.0-1.0, p*y and -y*w.
+      D sign = Wide(y) * xgb_survival::two - xgb_survival::one;
+      if (Wide(raw) * sign < xgb_survival::one) {
+        g = Narrow((-sign) * Wide(w));
+        h = w;
+      } else {
+        g = zero;
+        h = From(FLT_MIN);  // Unweighted floor, also for a NaN comparison.
+      }
+      output[tid] = float2(as_type<float>(g.bits), as_type<float>(h.bits));
+      return;
+    }
+    case 9: {
+      F pred = From(predictions[row * p.targets]);
+      for (uint k = 0; k < p.targets; ++k) {
+        if (k) pred = pred + (From(1e-6f) + SoftPlus(From(predictions[row * p.targets + k])));
+        if (k >= target) {
+          F diff = pred - y, level = From(alpha[k]);
+          F a = !IsNaN(diff) && !(diff < zero) ? one - level : level;
+          g = g + (a * diff) * w;
+          h = h + a * w;
+        }
+      }
+      F scale = target == 0 ? one : Sigmoid(raw);
+      output[tid] = float2(as_type<float>((scale * g).bits),
+                           as_type<float>(((scale * scale) * h).bits));
+      return;
+    }
+  }
+  output[tid] = float2(as_type<float>((g * w).bits), as_type<float>((h * w).bits));
+}
+
+kernel void xgb_transform(device const float* input [[buffer(0)]],
+                          device float* output [[buffer(1)]],
+                          constant TransformParams& p [[buffer(2)]],
+                          uint tid [[thread_position_in_grid]]) {
+  using namespace xgb_objective_math;
+  if (ulong(tid) >= p.n) return;
+  if (p.kind == 1)
+    output[tid] = as_type<float>(Sigmoid(From(input[tid])).bits);
+  else if (p.kind == 2)
+    output[tid] = as_type<float>(Exp(From(input[tid])).bits);
+  else if (p.kind == 3)
+    output[tid] = From(input[tid]) > From(0.f) ? 1.f : 0.f;
+  else {
+    ulong begin = ulong(tid) * p.targets;
+    if (p.kind == 7) {
+      for (uint k = 0; k < p.targets; ++k) output[begin + k] = input[begin + k];
+      // The CUDA quantile transform uses this same insertion sort, including
+      // its strict comparison and NaN barriers. Preserve subnormal ordering.
+      for (uint k = 1; k < p.targets; ++k) {
+        float value = output[begin + k];
+        uint j = k;
+        while (j && From(output[begin + j - 1]) > From(value)) {
+          output[begin + j] = output[begin + j - 1];
+          --j;
+        }
+        output[begin + j] = value;
+      }
+    } else if (p.kind == 6) {
+      F value = From(input[begin]);
+      output[begin] = as_type<float>(value.bits);
+      for (uint k = 1; k < p.targets; ++k) {
+        value = value + (From(1e-6f) + SoftPlus(From(input[begin + k])));
+        output[begin + k] = as_type<float>(value.bits);
+      }
+    }
+  }
+}
 
 kernel void xgb_multiclass_objective(
     device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
     device const float* weights [[buffer(2)]], device const float* alpha [[buffer(3)]],
     device float2* output [[buffer(4)]], constant ObjectiveParams& p [[buffer(5)]],
     uint row [[thread_position_in_grid]]) {
-  using namespace xgb_multiclass_math;
+  using namespace xgb_objective_math;
   if (ulong(row) >= p.n / p.targets) return;
   ulong begin = ulong(row) * p.targets;
   F maximum = From(FLT_MIN);  // Positive min, exactly as in GetGradient.
@@ -3421,7 +3441,7 @@ kernel void xgb_multiclass_transform(device const float* input [[buffer(0)]],
                                     device float* output [[buffer(1)]],
                                     constant TransformParams& p [[buffer(2)]],
                                     uint row [[thread_position_in_grid]]) {
-  using namespace xgb_multiclass_math;
+  using namespace xgb_objective_math;
   if (ulong(row) >= p.n) return;
   ulong begin = ulong(row) * p.targets;
   F maximum = From(input[begin]);

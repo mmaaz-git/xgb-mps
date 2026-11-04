@@ -80,6 +80,15 @@ clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_quantile.mm \
   -framework Metal -framework Foundation -o results/metal_quantile_test
 results/metal_quantile_test xgboost/src/common/metal_histogram.metal
 libomp_root="${LIBOMP_ROOT:-$(brew --prefix libomp)}"
+echo "Checking extracted CUDA regression/expectile/hinge expressions and transforms"
+.venv/bin/python tests/build_objective_reference.py
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_objective_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_objective_api_test
+MTL_DEBUG_LAYER=1 results/metal_objective_api_test
 echo "Checking CUDA-source multiclass gradients, softmax and argmax"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
