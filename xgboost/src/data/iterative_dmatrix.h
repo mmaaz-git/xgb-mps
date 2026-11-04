@@ -7,6 +7,7 @@
 #define XGBOOST_DATA_ITERATIVE_DMATRIX_H_
 
 #include <memory>   // for shared_ptr
+#include <mutex>    // for mutex, lock_guard
 #include <utility>  // for move
 
 #include "quantile_dmatrix.h"  // for QuantileDMatrix
@@ -34,6 +35,12 @@ namespace data {
 class IterativeDMatrix : public QuantileDMatrix {
   std::shared_ptr<EllpackPage> ellpack_;
   std::shared_ptr<GHistIndexMatrix> ghist_;
+#if defined(XGBOOST_USE_METAL)
+  // CPU and compressed Metal views are published separately and remain stable
+  // while readers hold batches. Serialize first conversion in either direction.
+  std::shared_ptr<GHistIndexMatrix> metal_ghist_;
+  mutable std::mutex metal_matrix_mutex_;
+#endif
   BatchParam batch_;
 
   DMatrixHandle proxy_;
@@ -61,7 +68,14 @@ class IterativeDMatrix : public QuantileDMatrix {
   ~IterativeDMatrix() override = default;
 
   [[nodiscard]] bool EllpackExists() const override { return static_cast<bool>(ellpack_); }
-  [[nodiscard]] bool GHistIndexExists() const override { return static_cast<bool>(ghist_); }
+  [[nodiscard]] bool GHistIndexExists() const override {
+#if defined(XGBOOST_USE_METAL)
+    std::lock_guard<std::mutex> lock{metal_matrix_mutex_};
+    return static_cast<bool>(ghist_) || static_cast<bool>(metal_ghist_);
+#else
+    return static_cast<bool>(ghist_);
+#endif
+  }
 
   BatchSet<GHistIndexMatrix> GetGradientIndex(Context const *ctx, BatchParam const &param) override;
   BatchSet<EllpackPage> GetEllpackBatches(Context const *ctx, const BatchParam &param) override;

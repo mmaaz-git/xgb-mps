@@ -30,9 +30,11 @@ void GetCutsFromRef(Context const* ctx, std::shared_ptr<DMatrix> ref, bst_featur
   p.forbid_regen = true;
   // Fetch cuts from GIDX
   auto csr = [&] {
-    // A reference needs only cut metadata. Keep an existing MPS matrix on its
-    // compressed path even when the new matrix is being constructed for CPU.
-    auto cut_ctx = ref->Ctx()->IsMPS() && ref->PageExists<GHistIndexMatrix>() ? ref->Ctx() : ctx;
+    // A reference needs only cut metadata. Use its existing representation when
+    // either matrix uses MPS, without creating CPU mirrors or uploading CPU bins.
+    auto cut_ctx = (ref->Ctx()->IsMPS() || ctx->IsMPS()) && ref->PageExists<GHistIndexMatrix>()
+                       ? ref->Ctx()
+                       : ctx;
     for (auto const& page : ref->GetBatches<GHistIndexMatrix>(cut_ctx, p)) {
       *p_cuts = page.cut;
       break;

@@ -24,6 +24,7 @@
 #include "xgboost/logging.h"
 
 #if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ellpack.h"
 #include "metal_quantile.h"
 #endif
 
@@ -77,22 +78,25 @@ void IterativeDMatrix::InitFromMPS(
   common::HistogramCuts cuts{0};
   metal_impl::MakeSketches(ctx, &iter, proxy, ref, p, missing, &cuts, &ext, &types);
   ext.SetInfo(ctx, true, &info_);
-  ghist_ = std::make_shared<GHistIndexMatrix>(info_, std::move(cuts), p.max_bin);
-  ghist_->ResizeIndex(ctx, ext.nnz, info_.IsDense());
-  if (info_.IsDense()) ghist_->index.SetBinOffset(ghist_->cut.Ptrs());
+  auto layout = common::metal::MakeEllpackInfo(cuts, ext.row_stride, info_.IsDense());
+  auto compressed = common::metal::MakeCompressedPage(layout, ext.accumulated_rows, 0);
   bst_idx_t row_base = 0, entry_offset = 0, batch = 0;
   while (iter.Next()) {
     CHECK_LT(batch, ext.n_batches) << "Different number of batches returned between 2 iterations";
     auto rows = BatchSamples(proxy);
     CHECK_EQ(rows, ext.base_rowids[batch + 1] - ext.base_rowids[batch]);
     CHECK_EQ(BatchColumns(proxy), ext.n_features);
+    auto input_page = common::metal::MakeCompressedPage(layout, rows, row_base);
+    input_page->BeginAdapter(cuts, types);
     auto first = entry_offset;
     metal_impl::AdapterWindows(ctx, proxy, missing, [&](auto const& input) {
-      input.WriteIndex(types, ghist_.get(), row_base, entry_offset);
+      input_page->PushAdapter(input);
       entry_offset += input.NonMissing();
     });
     CHECK_EQ(entry_offset - first, ext.batch_nnz[batch])
         << "Non-missing counts changed between iterations";
+    input_page->EndAdapter();
+    compressed->Copy(*input_page, row_base);
     proxy->Info().num_row_ = rows;
     proxy->Info().num_col_ = ext.n_features;
     proxy->Info().num_nonzero_ = ext.batch_nnz[batch];
@@ -108,9 +112,10 @@ void IterativeDMatrix::InitFromMPS(
     ext.SetInfo(ctx, false, &info_);
   }
   info_.feature_types.HostVector() = types;
-  // Host column representation is required by CPU interoperability in this fork,
-  // as in CUDA's conversion from ELLPACK to a host gradient-index page.
-  ghist_->InitColumns(ctx, p.sparse_thresh);
+  compressed->Commit(0.0);
+  CHECK_EQ(compressed->NonMissing(), ext.nnz);
+  metal_ghist_ = std::make_shared<GHistIndexMatrix>();
+  compressed->View(cuts, p.max_bin, false, metal_ghist_.get());
   iter.Reset();
 }
 #else
@@ -188,15 +193,59 @@ void IterativeDMatrix::InitFromCPU(
 
 BatchSet<GHistIndexMatrix> IterativeDMatrix::GetGradientIndex(Context const* ctx,
                                                               BatchParam const& param) {
+#if defined(XGBOOST_USE_METAL)
+  std::lock_guard<std::mutex> lock{metal_matrix_mutex_};
+#endif
   if (param.Initialized()) {
     detail::CheckParam(this->batch_, param);
     CHECK(!detail::RegenGHist(param, batch_)) << error::InconsistentMaxBin();
   }
-  if (!ellpack_ && !ghist_) {
+  if (!ellpack_ && !ghist_
+#if defined(XGBOOST_USE_METAL)
+      && !metal_ghist_
+#endif
+  ) {
     LOG(FATAL) << "`QuantileDMatrix` not initialized.";
   }
 
-  if (!ghist_) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx && ctx->IsMPS()) {
+    if (!metal_ghist_) {
+      CHECK(ghist_);
+      ghist_->RequireHost();
+      // CUDA's GHist-to-ELLPACK constructor also computes stride from host rows.
+      bst_idx_t stride = 0;
+      for (bst_idx_t r = 0; r < ghist_->Size(); ++r)
+        stride = std::max<bst_idx_t>(stride, ghist_->row_ptr[r + 1] - ghist_->row_ptr[r]);
+      auto layout = common::metal::MakeEllpackInfo(ghist_->cut, stride, ghist_->IsDense());
+      auto compressed = common::metal::MakeCompressedPage(layout, ghist_->Size(), 0);
+      compressed->Pack(*ghist_);
+      compressed->Commit(0.0);
+      CHECK_EQ(compressed->NonMissing(), Info().num_nonzero_);
+      auto view = std::make_shared<GHistIndexMatrix>();
+      compressed->View(ghist_->cut, batch_.max_bin, false, view.get());
+      metal_ghist_ = std::move(view);
+    }
+  } else if (!ghist_ && metal_ghist_) {
+    // Build a separate CPU representation, then publish only when complete.
+    // Existing Metal batches keep their immutable shape and compressed buffers.
+    auto host = std::make_shared<GHistIndexMatrix>();
+    host->cut = metal_ghist_->cut;
+    host->base_rowid = metal_ghist_->base_rowid;
+    host->max_numeric_bins_per_feat = metal_ghist_->max_numeric_bins_per_feat;
+    host->SetDense(metal_ghist_->IsDense());
+    host->SetMetalRows(metal_ghist_->Size());
+    host->metal_page = std::atomic_load(&metal_ghist_->metal_page);
+    auto cpu_ctx = ctx ? ctx->MakeCPU() : fmat_ctx_.MakeCPU();
+    common::metal::MaterializeHost(&cpu_ctx, batch_.sparse_thresh, host.get());
+    ghist_ = std::move(host);
+  }
+#endif
+  if (!ghist_
+#if defined(XGBOOST_USE_METAL)
+      && !metal_ghist_
+#endif
+  ) {
     if (!ctx->IsCUDA()) {
       ghist_ = std::make_shared<GHistIndexMatrix>(ctx, Info(), *ellpack_, param);
     } else if (!fmat_ctx_.IsCUDA()) {
@@ -215,14 +264,21 @@ BatchSet<GHistIndexMatrix> IterativeDMatrix::GetGradientIndex(Context const* ctx
                     "of `DMatrix`.";
   }
 
-  auto begin_iter =
-      BatchIterator<GHistIndexMatrix>(new SimpleBatchIteratorImpl<GHistIndexMatrix>(ghist_));
+  auto page = ghist_;
+#if defined(XGBOOST_USE_METAL)
+  if (ctx && ctx->IsMPS()) page = metal_ghist_;
+#endif
+  auto begin_iter = BatchIterator<GHistIndexMatrix>(
+      new SimpleBatchIteratorImpl<GHistIndexMatrix>(std::move(page)));
   return BatchSet<GHistIndexMatrix>(begin_iter);
 }
 
 BatchSet<ExtSparsePage> IterativeDMatrix::GetExtBatches(Context const* ctx,
                                                         BatchParam const& param) {
-  for (auto const& page : this->GetGradientIndex(ctx, param)) {
+  // Sparse export is a host operation even if the matrix was constructed on MPS.
+  auto cpu_ctx = ctx ? ctx->MakeCPU() : fmat_ctx_.MakeCPU();
+  auto access_ctx = ctx && !ctx->IsMPS() ? ctx : &cpu_ctx;
+  for (auto const& page : this->GetGradientIndex(access_ctx, param)) {
     auto p_out = std::make_shared<SparsePage>();
     p_out->data.Resize(this->Info().num_nonzero_);
     p_out->offset.Resize(this->Info().num_row_ + 1);

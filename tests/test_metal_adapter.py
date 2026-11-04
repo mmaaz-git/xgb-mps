@@ -64,7 +64,11 @@ def test_adapter_cuts_and_training(metal, layout, weight_kind, stream):
     q = xgb.QuantileDMatrix(Pages(batches, **meta), device="mps", max_bin=17, nthread=2)
     after = xgb.metal_info()
     assert after["adapter_prepare_dispatches"] > before["adapter_prepare_dispatches"]
-    assert after["adapter_index_dispatches"] > before["adapter_index_dispatches"]
+    assert after["ellpack_adapter_dispatches"] > before["ellpack_adapter_dispatches"]
+    assert after["ellpack_adapter_values"] - before["ellpack_adapter_values"] == q.num_nonmissing()
+    for name in ["adapter_index_dispatches", "ellpack_pack_input_bytes", "ellpack_restore_dispatches",
+                 "ellpack_host_materializations", "ellpack_host_readback_bytes"]:
+        assert after[name] == before[name], name
     assert after["adapter_debug_readback_bytes"] == before["adapter_debug_readback_bytes"]
     for name in ["sketch_finalize_dispatches", "sketch_update_dispatches", "sketch_sorted_dispatches"]:
         assert after[name] == before[name]
@@ -74,6 +78,11 @@ def test_adapter_cuts_and_training(metal, layout, weight_kind, stream):
     assert_cuts(q, 17, csr=raw.get_data(), page_rows=np.diff(split).tolist(), adapter=True)
     model = xgb.train(dict(device="mps", nthread=2, max_depth=3, max_bin=17, base_score=0,
                            objective="rank:pairwise" if weight_kind == "group" else "reg:squarederror"), q, 3)
+    trained = xgb.metal_info()
+    assert trained["ellpack_histogram_dispatches"] > after["ellpack_histogram_dispatches"]
+    for name in ["index_uploads", "ellpack_pack_input_bytes", "ellpack_restore_dispatches",
+                 "ellpack_host_materializations", "ellpack_host_readback_bytes"]:
+        assert trained[name] == after[name], name
     assert_same_model_cpu(model, q)
     assert xgb.metal_info()["cuda_sketch_batches"] == after["cuda_sketch_batches"]
 
@@ -117,7 +126,10 @@ def test_adapter_empty_window_boundary(metal):
     after = xgb.metal_info()
     assert q.num_row() == rows and q.num_nonmissing() == 0
     assert after["adapter_prepare_dispatches"] - before["adapter_prepare_dispatches"] == 4
-    assert after["adapter_index_dispatches"] - before["adapter_index_dispatches"] == 2
+    assert after["ellpack_adapter_dispatches"] - before["ellpack_adapter_dispatches"] == 2
+    for name in ["adapter_index_dispatches", "ellpack_pack_input_bytes", "ellpack_restore_dispatches",
+                 "ellpack_host_materializations", "ellpack_host_readback_bytes"]:
+        assert after[name] == before[name], name
     assert after["adapter_debug_readback_bytes"] == before["adapter_debug_readback_bytes"]
 
 
@@ -163,7 +175,7 @@ def test_adapter_reference_category_encoding(metal):
                            device="mps", nthread=2, max_bin=17)
 
 
-@pytest.mark.parametrize("change", ["rows", "missing", "batches"])
+@pytest.mark.parametrize("change", ["rows", "missing", "batches", "columns", "width"])
 def test_adapter_rejects_changed_iterator(metal, change):
     class Changing(xgb.DataIter):
         def __init__(self):
@@ -179,7 +191,12 @@ def test_adapter_rejects_changed_iterator(metal, change):
             if self.page == limit:
                 return False
             rows = 3 if self.pass_number > 1 and change == "rows" else 4
-            x = np.ones((rows, 3), dtype=np.float32)
+            cols = 4 if self.pass_number > 1 and change == "columns" else 3
+            x = np.ones((rows, cols), dtype=np.float32)
+            if change == "width":
+                x[:, 1] = np.nan
+                if self.pass_number > 1:
+                    x[0, 1], x[1, 2] = 1, np.nan  # Same nnz, larger maximum row width.
             if self.pass_number > 1 and change == "missing":
                 x[0, 0] = np.nan
             input_data(data=x)
