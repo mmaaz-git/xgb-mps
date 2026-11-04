@@ -1,0 +1,30 @@
+Apple M3, 2026-11-03. Metal API Validation enabled.
+Reproduce: bash scripts/build.sh && MTL_DEBUG_LAYER=1 bash scripts/test.sh
+
+Checking gradient sampling norms, thresholds, rescaling and replay against production CPU
+Checked 50 cases / 0 rows / 800 gradient and guard fields
+2026-11-03 17:58:41.222 metal_gradient_sampling_api_test[39650:43072872] Metal API Validation Enabled
+Checked 100 cases / 19 rows / 1730 gradient and guard fields
+Checked 150 cases / 69 rows / 3494 gradient and guard fields
+Checked 200 cases / 157 rows / 5418 gradient and guard fields
+Checked 250 cases / 460 rows / 9544 gradient and guard fields
+Checked 300 cases / 2010 rows / 25484 gradient and guard fields
+Checked 350 cases / 9436 rows / 95724 gradient and guard fields
+Checked 400 cases / 22286 rows / 308732 gradient and guard fields
+Checked 450 cases / 207936 rows / 1645952 gradient and guard fields
+Checked 487 cases / 420965 rows / 5760226 gradient and guard fields
+Checked 488 cases / 486502 rows / 6153464 gradient and guard fields
+Checked 489 cases / 552039 rows / 6546702 gradient and guard fields
+Checked 490 cases / 617576 rows / 6939952 gradient and guard fields
+Checked 491 cases / 683113 rows / 7333202 gradient and guard fields
+Checked 492 cases / 748650 rows / 7726452 gradient and guard fields
+Checked 493 cases / 1748653 rows / 13726486 gradient and guard fields
+Checked 494 cases / 2748656 rows / 19726520 gradient and guard fields
+Checked 495 cases / 3748659 rows / 25726554 gradient and guard fields
+Checked 496 cases / 4748662 rows / 31726600 gradient and guard fields
+Checked 497 cases / 5748665 rows / 37726646 gradient and guard fields
+Checked 498 cases / 6748668 rows / 43726692 gradient and guard fields
+PASS 6 production Sampler calls and reduced-gradient replay pairs
+PASS 498 exact sampling cases / 6748668 rows / 43726692 gradient and guard fields
+
+Python: 601 passed, 1 skipped. CPU-only build/API checks passed.

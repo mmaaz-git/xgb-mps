@@ -55,6 +55,7 @@ struct Statistics {
   std::uint64_t ranking_gradient_dispatches, ranking_gradient_gpu_time_ns,
       ranking_pairs, ranking_pair_batches;
   std::uint64_t ranking_bias_dispatches;
+  std::uint64_t gradient_sampling_dispatches, gradient_sampling_gpu_time_ns;
 };
 
 class Histogram {

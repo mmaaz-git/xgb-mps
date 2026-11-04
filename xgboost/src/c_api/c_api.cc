@@ -248,6 +248,10 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["split_dispatches"] = Integer{static_cast<std::int64_t>(stats.split_dispatches)};
   info["sampling_dispatches"] = Integer{static_cast<std::int64_t>(stats.sampling_dispatches)};
   info["sampling_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.sampling_gpu_time_ns)};
+  info["gradient_sampling_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_sampling_dispatches)};
+  info["gradient_sampling_gpu_time_ns"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_sampling_gpu_time_ns)};
   info["residual_scale_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.residual_scale_dispatches)};
   info["histogram_conversion_dispatches"] =
@@ -315,6 +319,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["split_dispatches"] = Integer{0};
   info["sampling_dispatches"] = Integer{0};
   info["sampling_gpu_time_ns"] = Integer{0};
+  info["gradient_sampling_dispatches"] = Integer{0};
+  info["gradient_sampling_gpu_time_ns"] = Integer{0};
   info["residual_scale_dispatches"] = Integer{0};
   info["histogram_conversion_dispatches"] = Integer{0};
   info["histogram_subtraction_dispatches"] = Integer{0};

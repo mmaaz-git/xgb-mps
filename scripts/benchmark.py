@@ -45,6 +45,7 @@ def main():
     parser.add_argument("--quantile-levels", type=float, nargs="+", default=[0.5])
     parser.add_argument("--eval-metric", help="Evaluate this training metric after every round")
     parser.add_argument("--subsample", type=float, default=1.0)
+    parser.add_argument("--sampling-method", choices=["uniform", "gradient_based"], default="uniform")
     parser.add_argument("--weighted", action="store_true")
     parser.add_argument("--features", type=int, default=32)
     parser.add_argument("--max-depth", type=int, default=6)
@@ -67,7 +68,8 @@ def main():
     is_ranking = args.objective.startswith("rank:")
     assert xgb.metal_info()["available"], "A visible Metal GPU is required"
     p = dict(tree_method="hist", objective=args.objective, max_depth=args.max_depth,
-             max_bin=256, nthread=args.threads, seed=7, subsample=args.subsample)
+             max_bin=256, nthread=args.threads, seed=7, subsample=args.subsample,
+             sampling_method=args.sampling_method)
     if is_ranking:
         p.update(lambdarank_pair_method=args.rank_method, lambdarank_num_pair_per_sample=args.rank_pairs,
                  lambdarank_unbiased=args.unbiased)
@@ -84,10 +86,18 @@ def main():
         xgb.train(p | {"device": device}, warm, num_boost_round=1)
     report = dict(status="in_progress", platform=platform.platform(), cpu_threads=args.threads, features=args.features,
                   rounds=args.rounds, repeats=args.repeats, weighted=args.weighted, params=p, cases=[],
+                  xgboost_version=xgb.__version__, numpy_version=np.__version__, build_info=xgb.build_info(),
+                  commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                  working_tree=subprocess.check_output(["git", "status", "--short"], text=True).strip(),
                   float32_generation=args.float32_generation, progress_every=args.progress_every,
                   query_size=args.query_size if is_ranking else None,
                   memory_note="RSS is the process lifetime peak; swap is system-wide, not isolated to this benchmark",
                   timing="DMatrix construction + training with quantization; warmed Metal runtime; data generation excluded")
+    if sys.platform == "darwin":
+        report["hardware"] = {
+            key: subprocess.check_output(["sysctl", "-n", key], text=True).strip()
+            for key in ("machdep.cpu.brand_string", "hw.memsize", "hw.ncpu")
+        }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for n in args.rows:
         print(f"Generating {n:,} rows x {args.features} features", flush=True)
@@ -142,6 +152,10 @@ def main():
                 metric_histories[device].append(history)
                 if args.eval_metric == "auc":
                     assert stats["roc_auc_dispatches"] == (args.rounds if device == "mps" else 0)
+                if args.sampling_method == "gradient_based":
+                    targets = len(args.quantile_levels) if args.objective == "reg:quantileerror" else 1
+                    assert stats["gradient_sampling_dispatches"] == (
+                        args.rounds * targets if device == "mps" and args.subsample < 1 else 0)
                 if is_ranking:
                     assert stats["ranking_gradient_dispatches"] == (args.rounds + 1 if device == "mps" else 0)
                     assert stats["ranking_bias_dispatches"] == (args.rounds + 1 if device == "mps" and args.unbiased else 0)

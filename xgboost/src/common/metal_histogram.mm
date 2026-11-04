@@ -38,6 +38,7 @@ std::atomic<std::uint64_t> residual_scale_dispatches{0};
 std::atomic<std::uint64_t> gradient_sum_dispatches{0}, gradient_sum_gpu_time_ns{0},
     stump_dispatches{0};
 std::atomic<std::uint64_t> sampling_dispatches{0}, sampling_gpu_time_ns{0};
+std::atomic<std::uint64_t> gradient_sampling_dispatches{0}, gradient_sampling_gpu_time_ns{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
 std::atomic<std::uint64_t> histogram_shared_gradient_bytes{0}, leaf_shared_gradient_bytes{0},
@@ -124,6 +125,8 @@ class Runtime {
       ranking_bias_dispatch_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline;
+  id<MTLComputePipelineState> gradient_sampling_norm_pipeline, gradient_sampling_threshold_pipeline,
+      gradient_sampling_apply_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
   id<MTLComputePipelineState> shared_pipeline, gradient_maximum_pipeline, gradient_scale_pipeline;
@@ -229,6 +232,9 @@ class Runtime {
       ranking_bias_pairs_pipeline = make_pipeline(@"xgb_ranking_bias_pairs");
       ranking_bias_dispatch_pipeline = make_pipeline(@"xgb_ranking_bias_dispatch");
       ranking_bias_update_pipeline = make_pipeline(@"xgb_ranking_bias_update");
+      gradient_sampling_norm_pipeline = make_pipeline(@"xgb_gradient_sampling_norm");
+      gradient_sampling_threshold_pipeline = make_pipeline(@"xgb_gradient_sampling_threshold");
+      gradient_sampling_apply_pipeline = make_pipeline(@"xgb_gradient_sampling_apply");
       prefix_double_pair_pipeline = make_pipeline(@"xgb_prefix_double_pair");
       prefix_double_pair_add_pipeline = make_pipeline(@"xgb_prefix_double_pair_add");
       CHECK_EQ(partition_classify_pipeline.threadExecutionWidth, 32);
@@ -993,7 +999,9 @@ Statistics GetStatistics() {
           ranking_gradient_gpu_time_ns.load(std::memory_order_relaxed),
           ranking_pairs.load(std::memory_order_relaxed),
           ranking_pair_batches.load(std::memory_order_relaxed),
-          ranking_bias_dispatches.load(std::memory_order_relaxed)};
+          ranking_bias_dispatches.load(std::memory_order_relaxed),
+          gradient_sampling_dispatches.load(std::memory_order_relaxed),
+          gradient_sampling_gpu_time_ns.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2357,6 +2365,112 @@ void UniformSample(linalg::MatrixView<GradientPair> gradients, float probability
     if (elapsed > 0)
       sampling_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                      std::memory_order_relaxed);
+  }
+}
+
+void GradientSample(linalg::MatrixView<GradientPair const> split_gradients,
+                    linalg::MatrixView<GradientPair> output, std::size_t sample_rows,
+                    std::uint64_t seed, std::uint32_t threads, Span<float> norms,
+                    float* threshold) {
+  auto rows = split_gradients.Shape(0);
+  CHECK_EQ(rows, output.Shape(0));
+  CHECK_LE(sample_rows, rows);
+  CHECK_GT(threads, 0);
+  CHECK(norms.empty() || norms.size() == rows);
+  if (!rows || sample_rows == rows) return;
+  CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
+  CHECK_GT(split_gradients.Shape(1), 0);
+  CHECK_GT(output.Shape(1), 0);
+  CHECK_LE(split_gradients.Shape(1), std::numeric_limits<std::uint32_t>::max());
+  CHECK_LE(output.Shape(1), std::numeric_limits<std::uint32_t>::max());
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto source_values = split_gradients.Values();
+    auto output_values = output.Values();
+    auto source = sample_rows ? Upload(rt, source_values.data(), source_values.size_bytes()) : nil;
+    bool same = source_values.data() == output_values.data() &&
+                source_values.size() == output_values.size() &&
+                split_gradients.Shape(1) == output.Shape(1) &&
+                split_gradients.Stride(0) == output.Stride(0) &&
+                split_gradients.Stride(1) == output.Stride(1);
+    auto result =
+        same && source ? source : Upload(rt, output_values.data(), output_values.size_bytes());
+    auto regularized = Allocate(rt, sample_rows ? rows * sizeof(float) : sizeof(float));
+    auto selected = Allocate(rt, sizeof(float));
+    struct {
+      std::uint64_t rows, source_stride0, source_stride1, output_stride0, output_stride1, seed;
+      std::uint32_t source_targets, output_targets, threads, sample_rows;
+    } p{rows,
+        split_gradients.Stride(0),
+        split_gradients.Stride(1),
+        output.Stride(0),
+        output.Stride(1),
+        seed,
+        static_cast<std::uint32_t>(split_gradients.Shape(1)),
+        static_cast<std::uint32_t>(output.Shape(1)),
+        threads,
+        static_cast<std::uint32_t>(sample_rows)};
+    static_assert(sizeof(p) == 64);
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    if (sample_rows) {
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.gradient_sampling_norm_pipeline];
+      [e setBuffer:source offset:0 atIndex:0];
+      [e setBuffer:regularized offset:0 atIndex:1];
+      [e setBytes:&p length:sizeof(p) atIndex:2];
+      [e dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      SortShape shape{rows, 1, 1, 1, static_cast<std::uint32_t>((rows + 255) / 256)};
+      auto sorted = EncodeColumnSort(rt, command, regularized, shape);
+      auto cdf = Allocate(rt, rows * sizeof(float));
+      auto n = static_cast<std::uint32_t>(rows);
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.quantile_cdf_pipeline];
+      [e setBuffer:sorted offset:0 atIndex:0];
+      [e setBuffer:regularized offset:0 atIndex:1];
+      [e setBuffer:cdf offset:0 atIndex:2];
+      [e setBytes:&n length:sizeof(n) atIndex:3];
+      [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.gradient_sampling_threshold_pipeline];
+      [e setBuffer:sorted offset:0 atIndex:0];
+      [e setBuffer:regularized offset:0 atIndex:1];
+      [e setBuffer:cdf offset:0 atIndex:2];
+      [e setBuffer:selected offset:0 atIndex:3];
+      [e setBytes:&p length:sizeof(p) atIndex:4];
+      [e dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+      [e endEncoding];
+    }
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.gradient_sampling_apply_pipeline];
+    [e setBuffer:result offset:0 atIndex:0];
+    [e setBuffer:regularized offset:0 atIndex:1];
+    [e setBuffer:selected offset:0 atIndex:2];
+    [e setBytes:&p length:sizeof(p) atIndex:3];
+    [e dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    std::memcpy(output_values.data(), result.contents, output_values.size_bytes());
+    if (sample_rows && !norms.empty())
+      std::memcpy(norms.data(), regularized.contents, norms.size_bytes());
+    if (sample_rows && threshold) std::memcpy(threshold, selected.contents, sizeof(float));
+    sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
+    gradient_sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
+    if (sample_rows) radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
+    auto elapsed = command.GPUEndTime - command.GPUStartTime;
+    if (elapsed > 0) {
+      auto ns = static_cast<std::uint64_t>(elapsed * 1e9);
+      sampling_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+      gradient_sampling_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
+    }
   }
 }
 

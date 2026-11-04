@@ -218,6 +218,13 @@ void Sampler::Sample(Context const* ctx, linalg::MatrixView<GradientPair> out) {
       UniformSample(ctx, out, subsample_, initial_seed_);
       break;
     case TrainParam::kGradientBased: {
+#if defined(XGBOOST_USE_METAL)
+      static_assert(kDefaultMvsLambda == 0.1f);
+      if (ctx->IsMPS()) {
+        common::metal::GradientSample(out, out, sample_rows, initial_seed_, ctx->Threads());
+        break;
+      }
+#endif
       if (sample_rows == 0) {
         ZeroGradientPairs(out);
         break;
@@ -245,6 +252,13 @@ void Sampler::ApplySampling(Context const* ctx, linalg::MatrixView<GradientPair 
     }
     case TrainParam::kGradientBased: {
       auto sample_rows = static_cast<std::size_t>(split_gpair.Shape(0) * subsample_);
+#if defined(XGBOOST_USE_METAL)
+      if (ctx->IsMPS()) {
+        common::metal::GradientSample(split_gpair, value_gpair->HostView(), sample_rows,
+                                      initial_seed_, ctx->Threads());
+        break;
+      }
+#endif
       if (sample_rows == 0) {
         ZeroGradientPairs(value_gpair->HostView());
         break;

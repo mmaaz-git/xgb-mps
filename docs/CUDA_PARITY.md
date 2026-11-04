@@ -17,7 +17,7 @@ listed below. This is not yet a complete GPU backend.
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host column sampling, interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
-| Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu` | Metal uniform row sampling/replay with CPU-compatible LCG/Bernoulli draws, scalar/vector root-gradient sums and dense root histogram sums; gradient-based/column sampling remain CPU |
+| Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | Metal uniform and gradient-based row sampling/replay, including CPU-compatible draws, norms, sorted thresholds and rescaling; scalar/vector root-gradient sums and dense root histogram sums on Metal; column sampling remains CPU |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means and Newton stump fitting use Metal; label validation and other objective-specific initialization remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means/stump fitting and initial quantile estimation use Metal; other initialization work remains CPU |
@@ -70,20 +70,39 @@ count, repeated measurements, and accuracy alongside any speedup claim.
 ## Next major training work
 
 Quantized pages, row indices and histogram caches now persist on Metal buffers.
-Split selection, histogram conversion/accumulation/subtraction and uniform sampling
+Split selection, histogram conversion/accumulation/subtraction, uniform/gradient-based sampling
 and root-gradient/stump reductions also execute on Metal. Host orchestration still synchronizes at each tree level;
 ordinary gradient calls can share host arrays directly, while other gradient and prediction-state paths still stage data between host arrays and GPU buffers.
 Keeping those arrays resident and reducing synchronization are the next architectural
 steps. Host model construction and serialization can remain on the CPU.
 
 Split tests include categorical partitions, missing directions, monotonic and
-interaction constraints, vector leaves and external-memory pages. Gradient-based
+interaction constraints, vector leaves and external-memory pages. Column
 sampling, remaining training-state updates and more efficient external-memory
 staging remain required.
 
 Grouped ranking ROC/PR-AUC, sensitive AFT gradient corrections, SHAP, quantile
 construction, linear training and collectives are separate coverage requirements.
 The observed prediction speedups do not establish any of those as complete.
+
+## Gradient-based sampling behavior
+
+The Metal implementation follows the upstream CPU sampler: sequential FP32
+target accumulation, sorted FP32 prefix sums, the same threshold search,
+Apple libc++ random draws and reciprocal rescaling. The tested Apple Clang CPU
+build contracts the regularized squared-gradient expression as an FMA; the Metal
+norm kernel preserves that rounding and implements subnormal handling and correctly
+rounded square roots. Native tests compare actual CPU-library norms and thresholds,
+then independently replay the standard-library draws, checking results bit for bit.
+This is a CPU behavioral contract, not a claim of identical CUDA masks: the CUDA
+sampler uses quantized gradients and a different random stream.
+
+All per-row sampling calculations execute on GPU. The host selects one seed per
+tree, supplies matrix metadata and waits for the result. Input/output storage is
+still staged; reduced-gradient replay recomputes the GPU norms/sort/threshold from
+the original split gradients. The ordered FP32 prefix preserves CPU decisions but
+limits parallelism. Persistent sampling state and faster threshold construction
+remain performance work.
 
 ## Survival precision limitation
 

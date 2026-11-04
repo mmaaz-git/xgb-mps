@@ -9,8 +9,9 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums and stump
-fitting, means, stable column/grouped sorting, ROC/PR-AUC, ranking metrics and quantile/median estimation on Metal. Feature quantile sketching,
-gradient-based sampling and several specialized features still run on the CPU. Histogram conversion,
+fitting, means, stable column/grouped sorting, ROC/PR-AUC, ranking metrics, gradient-based
+sampling and quantile/median estimation on Metal. Feature quantile sketching,
+column sampling and several specialized features still run on the CPU. Histogram conversion,
 subtraction and split-input gathering now execute on Metal-owned shared buffers. See the [coverage ledger](docs/CUDA_PARITY.md)
 and [105-file CUDA inventory](validation/cuda-inventory.json).
 
@@ -63,6 +64,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; quantile sketches and adapter-built QuantileDMatrix bins remain CPU |
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
+| Gradient-based sampling | GPU norms, stable sorting, CPU-ordered FP32 prefixes, threshold selection, random draws and gradient rescaling; includes strided multi-target replay and zero budgets; host chooses the per-tree seed |
 | Gradient quantization | GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales stay on GPU |
 | Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights; other leaf fitting still uses CPU |
 | Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
@@ -94,6 +96,9 @@ numerical edge cases are tested explicitly.
 It also reports GPU durations and histogram staging/wait/readback wall times. Wait
 time overlaps GPU duration; adding those numbers would double-count time. Counters
 are process-wide, so concurrent models contribute to the same totals.
+`gradient_sampling_dispatches` and `gradient_sampling_gpu_time_ns` report the
+gradient-based sampler separately; they are also included in the general sampling
+counters and must not be added to those totals.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
@@ -109,7 +114,7 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **583 passed, 1 skipped**. The skip requires a machine without an
+- Python: **601 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
@@ -119,6 +124,11 @@ On Apple M3, 2026-11-03:
 - Native sampling: **3,780 exact cases / 1,019,088 Bernoulli draws** against the
   CPU standard-library implementation, including zero seeds, rounding boundaries,
   strided matrices, guard regions and CPU thread partitions.
+- Native gradient-based sampling: **498 exact cases / 6,748,668 rows**, comparing
+  norms, thresholds, masks and rescaled gradients to production CPU routines and
+  libc++ random draws. Includes subnormals, overflow, equal gradients, zero/full
+  budgets, strided storage and reduced-gradient replay. Six additional production
+  Sampler checks preserve the host random-engine state and replay decisions.
 - Native bin assignment: **168 exact cases / 216,600 entries / 38,616,312 hit
   counts**, including all index widths, category truncation, subnormal/signed-zero
   boundaries, invalid values and guard regions.
@@ -147,7 +157,7 @@ On Apple M3, 2026-11-03:
 - Native histogram storage: **168 cases**, with 55,272 converted/accumulated pairs,
   18,424 subtracted pairs and 82,908 gathered pairs checked against CPU references,
   including signed integer limits, page accumulation, strided outputs and guard regions.
-- Native split selection: **3,780 scalar and 2,160 vector cases**, comparing selected
+- Native split selection: **6,300 scalar and 2,160 vector cases**, comparing selected
   splits, gains, child statistics and categorical ordering exactly against independent
   CPU references. Includes wide exponent ranges, ties, missing data, regularization,
   monotonic bounds, pooled vector weights and threadgroup boundaries.
@@ -347,7 +357,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Keep histograms in Metal shared memory; port conversion, subtraction and gathering.
 - [x] Reuse split workspaces across tree levels and boosting rounds.
 - [x] Port uniform sampling, including random-stream compatibility and replay.
-- [ ] Port gradient-based sampling and remaining training-state updates.
+- [x] Port gradient-based sampling, including exact CPU thresholds and replay.
+- [ ] Port column sampling and remaining training-state updates.
 - [ ] Port quantile construction, remaining objectives/metrics, SHAP and linear training.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.
@@ -1160,3 +1171,19 @@ The same seven CPU/MPS margin mismatches remain, with zero class disagreements a
 [Raw runs](validation/published-covtype-500-lowbin-m3.json) and
 [verification hashes](validation/published-covtype-lowbin-verification-m3.json)
 are retained with the [source benchmarks and reproduction commands](docs/PUBLISHED_BENCHMARKS.md).
+
+### Gradient-based sampling update
+
+Moved gradient-based row sampling to Metal: regularized norms, stable sorting,
+ordered FP32 prefixes, threshold search, CPU-compatible random draws and gradient
+rescaling. Reduced-gradient leaf fitting replays sampling from the original split
+gradients, including different target counts. Empty budgets are zeroed on GPU;
+full budgets require no dispatch. The host still chooses one per-tree seed and
+stages gradient storage.
+
+All **601 Python tests (one skipped)** and native suites pass under Metal API
+Validation; the independent CPU-only build also passes its compatibility checks.
+The [native sampling report](validation/gradient-sampling-m3.txt) covers **498 exact
+cases / 6.75 million rows**, plus six production sampler/replay checks. The
+[coverage ledger](docs/CUDA_PARITY.md#gradient-based-sampling-behavior) explains the
+CPU numerical contract and remaining synchronization/ordered-prefix costs.

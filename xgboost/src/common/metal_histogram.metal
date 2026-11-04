@@ -3698,3 +3698,169 @@ kernel void xgb_ranking_bias_update(device const ulong2* sums [[buffer(0)]],
   if ((li0 > epsilon || xgb_deq(li0, epsilon))) positive[position] = xgb_rank_pow(D{sums[position].x} / li0, regularizer).bits;
   if ((lj0 > epsilon || xgb_deq(lj0, epsilon))) negative[position] = xgb_rank_pow(D{sums[position].y} / lj0, regularizer).bits;
 }
+
+struct GradientSamplingParams {
+  ulong rows, source_stride0, source_stride1, output_stride0, output_stride1, seed;
+  uint source_targets, output_targets, threads, sample_rows;
+};
+
+// Round a positive integer times a power of two directly to binary32. Avoid a
+// binary64 intermediate: two rounds can lose the sticky bit at an FP32 midpoint.
+inline uint xgb_positive_float_bits(ulong significand, int scale) {
+  if (!significand) return 0;
+  int leading = 63 - int(clz(significand)), exponent = leading + scale;
+  if (exponent > 127) return 0x7f800000u;
+  int shift = exponent >= -126 ? leading - 23 : -149 - scale;
+  ulong rounded;
+  if (shift <= 0) {
+    rounded = significand << uint(-shift);
+  } else if (shift > 64) {
+    rounded = 0;
+  } else {
+    rounded = shift == 64 ? 0 : significand >> uint(shift);
+    ulong remainder = shift == 64 ? significand : significand & ((1ul << uint(shift)) - 1);
+    ulong midpoint = 1ul << uint(shift - 1);
+    rounded += ulong(remainder > midpoint || (remainder == midpoint && (rounded & 1)));
+  }
+  if (exponent < -126) return uint(rounded);
+  if (rounded == 0x1000000ul) {
+    rounded >>= 1;
+    ++exponent;
+  }
+  if (exponent > 127) return 0x7f800000u;
+  return (uint(exponent + 127) << 23) | (uint(rounded) & 0x7fffffu);
+}
+
+// Apple's CPU build squares g and h separately, then contracts .1*h2+g2.
+// Native FMA handles normal operands. The positive integer path preserves tiny
+// operands/results, including a subnormal that breaks an exact rounding tie.
+inline float xgb_mvs_square_sum(float g2, float h2) {
+  uint g = as_type<uint>(g2), h = as_type<uint>(h2);
+  float native = fma(0.1f, h2, g2);
+  bool tiny_result = (as_type<uint>(native) & 0x7fffffffu) < 0x800000u && (g || h);
+  if ((!g || g >= 0x800000u) && (!h || h >= 0x800000u) && !tiny_result) return native;
+  if (g >= 0x7f800000u || h >= 0x7f800000u) return fma(0.1f, h2, g2);
+  if (!h) return g2;
+  ulong gm = (g & 0x7fffffu) | ((g >> 23) ? 0x800000u : 0u);
+  ulong hm = (h & 0x7fffffu) | ((h >> 23) ? 0x800000u : 0u);
+  int ge = (g >> 23) ? int(g >> 23) - 150 : -149;
+  int he = (h >> 23) ? int(h >> 23) - 150 : -149;
+  ulong product = hm * 0xcccccdul;  // Exact significand of binary32 0.1.
+  int product_scale = he - 27;
+  if (!gm) return as_type<float>(xgb_positive_float_bits(product, product_scale));
+  int ph = 63 - int(clz(product)), gh = 63 - int(clz(gm));
+  int exponent = max(product_scale + ph, ge + gh);
+  ulong a = xgb_shift_jam(product << uint(62 - ph), uint(exponent - product_scale - ph));
+  ulong b = xgb_shift_jam(gm << uint(62 - gh), uint(exponent - ge - gh));
+  return as_type<float>(xgb_positive_float_bits(a + b, exponent - 62));
+}
+
+// Use hardware sqrt for an estimate, then integer squares to choose the exact
+// nearest binary32 result. Positive FP32 square roots are always normal.
+inline float xgb_mvs_sqrt(float value) {
+  uint bits = as_type<uint>(value);
+  if (!bits || bits >= 0x7f800000u) return value;
+  uint mantissa = bits & 0x7fffffu;
+  int exponent = int(bits >> 23) - 127;
+  if (bits >> 23)
+    mantissa |= 0x800000u;
+  else {
+    int shift = int(clz(mantissa)) - 8;
+    mantissa <<= uint(shift);
+    exponent = -126 - shift;
+  }
+  uint odd = uint(exponent & 1);
+  ulong radicand = ulong(mantissa) << (23 + odd);
+  float normalized = as_type<float>(((127u + odd) << 23) | (mantissa & 0x7fffffu));
+  ulong root = ulong(sqrt(normalized) * 8388608.0f);
+  while (root * root > radicand) --root;
+  while ((root + 1) * (root + 1) <= radicand) ++root;
+  root += ulong(radicand - root * root > root);
+  int output_exponent = (exponent - int(odd)) / 2 + 127;
+  if (root == 0x1000000ul) {
+    root >>= 1;
+    ++output_exponent;
+  }
+  return as_type<float>((uint(output_exponent) << 23) | (uint(root) & 0x7fffffu));
+}
+
+inline float xgb_mvs_divide(float a, float b) {
+  return xgb_dto_float(xgb_ddiv(xgb_dfrom_float(a), xgb_dfrom_float(b)));
+}
+
+kernel void xgb_gradient_sampling_norm(device const float2* gradients [[buffer(0)]],
+                                       device float* norms [[buffer(1)]],
+                                       constant GradientSamplingParams& p [[buffer(2)]],
+                                       uint row [[thread_position_in_grid]]) {
+  float sum = 0;
+  for (uint t = 0; t < p.source_targets; ++t) {
+    float2 pair = gradients[ulong(row) * p.source_stride0 + ulong(t) * p.source_stride1];
+    float g2 = xgb_fmul_preserve(pair.x, pair.x), h2 = xgb_fmul_preserve(pair.y, pair.y);
+    sum = xgb_fadd_preserve(sum, xgb_mvs_square_sum(g2, h2));
+  }
+  norms[row] = xgb_mvs_sqrt(sum);
+}
+
+kernel void xgb_gradient_sampling_threshold(device const uint2* sorted [[buffer(0)]],
+                                            device const float* norms [[buffer(1)]],
+                                            device const float* prefix [[buffer(2)]],
+                                            device float* output [[buffer(3)]],
+                                            constant GradientSamplingParams& p [[buffer(4)]]) {
+  long low = 0, high = long(p.rows) - 1;
+  while (low <= high) {
+    long i = low + (high - low) / 2;
+    float lower = norms[sorted[i].y];
+    float upper = ulong(i + 1) == p.rows ? as_type<float>(0x7f7fffffu) : norms[sorted[i + 1].y];
+    float denominator = float(p.sample_rows) - float(p.rows - ulong(i) - 1);
+    if (denominator <= 0) {
+      low = i + 1;
+      continue;
+    }
+    float u = xgb_mvs_divide(prefix[i], denominator);
+    if (u > lower && u <= upper) {
+      output[0] = u;
+      return;
+    }
+    if (u <= lower)
+      high = i - 1;
+    else
+      low = i + 1;
+  }
+  output[0] = xgb_mvs_divide(prefix[p.rows - 1], float(p.sample_rows));
+}
+
+kernel void xgb_gradient_sampling_apply(device float2* output [[buffer(0)]],
+                                        device const float* norms [[buffer(1)]],
+                                        device const float* threshold [[buffer(2)]],
+                                        constant GradientSamplingParams& p [[buffer(3)]],
+                                        uint row [[thread_position_in_grid]]) {
+  float probability = 0;
+  bool selected = false, certain = false;
+  if (p.sample_rows) {
+    float u = threshold[0];
+    if ((as_type<uint>(u) & 0x7fffffffu) != 0x7f800000u) {
+      if ((as_type<uint>(u) & 0x7fffffffu) < as_type<uint>(1e-6f)) u = copysign(1e-6f, u);
+      probability = xgb_mvs_divide(norms[row], u);
+    }
+    ulong seed = p.seed & 0x7ffffffffffffffful, index = ulong(row) + 1;
+    if (!seed) {
+      ulong chunk = p.rows / p.threads;
+      if (chunk) index = ulong(row) - min(ulong(row) / chunk, ulong(p.threads - 1)) * chunk + 1;
+      seed = 1;
+    }
+    // libc++ generate_canonical<float>, including its possible rounded 1.0.
+    uint random = xgb_positive_float_bits(xgb_lcg_skip(index, seed) - 1, -63);
+    uint prob = as_type<uint>(probability);
+    certain = probability >= 1;
+    selected = certain || (xgb_float_less(0, prob) && !xgb_float_less(prob, random));
+  }
+  if (certain) return;
+  float scale = selected ? xgb_mvs_divide(1.0f, probability) : 0;
+  for (uint t = 0; t < p.output_targets; ++t) {
+    ulong index = ulong(row) * p.output_stride0 + ulong(t) * p.output_stride1;
+    float2 pair = output[index];
+    output[index] = selected
+                        ? float2(xgb_fmul_preserve(pair.x, scale), xgb_fmul_preserve(pair.y, scale))
+                        : float2(0);
+  }
+}
