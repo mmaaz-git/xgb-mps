@@ -1435,3 +1435,32 @@ from the first fusion experiment above; final timings follow separately.
 all 530 native column cases and all 673 Python tests (one skipped), plus CPU-only
 compatibility checks. Other native implementations are unchanged from the preceding
 full validation.
+
+Final dispatch policy, medians of three alternating pairs on the same workloads:
+
+| Workload | CPU | MPS | CPU / MPS | Column-sampling GPU time |
+| --- | ---: | ---: | ---: | ---: |
+| 1M × 128, uniform sampling | 3.443 s | 3.811 s | 0.90× | 44.2 ms |
+| 100K × 2,048, weighted sampling | 7.326 s | 8.320 s | 0.88× | 348.1 ms |
+
+The [final million-row report](validation/benchmark-column-million-v3-m3.json)
+and [final weighted report](validation/benchmark-column-wide-v3-m3.json) have zero
+reported CPU/MPS prediction difference. The uniform sampler's GPU time is **25%
+lower** than the first implementation (59.1 → 44.2 ms); its whole MPS training
+median falls about **4.7%** (4.001 → 3.811 s). Restoring the staged weighted path
+removes the measured sampling-kernel regression (437.4 → 348.1 ms), although its
+whole-training median remains above the original session's result. Neither final
+workload beats CPU. Broader training costs and session variability remain; system
+swap is still about 20 GiB in the final wide run. This is a targeted sampling
+improvement, not a claim of general GPU training acceleration.
+
+```sh
+.venv/bin/python scripts/benchmark.py --rows 1000000 --features 128 \
+  --rounds 20 --threads 8 --repeats 3 --float32-generation \
+  --colsample-bytree .8 --colsample-bylevel .8 --colsample-bynode .8 \
+  --output results/my-column-million.json
+.venv/bin/python scripts/benchmark.py --rows 100000 --features 2048 \
+  --rounds 20 --threads 8 --repeats 3 --float32-generation --feature-weights \
+  --colsample-bytree .8 --colsample-bylevel .8 --colsample-bynode .5 \
+  --output results/my-column-wide.json
+```
