@@ -18,6 +18,9 @@
 #include "../common/random.h"                // for ColumnSampler
 #include "../common/threading_utils.h"       // for ParallelFor
 #include "../common/timer.h"                 // for Monitor
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_gradient.h"
+#endif
 #include "../data/gradient_index.h"          // for GHistIndexMatrix
 #include "common_row_partitioner.h"          // for CommonRowPartitioner
 #include "dmlc/registry.h"                   // for DMLC_REGISTRY_FILE_TAG
@@ -690,7 +693,14 @@ class QuantileHistMaker : public TreeUpdater {
     for (auto tree_it = trees.begin(); tree_it != trees.end(); ++tree_it) {
       if (need_copy()) {
         // Copy gradient into buffer for sampling. This converts C-order to F-order.
-        std::copy(linalg::cbegin(h_gpair), linalg::cend(h_gpair), linalg::begin(h_sample_out));
+#if defined(XGBOOST_USE_METAL)
+        if (ctx_->IsMPS()) {
+          common::metal::CopyGradients(h_gpair, h_sample_out);
+        } else
+#endif
+        {
+          std::copy(linalg::cbegin(h_gpair), linalg::cend(h_gpair), linalg::begin(h_sample_out));
+        }
       }
       sampler.Sample(ctx_, h_sample_out);
       auto *h_out_position = &out_position[tree_it - trees.begin()];
@@ -703,8 +713,15 @@ class QuantileHistMaker : public TreeUpdater {
                                                         in_gpair->value_gpair.Shape(1));
           auto h_value_grad = value_grad.HostView();
           auto h_value_grad_in = in_gpair->value_gpair.HostView();
-          std::copy(linalg::cbegin(h_value_grad_in), linalg::cend(h_value_grad_in),
-                    linalg::begin(h_value_grad));
+#if defined(XGBOOST_USE_METAL)
+          if (ctx_->IsMPS()) {
+            common::metal::CopyGradients(h_value_grad_in, h_value_grad);
+          } else
+#endif
+          {
+            std::copy(linalg::cbegin(h_value_grad_in), linalg::cend(h_value_grad_in),
+                      linalg::begin(h_value_grad));
+          }
           sampler.ApplySampling(ctx_, h_gpair, &value_grad);
           // Refresh the leaf weights.
           p_mtimpl_->ExpandTreeLeaf(value_grad, *tree_it);

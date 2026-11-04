@@ -1,0 +1,64 @@
+Apple M3 (10 GPU cores, 16 GB), 2026-11-03.
+Coverage/correctness first; no new performance measurements.
+
+CUDA source is the algorithm/control-flow authority. CPU comparisons are useful
+where algorithms agree, not a substitute for CUDA-specific semantics. No NVIDIA
+execution comparison was performed. Existing CPU-oriented sketch, RNG, quantizer,
+leaf statistics and linear-selector choices remain explicit CUDA-alignment gaps.
+
+New production support:
+- tree_method=approx with device=mps, including GPU copies/Hessian extraction,
+  root sums, histogram/split/partition kernels and final leaf assignments.
+- CUDA updater ordering: original Hessians -> cuts once per updater call ->
+  row sampling and column sampler initialization per tree.
+- Gradient target/layout copies used in gbtree and histogram sampling/value buffers.
+- Fresh external SparsePage gradient-index binning retains the MPS context.
+- Completed-operation counters, GPU time and shared/staged view byte counts.
+
+141 new Python cases cover dense/missing/CSR/categorical/external inputs,
+regression/binary/multiclass/multi-output scalar trees, growth policies, constraints,
+forests, empty/zero/full sampling, persistence and histogram copy integration.
+30 fixed-gradient cases test unsampled cuts and per-tree resets at subsample
+0/.3/.8 with both samplers. Their cut reference is CPU approx WITHOUT sampling,
+which isolates control flow, not CUDA's different GPU sketch algorithm.
+Two independent scalar cases check the no-sampling root-weight formula.
+CPU prediction comparisons are used for common approx update flow. Sampled approx
+checks CUDA-derived ordering, dispatches, reproducibility and finite predictions.
+
+Native: all bits are preserved across C/F/padded layouts and broadcasts, including
+signed zeros, subnormals, infinities and NaN payloads. Guards, alias snapshots,
+read-only staging, byte/dispatch accounting and malformed views are checked.
+276 native cases; layout loops count 25,026,384 copied pairs and the same number
+of extracted Hessians, plus alias/read-only cases.
+
+Every native executable was rebuilt after the Statistics ABI change. All native
+suites pass; the full Python suite passes; the independent CPU-only build and
+API/error check pass. No existing tolerance was widened.
+
+Native gradient-state output:
+Checked 45 state cases / 0 copied pairs / 0 extracted Hessians
+2026-11-03 22:08:05.519 metal_gradient_state_api_test[60239:43317666] Metal API Validation Enabled
+Checked 90 state cases / 315 copied pairs / 315 extracted Hessians
+Checked 135 state cases / 10080 copied pairs / 10080 extracted Hessians
+Checked 180 state cases / 91035 copied pairs / 91035 extracted Hessians
+Checked 225 state cases / 1381590 copied pairs / 1381590 extracted Hessians
+Checked 270 state cases / 22026375 copied pairs / 22026375 extracted Hessians
+PASS 276 gradient-state cases / 25026384 copied pairs / 25026384 extracted Hessians; all bits including NaN payloads, layouts, padding, aliases, read-only inputs and errors
+
+Focused Python result:
+207 passed, 1 warning in 17.99s
+
+Full Python result:
+1206 passed, 1 skipped, 309 warnings in 44.15s
+
+CPU-only check:
+CPU-only build verified: Metal reports unavailable and device=mps raises a clear error.
+
+Full driver:
+Wed Nov  4 06:08:55 UTC 2026
+Stage 1/4: rebuild formatted implementation
+Stage 2/4: recompile and run every native test, then the full Python suite
+Stage 3/4: build the independent CPU-only library
+Stage 4/4: verify CPU-only Metal API behavior
+Approx CUDA flow full validation finished: 0
+Wed Nov  4 06:11:58 UTC 2026

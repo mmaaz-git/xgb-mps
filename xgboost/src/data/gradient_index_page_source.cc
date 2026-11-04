@@ -14,7 +14,7 @@ namespace xgboost::data {
 void GradientIndexPageSource::Fetch() {
   if (!this->ReadCache()) {
     auto ctx = Context{};
-    ctx.Init(Args{{"nthread", std::to_string(nthreads_)}});
+    ctx.Init(Args{{"nthread", std::to_string(nthreads_)}, {"device", use_metal_ ? "mps" : "cpu"}});
     // source is initialized to be the 0th page during construction, so when count_ is 0
     // there's no need to increment the source.
     if (this->count_ != 0 && !this->sync_) {

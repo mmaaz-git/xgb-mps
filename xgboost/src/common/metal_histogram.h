@@ -69,6 +69,9 @@ struct Statistics {
   std::uint64_t linear_gradient_dispatches, linear_residual_dispatches, linear_gpu_time_ns;
   std::uint64_t sketch_weight_dispatches, sketch_sorted_dispatches, sketch_update_dispatches,
       sketch_ingest_gpu_time_ns;
+  std::uint64_t gradient_copy_dispatches, hessian_extract_dispatches, gradient_state_gpu_time_ns,
+      gradient_state_shared_input_bytes, gradient_state_shared_output_bytes,
+      gradient_state_staging_bytes;
 };
 
 class Histogram {

@@ -14,10 +14,46 @@ Current priority is complete operation coverage and correctness. Performance
 experiments are deferred until the missing GPU paths are implemented; existing
 measurements, including regressions, remain available.
 
+## Implementation authority and validation limits
+
+The vendored CUDA implementation defines the intended algorithms, precision,
+random streams and update order. CPU XGBoost is a useful comparison where it
+implements the same behavior; it is not the specification when the two differ.
+Independent scalar implementations of CUDA formulas/control flow can run on this
+Mac and provide test oracles. They cannot establish measured CUDA equivalence.
+**No tests in this repository have yet compared this port with execution on an
+NVIDIA GPU.** Such a run remains a separate validation requirement.
+
+Several earlier kernels deliberately followed CPU behavior. Their tests remain
+useful regression evidence, but the following differences are unfinished porting
+work, not accepted substitutes for CUDA behavior:
+
+- Quantization and tree reductions: Metal uses a different bounded fixed-point
+  scheme and binary64 root/leaf sums; CUDA's `GradientQuantiserGroup` and integer
+  tree statistics need alignment, including quantization before row sampling.
+- Row/column/ranking sampling: CPU-compatible random streams and row thresholds
+  need replacement or verification against the CUDA engines, seed consumption,
+  quantized norms and scans. Equal seeds do not currently imply equal masks.
+- Quantile sketches: CPU row queues, `SetPruneSorted`, ordered summary merging
+  and pruning differ from CUDA's sorted weighted scan and GPU sketch pipeline.
+  Existing exact CPU cut tests do not validate that CUDA pipeline.
+- Linear coordinate descent: binary64 reductions, filtering, residual arithmetic
+  and fresh host gradients for greedy/thrifty selectors differ from CUDA's FP32
+  reductions and unchanged host selector snapshot.
+- Ranking metric edge cases: some degenerate-query fallbacks currently preserve
+  CPU semantics where CUDA differs.
+- Split tie-breaking, reduction order, quantile statistics and objective edge
+  cases still need a complete source audit; GPU dispatch coverage alone is not
+  an algorithm-parity claim.
+
+Architecture-specific mechanics may differ where Metal requires them. Algorithm
+changes must be explicit and justified, and any observed numerical differences
+must be reported rather than hidden by widening test tolerances.
+
 | CUDA subsystem | Principal upstream source | Metal status |
 | --- | --- | --- |
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
-| Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` is still rejected for MPS; Hessian weighting and sorted-column summary kernels now exist, but the approximate updater's remaining GPU operations/integration and source value sorting are unfinished |
+| Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Sketch/sampler/quantizer algorithms still differ from CUDA and preprocessing remains hybrid |
 | Gradient quantization | `tree/gpu_hist/quantiser.cuh` | Implemented with a different bounded fixed-point scheme; GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales remain in GPU buffers; eligible raw gradients are read through guarded shared host views |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host interaction masks and tree updates |
@@ -44,6 +80,7 @@ measurements, including regressions, remain available.
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU bias/feature gradient reductions and residual updates with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
+| Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
 | CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | NVIDIA-specific interfaces cannot consume Metal memory; corresponding Apple-device interoperability is missing |
@@ -60,15 +97,20 @@ review. This inventory is a scope ledger, not a claim of full coverage.
 
 For each ported operation:
 
-1. Test the actual GPU output against independent mathematical references and/or
-   upstream CPU behavior, including edge cases and documented tolerances.
+1. Identify the corresponding CUDA algorithm and any CPU/CUDA differences. Test
+   actual Metal output against independent scalar references derived from CUDA,
+   including edge cases and documented tolerances. Compare CPU XGBoost where its
+   algorithm agrees; do not force CPU-specific behavior to pass that comparison.
 2. Check a completed-operation counter so a CPU fallback cannot pass the test.
 3. Validate the integrated API, model persistence, and CPU-only build.
 4. Keep dispatch instrumentation for coverage checks. When performance work
    resumes, measure cold/warm time and staging costs on identical inputs and
    parameters, including preprocessing.
 5. Keep limitations visible. A feature's training output matching CPU does not mean
-   its gradients, prediction, metrics, or preprocessing have been ported.
+   its gradients, prediction, metrics, or preprocessing have been ported. Track
+   CUDA-source alignment separately from dispatch coverage and CPU agreement.
+6. Run a shared fixture suite on NVIDIA hardware before claiming measured CUDA
+   equivalence. Local scalar-oracle tests do not replace that step.
 
 Performance work must reduce the full training/prediction time. Apple GPU and
 NVIDIA GPU speedups cannot be assumed equal; publish hardware, workload, CPU thread
@@ -89,7 +131,7 @@ now uses GPU initialization, random draws, selection and ordering. Remaining
 training-state updates and more efficient external-memory staging are still required.
 
 Sensitive AFT gradient corrections, remaining sketch
-construction, GPU `approx` training and collectives are separate coverage requirements.
+construction, CUDA algorithm alignment and collectives are separate coverage requirements.
 The observed prediction speedups do not establish any of those as complete.
 
 ## Gradient-based sampling behavior
@@ -101,8 +143,9 @@ build contracts the regularized squared-gradient expression as an FMA; the Metal
 norm kernel preserves that rounding and implements subnormal handling and correctly
 rounded square roots. Native tests compare actual CPU-library norms and thresholds,
 then independently replay the standard-library draws, checking results bit for bit.
-This is a CPU behavioral contract, not a claim of identical CUDA masks: the CUDA
-sampler uses quantized gradients and a different random stream.
+These tests describe the current CPU-oriented implementation. CUDA uses
+quantized gradients and a different random stream; porting that algorithm remains
+required. Passing these tests does not establish CUDA sampling parity.
 
 All per-row sampling calculations execute on GPU. The host selects one seed per
 tree, supplies matrix metadata and waits for the result. Input/output storage is
@@ -131,7 +174,8 @@ preserving a defensible numerical contract remains required for full AFT coverag
 Precision preserves CPU FP32 label × query-weight products before binary64 summation.
 NDCG preserves the CPU's unweighted fallback when inverse ideal gain is nonpositive;
 MAP's zero-hit fallback is multiplied by the query weight. These details can differ
-from upstream CUDA degeneracy handling. The reference contract here is upstream CPU.
+from upstream CUDA degeneracy handling. The current tests use upstream CPU;
+those differences remain to be corrected and validated against CUDA formulas.
 
 MAP uses parallel integer hit counts/prefixes for exact binary labels. Upstream
 validation also admits labels within epsilon of zero or one, including tiny negatives.
@@ -328,8 +372,8 @@ and the CPU's FP32 rounding of interior selection goals preserve the original
 the final endpoint have distinct reference behavior that is tested explicitly.
 The kernel receives already sorted columns; sorting the source values still
 requires porting. This path is integrated into `HostSketchContainer::PushColPage`
-and tested through production cut creation, but public `tree_method=approx`
-remains rejected pending its remaining GPU integration.
+and public `tree_method=approx` training. It still follows the CPU sketch
+algorithm; CUDA sketch alignment remains required.
 
 Every MPS numeric sketch queue flush now sends its incoming summary and retained
 levels to Metal. The GPU prunes to the level limit, merges/repairs ranks, clears
@@ -476,7 +520,7 @@ clears the sums, reduces indexed gradients in blocks, accumulates completed leaf
 sums across external-memory pages, and computes the final weights. Gradients use
 guarded shared host views when eligible and staged input otherwise.
 
-Sums use software binary64, following the CPU precision contract. CUDA uses its
+Sums currently use software binary64, following CPU precision. CUDA uses its
 quantized-gradient representation for this operation; this implementation does
 not claim identical intermediate CUDA sums. The weight calculation preserves
 CPU L1/L2 regularization, maximum-step clipping, FP32 conversion, bound application
@@ -523,7 +567,8 @@ does not silently change algorithms when selecting MPS. Upstream's deprecated
 `gpu_coord_descent` user parameter still raises its original error, and the
 vendored version's `gblinear` deprecation warning remains visible.
 
-The numerical reference is the CPU coordinate updater. Metal reduces FP32
+The current numerical reference is the CPU coordinate updater; the differences
+below remain CUDA-alignment work. Metal reduces FP32
 feature products in software binary64, preserves the CPU residual multiplication
 order, excludes negative Hessians as the CPU does, and includes the Hessian's
 addition of positive zero when updating a pair. This differs from CUDA's FP32
@@ -556,3 +601,59 @@ contributions and serialized weights use `rtol=atol=2e-5` against CPU.
 commands; `linear_gpu_time_ns` covers both, excluding host selection, scalar
 updates and staging. Empty operations and zero residual steps require no
 dispatch. No performance measurement accompanies this coverage update.
+
+
+## Approximate training and gradient state integration
+
+`tree_method="approx", device="mps"` now uses the shared builder with Metal
+Hessian extraction, buffer copies, root statistics, histogram/split evaluation,
+row partitioning and final leaf assignments. The MPS updater follows the ordering
+in `tree/updater_gpu_hist.cu::GPUGlobalApproxMaker::Update` and
+`GPUHistMakerDevice::Reset`: extract **original, unsampled** Hessians, build cuts
+once per updater call, then sample rows and reset column sampling separately for
+each tree. Constant-Hessian tasks cache cuts; other tasks regenerate at the next
+updater invocation. CPU approx intentionally retains its different shared-forest
+sampling and sampled-Hessian sketching order.
+
+This is partial CUDA algorithm alignment. The underlying sketch, row/column RNG,
+quantizer and tree-statistic precision are the existing Metal implementations
+listed above. In particular, Metal still samples float gradients before histogram
+quantization; CUDA samples already quantized gradients. Source value sorting,
+row queue construction and category collection remain host work. The updater is
+usable but not a complete CUDA-equivalent approximate backend. Vector-leaf approx
+remains unsupported, as upstream does not implement it.
+
+The new gradient-state kernel copies both raw words of each gradient pair or
+extracts just the Hessian word. It handles C/F layouts, slices, padded strides and
+broadcast sources; overlapping destinations are rejected. Aliased input/output
+uses a snapshot, and guarded shared views fall back to copied staging when needed.
+Copies are also used by target selection, histogram sampling buffers and
+reduced-gradient leaf refitting. Final leaf positions use the resident Metal row
+IDs instead of the CPU-only Hessian overload.
+
+Fresh external SparsePage-derived gradient-index pages now preserve their MPS
+context, so bin assignment executes on Metal. Previously those pages created a
+CPU context; the earlier blanket GPU-binning claim was too broad. Adapter-built
+QuantileDMatrix bins remain host work.
+
+`tests/test_metal_approx.py` contains 141 integration cases. Thirty fixed-gradient
+cases independently check CUDA updater ordering: cuts match the unsampled sketch
+reference at sampling rates 0, .3 and .8; two rounds of three trees make two cut
+builds and six row/column resets. They cover dense, missing, CSR, categorical and
+external-page inputs and both row samplers. The cut reference uses CPU approx
+without sampling to isolate ordering; it does not validate CUDA's GPU sketch.
+Two scalar tests independently check the no-sampling leaf formula. Other tests
+cover regression, classification, multi-output scalar trees, both growth policies,
+constraints, forests, empty inputs and saved-model continuation. CPU model
+comparisons are limited to common update flow, while sampled models check source
+ordering, reproducibility, finite results and actual GPU dispatch.
+
+The native gradient-state test covers 276 cases, with 25,026,384 copied pairs and
+25,026,384 extracted Hessians in its layout loops, plus alias/read-only checks.
+It compares raw bits, including signed zeros, subnormals and NaN payloads, and
+checks guards, output padding, staging counters and rejected invalid views.
+`gradient_copy_dispatches`, `hessian_extract_dispatches` and
+`gradient_state_gpu_time_ns` expose completed work; the corresponding
+`gradient_state_shared_input_bytes`, `gradient_state_shared_output_bytes` and
+`gradient_state_staging_bytes` report view extents, including padding. GPU time
+excludes staging and host allocation. See [validation](../validation/approx-gradient-state-m3.txt).

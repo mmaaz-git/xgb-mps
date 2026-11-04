@@ -9,11 +9,14 @@ operations, with measured performance. **Full CUDA parity is not implemented yet
 **Current priority: finish GPU coverage and correctness before further performance
 tuning.** The backend can train and predict with `device="mps"`, but training is
 still a mixture of GPU operations and CPU work. Passing tests cover implemented
-paths, not every CUDA operation.
+paths, not every CUDA operation. **CUDA source defines the target behavior; CPU
+comparisons are checks where the algorithms agree.** Some earlier kernels follow
+CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
+comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
 remaining objective initialization and training-state operations,
-GPU `approx` training, categorical/metadata operations, Apple GPU array
+CUDA algorithm alignment, categorical/metadata operations, Apple GPU array
 interoperability and distributed collectives. AFT still has CPU corrections;
 some long-run ranking and Covertype comparisons have numerical differences.
 Persistent GPU ownership and less synchronization also remain unfinished.
@@ -75,8 +78,12 @@ Linear GPU training uses `booster="gblinear", updater="coord_descent", device="m
 Its default `shotgun` updater remains on the host, as it does with CUDA. The
 vendored upstream version deprecates `gblinear`, but this port supports it.
 
-Explicit tree updater selection, `exact`/`approx` tree methods and
-distributed training are rejected for `mps`. Inaccessible Metal devices produce an
+Approximate training is also available with `tree_method="approx"`. It uses
+unsampled Hessians for cuts and resets sampling per tree, following CUDA's updater
+order. Sketch/sampling/quantization algorithms still require CUDA alignment.
+
+Explicit tree updater selection, `exact` and distributed training are rejected
+for `mps`. Inaccessible Metal devices produce an
 error. Other features may use CPU implementations as recorded in the coverage ledger;
 selecting `mps` does not imply that every stage runs on the GPU.
 
@@ -84,6 +91,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 
 | Operation | Implemented coverage |
 | --- | --- |
+| Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; underlying sketch/quantizer/sampler still need CUDA alignment |
+| Gradient state | GPU strided target/layout copies and bit-preserving Hessian extraction; aliases use staged snapshots |
 | Histograms | Dense/sparse compressed indices, external-memory pages, scaled integer sums, shared-memory dense kernel, GPU binary64 conversion/subtraction and a resident cache |
 | Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps interaction masks |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
@@ -144,7 +153,8 @@ host ingestion, staging and final cut materialization.
 `sketch_update_dispatches` report weighting, sorted-column summaries and streaming
 compaction. `sketch_ingest_gpu_time_ns` covers these commands, excluding host
 queue construction/sorting, allocation and staging. The sorted-column path is
-validated internally; public `tree_method="approx"` is still disabled.
+used by public `tree_method="approx"` training, with the CUDA-alignment limitations
+listed in the coverage ledger.
 `expectile_init_dispatches` and `prediction_init_dispatches` expose the new
 objective-specific initialization work. Their combined GPU duration is reported
 by `initialization_gpu_time_ns`, separately from ordinary objective GPU time.
@@ -164,6 +174,10 @@ excluded.
 `linear_gradient_dispatches` and `linear_residual_dispatches` count completed
 coordinate-descent reductions and updates; `linear_gpu_time_ns` measures those
 commands. Host feature selection, scalar model updates and staging are excluded.
+`gradient_copy_dispatches`, `hessian_extract_dispatches` and
+`gradient_state_gpu_time_ns` report generic gradient copies/Hessian extraction.
+`gradient_state_shared_input_bytes`, `gradient_state_shared_output_bytes` and
+`gradient_state_staging_bytes` count complete view extents, including padding.
 `objective_shared_input_bytes`, `objective_shared_output_bytes` and
 `objective_staging_bytes` measure memory access for the ordinary gradient kernel.
 Adaptive and AFT stages have separate memory paths.
@@ -179,9 +193,14 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **1,066 passed, 1 skipped**. The skip requires a machine without an
+- Python: **1,206 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
+- Gradient layout copies/Hessian extraction: **276 native cases**, with
+  **25,026,384 copied pairs and 25,026,384 Hessians** checked bit for bit, plus
+  aliases/read-only inputs, invalid views and guard checks. **141 new Python
+  cases** cover approximate training and gradient-state integration, including
+  CUDA updater ordering. These do not establish NVIDIA execution equivalence.
 - Native histograms: **576 cases**, with every bin compared exactly to independent
   CPU integer sums. Covers dense/sparse indices, 8/16/32-bit storage, page offsets,
   high contention, negative values, carries, zero words, sampled-out rows and
@@ -1742,3 +1761,27 @@ remain deferred; state allocation and staging costs are not optimized here.
 The independent CPU-only build/check also passes. After restoring the original
 row-weight size check, the final native ingestion suite and all 27 public sketch
 tests were rechecked successfully.
+
+
+### Approximate training and CUDA alignment update
+
+`tree_method="approx", device="mps"` now runs with GPU Hessian extraction, gradient
+copies, root statistics and the existing Metal tree operations. Cuts use original
+Hessians before row sampling, once per updater call, and each tree gets fresh row
+and column sampling. This follows CUDA's updater order, which differs from CPU
+approx. Fresh external-page gradient indices now preserve MPS for GPU binning.
+
+CUDA source is the implementation authority. Existing CPU-based sketch,
+sampling/RNG, quantization, leaf sums and linear-selector choices still need
+alignment; they are explicitly listed in the [ledger](docs/CUDA_PARITY.md).
+CPU equality is tested where algorithms agree. Fixed-gradient tests check the
+CUDA cut/sampling order independently of model-prediction equality. No tests have
+yet run against actual NVIDIA execution, and full CUDA parity remains unfinished.
+
+[Validation](validation/approx-gradient-state-m3.txt) adds 141 integration cases
+and 276 native gradient-state cases. The full run passes **1,206 Python tests
+(one skipped)**, every native suite and the independent CPU-only build/check.
+The native checks include over 25 million
+copied pairs and extracted Hessians, raw NaN bits, layouts, padding, aliases and
+read-only inputs. Coverage and correctness remain the priority; no new performance
+benchmark accompanies this change.

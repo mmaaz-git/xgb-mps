@@ -47,6 +47,7 @@ class GradientIndexPageSource
   std::int32_t max_bin_per_feat_;
   common::Span<FeatureType const> feature_types_;
   double sparse_thresh_;
+  bool use_metal_;
 
  public:
   GradientIndexPageSource(Context const* ctx, float missing, bst_feature_t n_features,
@@ -59,7 +60,8 @@ class GradientIndexPageSource
         is_dense_{is_dense},
         max_bin_per_feat_{param.max_bin},
         feature_types_{feature_types},
-        sparse_thresh_{param.sparse_thresh} {
+        sparse_thresh_{param.sparse_thresh},
+        use_metal_{ctx->IsMPS()} {
     this->source_ = source;
     this->SetCuts(std::move(cuts));
     if (this->cuts_.HasCategorical()) {

@@ -22,6 +22,9 @@
 #include "../common/error_msg.h"  // for UnknownDevice, WarnOldSerialization, InplacePredictProxy
 #include "../common/threading_utils.h"
 #include "../common/timer.h"
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_gradient.h"
+#endif
 #include "../data/proxy_dmatrix.h"  // for DMatrixProxy, HostAdapterDispatch
 #include "gbtree_model.h"
 #include "xgboost/base.h"
@@ -44,8 +47,9 @@ namespace {
 /** @brief Map the `tree_method` parameter to the `updater` parameter. */
 std::string MapTreeMethodToUpdaters(Context const* ctx, TreeMethod tree_method) {
   if (ctx->IsMPS()) {
-    CHECK(tree_method == TreeMethod::kHist || tree_method == TreeMethod::kAuto)
-        << "device=mps currently supports only tree_method=hist.";
+    CHECK(tree_method == TreeMethod::kHist || tree_method == TreeMethod::kAuto ||
+          tree_method == TreeMethod::kApprox)
+        << "device=mps supports tree_method=hist or approx.";
   }
   // Choose updaters according to tree_method parameters
   if (ctx->IsCUDA()) {
@@ -181,6 +185,12 @@ void CopyGradient(Context const* ctx, linalg::Matrix<GradientPair> const* in_gpa
   out_gpair->Reshape(in_gpair->Shape(0), 1);
   if (ctx->IsCUDA()) {
     GPUCopyGradient(ctx, in_gpair, group_id, out_gpair);
+#if defined(XGBOOST_USE_METAL)
+  } else if (ctx->IsMPS()) {
+    common::metal::CopyGradients(
+        in_gpair->HostView().Slice(linalg::All(), linalg::Range(group_id, group_id + 1)),
+        out_gpair->HostView());
+#endif
   } else {
     auto const& in = *in_gpair;
     auto h_tmp = out_gpair->HostView();

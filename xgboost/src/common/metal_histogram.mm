@@ -15,10 +15,11 @@
 #include "../data/gradient_index.h"
 #include "metal_auc.h"
 #include "metal_data.h"
+#include "metal_gradient.h"
 #include "metal_histogram.h"
-#include "metal_memory.h"
 #include "metal_leaf.h"
 #include "metal_linear.h"
+#include "metal_memory.h"
 #include "metal_ops.h"
 #include "metal_predictor.h"
 #include "metal_quantile.h"
@@ -47,6 +48,9 @@ std::atomic<std::uint64_t> sketch_finalize_dispatches{0}, sketch_finalize_column
     sketch_finalize_gpu_time_ns{0};
 std::atomic<std::uint64_t> sketch_weight_dispatches{0}, sketch_sorted_dispatches{0},
     sketch_update_dispatches{0}, sketch_ingest_gpu_time_ns{0};
+std::atomic<std::uint64_t> gradient_copy_dispatches{0}, hessian_extract_dispatches{0},
+    gradient_state_gpu_time_ns{0}, gradient_state_shared_input_bytes{0},
+    gradient_state_shared_output_bytes{0}, gradient_state_staging_bytes{0};
 std::atomic<std::uint64_t> expectile_init_dispatches{0}, prediction_init_dispatches{0},
     initialization_gpu_time_ns{0};
 std::atomic<std::uint64_t> label_validation_dispatches{0}, label_validation_gpu_time_ns{0};
@@ -147,6 +151,7 @@ class Runtime {
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
   id<MTLComputePipelineState> uniform_sampling_pipeline, sketch_finalize_pipeline;
   id<MTLComputePipelineState> sketch_weight_pipeline, sketch_sorted_pipeline, sketch_update_pipeline;
+  id<MTLComputePipelineState> gradient_state_pipeline;
   id<MTLComputePipelineState> expectile_init_pipeline, broadcast_targets_pipeline;
   id<MTLComputePipelineState> label_validation_pipeline;
   id<MTLComputePipelineState> base_score_pipeline, shap_pipeline;
@@ -229,6 +234,7 @@ class Runtime {
       sketch_weight_pipeline = make_pipeline(@"xgb_sketch_weights");
       sketch_sorted_pipeline = make_pipeline(@"xgb_sketch_sorted");
       sketch_update_pipeline = make_pipeline(@"xgb_sketch_update");
+      gradient_state_pipeline = make_pipeline(@"xgb_gradient_state");
       expectile_init_pipeline = make_pipeline(@"xgb_expectile_init");
       broadcast_targets_pipeline = make_pipeline(@"xgb_broadcast_targets");
       label_validation_pipeline = make_pipeline(@"xgb_validate_labels");
@@ -1250,7 +1256,13 @@ Statistics GetStatistics() {
           sketch_weight_dispatches.load(std::memory_order_relaxed),
           sketch_sorted_dispatches.load(std::memory_order_relaxed),
           sketch_update_dispatches.load(std::memory_order_relaxed),
-          sketch_ingest_gpu_time_ns.load(std::memory_order_relaxed)};
+          sketch_ingest_gpu_time_ns.load(std::memory_order_relaxed),
+          gradient_copy_dispatches.load(std::memory_order_relaxed),
+          hessian_extract_dispatches.load(std::memory_order_relaxed),
+          gradient_state_gpu_time_ns.load(std::memory_order_relaxed),
+          gradient_state_shared_input_bytes.load(std::memory_order_relaxed),
+          gradient_state_shared_output_bytes.load(std::memory_order_relaxed),
+          gradient_state_staging_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1267,6 +1279,97 @@ void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>*
 }  // namespace
 std::unique_ptr<LeafSums> MakeLeafSums(std::size_t leaves, std::size_t targets) {
   return std::make_unique<MetalLeafSums>(leaves, targets);
+}
+
+namespace {
+template <typename T>
+void CheckGradientView(linalg::MatrixView<T> view, bool output) {
+  auto rows = view.Shape(0), columns = view.Shape(1);
+  if (!rows || !columns) return;
+  auto a = view.Stride(0), b = view.Stride(1);
+  auto max = std::numeric_limits<std::size_t>::max();
+  CHECK(!a || rows - 1 <= max / a);
+  CHECK(!b || columns - 1 <= max / b);
+  auto row_extent = (rows - 1) * a, column_extent = (columns - 1) * b;
+  CHECK_LE(column_extent, max - row_extent);
+  CHECK_LT(row_extent + column_extent, view.Values().size());
+  if (output) {
+    CHECK(rows == 1 || a != 0) << "Overlapping output rows.";
+    CHECK(columns == 1 || b != 0) << "Overlapping output columns.";
+    if (rows > 1 && columns > 1) {
+      auto x = a, y = b;
+      while (y) {
+        auto r = x % y;
+        x = y;
+        y = r;
+      }
+      CHECK(rows <= b / x || columns <= a / x) << "Overlapping output elements.";
+    }
+  }
+}
+
+template <typename T>
+void GradientState(linalg::MatrixView<GradientPair const> input, linalg::MatrixView<T> output,
+                   bool hessian) {
+  CHECK_EQ(input.Shape(0), output.Shape(0));
+  CHECK_EQ(input.Shape(1), output.Shape(1));
+  CheckGradientView(input, false);
+  CheckGradientView(output, true);
+  auto rows = input.Shape(0), columns = input.Shape(1);
+  if (!rows || !columns) return;
+  CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max() / columns);
+  auto source = input.Values();
+  auto destination = output.Values();
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto in = TryBorrowMemory(rt.device, source.data(), source.size_bytes(), 8);
+    bool shared_in = in.buffer != nil;
+    if (!shared_in) in = {Upload(rt, source.data(), source.size_bytes()), 0};
+    bool alias = MemoryRangesOverlap(source.data(), source.size_bytes(), destination.data(),
+                                     destination.size_bytes());
+    auto out = alias ? BorrowedMemory{}
+                     : TryBorrowMemory(rt.device, destination.data(), destination.size_bytes(), 4);
+    bool shared_out = out.buffer != nil;
+    // Preserve output padding when staging, and defer aliased writes until the
+    // kernel has finished reading the original source snapshot.
+    if (!shared_out) out = {Upload(rt, destination.data(), destination.size_bytes()), 0};
+    struct {
+      std::uint64_t columns, in_row, in_column, out_row, out_column;
+      std::uint32_t hessian, padding;
+    } p{columns, input.Stride(0), input.Stride(1), output.Stride(0), output.Stride(1), hessian, 0};
+    static_assert(sizeof(p) == 48);
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.gradient_state_pipeline];
+    [e setBuffer:in.buffer offset:in.offset atIndex:0];
+    [e setBuffer:out.buffer offset:out.offset atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(rows * columns, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, hessian ? &hessian_extract_dispatches : &gradient_copy_dispatches,
+                      &gradient_state_gpu_time_ns);
+    if (!shared_out) std::memcpy(destination.data(), out.buffer.contents, destination.size_bytes());
+    gradient_state_shared_input_bytes.fetch_add(shared_in ? source.size_bytes() : 0,
+                                                std::memory_order_relaxed);
+    gradient_state_shared_output_bytes.fetch_add(shared_out ? destination.size_bytes() : 0,
+                                                 std::memory_order_relaxed);
+    gradient_state_staging_bytes.fetch_add(
+        (shared_in ? 0 : source.size_bytes()) + (shared_out ? 0 : destination.size_bytes()),
+        std::memory_order_relaxed);
+  }
+}
+}  // namespace
+
+void CopyGradients(linalg::MatrixView<GradientPair const> input,
+                   linalg::MatrixView<GradientPair> output) {
+  GradientState(input, output, false);
+}
+void ExtractHessians(linalg::MatrixView<GradientPair const> input,
+                     linalg::MatrixView<float> output) {
+  GradientState(input, output, true);
 }
 
 namespace {

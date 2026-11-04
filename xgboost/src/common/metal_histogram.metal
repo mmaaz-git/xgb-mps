@@ -5285,3 +5285,18 @@ kernel void xgb_sketch_update(device const float4* input [[buffer(0)]],
   counts[p.nlevels + 1] = max(p.nlevels, l + 1);
   counts[p.nlevels + 2] = l;
 }
+
+struct GradientStateParams {
+  ulong columns, in_row, in_column, out_row, out_column;
+  uint hessian, padding;
+};
+kernel void xgb_gradient_state(device const uint2* input [[buffer(0)]],
+                               device uint* output [[buffer(1)]],
+                               constant GradientStateParams& p [[buffer(2)]],
+                               uint tid [[thread_position_in_grid]]) {
+  ulong row = ulong(tid) / p.columns, column = ulong(tid) % p.columns;
+  uint2 pair = input[row * p.in_row + column * p.in_column];
+  ulong out = row * p.out_row + column * p.out_column;
+  if (p.hessian) output[out] = pair.y;
+  else { output[out * 2] = pair.x; output[out * 2 + 1] = pair.y; }
+}

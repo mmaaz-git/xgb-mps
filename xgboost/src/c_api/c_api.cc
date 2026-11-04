@@ -271,6 +271,18 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["linear_residual_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.linear_residual_dispatches)};
   info["linear_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.linear_gpu_time_ns)};
+  info["gradient_copy_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_copy_dispatches)};
+  info["hessian_extract_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.hessian_extract_dispatches)};
+  info["gradient_state_gpu_time_ns"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_state_gpu_time_ns)};
+  info["gradient_state_shared_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_state_shared_input_bytes)};
+  info["gradient_state_shared_output_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_state_shared_output_bytes)};
+  info["gradient_state_staging_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.gradient_state_staging_bytes)};
   info["sketch_weight_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.sketch_weight_dispatches)};
   info["sketch_sorted_dispatches"] =
@@ -387,6 +399,12 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["linear_gradient_dispatches"] = Integer{0};
   info["linear_residual_dispatches"] = Integer{0};
   info["linear_gpu_time_ns"] = Integer{0};
+  info["gradient_copy_dispatches"] = Integer{0};
+  info["hessian_extract_dispatches"] = Integer{0};
+  info["gradient_state_gpu_time_ns"] = Integer{0};
+  info["gradient_state_shared_input_bytes"] = Integer{0};
+  info["gradient_state_shared_output_bytes"] = Integer{0};
+  info["gradient_state_staging_bytes"] = Integer{0};
   info["sketch_weight_dispatches"] = Integer{0};
   info["sketch_sorted_dispatches"] = Integer{0};
   info["sketch_update_dispatches"] = Integer{0};

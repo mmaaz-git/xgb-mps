@@ -70,6 +70,7 @@ def test_gpu_reduced_leaf_fitting(metal, layout, sampling, subsample, regulariza
     before = xgb.metal_info()
     gpu = xgb.train(params | {"device": "mps"}, data, 3, obj=Reduced())
     after = xgb.metal_info()
+    assert after["gradient_copy_dispatches"] - before["gradient_copy_dispatches"] == 6
     pages = 4 if layout == "external" else 1
     assert after["leaf_sum_init_dispatches"] - before["leaf_sum_init_dispatches"] == 3
     assert after["leaf_sum_dispatches"] - before["leaf_sum_dispatches"] == 3 * pages
