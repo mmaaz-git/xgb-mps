@@ -66,7 +66,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
-| Ranking training | Stable grouped sorting, NDCG cache/label checks and biased top-k pairwise/NDCG/MAP pair construction, gradients and normalization on Metal; mean-sampled and unbiased gradients remain CPU |
+| Ranking training | Stable grouped sorting, NDCG cache/label checks and biased top-k and mean-sampled pairwise/NDCG/MAP pair construction, gradients and normalization on Metal; unbiased gradients remain CPU |
 | ROC-AUC | Binary, multiclass one-vs-rest and multilabel; stable descending score sort, weighted binary64 prefixes and tied-score trapezoid integration; final per-output normalization/averaging stays on the host |
 | PR-AUC | Binary, multiclass and multilabel; GPU sort, weighted prefixes and stable continuous PR integral; final aggregation stays on the host |
 | Metrics | RMSE, RMSLE, MAE, MAPE, logloss, error thresholds, Poisson, gamma, Tweedie, pseudo-Huber, multiclass logloss/error, quantile, expectile, NDCG, MAP and precision; GPU label validation and NDCG cache initialization |
@@ -992,3 +992,54 @@ zero; `ranking_pair_batches` counts storage batches. `ranking_gradient_gpu_time_
 measures the fused command and overlaps grouped-sort and objective durations.
 Do not add those timings. Broad CUDA parity and large training speedups remain
 unfinished.
+
+
+### Mean-sampled ranking and sigmoid accuracy
+
+Mean-sampled pairwise/NDCG/MAP now run pair generation and gradients on Metal.
+Stable label sorting follows prediction rank; a GPU generator per query preserves
+Apple libc++'s `minstd_rand` and rejection-sampling sequence. Ordered incidence
+lists let rows accumulate independently in CPU pair order. Candidate pair,
+gradient and incidence buffers share a 64 MiB batch budget, except when one query
+requires more. Sampling within a query is sequential and remains a performance
+limit for long queries. Unbiased gradients and position-bias updates remain CPU.
+
+Native checks cover **1,054,720 bit-exact random draws and engine states** across
+4,120 seed/range cases, including 31/32-bit ranges. Combined top-k/mean objective
+tests cover **1,442 cases / 2,444,200 rows / 43,810,880 candidate pairs**;
+**2,441,375 gradient pairs are bit-exact**, with maximum scaled error `6.30e-7`.
+There are 551,079 subnormal field checks. The full suite passes **574 Python tests**
+and native tests under Metal API Validation; one test is skipped. CPU-only checks
+also pass. A separate strict prediction benchmark still has a failure described below.
+
+The first large mean-pairwise benchmark exposed rounding feedback: native Metal
+exponential/division errors produced a 0.567 maximum prediction difference after
+20 rounds on 100,000 rows. Ranking now uses a two-float exponential expansion,
+explicit FP32 rounding boundaries and a binary64 reciprocal. On **2,996,040**
+inputs it matches both GPU software-binary64 and CPU binary64-exp sigmoid oracles
+exactly. Apple's dynamic CPU `expf` differs on 4,962 of those inputs, by up to four
+sigmoid ULPs, so exact CPU-libm identity is not claimed. The original failing
+100,000-row case is now a regression test and has maximum prediction difference
+`2.39e-6`; the benchmark tolerance was kept unchanged.
+
+Mean training measurements use 8 samples per row, query size 128, one million
+rows, 32 features, 20 rounds, depth 6, eight CPU threads, three alternating repeats
+and per-round NDCG@10 evaluation. They include DMatrix construction and warmed
+training, excluding data generation.
+
+| Objective | CPU median | MPS median | CPU / MPS | Maximum prediction difference |
+| --- | ---: | ---: | ---: | ---: |
+| [NDCG](validation/benchmark-ranking-mean-ndcg-v2-m3.json) | 1.804 s | 2.409 s | 0.75× | `4.77e-7` |
+| [MAP](validation/benchmark-ranking-mean-map-v2-m3.json) | 2.065 s | 2.499 s | 0.83× | `2.39e-7` |
+
+Both pass the strict prediction/evaluation checks; the reports retain their slower
+100,000-row cases too. MPS still loses these training comparisons.
+
+**Known strict-equivalence failure:** the [million-row mean-pairwise run](validation/benchmark-ranking-mean-pairwise-v3-m3.json)
+exceeds `atol=rtol=2e-5` on 1,544 of one million predictions. Maximum difference
+is `0.000506`, RMS difference is `7.09e-6`, and every round's NDCG@10 agrees within
+`4e-15` (final score approximately 0.994296). It remains explicitly marked
+`prediction_equivalence_failed`, not a passed speedup result. The preceding
+[run without evaluation](validation/benchmark-ranking-mean-pairwise-v2-m3.json)
+retains the passing 100,000-row case and the same million-row failure. Gradient
+and ranking-score equivalence do not guarantee identical long-run predictions.

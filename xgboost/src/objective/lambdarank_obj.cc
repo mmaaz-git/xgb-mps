@@ -154,10 +154,10 @@ class LambdaRankObj : public FitIntercept {
   }
 
 #if defined(XGBOOST_USE_METAL)
-  bool TryMetalGradient(common::metal::RankingLossKind kind,
+  bool TryMetalGradient(common::metal::RankingLossKind kind, std::uint32_t seed,
                          HostDeviceVector<float> const& predt, MetaInfo const& info,
                          linalg::Matrix<GradientPair>* out_gpair) {
-    if (!ctx_->IsMPS() || !param_.HasTruncation() || param_.lambdarank_unbiased) return false;
+    if (!ctx_->IsMPS() || param_.lambdarank_unbiased) return false;
     CHECK_EQ(info.labels.Shape(1), 1) << "multi-target for learning to rank is not yet supported.";
     out_gpair->SetDevice(DeviceOrd::CPU());
     out_gpair->Reshape(info.num_row_, 1);
@@ -171,7 +171,7 @@ class LambdaRankObj : public FitIntercept {
         p_cache_->DataGroupPtr(ctx_), info.weights_.ConstHostSpan(), param_.NumPair(),
         param_.lambdarank_normalization, param_.lambdarank_score_normalization,
         param_.ndcg_exp_gain, p_cache_->WeightNorm(), discounts, inverse,
-        out_gpair->HostView().Values());
+        out_gpair->HostView().Values(), param_.IsMean(), seed);
     return true;
   }
 #endif
@@ -390,7 +390,7 @@ class LambdaRankNDCG : public LambdaRankObj<LambdaRankNDCG, ltr::NDCGCache> {
       return;
     }
 #if defined(XGBOOST_USE_METAL)
-    if (this->TryMetalGradient(common::metal::RankingLossKind::kNDCG, predt, info, out_gpair)) return;
+    if (this->TryMetalGradient(common::metal::RankingLossKind::kNDCG, seed, predt, info, out_gpair)) return;
 #endif
 
     auto device = ctx_->Device().IsSycl() ? DeviceOrd::CPU() : ctx_->Device();
@@ -517,7 +517,7 @@ class LambdaRankMAP : public LambdaRankObj<LambdaRankMAP, ltr::MAPCache> {
           lj_full_.View(ctx_->Device()), out_gpair);
     }
 #if defined(XGBOOST_USE_METAL)
-    if (this->TryMetalGradient(common::metal::RankingLossKind::kMAP, predt, info, out_gpair)) return;
+    if (this->TryMetalGradient(common::metal::RankingLossKind::kMAP, seed, predt, info, out_gpair)) return;
 #endif
 
     auto gptr = p_cache_->DataGroupPtr(ctx_).data();
@@ -620,7 +620,7 @@ class LambdaRankPairwise : public LambdaRankObj<LambdaRankPairwise, ltr::Ranking
           lj_full_.View(ctx_->Device()), out_gpair);
     }
 #if defined(XGBOOST_USE_METAL)
-    if (this->TryMetalGradient(common::metal::RankingLossKind::kPairwise, predt, info, out_gpair)) return;
+    if (this->TryMetalGradient(common::metal::RankingLossKind::kPairwise, seed, predt, info, out_gpair)) return;
 #endif
 
     auto gptr = p_cache_->DataGroupPtr(ctx_);

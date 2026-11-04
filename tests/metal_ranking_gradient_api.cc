@@ -29,14 +29,15 @@ int main() {
     uint64_t pair_count = 0;
     double max_error = 0;
     auto run = [&](std::string const& objective, std::vector<bst_group_t> const& sizes, uint32_t k,
-                   bool normalized, bool score_normalized, int mode, bool batched) {
+                   bool normalized, bool score_normalized, int mode, bool batched,
+                   bool mean = false) {
       MetaInfo info;
       info.group_ptr_.push_back(0);
       uint64_t expected_pairs = 0;
       for (auto n : sizes) {
         info.group_ptr_.push_back(info.group_ptr_.back() + n);
         auto m = std::min(n, k);
-        expected_pairs += uint64_t(m) * n - uint64_t(m) * (m + 1ull) / 2;
+        expected_pairs += mean ? uint64_t(k) * n : uint64_t(m) * n - uint64_t(m) * (m + 1ull) / 2;
       }
       size_t n = info.group_ptr_.back();
       info.num_row_ = n;
@@ -62,7 +63,7 @@ int main() {
         for (size_t i = 0; i < w.size(); ++i)
           w[i] = mode == 3 ? (i % 2 ? 1e20f : 1e-20f) : .1f + float(rng() % 31) / 7;
       }
-      Args args{{"lambdarank_pair_method", "topk"},
+      Args args{{"lambdarank_pair_method", mean ? "mean" : "topk"},
                 {"lambdarank_num_pair_per_sample", std::to_string(k)},
                 {"lambdarank_normalization", normalized ? "true" : "false"},
                 {"lambdarank_score_normalization", score_normalized ? "true" : "false"},
@@ -72,6 +73,8 @@ int main() {
       co->Configure(args);
       go->Configure(args);
       linalg::Matrix<GradientPair> expected, actual;
+      cpu.Rng().seed(17891u + cases);
+      gpu.Rng().seed(17891u + cases);
       co->GetGradient(preds, info, 0, &expected);
       auto before = common::metal::GetStatistics();
       go->GetGradient(preds, info, 0, &actual);
@@ -111,20 +114,22 @@ int main() {
       rows += n;
       pair_count += expected_pairs;
     };
-    for (std::string objective : {"rank:pairwise", "rank:ndcg", "rank:map"}) {
-      for (std::vector<bst_group_t> sizes :
-           {std::vector<bst_group_t>{1}, {7, 31, 33}, {255, 256, 257}, {4097, 31, 1}}) {
-        for (uint32_t k : {1, 8, 32})
-          for (bool norm : {false, true})
-            for (bool score_norm : {false, true})
-              for (int mode = 0; mode < 5; ++mode)
-                run(objective, sizes, k, norm, score_norm, mode, false);
-        std::printf("Checked %zu gradient cases / %zu rows / %llu pairs\n", cases, rows,
-                    static_cast<unsigned long long>(pair_count));
-        std::fflush(stdout);
+    for (bool mean : {false, true}) {
+      for (std::string objective : {"rank:pairwise", "rank:ndcg", "rank:map"}) {
+        for (std::vector<bst_group_t> sizes :
+             {std::vector<bst_group_t>{1}, {7, 31, 33}, {255, 256, 257}, {4097, 31, 1}}) {
+          for (uint32_t k : {1, 8, 32})
+            for (bool norm : {false, true})
+              for (bool score_norm : {false, true})
+                for (int mode = 0; mode < 5; ++mode)
+                  run(objective, sizes, k, norm, score_norm, mode, false, mean);
+          std::printf("Checked %zu gradient cases / %zu rows / %llu pairs\n", cases, rows,
+                      static_cast<unsigned long long>(pair_count));
+          std::fflush(stdout);
+        }
       }
+      run("rank:pairwise", std::vector<bst_group_t>(2560, 128), 32, true, true, 0, true, mean);
     }
-    run("rank:pairwise", std::vector<bst_group_t>(2560, 128), 32, true, true, 0, true);
     std::printf(
         "PASS %zu ranking gradient cases / %zu rows / %llu pairs; %zu exact gradient pairs, max "
         "scaled error %.9g; batched storage verified\n",

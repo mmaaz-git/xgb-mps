@@ -50,6 +50,7 @@ def main():
     parser.add_argument("--max-depth", type=int, default=6)
     parser.add_argument("--query-size", type=int, default=128, help="Rows per query for ranking objectives")
     parser.add_argument("--rank-pairs", type=int, default=32)
+    parser.add_argument("--rank-method", choices=["topk", "mean"], default="topk")
     parser.add_argument("--progress-every", type=int, default=0)
     parser.add_argument("--float32-generation", action="store_true",
                         help="Generate large feature arrays directly as FP32, avoiding FP64 temporaries")
@@ -67,7 +68,7 @@ def main():
     p = dict(tree_method="hist", objective=args.objective, max_depth=args.max_depth,
              max_bin=256, nthread=args.threads, seed=7, subsample=args.subsample)
     if is_ranking:
-        p.update(lambdarank_pair_method="topk", lambdarank_num_pair_per_sample=args.rank_pairs)
+        p.update(lambdarank_pair_method=args.rank_method, lambdarank_num_pair_per_sample=args.rank_pairs)
     if args.eval_metric:
         p["eval_metric"] = args.eval_metric
     if args.objective == "reg:quantileerror":
@@ -148,12 +149,22 @@ def main():
                 preds[device] = model.predict(d)
                 print(f"  {device} repeat {repeat+1}/{args.repeats}: {elapsed:.3f}s, {completed} GPU dispatches, {gpu_seconds:.3f}s GPU time", flush=True)
                 report["in_progress"] = dict(rows=n, seconds=timings, memory=memory,
-                                              dispatch_statistics=dispatch_statistics, clock_checks=clock_checks)
+                                              dispatch_statistics=dispatch_statistics, clock_checks=clock_checks,
+                                              metric_histories=metric_histories)
                 args.output.write_text(json.dumps(report, indent=2) + "\n")
                 del d, model
         cpu = statistics.median(timings["cpu"])
         mps = statistics.median(timings["mps"])
-        np.testing.assert_allclose(preds["mps"], preds["cpu"], rtol=2e-5, atol=2e-5)
+        try:
+            np.testing.assert_allclose(preds["mps"], preds["cpu"], rtol=2e-5, atol=2e-5)
+        except AssertionError:
+            report["status"] = "prediction_equivalence_failed"
+            difference = np.abs(preds["cpu"] - preds["mps"])
+            report["in_progress"]["max_prediction_difference"] = float(np.max(difference))
+            report["in_progress"]["prediction_rmse_difference"] = float(np.sqrt(np.mean(difference.astype(np.float64) ** 2)))
+            report["in_progress"]["prediction_mismatch_count"] = int(np.count_nonzero(difference > 2e-5 + 2e-5 * np.abs(preds["cpu"])))
+            args.output.write_text(json.dumps(report, indent=2) + "\n")
+            raise
         if args.eval_metric:
             np.testing.assert_allclose(metric_histories["mps"][-1]["train"][args.eval_metric],
                                        metric_histories["cpu"][-1]["train"][args.eval_metric],

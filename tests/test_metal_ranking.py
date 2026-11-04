@@ -35,7 +35,7 @@ def test_ranking_training(metal, objective, method, largest):
     # NDCG also builds a temporary objective cache for intercept estimation.
     assert after["ranking_cache_dispatches"] - before["ranking_cache_dispatches"] == (3 if objective == "rank:ndcg" else 1)
     assert after["ranking_label_dispatches"] > before["ranking_label_dispatches"]
-    assert after["ranking_gradient_dispatches"] - before["ranking_gradient_dispatches"] == (6 if method == "topk" else 0)
+    assert after["ranking_gradient_dispatches"] - before["ranking_gradient_dispatches"] == 6
     assert (after["radix_sort_dispatches"] > before["radix_sort_dispatches"]) == (largest > 4096)
     np.testing.assert_allclose(models["mps"].predict(d), models["cpu"].predict(d),
                                rtol=2e-5, atol=2e-5)
@@ -171,4 +171,24 @@ def test_unbiased_gradient_path_is_explicit(metal, objective):
     assert after["group_sort_dispatches"] > before["group_sort_dispatches"]
     # This mode is still an explicit CPU-gradient gap; sorting/cache are Metal.
     assert after["ranking_gradient_dispatches"] == before["ranking_gradient_dispatches"]
+    np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)
+
+
+def test_mean_ranking_rounding_feedback(metal):
+    # Native Metal exp/division errors were amplified after ~15 rounds here.
+    # Keep the original benchmark's input, seed and prediction tolerance.
+    rng = np.random.default_rng(17)
+    n = 100_000
+    x = rng.standard_normal(size=(n, 32), dtype=np.float32)
+    y = (2 * x[:, 0] - x[:, 1] + x[:, 2] ** 2 + rng.normal(scale=.1, size=n)).astype(np.float32)
+    y = np.digitize(y, [-2, -1, 0, 1, 2, 4, 6]).astype(np.float32)
+    groups = np.diff(np.r_[np.arange(0, n, 128), n]).astype(np.uint32)
+    d = xgb.DMatrix(x, label=y, group=groups, nthread=8)
+    params = dict(tree_method="hist", objective="rank:pairwise", max_depth=6,
+                  max_bin=256, nthread=8, seed=7, subsample=1.,
+                  lambdarank_pair_method="mean", lambdarank_num_pair_per_sample=8)
+    cpu = xgb.train(params | {"device": "cpu"}, d, 20)
+    before = xgb.metal_info()
+    gpu = xgb.train(params | {"device": "mps"}, d, 20)
+    assert xgb.metal_info()["ranking_gradient_dispatches"] - before["ranking_gradient_dispatches"] == 21
     np.testing.assert_allclose(gpu.predict(d), cpu.predict(d), rtol=2e-5, atol=2e-5)

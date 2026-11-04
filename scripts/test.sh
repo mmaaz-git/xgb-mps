@@ -3,6 +3,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p results
 echo "Compiling standalone tests against the production Metal shader"
+echo "Checking mean-ranking random draws against Apple libc++"
+clang++ -O2 -std=c++17 -fobjc-arc tests/metal_ranking_rng.mm \
+  -framework Metal -framework Foundation -o results/metal_ranking_rng_test
+MTL_DEBUG_LAYER=1 results/metal_ranking_rng_test xgboost/src/common/metal_histogram.metal
 clang++ -std=c++17 -fobjc-arc tests/metal_kernel.mm \
   -framework Metal -framework Foundation -o results/metal_kernel_test
 echo "Checking host-memory sharing, guards and VM-region fallback rules"
@@ -92,7 +96,11 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_ranking_cache_api_test
 MTL_DEBUG_LAYER=1 results/metal_ranking_cache_api_test
-echo "Checking production top-k ranking gradients and bounded pair batches"
+echo "Checking ranking sigmoid rounding against CPU and binary64 oracles"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_ranking_math.mm \
+  -framework Metal -framework Foundation -o results/metal_ranking_math_test
+MTL_DEBUG_LAYER=1 results/metal_ranking_math_test xgboost/src/common/metal_histogram.metal
+echo "Checking top-k/mean ranking gradients and bounded pair batches"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
   -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
