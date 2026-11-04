@@ -2982,6 +2982,73 @@ Transform TransformFromName(char const* name) {
 }
 
 namespace {
+// Objective payloads may be owned Metal spans or host callers of the native API.
+// Keep guarded host compatibility and account every fallback explicitly.
+BorrowedMemory ObjectiveInput(Runtime const& rt, void const* data, std::size_t bytes,
+                                std::size_t alignment = 4) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, alignment);
+  if (input.buffer) {
+    objective_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  } else {
+    input = {Upload(rt, data, bytes), 0};
+    objective_staging_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
+struct ObjectiveOutput {
+  void* destination;
+  std::size_t bytes;
+  BorrowedMemory memory;
+  bool shared;
+  ObjectiveOutput(Runtime const& rt, void* data, std::size_t size, bool disjoint,
+                    id<MTLBuffer> fallback = nil)
+      : destination{data}, bytes{size},
+        memory{disjoint ? TryBorrowMemory(rt.device, data, size, 8) : BorrowedMemory{}},
+        shared{memory.buffer != nil} {
+    if (shared) objective_shared_output_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    else {
+      memory = {fallback ? fallback : Allocate(rt, bytes), 0};
+      objective_staging_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+  }
+  // Late publication from independent scratch preserves aliased input reads.
+  // Unshareable output already uses this scratch as its host publication source.
+  void Store(id<MTLCommandBuffer> command, id<MTLBuffer> source) {
+    if (!bytes) return;
+    if (!shared) {
+      memory = {source, 0};
+      return;
+    }
+    auto e = [command blitCommandEncoder];
+    CHECK(e);
+    [e copyFromBuffer:source sourceOffset:0 toBuffer:memory.buffer
+        destinationOffset:memory.offset size:bytes];
+    [e endEncoding];
+  }
+  void Publish() const {
+    if (!shared && bytes) std::memcpy(destination, memory.buffer.contents, bytes);
+  }
+};
+template <typename T, typename... Inputs>
+bool ObjectiveOutputDisjoint(Span<T> output, Inputs... inputs) {
+  return (!MemoryRangesOverlap(output.data(), output.size_bytes(), inputs.data(),
+                               inputs.size_bytes()) && ...);
+}
+// Bias kernels update their input buffers. Snapshot on GPU so caller storage
+// remains unchanged until all input reads and gradient calculations finish.
+id<MTLBuffer> ObjectiveSnapshot(Runtime const& rt, id<MTLCommandBuffer> command,
+                                 void const* data, std::size_t bytes) {
+  auto input = ObjectiveInput(rt, data, bytes, alignof(double));
+  auto result = Allocate(rt, bytes);
+  if (bytes) {
+    auto e = [command blitCommandEncoder];
+    CHECK(e);
+    [e copyFromBuffer:input.buffer sourceOffset:input.offset toBuffer:result
+        destinationOffset:0 size:bytes];
+    [e endEncoding];
+  }
+  return result;
+}
 // Guarded synchronous bindings for metric and ranking-cache payloads.
 BorrowedMemory MetricInput(Runtime const& rt, void const* data, std::size_t bytes,
                              std::size_t alignment = 4) {
@@ -4562,13 +4629,13 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
     auto& rt = GetRuntime();
     CHECK_LE(max_pairs, rt.device.maxBufferLength / sizeof(GradientPair))
         << "A ranking query needs more pair storage than this Metal device supports.";
-    auto input = Upload(rt, predictions.data(), predictions.size_bytes());
-    auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto input = ObjectiveInput(rt, predictions.data(), predictions.size_bytes());
+    auto response = ObjectiveInput(rt, labels.Values().data(), labels.Values().size_bytes());
     auto offsets = metadata->OffsetsBuffer();
     auto task_buffer = metadata->TasksBuffer();
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
-    auto discount = Upload(rt, discounts.data(), discounts.size_bytes());
-    auto inverse = Upload(rt, inverse_idcg.data(), inverse_idcg.size_bytes());
+    auto weight = ObjectiveInput(rt, weights.data(), weights.size_bytes());
+    auto discount = ObjectiveInput(rt, discounts.data(), discounts.size_bytes(), alignof(double));
+    auto inverse = ObjectiveInput(rt, inverse_idcg.data(), inverse_idcg.size_bytes(), alignof(double));
     auto pair_buffer = Allocate(rt, max_pairs * sizeof(GradientPair));
     auto costs = Allocate(rt, positions ? max_pairs * 8 : 8);
     auto minimum_bias = Allocate(rt, 8);
@@ -4578,8 +4645,6 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
     auto bias_segments = (n_groups + 127) / 128;
     auto bias_partial = Allocate(rt, positions ? positions * bias_segments * 16ull : 16);
     auto bias_sum = Allocate(rt, positions ? positions * 16ull : 16);
-    auto bias_positive = Upload(rt, bias.positive.data(), bias.positive.size_bytes());
-    auto bias_negative = Upload(rt, bias.negative.data(), bias.negative.size_bytes());
     // Each sampled pair has two incidence nodes, linked in CUDA pair-index
     // order so rows can accumulate independently. Pair RNG is parallel.
     if (mean) CHECK_LE(max_pairs, (std::numeric_limits<std::uint32_t>::max() - 1ull) / 2);
@@ -4593,6 +4658,8 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
     auto map_stats = Allocate(rt, 16);
     auto command = [rt.queue commandBuffer];
     CHECK(command);
+    auto bias_positive = ObjectiveSnapshot(rt, command, bias.positive.data(), bias.positive.size_bytes());
+    auto bias_negative = ObjectiveSnapshot(rt, command, bias.negative.data(), bias.negative.size_bytes());
     id<MTLCounterSampleBuffer> timing = nil;
     std::vector<char const*> phases;
     if (auto requested = std::getenv("XGBOOST_METAL_PROFILE_RANKING"); requested && std::strcmp(requested, "1") == 0) {
@@ -4620,7 +4687,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
       phases.push_back(phase);
       return [command computeCommandEncoderWithDescriptor:desc];
     };
-    auto order = EncodeGroupSort(rt, command, input, offsets, predictions.size(), 1, n_groups, max_group_size);
+    auto order = EncodeGroupSort(rt, command, input.buffer, offsets, predictions.size(), 1, n_groups, max_group_size, input.offset);
     GroupOrder label_order{};
     if (mean) {
       auto ranked_labels = Allocate(rt, predictions.size_bytes());
@@ -4628,7 +4695,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
       CHECK(e);
       [e setComputePipelineState:rt.ranking_mean_labels_pipeline];
       [e setBuffer:order.records offset:0 atIndex:0];
-      [e setBuffer:response offset:0 atIndex:1];
+      [e setBuffer:response.buffer offset:response.offset atIndex:1];
       [e setBuffer:ranked_labels offset:0 atIndex:2];
       std::uint64_t stride = labels.Stride(0);
       [e setBytes:&stride length:sizeof(stride) atIndex:3];
@@ -4647,7 +4714,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
       CHECK(e);
       [e setComputePipelineState:rt.ranking_map_stats_pipeline];
       [e setBuffer:order.records offset:0 atIndex:0];
-      [e setBuffer:response offset:0 atIndex:1];
+      [e setBuffer:response.buffer offset:response.offset atIndex:1];
       [e setBuffer:offsets offset:0 atIndex:2];
       [e setBuffer:values offset:0 atIndex:3];
       [e setBytes:&p length:sizeof(p) atIndex:4];
@@ -4707,7 +4774,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
             [e setComputePipelineState:rt.ranking_mean_sample_pipeline];
             [e setBuffer:order.records offset:0 atIndex:0];
             [e setBuffer:label_order.records offset:0 atIndex:1];
-            [e setBuffer:response offset:0 atIndex:2];
+            [e setBuffer:response.buffer offset:response.offset atIndex:2];
             [e setBuffer:task_buffer offset:0 atIndex:3];
             [e setBuffer:sampled offset:0 atIndex:4];
             [e setBytes:&p length:sizeof(p) atIndex:5];
@@ -4746,11 +4813,11 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
           CHECK(e);
           [e setComputePipelineState:rt.ranking_pairs_pipeline];
           [e setBuffer:order.records offset:0 atIndex:0];
-          [e setBuffer:input offset:0 atIndex:1];
-          [e setBuffer:response offset:0 atIndex:2];
+          [e setBuffer:input.buffer offset:input.offset atIndex:1];
+          [e setBuffer:response.buffer offset:response.offset atIndex:2];
           [e setBuffer:task_buffer offset:0 atIndex:3];
-          [e setBuffer:discount offset:0 atIndex:4];
-          [e setBuffer:inverse offset:0 atIndex:5];
+          [e setBuffer:discount.buffer offset:discount.offset atIndex:4];
+          [e setBuffer:inverse.buffer offset:inverse.offset atIndex:5];
           [e setBuffer:map_stats offset:0 atIndex:6];
           [e setBuffer:pair_buffer offset:0 atIndex:7];
           [e setBytes:&p length:sizeof(p) atIndex:8];
@@ -4774,7 +4841,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
           [e setBytes:&p length:sizeof(p) atIndex:3];
           [e setBuffer:costs offset:0 atIndex:4];
           [e setBuffer:minimum_bias offset:0 atIndex:5];
-          [e setBuffer:weight offset:0 atIndex:6];
+          [e setBuffer:weight.buffer offset:weight.offset atIndex:6];
           [e dispatchThreadgroups:MTLSizeMake((end - begin + 7) / 8, 1, 1)
               threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
           [e endEncoding];
@@ -4789,7 +4856,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
           [e setBuffer:task_buffer offset:0 atIndex:1];
           [e setBuffer:pair_buffer offset:0 atIndex:2];
           [e setBuffer:norms offset:0 atIndex:3];
-          [e setBuffer:weight offset:0 atIndex:4];
+          [e setBuffer:weight.buffer offset:weight.offset atIndex:4];
           [e setBuffer:result offset:0 atIndex:5];
           [e setBytes:&p length:sizeof(p) atIndex:6];
           if (mean) {
@@ -4851,6 +4918,21 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
       [e dispatchThreads:MTLSizeMake(positions, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
       [e endEncoding];
     }
+    // Preserve legacy gradient -> diagnostics -> positive -> negative ordering
+    // for overlapping output/diagnostic spans, including mixed sharing eligibility.
+    bool disjoint =
+        ObjectiveOutputDisjoint(output, bias.positive, bias.negative, diagnostics.groups,
+                                diagnostics.global_cost_rounding, diagnostics.map_prefix, mean_pair_trace) &&
+        ObjectiveOutputDisjoint(bias.positive, bias.negative, diagnostics.groups,
+                                diagnostics.global_cost_rounding, diagnostics.map_prefix, mean_pair_trace) &&
+        ObjectiveOutputDisjoint(bias.negative, diagnostics.groups,
+                                diagnostics.global_cost_rounding, diagnostics.map_prefix, mean_pair_trace);
+    ObjectiveOutput gradient_out{rt, output.data(), output.size_bytes(), disjoint, result};
+    ObjectiveOutput positive_out{rt, bias.positive.data(), bias.positive.size_bytes(), disjoint, bias_positive};
+    ObjectiveOutput negative_out{rt, bias.negative.data(), bias.negative.size_bytes(), disjoint, bias_negative};
+    gradient_out.Store(command, result);
+    positive_out.Store(command, bias_positive);
+    negative_out.Store(command, bias_negative);
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
@@ -4865,7 +4947,7 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
                   << " gpu_ticks=" << end - begin;
       }
     }
-    std::memcpy(output.data(), result.contents, output.size_bytes());
+    gradient_out.Publish();
     if (!diagnostics.groups.empty())
       std::memcpy(diagnostics.groups.data(), norms.contents, diagnostics.groups.size_bytes());
     if (!diagnostics.global_cost_rounding.empty())
@@ -4875,8 +4957,8 @@ void RankingGradient(RankingLossKind kind, Span<float const> predictions,
                   diagnostics.map_prefix.size_bytes());
     if (trace) std::memcpy(mean_pair_trace.data(), trace.contents, mean_pair_trace.size_bytes());
     if (positions) {
-      std::memcpy(bias.positive.data(), bias_positive.contents, bias.positive.size_bytes());
-      std::memcpy(bias.negative.data(), bias_negative.contents, bias.negative.size_bytes());
+      positive_out.Publish();
+      negative_out.Publish();
       ranking_bias_dispatches.fetch_add(1, std::memory_order_relaxed);
     }
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
@@ -6217,42 +6299,6 @@ std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predi
 }
 
 namespace {
-// Objective payloads may be owned Metal spans or host callers of the native API.
-// Keep guarded host compatibility and account every fallback explicitly.
-BorrowedMemory ObjectiveInput(Runtime const& rt, void const* data, std::size_t bytes) {
-  auto input = TryBorrowMemory(rt.device, data, bytes, 4);
-  if (input.buffer) {
-    objective_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
-  } else {
-    input = {Upload(rt, data, bytes), 0};
-    objective_staging_bytes.fetch_add(bytes, std::memory_order_relaxed);
-  }
-  return input;
-}
-struct ObjectiveOutput {
-  void* destination;
-  std::size_t bytes;
-  BorrowedMemory memory;
-  bool shared;
-  ObjectiveOutput(Runtime const& rt, void* data, std::size_t size, bool disjoint)
-      : destination{data}, bytes{size},
-        memory{disjoint ? TryBorrowMemory(rt.device, data, size, 8) : BorrowedMemory{}},
-        shared{memory.buffer != nil} {
-    if (shared) objective_shared_output_bytes.fetch_add(bytes, std::memory_order_relaxed);
-    else {
-      memory = {Allocate(rt, bytes), 0};
-      objective_staging_bytes.fetch_add(bytes, std::memory_order_relaxed);
-    }
-  }
-  void Publish() const {
-    if (!shared) std::memcpy(destination, memory.buffer.contents, bytes);
-  }
-};
-template <typename T, typename... Inputs>
-bool ObjectiveOutputDisjoint(Span<T> output, Inputs... inputs) {
-  return (!MemoryRangesOverlap(output.data(), output.size_bytes(), inputs.data(),
-                               inputs.size_bytes()) && ...);
-}
 struct SurvivalCommand {
   id<MTLCommandBuffer> command;
   id<MTLBuffer> result;

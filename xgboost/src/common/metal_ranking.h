@@ -73,7 +73,9 @@ struct RankingGradientTrace {
   Span<std::array<double, 2>> map_prefix;
 };
 // Top-k or mean-sampled LambdaRank. Nonempty bias vectors enable unbiased loss
-// and are updated on GPU, then copied back for objective serialization. Pair
+// and remain on GPU through gradient calculation and bias updates. Owned outputs
+// publish by GPU copy; overlapping output/diagnostic destinations use ordered
+// host publication. Objective serialization explicitly requests a host mirror. Pair
 // construction, statistics, normalization and FP32 gradient accumulation execute
 // on GPU; output is in original row order. Optional mean_pair_trace receives
 // raw CUDA-ordered query-relative prediction ranks for validation only. It must

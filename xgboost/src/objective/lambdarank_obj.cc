@@ -37,6 +37,7 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_ranking.h"
+#include "../common/metal_vector.h"
 #endif
 
 namespace xgboost::obj {
@@ -102,6 +103,19 @@ void LambdaRankUpdatePositionBias(Context const* ctx, linalg::VectorView<double 
 template <typename Loss, typename Cache>
 class LambdaRankObj : public FitIntercept {
   MetaInfo const* p_info_{nullptr};
+#if defined(XGBOOST_USE_METAL)
+  // CUDA uses persistent row-cost buffers to track bias initialization. Metal
+  // fuses that scratch into RankingGradient; retain its logical shape for the
+  // same initialization/reload rules and lazy CPU handoff.
+  std::size_t metal_bias_rows_{0}, metal_bias_positions_{0};
+#endif
+
+  void InitPositionCosts(std::size_t rows, std::size_t positions) {
+    li_ = linalg::Zeros<double>(ctx_, positions);
+    lj_ = linalg::Zeros<double>(ctx_, positions);
+    li_full_ = linalg::Zeros<double>(ctx_, rows);
+    lj_full_ = linalg::Zeros<double>(ctx_, rows);
+  }
 
   // Update position biased for unbiased click data
   void UpdatePositionBias() {
@@ -159,7 +173,7 @@ class LambdaRankObj : public FitIntercept {
                          linalg::Matrix<GradientPair>* out_gpair) {
     if (!ctx_->IsMPS()) return false;
     CHECK_EQ(info.labels.Shape(1), 1) << "multi-target for learning to rank is not yet supported.";
-    out_gpair->SetDevice(DeviceOrd::CPU());
+    out_gpair->SetDevice(DeviceOrd::MPS());
     out_gpair->Reshape(info.num_row_, 1);
     common::Span<double const> discounts, inverse;
     if constexpr (std::is_same_v<Cache, ltr::NDCGCache>) {
@@ -167,13 +181,16 @@ class LambdaRankObj : public FitIntercept {
       inverse = GetCache()->InvIDCG(ctx_).Values();
     }
     common::metal::RankingGradient(
-        kind, predt.ConstHostSpan(), info.labels.HostView().Slice(linalg::All(), 0),
-        p_cache_->DataGroupPtr(ctx_), info.weights_.ConstHostSpan(), param_.NumPair(),
+        kind, common::metal::ConstDeviceSpan(predt),
+        info.labels.View(DeviceOrd::MPS()).Slice(linalg::All(), 0), p_cache_->DataGroupPtr(ctx_),
+        common::metal::ConstDeviceSpan(info.weights_), param_.NumPair(),
         param_.lambdarank_normalization, param_.lambdarank_score_normalization,
         param_.ndcg_exp_gain, p_cache_->WeightNorm(), discounts, inverse,
-        out_gpair->HostView().Values(), param_.IsMean(), seed,
-        {param_.lambdarank_unbiased ? ti_plus_.HostView().Values() : common::Span<double>{},
-         param_.lambdarank_unbiased ? tj_minus_.HostView().Values() : common::Span<double>{},
+        out_gpair->View(DeviceOrd::MPS()).Values(), param_.IsMean(), seed,
+        {param_.lambdarank_unbiased ? ti_plus_.View(DeviceOrd::MPS()).Values()
+                                    : common::Span<double>{},
+         param_.lambdarank_unbiased ? tj_minus_.View(DeviceOrd::MPS()).Values()
+                                    : common::Span<double>{},
          param_.Regularizer()},
         {}, {}, p_cache_->MetalPlan());
     return true;
@@ -337,18 +354,42 @@ class LambdaRankObj : public FitIntercept {
       CHECK_EQ(info.weights_.Size(), n_groups) << error::GroupWeight();
     }
 
-    if ((ti_plus_.Empty() || (!ctx_->IsMPS() && li_full_.Empty())) && param_.lambdarank_unbiased) {
+    bool has_row_costs = !li_full_.Empty();
+#if defined(XGBOOST_USE_METAL)
+    has_row_costs = has_row_costs || metal_bias_rows_ != 0;
+#endif
+    if ((ti_plus_.Empty() || !has_row_costs) && param_.lambdarank_unbiased) {
       CHECK_EQ(iter, 0);
-      ti_plus_ = linalg::Constant<double>(ctx_, 1.0, p_cache_->MaxPositionSize());
-      tj_minus_ = linalg::Constant<double>(ctx_, 1.0, p_cache_->MaxPositionSize());
-
-      if (!ctx_->IsMPS()) {
-        li_ = linalg::Zeros<double>(ctx_, p_cache_->MaxPositionSize());
-        lj_ = linalg::Zeros<double>(ctx_, p_cache_->MaxPositionSize());
-        li_full_ = linalg::Zeros<double>(ctx_, info.num_row_);
-        lj_full_ = linalg::Zeros<double>(ctx_, info.num_row_);
+      auto positions = p_cache_->MaxPositionSize();
+#if defined(XGBOOST_USE_METAL)
+      metal_bias_rows_ = 0;
+      metal_bias_positions_ = 0;
+      if (ctx_->IsMPS()) {
+        li_ = {};
+        lj_ = {};
+        li_full_ = {};
+        lj_full_ = {};
+        ti_plus_ = linalg::Vector<double>{{positions}, DeviceOrd::MPS()};
+        tj_minus_ = linalg::Vector<double>{{positions}, DeviceOrd::MPS()};
+        ti_plus_.Data()->Fill(1.0);
+        tj_minus_.Data()->Fill(1.0);
+        metal_bias_rows_ = info.num_row_;
+        metal_bias_positions_ = positions;
+      } else
+#endif
+      {
+        ti_plus_ = linalg::Constant<double>(ctx_, 1.0, positions);
+        tj_minus_ = linalg::Constant<double>(ctx_, 1.0, positions);
+        this->InitPositionCosts(info.num_row_, positions);
       }
     }
+#if defined(XGBOOST_USE_METAL)
+    if (!ctx_->IsMPS() && param_.lambdarank_unbiased && li_full_.Empty() && metal_bias_rows_ != 0) {
+      // A CPU consumer needs the scratch that CUDA would already have allocated;
+      // preserve the bias vectors learned on Metal instead of resetting them.
+      this->InitPositionCosts(metal_bias_rows_, metal_bias_positions_);
+    }
+#endif
     std::uint32_t seed{0};
     if (param_.IsMean()) {
       seed = static_cast<std::uint32_t>(ctx_->Rng()());

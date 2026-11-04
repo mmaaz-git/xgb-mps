@@ -14,7 +14,28 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **resident ranking metrics and caches**. Precision, NDCG and MAP now
+Latest step: **resident LambdaRank gradients and bias state**. Pairwise, NDCG and
+MAP objectives now consume Metal predictions, labels and query weights, publish
+gradients on GPU, and retain unbiased-learning arrays through bias updates.
+Saving configuration explicitly reads the small bias arrays. Initialization and
+reload rules now match the shared CPU/CUDA objective lifecycle; previously, a
+fresh Metal objective incorrectly preserved loaded bias at iteration zero.
+
+Focused validation passes **394 native cases / 85,031 checks / 44 expected
+rejections**, covering repeated calls, GPU writes, serialization/reloads, CPU/MPS
+handoffs, read-only/offset inputs, output aliases and publication order. Ranking
+formulas, RNG rules and comparison tolerances are unchanged. Full regression passes
+**3,325 Python tests, one expected skip**, all **91 rebuilt native check groups**,
+and the CPU-only build/API checks. The large batched ranking tests also verify
+resident inputs, gradients and bias without host transfers.
+[LambdaRank storage validation](validation/cuda-metal-ranking-gradient-state-m3.txt).
+
+Predictor/updater state, public result plumbing, persistent dictionaries, remaining
+CUDA audits and GPU collective transport remain open. Generic context storage
+still defaults to CPU. No benchmark or NVIDIA execution comparison was run for
+this step.
+
+The preceding step added **resident ranking metrics and caches**. Precision, NDCG and MAP now
 consume Metal predictions, labels and query weights. NDCG discounts and inverse
 ideal gains stay in Metal storage, including cache accessors. Cached sort indices
 are allocated and published on GPU from their first use. CUDA's small final
@@ -27,10 +48,9 @@ Full regression passes **3,325 Python tests, one expected skip**, all **90 rebui
 native check groups**, and the CPU-only build/API checks.
 [Ranking metric storage validation](validation/cuda-metal-ranking-metric-state-m3.txt).
 
-Ranking gradient and bias arrays still need ownership migration. Predictor/updater
-state, public result plumbing, persistent dictionaries, remaining CUDA audits and
-GPU collective transport also remain open. Generic context storage still defaults
-to CPU. No benchmark or NVIDIA execution comparison was run for this step.
+Ranking gradient and bias ownership was still pending at that checkpoint and is
+addressed by the latest step above. No benchmark or NVIDIA execution comparison
+was run for the metric/cache step.
 
 The preceding step added **resident AUC inputs and summaries**. Binary, multiclass, multilabel
 and grouped ROC/PR evaluators now consume Metal predictions, labels and weights.

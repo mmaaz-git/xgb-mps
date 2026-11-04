@@ -86,7 +86,7 @@ must be reported rather than hidden by widening test tolerances.
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; multiclass softmax follows source sequential binary64 accumulation of FP32 terms and argmax handles source NaN/subnormal comparisons; identity transforms require no dispatch. Nonranking objective transforms now retain explicit Metal vector storage |
 | Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; checked results publish by GPU blit only on success and retain Metal vector storage; expectile's host margin loop matches upstream host execution |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal source-expression gradients, FP32 residual-root sums, binary64 optional-weight sums and quantile prediction sorting; upstream host scale-statistic collective restored for empty/nonempty workers; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; gradient payloads now retain Metal vector storage. Initialization means/broadcasts/stumps/quantiles now retain Metal storage; source-defined expectile/absolute host finalizers remain. Other generic state work still needs migration |
-| Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation, ranking label validation and query-weight normalization now retain Metal input/cache storage; gradient/bias input and output ownership still needs migration. Top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
+| Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. Predictions, labels, query weights, gradients, NDCG caches and unbiased-learning arrays now retain explicit Metal storage through objective calls. Top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates execute on GPU. Source bias initialization/reload rules are preserved; serialization explicitly reads the small bias arrays |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms, now with explicit Metal input/output storage; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Means, medians/quantiles and stump wrappers now consume Metal spans and publish strided outputs/empty fills on GPU. Other state work still requires porting/audit |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
@@ -3683,3 +3683,70 @@ GPU bias calculations already exist, but their payload migration is next. Other
 remaining work includes predictor/updater state, result plumbing, dictionaries,
 source coverage audits, GPU collectives and cross-hardware validation. No benchmark
 or NVIDIA execution comparison was run.
+
+## LambdaRank gradients and bias retain Metal storage
+
+CUDA authority: the shared `objective/lambdarank_obj.cc` lifecycle and
+`objective/lambdarank_obj.cu` gradient/bias state. Pairwise, NDCG and MAP now pass
+explicit Metal prediction, label, query-weight, gradient and bias spans through
+the existing GPU ranking implementation. Bias vectors are initialized with GPU
+fills. The NDCG caches migrated in the preceding step remain resident here.
+`SaveConfig` is the explicit host boundary and retains upstream F32 serialization
+of the double bias arrays. Reading that mirror does not force a reupload on the
+next gradient call.
+
+The lower wrapper reuses guarded objective bindings, including byte offsets for
+all immutable inputs and eight-byte alignment for doubles. Bias kernels mutate
+their input, so GPU snapshots preserve aliased input reads until computation
+finishes. Gradients and both updated bias arrays publish from scratch by GPU blit.
+Overlapping output/diagnostic spans use ordered host publication, preserving the
+previous gradient, diagnostics, positive-bias, negative-bias write order even
+with mixed sharing eligibility. Read-only inputs and unshareable destinations
+retain counted fallback paths. Production objective arrays are disjoint owned
+buffers. Existing `objective_shared_input_bytes`, `objective_shared_output_bytes`
+and `objective_staging_bytes` now include ranking; no statistics ABI growth.
+
+The audit also found an initialization difference. CPU/CUDA use persistent row
+costs to determine whether bias has been initialized. Metal fuses that scratch
+inside its gradient command and previously checked only whether bias was empty.
+A fresh objective loading saved bias consequently preserved it at iteration zero
+and accepted starting later; CPU/CUDA instead reset it at zero and reject starting
+that state later. Metal now records the logical scratch shape and follows the
+source rule. An already initialized objective can still load bias and continue;
+its first call imports the serialized F32 values once. CPU handoff allocates row
+scratch lazily without resetting learned bias. Reinitialization replaces the old
+shape, including empty-row state after device handoffs.
+
+New native tests pass **394 cases / 85,031 checks / 44 expected rejections** with
+Metal API validation. Actual objective calls cover all three losses, top-k and
+mean sampling, biased/unbiased training, absent/positive/zero weights, empty to
+257-row data, repeated calls, GPU prediction writes, exact binding byte counts,
+serialization/reloads and CPU/MPS handoffs. Resident calls require no host mirrors,
+vector imports or objective/cache payload staging, with no repeated owned-vector
+allocation. An independent scalar CUDA-source reference checks gradient and bias
+values; existing tolerances are unchanged. CPU comparisons are restricted to
+compatible top-k behavior. CPU MAP's empty-query implementation indexes the first
+row unconditionally, so it is not used as an empty-query reference; Metal's empty
+state and valid nonempty CPU handoffs remain covered.
+
+Direct bindings cover small/medium/radix sorting through 8,197 rows, strided labels,
+offsets, every immutable input slot with read-only memory, unaligned outputs,
+input/output aliases, overlapping gradient/bias destinations and diagnostic
+publication order. Guards and vector lifetime gauges are checked. The existing
+524,288-row batched unbiased tests now also assert resident input/output state
+and no host transfers. Their host prediction mutations reacquire writable access
+instead of retaining an old host reference across device calls.
+
+Full regression completed **2026-11-04 23:48:34–23:56:22 UTC** (7m48s): **3,325
+Python tests passed, one expected skip** (620 warnings, 190.13s), all **91 rebuilt
+native check groups**, the source reference updater and CPU-only build/API/device/
+cache checks. Existing ranking oracles retained 2,444,200 exact gradient pairs,
+2,592 unbiased calls with zero serialized-bias error, and four exact 524,288-row
+batched runs with no measured host transfers. No production/test edits followed
+the final build/run; documentation was finalized afterward.
+[Validation record](../validation/cuda-metal-ranking-gradient-state-m3.txt).
+No arithmetic kernels, pair construction, RNG consumption, reduction order or
+tolerances changed. This does
+not establish end-to-end training residency: predictor/updater consumers, result
+plumbing, persistent dictionaries, other source audits and GPU collective
+transport remain open. No benchmark or NVIDIA execution comparison was run.

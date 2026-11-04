@@ -47,9 +47,21 @@ void CheckBatched() {
       linalg::Matrix<GradientPair> expected, actual;
       reference.Gradient(predictions, info,
                          method == "mean" ? static_cast<std::uint32_t>(cpu.Rng()()) : 0, &expected);
+      for (auto *values : {&predictions, info.labels.Data(), &info.weights_}) {
+        values->SetDevice(DeviceOrd::MPS());
+        values->DevicePointer();
+      }
       auto before = common::metal::GetStatistics();
       go->GetGradient(predictions, info, iteration, &actual);
       auto after = common::metal::GetStatistics();
+      Check(actual.Data()->Device().IsMPS() &&
+                actual.Data()->DeviceCanWrite() &&
+                !actual.Data()->HostCanRead(),
+            "Batched gradient is not resident on Metal");
+      Check(after.vector_readback_bytes == before.vector_readback_bytes &&
+                after.vector_upload_bytes == before.vector_upload_bytes &&
+                after.objective_staging_bytes == before.objective_staging_bytes,
+            "Batched gradient/bias payload crossed the host boundary");
       Check(after.ranking_pair_batches - before.ranking_pair_batches > 1,
             "Large unbiased test did not exercise multiple batches");
       auto a = actual.HostView().Values(), e = expected.HostView().Values();
@@ -175,7 +187,8 @@ int main() {
                     rows += values.size();
                     // Feed exactly the same changing predictions to both objective states.
                     if (mode != 1)
-                      for (auto& v : values) v += float(int(rng() % 101) - 50) / 300;
+                      for (auto &v : pred.HostVector())
+                        v += float(int(rng() % 101) - 50) / 300;
                   }
                   if (cases % 216 == 0) {
                     std::printf("Checked %zu unbiased calls / %zu rows / %zu bias values\n", cases,
