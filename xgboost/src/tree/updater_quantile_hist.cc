@@ -164,6 +164,7 @@ void UpdateTree(common::Monitor *monitor, linalg::MatrixView<GradientPair const>
 class MultiTargetHistBuilder {
 #if defined(XGBOOST_USE_METAL)
   std::shared_ptr<common::metal::QuantizedGradients const> quantized_;
+  std::shared_ptr<common::metal::GradientQuantizer const> value_quantizer_;
 #endif
 
  private:
@@ -185,6 +186,10 @@ class MultiTargetHistBuilder {
 #if defined(XGBOOST_USE_METAL)
   void SetQuantized(std::shared_ptr<common::metal::QuantizedGradients const> gradients) {
     quantized_ = std::move(gradients);
+    value_quantizer_.reset();
+  }
+  void SetValueQuantizer(std::shared_ptr<common::metal::GradientQuantizer const> quantizer) {
+    value_quantizer_ = std::move(quantizer);
   }
 #endif
 
@@ -365,7 +370,8 @@ class MultiTargetHistBuilder {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       CHECK(!collective::IsDistributed()) << "Distributed Metal leaf fitting is not implemented.";
-      auto sums = common::metal::MakeLeafSums(n_leaves, n_targets);
+      CHECK(value_quantizer_);
+      auto sums = common::metal::MakeLeafSums(n_leaves, n_targets, std::move(value_quantizer_));
       for (auto const& part : partitioner_) {
         auto const& rows = part.Partitions();
         CHECK(rows.metal_rows);
@@ -732,17 +738,18 @@ class QuantileHistMaker : public TreeUpdater {
 #endif
       auto *h_out_position = &out_position[tree_it - trees.begin()];
       if ((*tree_it)->IsMultiTarget()) {
-        UpdateTree<MultiExpandEntry>(&monitor_, h_sample_out, p_mtimpl_.get(), p_fmat, param,
-                                     h_out_position, *tree_it);
-        if (in_gpair->HasValueGrad()) {
-          // Copy the value gradient and replay sampling from the original split gradient.
-          auto value_grad = linalg::Empty<GradientPair>(ctx_, in_gpair->value_gpair.Shape(0),
-                                                        in_gpair->value_gpair.Shape(1));
+        linalg::Matrix<GradientPair> value_grad;
+        auto prepare_value = [&] {
+          value_grad = linalg::Empty<GradientPair>(ctx_, in_gpair->value_gpair.Shape(0),
+                                                   in_gpair->value_gpair.Shape(1));
           auto h_value_grad = value_grad.HostView();
           auto h_value_grad_in = in_gpair->value_gpair.HostView();
 #if defined(XGBOOST_USE_METAL)
           if (ctx_->IsMPS()) {
             common::metal::CopyGradients(h_value_grad_in, h_value_grad);
+            // CUDA constructs original value scales and replays float sampling
+            // before tree growth. Leaf sums later use these original scales.
+            p_mtimpl_->SetValueQuantizer(common::metal::MakeGradientQuantizer(h_value_grad_in));
           } else
 #endif
           {
@@ -750,6 +757,18 @@ class QuantileHistMaker : public TreeUpdater {
                       linalg::begin(h_value_grad));
           }
           sampler.ApplySampling(ctx_, h_gpair, &value_grad);
+        };
+        bool value_prepared = false;
+#if defined(XGBOOST_USE_METAL)
+        if (ctx_->IsMPS() && in_gpair->HasValueGrad()) {
+          prepare_value();
+          value_prepared = true;
+        }
+#endif
+        UpdateTree<MultiExpandEntry>(&monitor_, h_sample_out, p_mtimpl_.get(), p_fmat, param,
+                                     h_out_position, *tree_it);
+        if (in_gpair->HasValueGrad()) {
+          if (!value_prepared) prepare_value();
           // Refresh the leaf weights.
           p_mtimpl_->ExpandTreeLeaf(value_grad, *tree_it);
         } else {

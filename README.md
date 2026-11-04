@@ -14,12 +14,12 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **CUDA-source gradient-based sampling on shared integer
-gradients**, including quantized prefix sums, Philox selection, integer rescaling
-and saved-state replay for reduced value gradients. The full suite passes **1,286 Python tests**, all native checks and the CPU-only
-build/API check. Independent host oracles check the stages locally; NVIDIA execution
-and compiler-specific details remain unverified.
-[Validation](validation/cuda-gradient-sampling-m3.txt).
+Latest validated step: **CUDA-ordered integer reduced-leaf fitting**. Original
+value-gradient scales are retained before float sampling; leaf sums and external-page
+accumulation stay integer until materialized for final weights. The full suite passes
+**1,310 Python tests**, all native checks and the CPU-only build/API check.
+[Validation](validation/integer-leaf-sums-m3.txt). NVIDIA execution equivalence
+remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
 remaining objective initialization and training-state operations,
@@ -109,9 +109,9 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
-| Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Leaf/split integer state still needs alignment |
+| Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; split scans/child statistics still need integer alignment |
 | Root statistics / stump fitting | All scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; objective stump fitting retains its separate binary64 GPU reduction |
-| Reduced-gradient leaf fitting | GPU segmented binary64 sums over resident row IDs, accumulation across external pages, regularized/clipped final weights; existing host tree receives the completed leaf values |
+| Reduced-gradient leaf fitting | Original value scales → float sampling replay → per-row integer conversion → integer leaf/page sums; binary64 view for regularized/clipped final weights; host tree receives completed leaves |
 | Linear coordinate descent | GPU bias/feature gradient sums and residual updates; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
 | Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
 | Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; other objective-specific initialization work remains CPU |
@@ -178,7 +178,9 @@ and interaction batches; `shap_gpu_time_ns` covers both. These are separate from
 ordinary prediction counters and exclude host preparation and staging.
 `leaf_sum_init_dispatches`, `leaf_sum_dispatches` and `leaf_weight_dispatches`
 report GPU clearing, per-page leaf reductions and final weight calculation.
-`leaf_fitting_gpu_time_ns` covers those stages separately from root sums, histogram
+`leaf_integer_sum_dispatches` counts successful quantized page reductions within
+the leaf-sum total. `leaf_fitting_gpu_time_ns` includes original value-bound
+calculation and those stages, separately from root sums, histogram
 work and row partitioning; source sharing/staging and final host tree updates are
 excluded.
 `linear_gradient_dispatches` and `linear_residual_dispatches` count completed
@@ -323,12 +325,17 @@ On Apple M3, 2026-11-03:
   bit patterns, all exponent pairs, pruning denominators and subnormal rounding
   ties; NaNs are checked by classification. This replaces software binary64
   division in sketch pruning without changing its rounding contract.
-- Reduced-gradient leaf fitting: **304 native cases / 24,327,036 source gradient
+- Legacy binary64 leaf-sum API: **304 native cases / 24,327,036 source gradient
   pairs**, 46,852 exact sum fields and 156,240 bitwise CPU weight comparisons
   (NaNs checked by classification). Covers strided/broadcast inputs, paged sums,
   empty leaves, subnormals, large/nonfinite values, L1/L2 penalties, clipping,
   bounds and guards. **66 public tests** cover training and saved-model
   continuation across dense, missing, sparse and external-page inputs.
+- CUDA-derived integer leaf sums: **250 native cases / 11,594,018 source pairs**,
+  20,458 exact materialized sum fields, original-scale retention, float rescaling,
+  positive-curvature minimums and conversion boundaries. **24 additional public
+  cases** check exact cancellation, sampled value scales, zero-bin/external-page
+  roots and prediction/cache/reload behavior.
 - Linear coordinate descent: **49 native cases / 4,118,809 source gradient
   pairs**, 3,159 exact sum fields and 148,277,124 residual field comparisons.
   Finite residuals match CPU bits, including signed zeros; NaNs use classification.
@@ -1886,7 +1893,8 @@ performance benchmark was performed.
 
 At this uniform-sampling checkpoint, gradient-based sampling still needed integer
 norms, prefix sums and rescaling; the following update implements that pipeline.
-Leaf sums, split scans, column/ranking RNG, sketches and other ledger gaps remain.
+At that checkpoint, leaf sums, split scans, column/ranking RNG, sketches and other
+ledger gaps remained. Integer reduced-leaf sums are implemented below.
 
 
 ### CUDA-derived gradient-based integer sampling
@@ -1905,3 +1913,25 @@ existing prediction tolerances. See the [scope and limitations](docs/CUDA_PARITY
 and [validation](validation/cuda-gradient-sampling-m3.txt). Actual NVIDIA compiler/
 hardware comparison remains required; this is not measured CUDA equivalence.
 No new performance measurements were run.
+
+
+### CUDA-ordered integer reduced-leaf sums
+
+Value-gradient leaf fitting now retains quantizer scales from the original values,
+replays sampling in FP32 before tree growth, and quantizes sampled float values with
+those original scales. GPU leaf reductions and page accumulation preserve integers;
+a separate binary64 view supplies final regularized weights. This follows CUDA's
+value-gradient path, which differs from its integer split-gradient sampling path.
+The scale-only factory avoids allocating an unused integer array for every value row.
+
+[Validation](validation/integer-leaf-sums-m3.txt) processes over 11.5 million native
+value-gradient pairs and checks exact leaf sums, original scales, source lifetime,
+strides, guards and conversion boundaries. New public cases preserve cancellation
+across pages and the original positive-Hessian minimum after sampling rejects an
+outlier. The full run passes **1,310 Python tests (one skipped)**, all native suites
+and the independent CPU-only build/API check, without widening tolerances.
+
+The previous binary64 low-level API retains regression coverage; production reduced
+leaf fitting uses the integer path. Split scans and child statistics still require
+integer alignment. Other ledger gaps and actual NVIDIA execution validation remain;
+no new performance measurements accompany this checkpoint.

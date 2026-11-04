@@ -76,10 +76,12 @@ def test_gpu_reduced_leaf_fitting(metal, layout, sampling, subsample, regulariza
     before = xgb.metal_info()
     gpu = xgb.train(params | {"device": "mps"}, data, 3, obj=Reduced())
     after = xgb.metal_info()
-    assert after["gradient_copy_dispatches"] - before["gradient_copy_dispatches"] == 6
+    # Split copy, value copy and the original value-bound column layout per round.
+    assert after["gradient_copy_dispatches"] - before["gradient_copy_dispatches"] == 9
     pages = 4 if layout == "external" else 1
     assert after["leaf_sum_init_dispatches"] - before["leaf_sum_init_dispatches"] == 3
     assert after["leaf_sum_dispatches"] - before["leaf_sum_dispatches"] == 3 * pages
+    assert after["leaf_integer_sum_dispatches"] - before["leaf_integer_sum_dispatches"] == 3 * pages
     assert after["leaf_weight_dispatches"] - before["leaf_weight_dispatches"] == 3
     assert after["leaf_fitting_gpu_time_ns"] > before["leaf_fitting_gpu_time_ns"]
     np.testing.assert_allclose(gpu.predict(data), cpu.predict(data), atol=2e-5, rtol=2e-5)
@@ -106,3 +108,111 @@ def test_regular_vector_training_skips_refitting(metal, tmp_path):
     before = xgb.metal_info()["leaf_weight_dispatches"]
     xgb.train(dict(device="mps", nthread=2, multi_strategy="multi_output_tree"), data, 2)
     assert xgb.metal_info()["leaf_weight_dispatches"] == before
+
+
+def integer_leaf_data(x, targets, layout, tmp_path):
+    if layout == "missing":
+        x[:, 0], x[1, 1] = np.nan, np.nan
+    elif layout == "empty":
+        x[:] = np.nan
+    label = np.zeros((len(x), targets), dtype=np.float32)
+    if layout != "external":
+        return xgb.DMatrix(x, label=label, nthread=1)
+
+    class Pages(xgb.DataIter):
+        def __init__(self):
+            self.page = 0
+            super().__init__(cache_prefix=str(tmp_path / "integer-leaf-pages"))
+        def reset(self):
+            self.page = 0
+        def next(self, input_data):
+            if self.page == 2:
+                return False
+            begin, end = (0, 3) if self.page == 0 else (3, 4)
+            input_data(data=x[begin:end], label=label[begin:end])
+            self.page += 1
+            return True
+    return xgb.DMatrix(Pages(), nthread=1)
+
+
+@pytest.mark.parametrize("layout", ["dense", "missing", "empty", "external"])
+@pytest.mark.parametrize("exponent", [-80, 0, 54, 100])
+def test_reduced_leaf_integer_cancellation(metal, layout, exponent, tmp_path):
+    """The first page's rounded sum loses small terms; integer state must keep them."""
+    big, small = np.float32(2.**exponent), np.float32(2.**(exponent-54))
+    multipliers = np.array([1., 2., 4.], dtype=np.float32)
+    grad = np.array([big, small, small, -big], dtype=np.float32)[:, None] * multipliers
+    hess = np.tile(np.array([0., 1., 1., 0.], dtype=np.float32)[:, None], (1, 3))
+    class Objective(TreeObjective):
+        def __call__(self, iteration, pred, data):
+            return grad.copy(), hess.copy()
+        def split_grad(self, iteration, g, h):
+            return np.zeros(4, dtype=np.float32), np.ones(4, dtype=np.float32)
+    x = np.zeros((4, 2), dtype=np.float32)
+    data = integer_leaf_data(x, 3, layout, tmp_path)
+    before = xgb.metal_info()
+    model = xgb.train(dict(device="mps", multi_strategy="multi_output_tree", nthread=1,
+                          base_score=0., eta=1., reg_lambda=0., min_child_weight=0.,
+                          max_depth=1, max_bin=2), data, 1, obj=Objective())
+    after = xgb.metal_info()
+    assert after["leaf_integer_sum_dispatches"] - before["leaf_integer_sum_dispatches"] == (2 if layout == "external" else 1)
+    assert after["gradient_bound_dispatches"] - before["gradient_bound_dispatches"] == 4
+    assert after["quantization_dispatches"] - before["quantization_dispatches"] == 1
+    expected = np.tile(-small * multipliers, (4, 1))
+    np.testing.assert_array_equal(model.predict(data), expected)
+    np.testing.assert_array_equal(model.inplace_predict(x), expected)
+    restored = xgb.Booster(model_file=model.save_raw())
+    np.testing.assert_array_equal(restored.predict(data), expected)
+
+
+@pytest.mark.parametrize("layout", ["dense", "missing", "empty", "external"])
+@pytest.mark.parametrize("sampling", ["uniform", "gradient_based"])
+def test_reduced_leaf_uses_original_value_scales(metal, layout, sampling, tmp_path):
+    from cuda_uniform_reference import weights
+    from cuda_gradient_reference import exponents, sample
+
+    split_g = np.array([-.125, .5, 1.5, 4.], dtype=np.float32)
+    split_h = np.ones(4, dtype=np.float32)
+    # Sampling is driven by split gradients, independently of the value-gradient
+    # outlier. Reject that outlier, retaining at least two tiny-curvature rows.
+    for seed in range(1000):
+        row_seed = int(np.random.RandomState(seed).randint(0, 1 << 32, dtype=np.uint32))
+        if sampling == "uniform":
+            factors = (weights(row_seed, 4) <= np.float32(.6)).astype(np.float32)
+        else:
+            _, factors, _ = sample(split_g, split_h, np.float32(.6), row_seed)
+        if factors[0] == 0 and np.count_nonzero(factors[1:]) >= 2:
+            break
+    else:
+        raise AssertionError("No reference seed found")
+    multipliers = np.array([1., 2., 4.], dtype=np.float32)
+    grad = np.array([.33333334, 1.00000012, -1.2345678, .7654321], dtype=np.float32)[:, None] * multipliers
+    hess = np.tile(np.array([2.**65, 2.**-149, 2.**-100, 2.**-50], dtype=np.float32)[:, None], (1, 3)) * multipliers
+    # CUDA value path: original bounds, FLOAT replay, then fixed-point conversion.
+    ge, he = exponents(grad), exponents(hess)
+    sampled_g, sampled_h = grad * factors[:, None], hess * factors[:, None]
+    qg = np.ldexp(sampled_g.astype(np.float64), ge).astype(np.int64)
+    qh = np.ldexp(sampled_h.astype(np.float64), he).astype(np.int64)
+    qh[(sampled_h > 0) & (qh == 0)] = 1
+    total_g = np.ldexp(qg.sum(axis=0).astype(np.float64), -ge)
+    total_h = np.ldexp(qh.sum(axis=0).astype(np.float64), -he)
+    assert np.all(total_h == np.count_nonzero(factors) * 16. * multipliers)
+    expected = np.tile((-total_g / (total_h + 1.)).astype(np.float32), (4, 1))
+    class Objective(TreeObjective):
+        def __call__(self, iteration, pred, data):
+            return grad.copy(), hess.copy()
+        def split_grad(self, iteration, g, h):
+            return split_g.copy(), split_h.copy()
+    x = np.zeros((4, 2), dtype=np.float32)
+    data = integer_leaf_data(x, 3, layout, tmp_path)
+    before = xgb.metal_info()
+    model = xgb.train(dict(device="mps", multi_strategy="multi_output_tree", nthread=1,
+                          seed=seed, subsample=.6, sampling_method=sampling,
+                          # Keep a single leaf even when missingness can split rows.
+                          gamma=1e30, base_score=0., eta=1., reg_lambda=1., min_child_weight=0.,
+                          max_depth=1, max_bin=2), data, 1, obj=Objective())
+    after = xgb.metal_info()
+    assert after["gradient_bound_dispatches"] - before["gradient_bound_dispatches"] == 4
+    assert after["leaf_integer_sum_dispatches"] - before["leaf_integer_sum_dispatches"] == (2 if layout == "external" else 1)
+    np.testing.assert_array_equal(model.predict(data), expected)
+    np.testing.assert_array_equal(model.inplace_predict(x), expected)

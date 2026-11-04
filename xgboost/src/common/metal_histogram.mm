@@ -54,6 +54,7 @@ std::atomic<std::uint64_t> gradient_copy_dispatches{0}, hessian_extract_dispatch
 std::atomic<std::uint64_t> expectile_init_dispatches{0}, prediction_init_dispatches{0},
     initialization_gpu_time_ns{0};
 std::atomic<std::uint64_t> label_validation_dispatches{0}, label_validation_gpu_time_ns{0};
+std::atomic<std::uint64_t> leaf_integer_sum_dispatches{0};
 std::atomic<std::uint64_t> leaf_sum_init_dispatches{0}, leaf_sum_dispatches{0},
     leaf_weight_dispatches{0}, leaf_fitting_gpu_time_ns{0};
 std::atomic<std::uint64_t> linear_gradient_dispatches{0}, linear_residual_dispatches{0},
@@ -172,6 +173,7 @@ class Runtime {
   id<MTLComputePipelineState> base_score_pipeline, shap_pipeline;
   id<MTLComputePipelineState> linear_gradient_pipeline, linear_residual_pipeline;
   id<MTLComputePipelineState> leaf_sum_pipeline, leaf_sum_finish_pipeline, leaf_weight_pipeline;
+  id<MTLComputePipelineState> leaf_integer_sum_pipeline, leaf_integer_sum_finish_pipeline;
   id<MTLComputePipelineState> column_iota_pipeline, column_rng_pipeline, column_keys_pipeline,
       column_select_pipeline, column_sort_small_pipeline, column_output_pipeline,
       column_sample_small_pipeline;
@@ -260,6 +262,8 @@ class Runtime {
       shap_pipeline = make_pipeline(@"xgb_shap");
       linear_gradient_pipeline = make_pipeline(@"xgb_linear_gradient");
       linear_residual_pipeline = make_pipeline(@"xgb_linear_residual");
+      leaf_integer_sum_pipeline = make_pipeline(@"xgb_leaf_integer_sum");
+      leaf_integer_sum_finish_pipeline = make_pipeline(@"xgb_leaf_integer_sum_finish");
       leaf_sum_pipeline = make_pipeline(@"xgb_leaf_sum");
       leaf_sum_finish_pipeline = make_pipeline(@"xgb_leaf_sum_finish");
       leaf_weight_pipeline = make_pipeline(@"xgb_leaf_weight");
@@ -543,29 +547,11 @@ void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>*
                        std::atomic<std::uint64_t>* duration);
 class MetalLeafSums final : public LeafSums {
  public:
-  id<MTLBuffer> buffer;
+  id<MTLBuffer> buffer, integers, scales, error;
+  std::shared_ptr<GradientQuantizer const> quantizer;
   std::size_t leaves, targets;
-  MetalLeafSums(std::size_t n_leaves, std::size_t n_targets)
-      : leaves{n_leaves}, targets{n_targets} {
-    CHECK_GT(targets, 0);
-    CHECK_LE(targets, 65535);
-    CHECK_LE(leaves, std::numeric_limits<std::uint32_t>::max());
-    auto& rt = GetRuntime();
-    CHECK_LE(leaves, rt.device.maxBufferLength / sizeof(GradientPairPrecise) / targets);
-    @autoreleasepool {
-      buffer = Allocate(rt, leaves * targets * sizeof(GradientPairPrecise));
-      if (!leaves) return;
-      auto command = [rt.queue commandBuffer];
-      CHECK(command);
-      auto e = [command blitCommandEncoder];
-      CHECK(e);
-      [e fillBuffer:buffer
-              range:NSMakeRange(0, leaves * targets * sizeof(GradientPairPrecise))
-              value:0];
-      [e endEncoding];
-      CompleteOperation(command, &leaf_sum_init_dispatches, &leaf_fitting_gpu_time_ns);
-    }
-  }
+  MetalLeafSums(std::size_t n_leaves, std::size_t n_targets,
+                std::shared_ptr<GradientQuantizer const> original_quantizer);
   Span<GradientPairPrecise const> Data() const override {
     return {static_cast<GradientPairPrecise const*>(buffer.contents), leaves * targets};
   }
@@ -768,6 +754,7 @@ class MetalRows final : public DeviceRows {
     CHECK(output);
     auto sums = static_cast<MetalLeafSums*>(output);
     CHECK_EQ(gradients.Shape(1), sums->targets);
+    if (sums->quantizer) CHECK_EQ(gradients.Shape(0), sums->quantizer->Rows());
     CHECK_LE(base_, gradients.Shape(0));
     CHECK_LE(size_, gradients.Shape(0) - base_);
     auto values = gradients.Values();
@@ -827,27 +814,43 @@ class MetalRows final : public DeviceRows {
       static_assert(sizeof(p) == 24 && sizeof(Block) == 16 && sizeof(Segment) == 24);
       auto e = [command computeCommandEncoder];
       CHECK(e);
-      [e setComputePipelineState:rt_.leaf_sum_pipeline];
+      [e setComputePipelineState:sums->quantizer ? rt_.leaf_integer_sum_pipeline
+                                                 : rt_.leaf_sum_pipeline];
       [e setBuffer:rows_ offset:0 atIndex:0];
       [e setBuffer:g.buffer offset:g.offset atIndex:1];
       [e setBuffer:tasks offset:0 atIndex:2];
       [e setBuffer:partial offset:0 atIndex:3];
       [e setBytes:&p length:sizeof(p) atIndex:4];
+      if (sums->quantizer) {
+        [e setBuffer:sums->scales offset:0 atIndex:5];
+        [e setBuffer:sums->error offset:0 atIndex:6];
+      }
       [e dispatchThreadgroups:MTLSizeMake(blocks.size(), sums->targets, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
       e = [command computeCommandEncoder];
       CHECK(e);
-      [e setComputePipelineState:rt_.leaf_sum_finish_pipeline];
+      [e setComputePipelineState:sums->quantizer ? rt_.leaf_integer_sum_finish_pipeline
+                                                 : rt_.leaf_sum_finish_pipeline];
       [e setBuffer:partial offset:0 atIndex:0];
       [e setBuffer:ranges offset:0 atIndex:1];
       [e setBuffer:sums->buffer offset:0 atIndex:2];
       [e setBytes:&p length:sizeof(p) atIndex:3];
+      if (sums->quantizer) {
+        [e setBuffer:sums->integers offset:0 atIndex:4];
+        [e setBuffer:sums->scales offset:0 atIndex:5];
+      }
       [e dispatchThreadgroups:MTLSizeMake(segments.size(), sums->targets, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
       CompleteOperation(command, &leaf_sum_dispatches, &leaf_fitting_gpu_time_ns);
       this->MarkReady();
+      if (sums->quantizer) {
+        CHECK_EQ(*static_cast<std::uint32_t const*>(sums->error.contents), 0)
+            << "Leaf fitting requires finite sampled value gradients within the original "
+               "quantizer's int64 range; CUDA's conversion is undefined outside this range.";
+        leaf_integer_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
+      }
     }
   }
 
@@ -943,9 +946,10 @@ class MetalQuantizedColumn {
     gradient_partial_ = nil;
     gradient_bounds_ = nil;
   }
-  std::size_t Encode(Span<GradientPair const> gradients, id<MTLCommandBuffer> command) {
+  std::size_t Encode(Span<GradientPair const> gradients, id<MTLCommandBuffer> command,
+                     bool quantize) {
     CHECK_LE(gradients.size(), std::numeric_limits<std::uint32_t>::max());
-    if (!gradients_ || gradients_.length < gradients.size() * sizeof(QuantizedPair))
+    if (quantize && (!gradients_ || gradients_.length < gradients.size() * sizeof(QuantizedPair)))
       gradients_ = Allocate(rt_, gradients.size() * sizeof(QuantizedPair));
     static_assert(sizeof(GradientPair) == 8);
     // Only the command retains a borrowed view. The class caches GPU-owned
@@ -994,21 +998,118 @@ class MetalQuantizedColumn {
     [encoder setBytes:&count length:sizeof(count) atIndex:2];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    encoder = [command computeCommandEncoder];
-    CHECK(encoder);
-    [encoder setComputePipelineState:rt_.quantize_pipeline];
-    [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
-    [encoder setBuffer:gradients_ offset:0 atIndex:1];
-    [encoder setBytes:&count length:sizeof(count) atIndex:2];
-    [encoder setBuffer:gradient_scale_ offset:0 atIndex:3];
-    if (count) {
-      [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    if (quantize) {
+      encoder = [command computeCommandEncoder];
+      CHECK(encoder);
+      [encoder setComputePipelineState:rt_.quantize_pipeline];
+      [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
+      [encoder setBuffer:gradients_ offset:0 atIndex:1];
+      [encoder setBytes:&count length:sizeof(count) atIndex:2];
+      [encoder setBuffer:gradient_scale_ offset:0 atIndex:3];
+      if (count) {
+        [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      }
+      [encoder endEncoding];
     }
-    [encoder endEncoding];
     return shared_bytes;
   }
 };
+
+std::vector<std::unique_ptr<MetalQuantizedColumn>> MakeGradientColumns(
+    Runtime& rt, linalg::MatrixView<GradientPair const> gradients, bool quantize) {
+  std::vector<std::unique_ptr<MetalQuantizedColumn>> columns;
+  CheckGradientView(gradients, false);
+  auto rows = gradients.Shape(0);
+  CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
+  CHECK_GT(gradients.Shape(1), 0);
+  CHECK_LE(gradients.Shape(1), 65535);
+  // Quantization is per target. A GPU layout copy handles C order, padding and
+  // broadcasts; its temporary raw floats never own the persistent tree state.
+  linalg::Matrix<GradientPair> contiguous;
+  if (gradients.Stride(0) != 1) {
+    contiguous =
+        linalg::Matrix<GradientPair>{gradients.Shape(), DeviceOrd::CPU(), linalg::Order::kF};
+    CopyGradients(gradients, contiguous.HostView());
+    gradients = contiguous.HostView();
+  }
+  auto command = [rt.queue commandBuffer];
+  CHECK(command);
+  std::size_t shared_bytes = 0;
+  for (std::size_t t = 0; t < gradients.Shape(1); ++t) {
+    auto column = std::make_unique<MetalQuantizedColumn>(rt);
+    shared_bytes += column->Encode(gradients.Slice(linalg::All(), t).Values().subspan(0, rows),
+                                   command, quantize);
+    columns.push_back(std::move(column));
+  }
+  [command commit];
+  [command waitUntilCompleted];
+  CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+  for (auto const& column : columns) {
+    CHECK(static_cast<GradientScale const*>(column->gradient_scale_.contents)->valid)
+        << "Metal quantization requires finite gradients and Hessians.";
+    column->ReleaseScratch();
+  }
+  gradient_bound_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
+  if (quantize) quantization_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
+  (quantize ? histogram_shared_gradient_bytes : leaf_shared_gradient_bytes)
+      .fetch_add(shared_bytes, std::memory_order_relaxed);
+  if (!quantize && command.GPUEndTime > command.GPUStartTime)
+    leaf_fitting_gpu_time_ns.fetch_add(
+        static_cast<std::uint64_t>((command.GPUEndTime - command.GPUStartTime) * 1e9),
+        std::memory_order_relaxed);
+  return columns;
+}
+class MetalGradientQuantizer final : public GradientQuantizer {
+  std::size_t rows_;
+
+ public:
+  std::vector<std::unique_ptr<MetalQuantizedColumn>> columns;
+  explicit MetalGradientQuantizer(linalg::MatrixView<GradientPair const> original)
+      : rows_{original.Shape(0)}, columns{MakeGradientColumns(GetRuntime(), original, false)} {}
+  std::size_t Rows() const override { return rows_; }
+  std::size_t Targets() const override { return columns.size(); }
+};
+
+MetalLeafSums::MetalLeafSums(std::size_t n_leaves, std::size_t n_targets,
+                             std::shared_ptr<GradientQuantizer const> original_quantizer)
+    : quantizer{std::move(original_quantizer)}, leaves{n_leaves}, targets{n_targets} {
+  CHECK_GT(targets, 0);
+  CHECK_LE(targets, 65535);
+  CHECK_LE(leaves, std::numeric_limits<std::uint32_t>::max());
+  if (quantizer) CHECK_EQ(quantizer->Targets(), targets);
+  auto& rt = GetRuntime();
+  CHECK_LE(leaves, rt.device.maxBufferLength / sizeof(GradientPairPrecise) / targets);
+  @autoreleasepool {
+    auto bytes = leaves * targets * sizeof(GradientPairPrecise);
+    buffer = Allocate(rt, bytes);
+    if (quantizer) {
+      integers = Allocate(rt, bytes);
+      scales = Allocate(rt, targets * sizeof(GradientScale));
+      std::uint32_t zero = 0;
+      error = Upload(rt, &zero, sizeof(zero));
+    }
+    if (!leaves) return;
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command blitCommandEncoder];
+    CHECK(e);
+    [e fillBuffer:buffer range:NSMakeRange(0, bytes) value:0];
+    if (quantizer) {
+      [e fillBuffer:integers range:NSMakeRange(0, bytes) value:0];
+      auto original = static_cast<MetalGradientQuantizer const*>(quantizer.get());
+      for (std::size_t t = 0; t < targets; ++t) {
+        [e copyFromBuffer:original->columns[t]->gradient_scale_
+                 sourceOffset:0
+                     toBuffer:scales
+            destinationOffset:t * sizeof(GradientScale)
+                         size:sizeof(GradientScale)];
+      }
+    }
+    [e endEncoding];
+    CompleteOperation(command, &leaf_sum_init_dispatches, &leaf_fitting_gpu_time_ns);
+  }
+}
 
 struct CudaUniformParams {
   std::uint64_t rows, stride0, stride1;
@@ -1030,39 +1131,7 @@ class MetalQuantizedGradients final : public QuantizedGradients {
   std::vector<std::unique_ptr<MetalQuantizedColumn>> columns;
   explicit MetalQuantizedGradients(linalg::MatrixView<GradientPair const> gradients)
       : rt_{GetRuntime()}, rows_{gradients.Shape(0)} {
-    CheckGradientView(gradients, false);
-    CHECK_LE(rows_, std::numeric_limits<std::uint32_t>::max());
-    CHECK_GT(gradients.Shape(1), 0);
-    CHECK_LE(gradients.Shape(1), 65535);
-    // Quantization is per target. A GPU layout copy handles C order, padding and
-    // broadcasts; its temporary raw floats never own the persistent tree state.
-    linalg::Matrix<GradientPair> contiguous;
-    if (gradients.Stride(0) != 1) {
-      contiguous =
-          linalg::Matrix<GradientPair>{gradients.Shape(), DeviceOrd::CPU(), linalg::Order::kF};
-      CopyGradients(gradients, contiguous.HostView());
-      gradients = contiguous.HostView();
-    }
-    auto command = [rt_.queue commandBuffer];
-    CHECK(command);
-    std::size_t shared_bytes = 0;
-    for (std::size_t t = 0; t < gradients.Shape(1); ++t) {
-      auto column = std::make_unique<MetalQuantizedColumn>(rt_);
-      shared_bytes +=
-          column->Encode(gradients.Slice(linalg::All(), t).Values().subspan(0, rows_), command);
-      columns.push_back(std::move(column));
-    }
-    [command commit];
-    [command waitUntilCompleted];
-    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-    for (auto const& column : columns) {
-      CHECK(static_cast<GradientScale const*>(column->gradient_scale_.contents)->valid)
-          << "Metal histograms require finite gradients and Hessians.";
-      column->ReleaseScratch();
-    }
-    gradient_bound_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
-    quantization_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
-    histogram_shared_gradient_bytes.fetch_add(shared_bytes, std::memory_order_relaxed);
+    columns = MakeGradientColumns(rt_, gradients, true);
   }
   std::size_t Rows() const override { return rows_; }
   std::size_t Targets() const override { return columns.size(); }
@@ -1369,6 +1438,13 @@ class MetalHistogram final : public Histogram {
 };
 }  // namespace
 
+std::shared_ptr<GradientQuantizer> MakeGradientQuantizer(
+    linalg::MatrixView<GradientPair const> original) {
+  @autoreleasepool {
+    return std::make_shared<MetalGradientQuantizer>(original);
+  }
+}
+
 std::shared_ptr<QuantizedGradients> MakeQuantizedGradients(
     linalg::MatrixView<GradientPair const> gradients) {
   @autoreleasepool {
@@ -1549,7 +1625,8 @@ Statistics GetStatistics() {
           histogram_integer_sum_dispatches.load(std::memory_order_relaxed),
           quantized_gradient_sum_dispatches.load(std::memory_order_relaxed),
           cuda_uniform_sampling_dispatches.load(std::memory_order_relaxed),
-          cuda_gradient_sampling_dispatches.load(std::memory_order_relaxed)};
+          cuda_gradient_sampling_dispatches.load(std::memory_order_relaxed),
+          leaf_integer_sum_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -1564,8 +1641,10 @@ void CompleteOperation(id<MTLCommandBuffer> command, std::atomic<std::uint64_t>*
     duration->fetch_add(static_cast<std::uint64_t>(elapsed * 1e9), std::memory_order_relaxed);
 }
 }  // namespace
-std::unique_ptr<LeafSums> MakeLeafSums(std::size_t leaves, std::size_t targets) {
-  return std::make_unique<MetalLeafSums>(leaves, targets);
+std::unique_ptr<LeafSums> MakeLeafSums(
+    std::size_t leaves, std::size_t targets,
+    std::shared_ptr<GradientQuantizer const> original_quantizer) {
+  return std::make_unique<MetalLeafSums>(leaves, targets, std::move(original_quantizer));
 }
 
 namespace {

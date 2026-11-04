@@ -332,6 +332,8 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.histogram_integer_subtraction_dispatches)};
   info["quantized_gradient_sum_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.quantized_gradient_sum_dispatches)};
+  info["leaf_integer_sum_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.leaf_integer_sum_dispatches)};
   info["cuda_gradient_sampling_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.cuda_gradient_sampling_dispatches)};
   info["cuda_uniform_sampling_dispatches"] =
@@ -447,6 +449,7 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["quantized_gradient_sum_dispatches"] = Integer{0};
   info["cuda_uniform_sampling_dispatches"] = Integer{0};
   info["cuda_gradient_sampling_dispatches"] = Integer{0};
+  info["leaf_integer_sum_dispatches"] = Integer{0};
   info["histogram_integer_sum_dispatches"] = Integer{0};
   info["resident_split_dispatches"] = Integer{0};
 

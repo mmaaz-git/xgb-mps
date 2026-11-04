@@ -31,8 +31,9 @@ work, not accepted substitutes for CUDA behavior:
 - Quantized training state and tree reductions: original per-target quantization,
   both integer sampling methods, histogram caches and all scalar/vector/hist/approx
   root reductions now share GPU-owned integer state. Gradient-based sampling follows
-  the CUDA pipeline described below. Leaf sums and split scans/child statistics
-  still need integer-state alignment.
+  the CUDA pipeline described below. Reduced value-leaf sums now quantize sampled
+  floats with original value scales and accumulate integers across pages. Split
+  scans/child statistics still need integer-state alignment.
 - Row/column/ranking sampling: uniform row sampling targets CUDA's modern
   `<cuda/std/random>` Philox4x64 branch, including seed consumption and replay.
   The older Thrust branch is not an equivalent stream. Gradient-based sampling now
@@ -59,7 +60,7 @@ must be reported rather than hidden by widening test tolerances.
 | --- | --- | --- |
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
 | Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Both sampling methods and all roots share quantized state; weighted sketches still differ from CUDA; preprocessing remains hybrid |
-| Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Original per-tree scales feed both integer sampling methods, all roots and histograms; leaf/split statistics need integer alignment |
+| Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Original per-tree scales feed both integer sampling methods, all roots and histograms; reduced value leaves now use original scales and integer sums; split statistics need integer alignment |
 | Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned integer cache; external-page accumulation and subtraction retain exact quantized sums, with a binary64 view materialized for existing split evaluators. GPU growth copies both buffers, empty first pages overwrite reused ranges, and feature gathering remains GPU. Host cache policy/metadata and binary64 split scans remain |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
@@ -70,7 +71,7 @@ must be reported rather than hidden by widening test tolerances.
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation use Metal; other initialization work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; biased top-k/mean pair construction, gradients, MAP prefixes and query normalization execute on Metal. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients and prediction/base-score transforms; GPU identifies small censored probabilities for original CPU gradient recomputation, exposed through correction counters/time. Full GPU coverage remains incomplete |
-| Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting with separate value gradients now uses GPU segmented sums over resident row IDs, cross-page accumulation and regularized/clipped weights; final tree updates stay host as in CUDA. Other initialization/state work still requires porting/audit |
+| Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Other initialization/state work still requires porting/audit |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; CPU input views stage dense chunks and recode categories |
 | Prediction cache from leaf IDs | `predictor/predictor.cu` | Metal; supports strided target slices and negated sampling positions |
 | SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA; dense input staging/category recoding remain host |
@@ -506,46 +507,56 @@ staging and result copying.
 ## Reduced-gradient final leaf fitting
 
 Custom tree objectives can supply separate gradients for split selection and
-final leaf values. Metal now computes the final leaf-gradient sums and weights
-in `MultiTargetHistBuilder::ExpandTreeLeaf`. It uses the row indices already
-resident in each Metal partitioner; it no longer copies those indices back for
-CPU summation. Host code supplies segment metadata and allocates buffers. The GPU
-clears the sums, reduces indexed gradients in blocks, accumulates completed leaf
-sums across external-memory pages, and computes the final weights. Gradients use
-guarded shared host views when eligible and staged input otherwise.
+final leaf values. Production MPS now follows `updater_gpu_hist.cuh::Reset` and
+`gpu_hist/leaf_sum.cu`: construct the value quantizer from original gradients,
+replay sampling in FP32 before tree growth, convert each sampled float pair with
+the original scales, and sum integer pairs per leaf and across pages. This is a
+different path from rescaling the already-quantized split gradients; substituting
+that path would change value-gradient rounding. Minimum-one positive Hessians are
+preserved at the sampled-float conversion, as in CUDA.
 
-Sums currently use software binary64, following CPU precision. CUDA uses its
-quantized-gradient representation for this operation; this implementation does
-not claim identical intermediate CUDA sums. The weight calculation preserves
-CPU L1/L2 regularization, maximum-step clipping, FP32 conversion, bound application
-and subsequent learning-rate multiplication. Nonpositive Hessians produce zero
-before bounds are applied. `min_child_weight` controls split validity and is not
-an additional cutoff in the upstream final-weight formula. The internal weight
-API handles per-leaf/per-target bounds, although public reduced-gradient training
-rejects monotonic constraints in both upstream CPU and CUDA implementations.
+The new `metal::GradientQuantizer` owns original per-target scales without
+allocating integer rows. It shares the GPU sign-separated bound/scale builder
+with `QuantizedGradients`. Noncontiguous target columns use a GPU layout copy;
+raw staging and bound workspace are released after completion. The leaf state
+retains quantizer ownership and copies the small scale array on the GPU. Neither
+sampling rejection nor individual external pages recompute the scales.
 
-The final leaf values return to the host tree, matching CUDA's model update.
-Generic gradient allocation/layout copies earlier in the training path remain
-host work. This closes final leaf refitting, not every training-state operation.
-The API currently checks a maximum of 65,535 targets, 32-bit leaf/task indices and
-the Metal device's buffer-size limits.
+Resident row partitions provide leaf segments and global row indices. Metal
+converts indexed sampled floats using their original scales, reduces integer
+blocks, and adds integer leaf totals across external pages. A separate binary64
+view is refreshed for inspection and final weight calculation; rounded views
+never feed later integer accumulation. Persistent sums use 32 bytes per leaf/target
+for the integer state and its binary64 view. Host code still owns segment metadata,
+allocation and the final tree update, as previously documented.
 
-Native validation covers 304 cases and 24,327,036 source gradient pairs across
-row-major, column-major, padded and broadcast views. Independently accumulated
-sums match 46,852 checked fields exactly; 156,240 weight results match the CPU
-formula by bits, with NaNs compared by classification. Tests cover million-row
-inputs, page offsets, permuted output slots, empty leaves, tiny/large/nonfinite
-inputs, negative Hessians, regularization, bounds, guards and malformed metadata.
-Public validation adds 66 cases across four input layouts, both sampling methods,
-zero/full sampling, regularization/clipping, root-only trees, saved-model
-continuation and the upstream monotonic-constraint rejection. Training outputs
-use the existing `rtol=atol=2e-5` CPU comparison.
+The weight calculation preserves the upstream L1/L2 formula, maximum-step clipping,
+FP32 conversion, bounds and subsequent learning-rate multiplication. Nonpositive
+Hessians produce zero before bounds. `min_child_weight` governs split validity,
+not an extra final-weight cutoff. Public reduced-gradient training still rejects
+monotonic constraints, as upstream CPU and CUDA do. The API checks 65,535 targets,
+32-bit leaf/task indices and Metal buffer-size limits. Nonfinite or out-of-int64
+sampled-value conversions raise an explicit error; CUDA C++ conversion is undefined
+for those inputs. No portable CUDA result is claimed for that domain.
 
-`leaf_sum_init_dispatches`, `leaf_sum_dispatches` and `leaf_weight_dispatches`
-count completed clearing, per-page reduction and weight commands.
-`leaf_fitting_gpu_time_ns` measures their combined GPU duration separately from
-root-gradient sums and row partitioning. Empty reductions do not dispatch. No
-performance gain is claimed in this coverage-focused update.
+Independent host CUDA-formula tests process **11,594,018 pairs in 250 cases** and
+check **20,458 materialized sum fields** exactly, plus original positive-curvature
+scales and conversion-boundary cases. They cover C/F/padded/broadcast views, global
+page offsets, output-slot permutations, empty leaves, million-row input, source
+lifetime, float replay, cancellation across pages and final weight formulas.
+**24 additional public cases** check exact cancellation and retention of original
+value scales after uniform/gradient-based sampling, including zero-bin and external
+pages, cached/in-place predictions and reloads. Existing CPU comparisons keep their
+original tolerances. The two-argument low-level `MakeLeafSums` retains its legacy
+binary64 tests; production always supplies the original value quantizer.
+
+`leaf_integer_sum_dispatches` counts successful integer page reductions within
+`leaf_sum_dispatches`; initialization and final weight counters remain separate.
+`leaf_fitting_gpu_time_ns` includes value-bound calculation, clearing, leaf sums
+and weights, excluding staging/layout copies and host tree updates. CPU-only builds
+expose the new counter as zero. See [validation](../validation/integer-leaf-sums-m3.txt).
+NVIDIA execution validation and other training-state gaps remain; no new performance
+benchmark was run.
 
 
 ## Linear coordinate descent
@@ -695,8 +706,8 @@ intended CUDA behavior in these cases.
 This validates the quantizer formulas on Metal, not actual NVIDIA execution or
 the whole CUDA training pipeline. Backend reduction topology can change FP64
 bound sums near rounding boundaries. Shared integer state now feeds both sampling
-methods and every root layout. Remaining work includes integer leaf sums and
-integer split scans/child statistics. Histogram cache page
+methods and every root layout. Remaining work includes integer split scans/child statistics. Reduced value-leaf
+sums now use original value quantizers and integer page accumulation. Histogram cache page
 addition/subtraction now retain integer statistics, as described below. Full Python regression validation passes without tolerance
 changes. See [validation](../validation/cuda-quantizer-m3.txt).
 
@@ -722,10 +733,11 @@ hist root sums also reduce one feature's integer bins before conversion.
 This distinction matters with cancellation: `(2^61+3) - (2^61+1)` must give 2;
 subtracting the binary64 views gives 0. Similarly, accumulating page sums before
 conversion retains small terms that would disappear beside a large page sum.
-The current split scans and child statistics still consume binary64 views, and
-leaf fitting still needs quantized state. All roots now share integer state as
-described below; both sampling methods now follow original-gradient quantization.
-The remaining leaf/split gaps are not resolved by the cache arithmetic.
+The current split scans and child statistics still consume binary64 views. All
+roots share integer state and both sampling methods follow original-gradient
+quantization. Reduced value-leaf sums now have their own original quantizers and
+integer cache, as described below. The remaining split gaps are not resolved by
+histogram/leaf cache arithmetic.
 
 Native shader tests check **75 page/subtraction cases, 5,013,975 stored/subtracted
 pairs and 225 integer root reductions**, including cancellation, signed carries,
@@ -805,7 +817,7 @@ a subset of sampling calls. Float replay does not increment that integer-samplin
 counter. CPU-only builds expose both as zero. See the
 [validation record](../validation/shared-quantized-state-m3.txt).
 
-**Still unfinished:** leaf sums, split scans/child statistics, column/ranking RNG,
+**Still unfinished:** split scans/child statistics, column/ranking RNG,
 sketches and other ledger gaps remain. The subsequent gradient sampler port is
 described below. These tests did not execute on NVIDIA hardware. No new performance
 benchmark accompanies this change.

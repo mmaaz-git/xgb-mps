@@ -76,7 +76,7 @@ struct Statistics {
   std::uint64_t histogram_integer_store_dispatches, histogram_integer_accumulation_dispatches,
       histogram_integer_subtraction_dispatches, histogram_integer_sum_dispatches;
   std::uint64_t quantized_gradient_sum_dispatches, cuda_uniform_sampling_dispatches;
-  std::uint64_t cuda_gradient_sampling_dispatches;
+  std::uint64_t cuda_gradient_sampling_dispatches, leaf_integer_sum_dispatches;
 };
 
 class Histogram {

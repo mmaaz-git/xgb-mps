@@ -1,0 +1,94 @@
+CUDA-ordered integer reduced-leaf fitting on Apple M3
+Date: 2026-11-03 America/Los_Angeles (2026-11-04 UTC)
+Machine: MacBook Air, Apple M3 (8 CPU / 10 GPU cores), 16 GB, macOS 26.6.2.
+
+Scope and source authority
+--------------------------
+updater_gpu_hist.cuh::Reset constructs original VALUE quantizers before replaying
+float sampling. gpu_hist/leaf_sum.cu converts those sampled floats using original
+scales, reduces integer pairs, adds external pages in integers, and materializes
+final sums for LeafWeight. MPS now follows this order, including preparing value
+gradients before tree growth. CPU preparation retains its previous post-growth
+order and CPU algorithm.
+
+A scale-only GradientQuantizer factory shares the GPU original-bound builder with
+QuantizedGradients without allocating an integer value-gradient matrix. Leaf state
+retains those scales, an integer sum cache, and a binary64 materialized view.
+The view never feeds subsequent integer page addition. Conversion reuses the
+checked binary64-to-int64 helper and preserves minimum-one positive Hessians.
+Nonfinite/out-of-range sampled conversions raise an error: CUDA C++ conversion is
+undefined for those values. Source metadata/command orchestration and final host
+tree updates remain host operations. The legacy low-level no-quantizer leaf API
+retains binary64 regression coverage; production supplies the original quantizer.
+
+No NVIDIA hardware comparison was performed. These are CUDA-source and host-formula
+checks, not measured CUDA execution equivalence. Original bound-reduction topology,
+other CUDA algorithm differences and the wider coverage ledger remain outstanding.
+No performance benchmarks were run. No numerical tolerance was widened.
+
+Authoritative full validation
+-----------------------------
+Script: results/run-integer-leaves-full-v1.sh
+Tmux: xgb-integer-leaves-full-v1 (completed)
+Driver log: results/integer-leaves-full-driver-v1.log
+2026-11-04 07:52:43 through 07:56:09 UTC; exit status 0.
+
+1. Metal build PASS: results/build-integer-leaves-final-v1.log.
+2. ALL native test executables rebuilt for Statistics/internal API changes;
+   all native suites PASS. Full Python: 1310 passed, 1 skipped, 309 warnings,
+   51.64 seconds. Log: results/test-integer-leaves-full-v1.log.
+3. Independent CPU-only build PASS: results/build-cpu-integer-leaves-v1.log.
+4. CPU-only API/device-error check PASS: results/check-cpu-integer-leaves-v1.log.
+
+New native API suite: tests/metal_integer_leaf_api.cc
+---------------------------------------------------
+PASS 250 cases / 11594018 source pairs / 20458 exact materialized sum fields.
+Additional curvature/original-scale/conversion-boundary cases PASS.
+
+Independent oracle computes original per-target sign-separated bound scales,
+converts sampled FLOAT values, retains uint64 integer bits across page additions,
+then converts final sums and applies the shared upstream regularized weight formula.
+It does not use GPU results as expected sum inputs.
+
+Coverage: 0/1/31/257/4097/65539/1000003 page rows; 1/3 targets; C/F/padded and
+row/column-broadcast views; small/large exponents, subnormals, rescaling and rejection;
+global row offsets, reordered output slots, empty leaves, source lifetime after
+quantizer construction, unchanged inputs/guards, original-scale dispatch counters;
+regularization, maximum-step clipping, positive bounds and weight output guards.
+Eight cancellation cases use exponents -80/0/54/100, within one page and across
+pages. The rounded first-page view loses the small terms, but the retained integer
+state recovers them after cancellation. A rejected original Hessian of 2^65 must
+leave scale unit 16; two tiny sampled Hessians yield cover 32, not their raw sum.
+Boundary cases accept -2^63 and the last in-range FP32 input at the tested scale,
+and reject positive 2^63, infinity and NaN conversions.
+
+Public training tests
+---------------------
+24 additional cases in tests/test_metal_leaf_fitting.py:
+- 16 exact cancellation cases: four exponents and dense/missing/zero-bin/external
+  layouts. Cached, in-place and reloaded predictions match the exact reference,
+  including subnormal leaves. Checks one split quantization and three original
+  value-bound calculations, plus integer leaf dispatches.
+- 8 original-value-scale cases: uniform and CUDA-derived gradient sampling across
+  four layouts. Independent split sampling chooses rejection of a value-Hessian
+  outlier. Expected weights use original bounds, FP32 value replay, integer
+  conversion with minimum-one curvature, integer sums and final weight formula.
+The existing 118 sampling/reduced-leaf tests passed in the initial focused run at
+unchanged tolerances (results/test-integer-leaves-python-v1.log). The final full
+run additionally validates the before-growth preparation order and all new cases.
+
+Initial diagnostic
+------------------
+The first new public run had two root-expectation failures for missing-data
+layouts: missingness allowed valid splits with the varying split gradients.
+The fixture now explicitly disables splits using gamma=1e30, as required for its
+single-root oracle. No production numerical fix or tolerance change was used to
+resolve those fixture failures. Native tests passed on their first run.
+
+Remaining full-project work
+---------------------------
+Integer split scans/child statistics; CUDA sketch pipeline and adapter matrix
+preprocessing; column/ranking RNG and objective/metric edge audits; AFT CPU
+corrections; Apple GPU array interoperability; distributed collectives; persistent
+GPU ownership/asynchrony; cross-Apple and actual NVIDIA validation. Full CUDA
+parity is NOT complete. Historical benchmark/numerical records were not rerun.

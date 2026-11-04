@@ -8,6 +8,17 @@
 #include "xgboost/linalg.h"
 
 namespace xgboost::common::metal {
+// Immutable original per-target bounds/scales, without allocating integer rows.
+// Value-gradient leaf fitting retains these scales BEFORE float sampling replay.
+class GradientQuantizer {
+ public:
+  virtual ~GradientQuantizer() = default;
+  virtual std::size_t Rows() const = 0;
+  virtual std::size_t Targets() const = 0;
+};
+std::shared_ptr<GradientQuantizer> MakeGradientQuantizer(
+    linalg::MatrixView<GradientPair const> original);
+
 // Per-tree, GPU-owned integer gradients and their original per-target scales.
 // Histogram builders retain this state explicitly. Floating-point replay is for
 // row-position bookkeeping/value gradients, never an input to re-quantization.

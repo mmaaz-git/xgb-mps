@@ -9,7 +9,11 @@
 #include "xgboost/span.h"
 
 namespace xgboost::common::metal {
-// GPU-owned binary64 sums, accumulated by resident row partitions across pages.
+class GradientQuantizer;
+// GPU-owned leaf sums accumulated across resident row partitions/pages. With an
+// original value quantizer, arithmetic remains integer until materialization;
+// Data() exposes a binary64 view, never the input to further integer addition.
+// Calls without a quantizer retain the legacy binary64 low-level API.
 class LeafSums {
  public:
   virtual ~LeafSums() = default;
@@ -17,5 +21,7 @@ class LeafSums {
   virtual void Weights(SplitParameters const& parameters, Span<SplitBounds const> bounds,
                        float learning_rate, Span<float> output) const = 0;
 };
-std::unique_ptr<LeafSums> MakeLeafSums(std::size_t leaves, std::size_t targets);
+std::unique_ptr<LeafSums> MakeLeafSums(
+    std::size_t leaves, std::size_t targets,
+    std::shared_ptr<GradientQuantizer const> original_quantizer = nullptr);
 }  // namespace xgboost::common::metal

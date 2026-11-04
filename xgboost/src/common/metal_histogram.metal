@@ -5701,3 +5701,57 @@ kernel void xgb_cuda_mvs_replay(device uint2* values [[buffer(0)]],
     values[out] = pair;
   }
 }
+
+// CUDA leaf_sum.cu quantizes the sampled FLOAT value gradients using scales
+// constructed before sampling. This deliberately differs from split-gradient
+// integer rescaling. Accumulate pages in integers, never in the binary64 view.
+kernel void xgb_leaf_integer_sum(
+    device const ulong* rows [[buffer(0)]], device const uint2* gradients [[buffer(1)]],
+    device const LeafSumBlock* blocks [[buffer(2)]], device ulong2* partial [[buffer(3)]],
+    constant LeafSumParams& p [[buffer(4)]], device const GradientScale* scales [[buffer(5)]],
+    device atomic_uint* error [[buffer(6)]], uint2 group [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]]) {
+  LeafSumBlock block = blocks[group.x];
+  GradientScale scale = scales[group.y];
+  ulong2 total(0);
+  for (ulong i = block.begin + tid; i < block.end; i += 256) {
+    uint2 pair = gradients[rows[i] * p.stride0 + ulong(group.y) * p.stride1];
+    ulong g = xgb_cuda_quantize_double(xgb_dfrom_float(as_type<float>(pair.x)), scale.grad_exponent,
+                                       error);
+    ulong h = xgb_cuda_quantize_double(xgb_dfrom_float(as_type<float>(pair.y)), scale.hess_exponent,
+                                       error);
+    if (pair.y > 0 && pair.y < 0x80000000u && h == 0) h = 1;
+    total += ulong2(g, h);
+  }
+  threadgroup ulong2 sums[256];
+  sums[tid] = total;
+  for (uint width = 128; width; width >>= 1) {
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < width) sums[tid] += sums[tid + width];
+  }
+  if (!tid) partial[ulong(group.x) * p.targets + group.y] = sums[0];
+}
+kernel void xgb_leaf_integer_sum_finish(
+    device const ulong2* partial [[buffer(0)]], device const LeafSumSegment* segments [[buffer(1)]],
+    device ulong2* output [[buffer(2)]], constant LeafSumParams& p [[buffer(3)]],
+    device ulong2* integers [[buffer(4)]], device const GradientScale* scales [[buffer(5)]],
+    uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) {
+  LeafSumSegment segment = segments[group.x];
+  ulong2 total(0);
+  for (ulong i = segment.begin + tid; i < segment.end; i += 256)
+    total += partial[i * p.targets + group.y];
+  threadgroup ulong2 sums[256];
+  sums[tid] = total;
+  for (uint width = 128; width; width >>= 1) {
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < width) sums[tid] += sums[tid + width];
+  }
+  if (!tid) {
+    ulong at = ulong(segment.output) * p.targets + group.y;
+    ulong2 value = integers[at] + sums[0];
+    integers[at] = value;
+    GradientScale scale = scales[group.y];
+    output[at] = ulong2(xgb_scaled_integer(value.x, -scale.grad_exponent),
+                        xgb_scaled_integer(value.y, -scale.hess_exponent));
+  }
+}
