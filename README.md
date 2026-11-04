@@ -6,6 +6,20 @@ An experimental Apple GPU backend for XGBoost 3.4.2, using custom Metal compute
 kernels behind `device="mps"`. The goal is coverage of all CUDA-accelerated XGBoost
 operations, with measured performance. **Full CUDA parity is not implemented yet.**
 
+**Current priority: finish GPU coverage and correctness before further performance
+tuning.** The backend can train and predict with `device="mps"`, but training is
+still a mixture of GPU operations and CPU work. Passing tests cover implemented
+paths, not every CUDA operation.
+
+The major remaining areas are sketch ingestion and matrix preprocessing,
+remaining objective initialization and leaf fitting, SHAP, linear boosting,
+GPU `approx` training, categorical/metadata operations, Apple GPU array
+interoperability and distributed collectives. AFT still has CPU corrections;
+some long-run ranking and Covertype comparisons have numerical differences.
+Persistent GPU ownership and less synchronization also remain unfinished.
+The [coverage ledger](docs/CUDA_PARITY.md) records the details. Performance
+experiments are deferred while these coverage gaps are addressed.
+
 The current backend runs histograms, gradient quantization, several objectives,
 prediction transforms, tree traversal, prediction-cache updates, common metrics,
 row partitioning, scalar/vector split evaluation, root-gradient sums and stump
@@ -1525,3 +1539,13 @@ pruning's rank searches and removal of duplicate selections. Merge/rank repair
 retain their original order. GPU validation of monotonic rank keys selects a
 serial GPU path for irregular summaries. Native summaries and all 700 Python
 tests still pass; measurements of this change follow separately.
+
+Completed measurements for parallel pruning: [1M × 128](validation/benchmark-sketch-million-v3-m3.json)
+takes **4.300 s CPU / 4.789 s MPS**, with sketch GPU time **47.2 ms**;
+[100K × 2,048](validation/benchmark-sketch-wide-v3-m3.json) takes
+**7.680 s / 8.322 s**, with sketch GPU time **79.8 ms**. Both report zero
+final-pair prediction difference. The million-row sketch stage is about 3.15×
+faster than its first GPU version, while the wide sketch stage regresses from
+55.5 to 79.8 ms. Neither final training median beats CPU. Further optimization
+is deferred in favor of completing missing GPU operations; all three experiments
+are retained.
