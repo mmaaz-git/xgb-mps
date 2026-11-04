@@ -1,5 +1,8 @@
 """CUDA-capable linear coordinate descent now dispatches Metal operations."""
+import ctypes
 import json
+from pathlib import Path
+import subprocess
 
 import numpy as np
 import pytest
@@ -7,6 +10,32 @@ import scipy.sparse as sp
 import xgboost as xgb
 
 SELECTORS = ["cyclic", "shuffle", "random", "greedy", "thrifty"]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def cuda_source_reference():
+    # The test-only host updater runs real XGBoost objectives/serialization with
+    # an independent CUDA-source coordinate implementation. It calls no Metal code.
+    info = xgb.metal_info()
+    if not info["built"] or not info["available"]:
+        return None, None  # The function-scoped metal fixture reports skip/failure.
+    root = Path(__file__).resolve().parents[1]
+    library = root / "results/libcuda_linear_reference.dylib"
+    dependencies = [root / "tests/cuda_linear_reference.cc", root / "xgboost/lib/libxgboost.dylib",
+                    root / "tests/build_linear_reference.sh"]
+    if not library.exists() or library.stat().st_mtime < max(p.stat().st_mtime for p in dependencies):
+        with (root / "results/build-linear-reference.log").open("w") as log:
+            subprocess.run(["bash", str(root / "tests/build_linear_reference.sh")],
+                           check=True, stdout=log, stderr=subprocess.STDOUT)
+    # Mach-O weak template symbols need the already-loaded core library visible
+    # globally to a test plugin. This changes only this test process's loader scope.
+    core = ctypes.CDLL(xgb.core._LIB._name, mode=ctypes.RTLD_GLOBAL)
+    return core, ctypes.CDLL(str(library))
+
+
+def train_reference(params, data, rounds, **kwargs):
+    return xgb.train(params | {"device": "cpu", "updater": "test_cuda_source_reference"},
+                     data, rounds, **kwargs)
 
 
 def data_and_params(layout, kind):
@@ -55,17 +84,23 @@ def test_metal_coordinate_descent(metal, selector, layout, kind, penalized):
     if penalized:
         params.update(reg_alpha=.03, reg_lambda=.2)
     cpu = xgb.train(params | {"device": "cpu"}, data, 5)
+    reference = train_reference(params, data, 5)
     before = xgb.metal_info()
     gpu = xgb.train(params | {"device": "mps"}, data, 5)
     after = xgb.metal_info()
     assert after["linear_gradient_dispatches"] > before["linear_gradient_dispatches"]
     assert after["linear_residual_dispatches"] > before["linear_residual_dispatches"]
     assert after["linear_gpu_time_ns"] > before["linear_gpu_time_ns"]
-    check_models(cpu, gpu, data)
-    cpu_raw, gpu_raw = cpu.save_raw(), gpu.save_raw()
+    check_models(reference, gpu, data)
+    if selector not in ["greedy", "thrifty"]:
+        check_models(cpu, gpu, data)
+    cpu_raw, gpu_raw, reference_raw = cpu.save_raw(), gpu.save_raw(), reference.save_raw()
     cpu = xgb.train(params | {"device": "cpu"}, data, 2, xgb_model=cpu_raw)
     gpu = xgb.train(params | {"device": "mps"}, data, 2, xgb_model=gpu_raw)
-    check_models(cpu, gpu, data)
+    reference = train_reference(params, data, 2, xgb_model=reference_raw)
+    check_models(reference, gpu, data)
+    if selector not in ["greedy", "thrifty"]:
+        check_models(cpu, gpu, data)
 
 
 @pytest.mark.parametrize("selector", ["greedy", "thrifty"])
@@ -74,9 +109,9 @@ def test_linear_top_k(metal, selector, top_k):
     data, objective = data_and_params("sparse", "multiclass")
     params = dict(booster="gblinear", updater="coord_descent", feature_selector=selector,
                   top_k=top_k, nthread=2, eta=.2, **objective)
-    cpu = xgb.train(params | {"device": "cpu"}, data, 4)
+    reference = train_reference(params, data, 4)
     gpu = xgb.train(params | {"device": "mps"}, data, 4)
-    check_models(cpu, gpu, data)
+    check_models(reference, gpu, data)
 
 
 @pytest.mark.parametrize("rows", [0, 1, 257])
@@ -104,7 +139,52 @@ def test_linear_convergence_and_zero_step(metal):
         check_models(cpu, gpu, data)
         assert after["linear_gradient_dispatches"] > before["linear_gradient_dispatches"]
         if options.get("eta") == 0:
-            assert after["linear_residual_dispatches"] == before["linear_residual_dispatches"]
+            # CUDA skips zero bias steps but still updates each selected feature.
+            assert after["linear_residual_dispatches"] - before["linear_residual_dispatches"] == 5 * data.num_col()
+
+
+@pytest.mark.parametrize("selector", ["greedy", "thrifty"])
+def test_cuda_selector_uses_original_gradients(metal, selector):
+    x = np.column_stack([np.ones(32), np.tile([-1, 1], 16), np.zeros(32)]).astype(np.float32)
+    d = xgb.DMatrix(x, label=10 + 2*x[:, 1])
+    p = dict(booster="gblinear", updater="coord_descent", feature_selector=selector,
+             top_k=1, eta=1, base_score=0, nthread=1)
+    model = xgb.train(p | {"device": "mps"}, d, 1)
+    reference = train_reference(p, d, 1)
+    cpu = xgb.train(p | {"device": "cpu"}, d, 1)
+    check_models(reference, model, d)
+    np.testing.assert_array_equal(model.predict(d), np.full(32, 10, dtype=np.float32))
+    np.testing.assert_array_equal(cpu.predict(d), 10 + 2*x[:, 1])
+
+
+@pytest.mark.parametrize("selector", SELECTORS)
+@pytest.mark.parametrize("targets", [1, 3])
+def test_cuda_linear_negative_hessians(metal, selector, targets):
+    rng = np.random.default_rng(293)
+    x = rng.integers(-3, 4, (33, 4)).astype(np.float32) / 2
+    g = rng.integers(-8, 9, (len(x), targets)).astype(np.float32) / 4
+    h = rng.integers(1, 5, g.shape).astype(np.float32) / 2
+    h[::3] = -.25
+    d = xgb.DMatrix(x, label=np.zeros_like(g))
+    p = dict(booster="gblinear", updater="coord_descent", feature_selector=selector,
+             base_score=[0.]*targets, eta=.25, nthread=1, seed=31, seed_per_iteration=True)
+    objective = lambda prediction, data: (g.copy(), h.copy())
+    model = xgb.train(p | {"device": "mps"}, d, 3, obj=objective)
+    reference = train_reference(p, d, 3, obj=objective)
+    check_models(reference, model, d)
+    loaded = xgb.Booster(params={"device": "cpu"}, model_file=model.save_raw())
+    np.testing.assert_array_equal(model.predict(d), loaded.predict(d))
+
+
+@pytest.mark.parametrize("selector", SELECTORS)
+@pytest.mark.parametrize("targets", [1, 3])
+def test_cuda_linear_keeps_input_snapshot(metal, cuda_source_reference, selector, targets):
+    x = (np.arange(33*4, dtype=np.float32).reshape(33, 4) % 7) / 4
+    d = xgb.DMatrix(x, label=np.zeros(33))
+    check = cuda_source_reference[1].TestCudaLinearInputSnapshot
+    check.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint]
+    check.restype = ctypes.c_int
+    assert check(d.handle, selector.encode(), targets) == 1
 
 
 def test_shotgun_retains_host_updater(metal):

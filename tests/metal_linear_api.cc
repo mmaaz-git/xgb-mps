@@ -1,4 +1,4 @@
-// Production Metal linear kernels against independent CPU reductions/residuals.
+// Production kernels against CUDA-source terms/residuals and FP32 error bounds.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -14,19 +14,60 @@
 
 using namespace xgboost;
 namespace metal = common::metal;
-std::size_t cases = 0, sums = 0, residuals = 0, source_pairs = 0;
+std::size_t cases = 0, sums = 0, exact_sums = 0, residuals = 0, source_pairs = 0;
+double max_error_fraction = 0;
 std::string current;
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(current + ": " + message);
 }
-void SameDouble(double a, double b) {
-  if (std::isnan(a) && std::isnan(b)) return;
-  if (a != b) {
-    std::printf("GPU sum %.17g CPU %.17g\n", a, b);
-    Check(false, "Reduction differs");
+// An independent high-precision sum of the FP32 source terms. Exact comparisons
+// remain required whenever all possible partial sums fit the dyadic FP32 lattice.
+// Other cases use the forward-error bound gamma_d * sum(abs(terms)), with d the
+// maximum number of FP32 additions along a path in the balanced reduction.
+struct ReferenceSum {
+  double value{0}, magnitude{0};
+  int quantum{10000};
+  void Add(float term) {
+    value += term;
+    magnitude += std::abs(double(term));
+    std::uint32_t bits;
+    std::memcpy(&bits, &term, 4);
+    bits &= 0x7fffffffu;
+    if (bits && bits < 0x7f800000u) {
+      auto exponent = bits >> 23;
+      auto mantissa = (bits & 0x7fffffu) | (exponent ? 0x800000u : 0);
+      int power = exponent ? int(exponent) - 127 - 23 : -149;
+      quantum = std::min(quantum, power + __builtin_ctz(mantissa));
+    }
   }
-  ++sums;
-}
+  void Compare(float actual, std::size_t count) const {
+    ++sums;
+    if (!std::isfinite(value)) {
+      Check(std::isnan(value) ? std::isnan(actual) : actual == value, "Nonfinite sum differs");
+      ++exact_sums;
+      return;
+    }
+    auto exact = magnitude == 0 || std::ldexp(magnitude, -quantum) <= 0x1p24;
+    if (exact) {
+      Check(actual == value, "Exactly representable FP32 sum differs");
+      ++exact_sums;
+      return;
+    }
+    unsigned depth = 0;
+    do {
+      depth += 8;
+      count = (count + 255) / 256;
+    } while (count > 1);
+    double unit = 0x1p-24, gamma = depth * unit / (1 - depth * unit);
+    double bound = gamma * magnitude, error = std::abs(double(actual) - value);
+    max_error_fraction = std::max(max_error_fraction, error / bound);
+    if (!(error <= bound)) {
+      std::printf("FP32 sum %.9g high-precision %.17g error %.17g bound %.17g\n", actual, value,
+                  error, bound);
+      Check(false, "FP32 reduction exceeded its rounding-error bound");
+    }
+  }
+};
 void SameFloat(float a, float b) {
   ++residuals;
   if (std::isnan(a) && std::isnan(b)) return;
@@ -83,41 +124,39 @@ void Run(std::size_t rows, unsigned groups, unsigned mode) {
       for (unsigned group = 0; group < groups; ++group) {
         std::size_t begin = feature < 0 ? 0 : offsets[feature];
         std::size_t count = feature < 0 ? rows : offsets[feature + 1] - begin;
-        double expected_g = 0, expected_h = 0;
+        ReferenceSum expected_g, expected_h;
         for (std::size_t i = 0; i < count; ++i) {
           auto row = feature < 0 ? i : entries[begin + i].index;
           auto pair = reference[row * groups + group];
-          if (feature < 0 ? !(pair.GetHess() >= 0) : pair.GetHess() < 0) continue;
           float g = pair.GetGrad(), h = pair.GetHess();
           if (feature >= 0) {
             float value = entries[begin + i].fvalue;
             g = g * value;
             h = (h * value) * value;
           }
-          expected_g += g;
-          expected_h += h;
+          expected_g.Add(g);
+          expected_h.Add(h);
         }
         auto before = metal::GetStatistics();
         auto actual = state->Gradient(feature, group);
         auto after = metal::GetStatistics();
         Check(after.linear_gradient_dispatches - before.linear_gradient_dispatches == bool(count),
               "Gradient dispatch count differs");
-        SameDouble(actual.GetGrad(), expected_g);
-        SameDouble(actual.GetHess(), expected_h);
-        if (delta != 0) {
+        expected_g.Compare(actual.GetGrad(), count);
+        expected_h.Compare(actual.GetHess(), count);
+        if (feature >= 0 || delta != 0) {
           for (std::size_t i = 0; i < count; ++i) {
             auto row = feature < 0 ? i : entries[begin + i].index;
             auto& pair = reference[row * groups + group];
-            if (pair.GetHess() < 0) continue;
-            float product =
-                feature < 0 ? pair.GetHess() : pair.GetHess() * entries[begin + i].fvalue;
-            pair += GradientPair{product * delta, 0};
+            float product = pair.GetHess() * delta;
+            if (feature >= 0) product = product * entries[begin + i].fvalue;
+            pair += GradientPair{product, 0};
           }
         }
         state->UpdateResidual(feature, group, delta);
         auto updated = metal::GetStatistics();
         Check(updated.linear_residual_dispatches - after.linear_residual_dispatches ==
-                  bool(count && delta != 0),
+                  bool(count && (feature >= 0 || delta != 0)),
               "Residual dispatch count differs");
       }
       std::vector<GradientPair> output(reference.size() + 2, GradientPair{-999, 998});
@@ -165,17 +204,71 @@ void Rejections() {
   }
   Check(failed, "Invalid row index accepted");
 }
-int main() {
+void CudaDifferences() {
+  current = "CUDA source differences";
+  std::vector<bst_idx_t> offsets{0, 1};
+  std::vector<Entry> entries{{0, 3}};
+  std::vector<GradientPair> gradients{{7, -2}};
+  auto state = metal::MakeLinearState(1, 1, offsets, entries, gradients);
+  auto bias = state->Gradient(-1, 0), feature = state->Gradient(0, 0);
+  Check(bias.GetGrad() == 7 && bias.GetHess() == -2 && feature.GetGrad() == 21 &&
+            feature.GetHess() == -18,
+        "CUDA reductions must include negative Hessians");
+  state->UpdateResidual(-1, 0, .5f);
+  state->CopyGradients(gradients);
+  Check(gradients[0] == GradientPair(6, -2), "CUDA bias residual must include negative Hessians");
+  state->UpdateResidual(0, 0, .5f);
+  state->CopyGradients(gradients);
+  Check(gradients[0] == GradientPair(3, -2),
+        "CUDA feature residual must include negative Hessians");
+  auto from_bits = [](std::uint32_t bits) {
+    float out;
+    std::memcpy(&out, &bits, 4);
+    return out;
+  };
+  float h = from_bits(0x401758e3), step = from_bits(0x3fd4c3f0), x = from_bits(0x3f807d7e);
+  float cuda = (h * step) * x, cpu = (h * x) * step;
+  Check(cuda != cpu, "Residual-order fixture must distinguish CPU from CUDA");
+  entries[0].fvalue = x;
+  gradients[0] = GradientPair(0, h);
+  state = metal::MakeLinearState(1, 1, offsets, entries, gradients);
+  state->UpdateResidual(0, 0, step);
+  state->CopyGradients(gradients);
+  SameFloat(gradients[0].GetGrad(), cuda);
+  // CUDA returns an FP32 pair, including overflow; the former binary64 sum did not.
+  gradients.assign(2, GradientPair(std::numeric_limits<float>::max(), 1));
+  auto overflow = metal::MakeLinearState(2, 1, {offsets.data(), 1}, {}, gradients);
+  Check(std::isinf(overflow->Gradient(-1, 0).GetGrad()), "Reduction must retain FP32 overflow");
+  gradients.resize(1);
+  // A zero feature step still performs arithmetic in CUDA; a zero bias step skips it.
+  entries[0].fvalue = INFINITY;
+  gradients[0] = GradientPair(3, -0.f);
+  state = metal::MakeLinearState(1, 1, offsets, entries, gradients);
+  state->UpdateResidual(-1, 0, 0.f);
+  state->CopyGradients(gradients);
+  Check(gradients[0].GetGrad() == 3 && std::signbit(gradients[0].GetHess()),
+        "Zero bias must bypass");
+  auto before = metal::GetStatistics();
+  state->UpdateResidual(0, 0, 0.f);
+  state->CopyGradients(gradients);
+  Check(std::isnan(gradients[0].GetGrad()) && !std::signbit(gradients[0].GetHess()),
+        "Zero feature step must retain CUDA exceptional arithmetic");
+  Check(metal::GetStatistics().linear_residual_dispatches == before.linear_residual_dispatches + 1,
+        "Zero feature step did not dispatch");
+}
+int main(int argc, char**) {
   try {
+    CudaDifferences();
+    if (argc > 1) return 0;
     for (std::size_t rows : {0ul, 1ul, 31ul, 257ul, 4097ul, 65539ul})
       for (unsigned groups : {1u, 3u})
         for (unsigned mode = 0; mode < 4; ++mode) Run(rows, groups, mode);
     Run(1000003, 3, 0);
     Rejections();
     std::printf(
-        "PASS %zu linear cases / %zu source gradient pairs / %zu exact sum fields / %zu exact "
-        "residual fields; duplicates, guards, exceptional values and errors\n",
-        cases, source_pairs, sums, residuals);
+        "PASS %zu linear cases / %zu source pairs / %zu sum fields (%zu exact) / %zu exact "
+        "residual fields; max FP32 forward-error fraction %.9g\n",
+        cases, source_pairs, sums, exact_sums, residuals, max_error_fraction);
   } catch (std::exception const& e) {
     std::fprintf(stderr, "FAIL %s\n", e.what());
     return 1;

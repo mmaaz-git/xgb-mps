@@ -1,0 +1,86 @@
+CUDA-source linear coordinate descent on Apple M3
+Date: 2026-11-04
+Source base: ce05578 plus the linear-alignment change accompanying this record.
+
+Authority and changes:
+  linear/updater_gpu_coordinate.cu GetBiasGradient/GetGradient reduce FP32
+  GradientPair via common/device_helpers.cuh SumReduction (CUB DeviceReduce::Sum).
+  All Hessians participate in device sums/residuals. Feature terms are g*x and
+  (h*x)*x. Feature residuals use (h*delta)*x, then GradientPair += (term,+0).
+  Bias skips delta=0; feature updates do not. Host selectors receive the original
+  input gradient snapshot even after bias/residual updates; no final copy-back.
+  Metal now follows these rules, replacing the earlier CPU-based f64/filter/
+  residual order and refreshed selector snapshot. Host selection/scalar model
+  updates remain host, as CUDA specifies. Input gradients remain unchanged.
+
+Reduction and domain limits:
+  Recursive 256-thread FP32 trees, with eight 32-lane groups and raw-bit shuffles.
+  All levels return GradientPair (FP32), including overflow. Arithmetic helpers
+  preserve subnormals under Metal FTZ. No binary64 sum accumulator remains here.
+  This is not an emulation of a specific CUB architecture/tile policy. NVIDIA
+  documents that legacy DeviceReduce floating-point sums can differ across GPU
+  architectures. Exact NVIDIA execution and NVCC contraction remain unverified.
+  https://nvidia.github.io/cccl/unstable/cub/api/structcub_1_1DeviceReduce.html
+  Reduction lengths above INT32_MAX are rejected to avoid CUDA-interface narrowing.
+  Sorted duplicate CSC rows are processed serially on Metal. CUDA's concurrent
+  per-entry writes race for duplicates; no NVIDIA-equivalence claim is made for
+  this extension. Distinct-row CSC semantics follow source. Multi-page input is
+  rejected upstream and here. Cross-round buffer reuse remains unimplemented.
+
+Native validation: tests/metal_linear_api.cc
+  PASS 49 cases / 4,118,809 source pairs / 3,564 sum fields (2,991 exact or nonfinite
+  classification) / 148,277,125 residual fields. Metal API Validation enabled.
+  Finite residuals retain exact bit comparisons; NaNs use classification.
+  FP32 sums use an independent high-precision reference of source terms. When
+  sum(abs(terms)) fits the common dyadic lattice in 24 significand bits, exact
+  comparison is required. Otherwise use gamma_d * sum(abs(terms)), d=8 per recursive
+  256-element level, u=2^-24, gamma_d=d*u/(1-d*u). Maximum error/bound=0.0987717202.
+  This is the explicit new FP32 contract, not a widened failed binary64 tolerance.
+  Empty/million-row inputs, multiple groups, subnormals/large/nonfinite values,
+  negative Hessians, duplicate runs, guards, input preservation and errors retained.
+  New exact differences: negative-H sums/residuals, zero bias bypass vs zero feature
+  execution (+0 Hessian and 0*infinity -> NaN), FP32 overflow, multiplication-order
+  fixture h=0x401758e3, step=0x3fd4c3f0, x=0x3f807d7e gives CUDA0x407c898a vs CPU...8b.
+
+Training validation:
+  tests/cuda_linear_reference.cc registers a test-only host updater via a dynamic
+  library. Its coordinate algorithm follows CUDA, its independent adjacent-pair
+  sum rounds in FP32, and it reuses upstream host selectors/formulas like CUDA.
+  No Metal calls in the reference updater. A separate exported test function calls
+  the production MPS updater directly to inspect original-gradient ownership.
+  Test loader promotes the existing core dylib to RTLD_GLOBAL for Mach-O weak
+  template lookup; production loading and code are unchanged.
+  tests/test_metal_linear.py preserves all 136 earlier scenarios and adds 22 cases:
+    2 greedy/thrifty original-snapshot fixtures that intentionally differ from CPU;
+    10 negative-Hessian selector/target cases;
+    10 direct production updater input-preservation checks.
+  Existing rtol=atol=2e-5 unchanged; CPU comparisons retained for cyclic/shuffle/random.
+  All selectors, dense/missing/CSR data, regression/binary/multiclass/multitarget,
+  L1/L2 penalties, top_k, zero steps, convergence, save/load and continuation covered.
+
+Development logs (local results/, not benchmark timings):
+  test-linear-cuda-before-v1.log: expected failure on ce05578's old implementation:
+    CUDA reductions must include negative Hessians. New test established mismatch.
+  linear-cuda-build-driver-v1.log: 10:48:24-10:48:31 UTC, exit 0; build and initial
+    explicit CUDA differences PASS.
+  Initial reference plugin probe: Mach-O weak symbol lookup failed under RTLD_LOCAL;
+    promoting the already-loaded core to RTLD_GLOBAL fixed test loading.
+  linear-cuda-focused-driver-v1.log: 10:52:06-10:52:17 UTC, exit 0.
+    test-linear-cuda-native-v1.log: all native source checks PASS.
+    test-linear-cuda-python-v1.log: 148 passed, 339 warnings, 6.96 s.
+  test-linear-cuda-snapshot-v1.log: 10 setup errors compiling the added C++ test
+    wrapper (initializer-list template deduction). Explicit Args/shape types fixed it.
+  test-linear-cuda-snapshot-v2.log: 10 passed, 148 deselected, 2.28 s.
+  run-linear-cuda-full-v1.sh: 10:54:23-10:58:36 UTC, exit 0.
+    build-linear-cuda-final-v1.log: final Metal build PASS.
+    test-linear-cuda-full-v1.log: every native suite/reference plugin rebuilt and PASS;
+      1603 Python passed, 1 skipped, 370 warnings in 96.75 seconds.
+    build-cpu-linear-cuda-v1.log: CPU-only build PASS.
+    check-cpu-linear-cuda-v1.log: unavailable/zero-counters/device-error checks PASS.
+  No production/test changes after full validation; only documentation edits.
+
+Scope:
+  Linear source-algorithm mismatch addressed; actual NVIDIA/compiler behavior,
+  generic state/metadata, sketch and other algorithm gaps, AFT corrections,
+  interoperability, collectives and end-to-end device ownership remain.
+  No benchmark or NVIDIA execution comparison was run.

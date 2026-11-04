@@ -43,15 +43,12 @@ work, not accepted substitutes for CUDA behavior:
 - Quantile sketches: CPU row queues, `SetPruneSorted`, ordered summary merging
   and pruning differ from CUDA's sorted weighted scan and GPU sketch pipeline.
   Existing exact CPU cut tests do not validate that CUDA pipeline.
-- Interaction constraints: current Metal training uses the CPU history-based
-  intersection of compatible groups. CUDA accumulates the union of groups
-  containing each split feature, and its nonroot query emits ascending feature
-  IDs. Overlapping groups can therefore differ. The existing split oracles also
-  retain CPU constraint filtering; their disjoint-group cases do not test this
-  difference. Both implementation and reference require CUDA alignment.
-- Linear coordinate descent: binary64 reductions, filtering, residual arithmetic
-  and fresh host gradients for greedy/thrifty selectors differ from CUDA's FP32
-  reductions and unchanged host selector snapshot.
+- Interaction constraints now follow CUDA's cumulative group unions and ascending
+  nonroot queries, with explicit overlapping-group tests; the former CPU history
+  filter has been removed from production MPS training and the source oracles.
+- Linear reductions now use FP32 pairs, CUDA Hessian/residual rules and unchanged
+  selector snapshots. CUB tile ordering, NVCC contraction and actual NVIDIA
+  execution remain unverified; they are not cross-device bitwise guarantees.
 - Ranking metric edge cases: some degenerate-query fallbacks currently preserve
   CPU semantics where CUDA differs.
 - Scalar split enumeration now follows CUDA's exclusive numeric scan and strict
@@ -93,7 +90,7 @@ must be reported rather than hidden by widening test tolerances.
 | Quantile sketching, cuts, weighted/category handling | `common/quantile.cu`, `data/gradient_index.cu` | Group/Hessian weighting, sorted-column weighted summaries, streaming level compaction, final numeric merging, rank repair and pruning use Metal. Row ingestion/queue folding, value sorting and category collection remain CPU. Final cut materialization is host-side in both CUDA and Metal. SparsePage bin assignment and hit counts use Metal; adapter-built QuantileDMatrix bins remain CPU |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `metainfo.cu`, `array_interface.cu` | CPU |
-| Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU bias/feature gradient reductions and residual updates with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
+| Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
@@ -581,40 +578,64 @@ does not silently change algorithms when selecting MPS. Upstream's deprecated
 `gpu_coord_descent` user parameter still raises its original error, and the
 vendored version's `gblinear` deprecation warning remains visible.
 
-The current numerical reference is the CPU coordinate updater; the differences
-below remain CUDA-alignment work. Metal reduces FP32
-feature products in software binary64, preserves the CPU residual multiplication
-order, excludes negative Hessians as the CPU does, and includes the Hessian's
-addition of positive zero when updating a pair. This differs from CUDA's FP32
-reductions and some of its arithmetic/filtering choices; identical CUDA
-intermediate values are not claimed. Sorted duplicate CSC row entries are
-processed sequentially by one thread per run, avoiding residual write races.
+The numerical rules now follow `updater_gpu_coordinate.cu`: bias and feature
+sums return FP32 `GradientPair`, without negative-Hessian filtering. Feature terms
+round `g*x` and `(h*x)*x` in FP32; residual terms use `(h*step)*x`, then add the term
+to the gradient and positive zero to the Hessian. Bias updates skip a zero step;
+feature updates still execute, preserving exceptional-value and signed-zero
+behavior. Host `CoordinateDelta` formulas and weight updates remain unchanged.
 
-All five selectors are supported. Greedy/thrifty selectors see completed residual
-updates, following the CPU contract; the CUDA updater instead supplies its
-unchanged host gradient snapshot to selectors. CSC entries and mutable gradients
-are copied into Metal-owned storage for each boosting update, and residuals are
-read back before host selection needs them and at completion. Keeping data
-resident between boosting rounds and reducing synchronization are deferred
-performance work. As in CUDA, training requires a single CSC block; external
-multi-page input is rejected explicitly. Device buffer limits, signed 32-bit
-feature identifiers and 32-bit residual dispatch sizes are checked.
+The previous implementation reduced in binary64, filtered Hessians and used
+CPU residual order. It also copied residuals back for greedy/thrifty selectors.
+CUDA instead supplies the original input gradient snapshot to both `Setup` and
+`NextFeature`, and leaves that input unchanged after the update. MPS now does the
+same. Explicit fixtures show CUDA-style selectors choosing a different feature
+from CPU after a bias update; CPU topology/weight identity is not asserted there.
 
-Native validation covers 49 cases and 4,118,809 source gradient pairs, with
-3,159 exact sum-field comparisons and 148,277,124 residual-field comparisons.
-Finite residuals match CPU bits, including signed zeros; NaNs use classification.
-The dyadic finite sum inputs allow exact independent CPU accumulation. Cases
-include million-row input, multiple groups, empty columns/rows, duplicate rows,
-subnormals, large/nonfinite values, negative Hessians, input preservation,
-guards and invalid metadata. The 136 public tests exercise dense/missing/CSR data,
-regression/binary/multiclass/multitarget objectives, all selectors, L1/L2 penalties,
-`top_k`, zero weights/steps, convergence and saved-model continuation. Predictions,
-contributions and serialized weights use `rtol=atol=2e-5` against CPU.
+Metal uses recursive balanced FP32 reductions with 256-thread groups. It does
+not emulate the tile policy of a particular CUB build. The legacy
+`cub::DeviceReduce::Sum` called by this XGBoost source can use different reduction
+orders across GPU architectures; see [NVIDIA's CUB documentation](https://nvidia.github.io/cccl/unstable/cub/api/structcub_1_1DeviceReduce.html).
+NVCC contraction and exact NVIDIA execution remain unverified. Subnormal-preserving
+FP32 helpers avoid Metal's native FTZ behavior. Counts are checked against CUDA's
+signed 32-bit reduction interface rather than silently narrowed.
 
-`linear_gradient_dispatches` and `linear_residual_dispatches` expose completed
-commands; `linear_gpu_time_ns` covers both, excluding host selection, scalar
-updates and staging. Empty operations and zero residual steps require no
-dispatch. No performance measurement accompanies this coverage update.
+CSC data and mutable gradients are owned on GPU for each boosting update, as
+before. Feature selectors receive the untouched original host gradients. Production
+training no longer reads residuals back; the low-level readback API remains for
+validation. Sorted duplicate row entries are processed serially on Metal to avoid
+write races. CUDA's one-thread-per-entry residual update races on such duplicate
+rows, so equivalence is claimed only for its defined distinct-row case; the
+serial duplicate extension remains explicitly tested. Multi-page input remains
+rejected as in CUDA. Cross-round storage reuse is not implemented.
+
+Native validation retains **49 cases / 4,118,809 source pairs** and checks **3,564
+sum fields**, of which **2,991** permit exact comparison or nonfinite classification.
+For other FP32 sums, an independent high-precision sum of source terms is checked
+against the balanced-tree forward-error bound `gamma_d * sum(abs(terms))`; the
+maximum observed error is 0.098772 of that bound. This replaces the obsolete
+binary64 contract explicitly, rather than relaxing a failed FP32 comparison.
+**148,277,125 residual fields** retain exact finite-bit comparisons and NaN
+classification against CUDA's multiplication/filter rules. Checks include empty/
+million-row data, multiple targets, subnormals, negative Hessians, overflow,
+nonfinite values, duplicates, input preservation, guards and malformed metadata.
+
+Public validation uses a test-only host updater derived from the CUDA source,
+with an independent adjacent-pair FP32 reduction. It shares the upstream host
+selectors and coordinate formulas that CUDA itself calls; it calls no Metal code.
+All 136 previous public scenarios remain, augmented by two selector-divergence
+fixtures, ten negative-Hessian cases and ten direct production input-ownership
+checks. Training spans all five selectors, dense/missing/CSR data, multiple
+objectives/targets, penalties, `top_k`, zero steps, convergence and continuation.
+The existing `rtol=atol=2e-5` is unchanged. CPU comparisons remain where selector
+algorithms agree; actual NVIDIA execution is not claimed. Final validation passes
+**1,603 Python tests (one skipped)**, every rebuilt native suite and the CPU-only
+build/API check. [Validation record](../validation/cuda-linear-m3.txt).
+
+`linear_gradient_dispatches` and `linear_residual_dispatches` count completed
+commands; `linear_gpu_time_ns` covers GPU time, excluding host selection, scalar
+updates and staging. Empty operations and zero bias steps do not dispatch; zero
+feature steps do. No performance benchmark accompanies this alignment update.
 
 
 ## Approximate training and gradient state integration

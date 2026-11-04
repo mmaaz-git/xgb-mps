@@ -341,4 +341,6 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_bound_state_api_test
 MTL_DEBUG_LAYER=1 results/metal_bound_state_api_test
 echo "Running training validation tests; a real GPU is required"
+echo "Building the test-only host CUDA coordinate-descent reference"
+bash tests/build_linear_reference.sh
 .venv/bin/python -m pytest -q tests --require-metal

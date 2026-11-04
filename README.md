@@ -14,12 +14,13 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest validated step: **GPU-owned monotonic bounds**, following the interaction-
-constraint port. Scalar and vector training now initialize bounds, preserve them
-during growth and update them directly in Metal buffers. Native validation passes
-**24 storage cases / 76 updates / 3,847,176 exact values**. Final validation passes
-**1,581 Python tests**, every rebuilt native suite and the CPU-only build/API check.
-[Validation](validation/bound-state-m3.txt) · [Scope](docs/CUDA_PARITY.md#gpu-owned-monotonic-bounds).
+Latest validated step: **CUDA-source linear coordinate descent**. Metal now uses
+FP32 sums, CUDA residual/Hessian rules and the original gradient snapshot for
+feature selection. Explicit tests catch CPU/CUDA algorithm differences.
+Final validation passes **1,603 Python tests**, every rebuilt native suite and the
+CPU-only build/API check. Linear validation includes 49 native cases and 158
+public cases, with the existing public tolerance unchanged.
+[Validation](validation/cuda-linear-m3.txt) · [Scope](docs/CUDA_PARITY.md#linear-coordinate-descent).
 Actual NVIDIA execution equivalence remains unverified.
 
 The major remaining areas are sketch ingestion and matrix preprocessing,
@@ -114,7 +115,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; scalar/vector split statistics retain integers |
 | Root statistics / stump fitting | All scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; final root weights run on GPU; vector cover sums targets in binary64 before FP32 conversion; objective stump fitting retains its separate binary64 GPU reduction |
 | Reduced-gradient leaf fitting | Original value scales → float sampling replay → per-row integer conversion → integer leaf/page sums; binary64 view for regularized/clipped final weights; host tree receives completed leaves |
-| Linear coordinate descent | GPU bias/feature gradient sums and residual updates; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
+| Linear coordinate descent | GPU FP32 sums, CUDA residual/Hessian rules and original selector snapshots; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
 | Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
 | Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; other objective-specific initialization work remains CPU |
 | Objective initialization | GPU expectile initial gradients/Hessians and absolute-error target-mean broadcast; small final base-score adjustments remain host, as in CUDA |
@@ -345,12 +346,13 @@ On Apple M3, 2026-11-03:
   positive-curvature minimums and conversion boundaries. **24 additional public
   cases** check exact cancellation, sampled value scales, zero-bin/external-page
   roots and prediction/cache/reload behavior.
-- Linear coordinate descent: **49 native cases / 4,118,809 source gradient
-  pairs**, 3,159 exact sum fields and 148,277,124 residual field comparisons.
-  Finite residuals match CPU bits, including signed zeros; NaNs use classification.
-  Covers empty/million-row inputs, duplicate CSC rows, subnormals, nonfinite
-  values, negative Hessians and guards. **136 public cases** cover all five selectors,
-  dense/missing/sparse data, multiple outputs, penalties and model continuation.
+- Linear coordinate descent: **49 native cases / 4,118,809 source pairs**, 3,564
+  FP32 sum checks (2,991 exact/nonfinite checks; others use a derived rounding-error
+  bound), and 148,277,125 residual fields checked against CUDA-source arithmetic.
+  Finite residuals match bits; NaNs use classification. Covers empty/million-row
+  inputs, duplicates, subnormals, nonfinite values, negative Hessians and guards.
+  **158 public cases** cover selectors, objectives/layouts, model continuation,
+  explicit CPU/CUDA selector differences and original-gradient preservation.
 - SHAP: **576 native cases / 424,350,144 output values**, including zero entries,
   compared with independent one-feature Shapley values; maximum absolute error
   `2.39e-7`. Checks include guards, overlapping storage, empty inputs and batch
@@ -558,7 +560,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port sketch weighting, sorted-column summaries and streaming level compaction.
 - [x] Port exact SHAP contributions and interactions.
 - [x] Implement Metal coordinate-descent reductions and residual updates.
-- [ ] Align linear arithmetic, sketch algorithms and column/ranking streams with CUDA.
+- [x] Align linear FP32 arithmetic and selector snapshots with CUDA source.
+- [ ] Align sketch algorithms and column/ranking streams with CUDA.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.
@@ -1778,8 +1781,9 @@ coordinate updater now run on Metal. Use
 `booster="gblinear", updater="coord_descent", device="mps"`. All five feature
 selectors are supported. Selectors, scalar weight updates, CSC preparation and
 linear prediction remain host work, matching CUDA's placement. The default
-`shotgun` algorithm also remains host. The numerical reference is CPU, including
-updated residuals for greedy/thrifty selection; CUDA intermediate bits can differ.
+`shotgun` algorithm also remains host. At this checkpoint the numerical reference
+was CPU, including refreshed residuals for greedy/thrifty selection. The later
+CUDA-alignment update below replaces those rules.
 
 [Validation](validation/linear-coordinate-m3.txt): **1,066 Python tests pass (one
 skipped)**, all native suites pass, and the separate CPU-only build/check passes.
@@ -1824,8 +1828,9 @@ and column sampling. This follows CUDA's updater order, which differs from CPU
 approx. Fresh external-page gradient indices now preserve MPS for GPU binning.
 
 CUDA source is the implementation authority. Existing CPU-based sketch,
-sampling/RNG, quantization, leaf sums and linear-selector choices still need
-alignment; they are explicitly listed in the [ledger](docs/CUDA_PARITY.md).
+sampling/RNG, quantization, leaf sums and linear-selector choices needed alignment
+at this checkpoint. Subsequent updates below address several of them; current gaps
+are tracked in the [ledger](docs/CUDA_PARITY.md).
 CPU equality is tested where algorithms agree. Fixed-gradient tests check the
 CUDA cut/sampling order independently of model-prediction equality. No tests have
 yet run against actual NVIDIA execution, and full CUDA parity remains unfinished.
@@ -2128,3 +2133,26 @@ rebuilt native suite and the CPU-only build/API check. [Validation](validation/b
 Candidate staging, generic metadata/model ownership, sketch/CUDA algorithm gaps,
 AFT corrections, interoperability and distributed collectives remain. No benchmark
 or NVIDIA execution comparison was run.
+
+
+### CUDA linear coordinate-descent alignment
+
+Linear training now follows CUDA's FP32 gradient sums, includes negative Hessians,
+and applies residual products in CUDA order. Bias updates skip zero steps; feature
+updates execute them, including their signed-zero and nonfinite behavior. Greedy
+and thrifty selectors now see the original gradient snapshot, as CUDA specifies.
+Residuals stay in the GPU-owned copy, leaving the input gradients unchanged.
+
+A new host CUDA-source updater checks complete training with the existing `2e-5`
+tolerance. CPU comparisons remain for selectors whose algorithms agree. Explicit
+fixtures catch selector divergence, negative Hessians, product order, FP32 overflow
+and zero-step behavior. Native checks retain 49 cases and over 148 million residual
+field comparisons; public coverage now contains 158 cases. Final validation passes
+**1,603 Python tests (one skipped)**, every rebuilt native suite and the CPU-only
+build/API check. [Validation](validation/cuda-linear-m3.txt).
+
+The reduction uses FP32 throughout but does not reproduce a specific NVIDIA
+CUB tile policy. CUB's floating-point reduction order can vary by GPU architecture;
+see the [coverage ledger](docs/CUDA_PARITY.md#linear-coordinate-descent) for the
+source contract and validation limits. Actual NVIDIA execution and compiler
+contraction remain unverified. No performance benchmark was run.

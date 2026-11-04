@@ -111,7 +111,6 @@ class CoordinateUpdater : public LinearUpdater {
     auto state = common::metal::MakeLinearState(rows, groups, page.offset.ConstHostSpan(),
                                                 page.data.ConstHostSpan(),
                                                 in_gpair->Data()->ConstHostSpan());
-    auto host = in_gpair->Data()->HostSpan();
     for (bst_target_t group = 0; group < groups; ++group) {
       auto sum = state->Gradient(-1, group);
       auto delta = static_cast<float>(tparam_.learning_rate *
@@ -119,14 +118,13 @@ class CoordinateUpdater : public LinearUpdater {
       model->Bias()[group] += delta;
       state->UpdateResidual(-1, group, delta);
     }
-    // Host feature selectors are also used by CUDA. Unlike a stale snapshot,
-    // this view includes completed GPU bias/residual changes as the CPU expects.
-    state->CopyGradients(host);
+    // CUDA selectors consume the original input snapshot. Residual changes stay
+    // in the device-owned copy, including after Update returns. Greedy/thrifty
+    // consequently differ from the CPU updater's refreshed gradient view.
     selector_->Setup(ctx_, *model, in_gpair->Data()->ConstHostVector(), data,
                      tparam_.reg_alpha_denorm, tparam_.reg_lambda_denorm, cparam_.top_k);
     for (bst_target_t group = 0; group < groups; ++group) {
       for (bst_feature_t i = 0; i < model->learner_model_param->num_feature; ++i) {
-        if (tparam_.feature_selector == kGreedy) state->CopyGradients(host);
         auto feature =
             selector_->NextFeature(ctx_, i, *model, group, in_gpair->Data()->ConstHostVector(),
                                    data, tparam_.reg_alpha_denorm, tparam_.reg_lambda_denorm);
@@ -141,7 +139,6 @@ class CoordinateUpdater : public LinearUpdater {
         state->UpdateResidual(feature, group, delta);
       }
     }
-    state->CopyGradients(host);
   }
 #endif
 

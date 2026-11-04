@@ -189,7 +189,8 @@ class Runtime {
   id<MTLComputePipelineState> expectile_init_pipeline, broadcast_targets_pipeline;
   id<MTLComputePipelineState> label_validation_pipeline;
   id<MTLComputePipelineState> base_score_pipeline, shap_pipeline;
-  id<MTLComputePipelineState> linear_gradient_pipeline, linear_residual_pipeline;
+  id<MTLComputePipelineState> linear_gradient_pipeline, linear_sum_pipeline,
+      linear_residual_pipeline;
   id<MTLComputePipelineState> leaf_sum_pipeline, leaf_sum_finish_pipeline, leaf_weight_pipeline;
   id<MTLComputePipelineState> leaf_integer_sum_pipeline, leaf_integer_sum_finish_pipeline;
   id<MTLComputePipelineState> column_iota_pipeline, column_rng_pipeline, column_keys_pipeline,
@@ -291,6 +292,7 @@ class Runtime {
       base_score_pipeline = make_pipeline(@"xgb_base_score");
       shap_pipeline = make_pipeline(@"xgb_shap");
       linear_gradient_pipeline = make_pipeline(@"xgb_linear_gradient");
+      linear_sum_pipeline = make_pipeline(@"xgb_linear_sum");
       linear_residual_pipeline = make_pipeline(@"xgb_linear_residual");
       leaf_integer_sum_pipeline = make_pipeline(@"xgb_leaf_integer_sum");
       leaf_integer_sum_finish_pipeline = make_pipeline(@"xgb_leaf_integer_sum_finish");
@@ -1935,15 +1937,16 @@ class MetalLinearState final : public LinearState {
       gradients_ = Upload(rt_, gradients.data(), gradients.size_bytes());
     }
   }
-  GradientPairPrecise Gradient(std::int32_t feature, std::uint32_t group) override {
+  GradientPair Gradient(std::int32_t feature, std::uint32_t group) override {
     auto p = Parameters(feature, group);
     if (!p.count) return {};
+    // CUDA SumReduction takes a signed int length. Avoid silently narrowing it.
+    CHECK_LE(p.count, std::numeric_limits<std::int32_t>::max());
+    CHECK_EQ(rt_.linear_gradient_pipeline.threadExecutionWidth, 32);
+    CHECK_EQ(rt_.linear_sum_pipeline.threadExecutionWidth, 32);
     auto blocks = (p.count + 255) / 256;
-    CHECK_LE(blocks, std::numeric_limits<std::uint32_t>::max());
-    CHECK_LE(blocks, rt_.device.maxBufferLength / sizeof(GradientPairPrecise));
     @autoreleasepool {
-      auto partial = Allocate(rt_, blocks * sizeof(GradientPairPrecise));
-      auto result = Allocate(rt_, sizeof(GradientPairPrecise));
+      auto partial = Allocate(rt_, blocks * sizeof(GradientPair));
       auto command = [rt_.queue commandBuffer];
       CHECK(command);
       auto e = [command computeCommandEncoder];
@@ -1956,27 +1959,30 @@ class MetalLinearState final : public LinearState {
       [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
-      // Reuse the binary64 pair final reduction; this is independent of the
-      // generic/root-gradient dispatch counters.
-      struct {
-        std::uint64_t rows, stride0, stride1;
-        std::uint32_t targets, blocks;
-      } finish{p.count, 0, 0, 1, static_cast<std::uint32_t>(blocks)};
-      e = [command computeCommandEncoder];
-      CHECK(e);
-      [e setComputePipelineState:rt_.gradient_sum_finish_pipeline];
-      [e setBuffer:partial offset:0 atIndex:0];
-      [e setBuffer:result offset:0 atIndex:1];
-      [e setBytes:&finish length:sizeof(finish) atIndex:2];
-      [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-      [e endEncoding];
+      // All reduction levels accumulate GradientPair (FP32), like CUDA's CUB
+      // reduction. CUB tile/order choices vary with architecture and toolkit.
+      while (blocks > 1) {
+        auto next_blocks = (blocks + 255) / 256;
+        auto next = Allocate(rt_, next_blocks * sizeof(GradientPair));
+        e = [command computeCommandEncoder];
+        CHECK(e);
+        [e setComputePipelineState:rt_.linear_sum_pipeline];
+        [e setBuffer:partial offset:0 atIndex:0];
+        [e setBuffer:next offset:0 atIndex:1];
+        [e setBytes:&blocks length:sizeof(blocks) atIndex:2];
+        [e dispatchThreadgroups:MTLSizeMake(next_blocks, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+        partial = next;
+        blocks = next_blocks;
+      }
       CompleteOperation(command, &linear_gradient_dispatches, &linear_gpu_time_ns);
-      return *static_cast<GradientPairPrecise const*>(result.contents);
+      return *static_cast<GradientPair const*>(partial.contents);
     }
   }
   void UpdateResidual(std::int32_t feature, std::uint32_t group, float delta) override {
     auto p = Parameters(feature, group, delta);
-    if (!p.count || delta == 0.f) return;
+    if (!p.count || (p.bias && delta == 0.f)) return;
     CHECK_LE(p.count, std::numeric_limits<std::uint32_t>::max());
     @autoreleasepool {
       auto command = [rt_.queue commandBuffer];
