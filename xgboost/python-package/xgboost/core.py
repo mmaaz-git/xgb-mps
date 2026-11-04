@@ -1632,9 +1632,13 @@ class QuantileDMatrix(DMatrix, _RefMixIn):
         max_quantile_blocks: Optional[int],
         **meta: Any,
     ) -> None:
+        from ._metal import is_metal
+        from ._metal import transform as transform_metal
         from .data import _is_dlpack, _transform_dlpack
 
-        if _is_dlpack(data):
+        if is_metal(data):
+            data = transform_metal(data)
+        elif _is_dlpack(data):
             # We specialize for dlpack because cupy will take the memory from it so
             # it can't be transformed twice.
             data = _transform_dlpack(data)
@@ -2733,6 +2737,12 @@ class Booster:
         if _is_cudf_pandas(data):
             data = data._fsproxy_fast  # pylint: disable=protected-access
 
+        from ._metal import MetalData, is_metal
+        from ._metal import transform as transform_metal
+
+        if is_metal(data):
+            data = transform_metal(data)
+
         enable_categorical = True
         if _is_arrow(data):
             data, fns, _ = _transform_arrow_table(data, enable_categorical, None, None)
@@ -2764,6 +2774,19 @@ class Booster:
                     f"got {data.shape[1]}"
                 )
 
+        if isinstance(data, MetalData):
+            _check_call(
+                _LIB.XGBoosterPredictFromMetal(
+                    self.handle,
+                    data.descriptor,
+                    args,
+                    p_handle,
+                    ctypes.byref(shape),
+                    ctypes.byref(dims),
+                    ctypes.byref(preds),
+                )
+            )
+            return _prediction_output(shape, dims, preds, False)
         if _is_np_array_like(data):
             data, _ = _ensure_np_dtype(data, data.dtype)
             _check_call(

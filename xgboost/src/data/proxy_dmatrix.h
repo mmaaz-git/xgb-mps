@@ -83,6 +83,7 @@ class DMatrixProxy : public DMatrix {
    */
   void SetCudaColumnar(StringView data);
   void SetCudaArray(StringView data);
+  void SetMetalArray(StringView data);
   /**
    * Host setters
    */
@@ -271,6 +272,7 @@ decltype(auto) DispatchAny(DMatrixProxy const* proxy, Fn&& fn, bool* type_error 
  * @return A host view to the categories
  */
 [[nodiscard]] inline decltype(auto) BatchCats(DMatrixProxy const* proxy) {
+  if (proxy->Ctx()->IsMPS()) return enc::HostColumnsView{};
   return DispatchAny<false>(proxy, [](auto const& adapter) -> decltype(auto) {
     using AdapterT = typename std::remove_reference_t<decltype(adapter)>::element_type;
     if constexpr (std::is_same_v<AdapterT, ColumnarAdapter>) {
@@ -305,6 +307,7 @@ namespace cuda_impl {
  * @brief Get the number of samples for the current batch.
  */
 [[nodiscard]] inline bst_idx_t BatchSamples(DMatrixProxy const* proxy) {
+  if (proxy->Ctx()->IsMPS()) return proxy->Info().num_row_;
   bool type_error = false;
   auto n_samples =
       cpu_impl::DispatchAny(proxy, [](auto const& value) { return value.NumRows(); }, &type_error);
@@ -318,6 +321,7 @@ namespace cuda_impl {
  * @brief Get the number of features for the current batch.
  */
 [[nodiscard]] inline bst_feature_t BatchColumns(DMatrixProxy const* proxy) {
+  if (proxy->Ctx()->IsMPS()) return proxy->Info().num_col_;
   bool type_error = false;
   auto n_features =
       cpu_impl::DispatchAny(proxy, [](auto const& value) { return value.NumCols(); }, &type_error);

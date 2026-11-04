@@ -14,12 +14,26 @@
 #include "xgboost/data.h"     // for DMatrix
 #include "xgboost/logging.h"
 #include "xgboost/string_view.h"  // for StringView
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_tensor.h"
+#endif
 
 #if !defined(XGBOOST_USE_CUDA)
 #include "../common/common.h"  // for AssertGPUSupport
 #endif
 
 namespace xgboost::data {
+void DMatrixProxy::SetMetalArray(StringView data) {
+#if defined(XGBOOST_USE_METAL)
+  auto tensor = common::metal::ImportTensor(data);
+  this->Info().num_row_ = tensor->NumRows();
+  this->Info().num_col_ = tensor->NumColumns();
+  this->batch_ = std::move(tensor);
+  this->ctx_.Init({{"device", "mps"}});
+#else
+  LOG(FATAL) << "Metal tensor input requires XGBoost built with USE_METAL=ON.";
+#endif
+}
 void DMatrixProxy::SetColumnar(StringView data) {
   std::shared_ptr<ColumnarAdapter> adapter{new ColumnarAdapter{data}};
   this->Info().num_col_ = adapter->NumColumns();
@@ -98,6 +112,7 @@ std::shared_ptr<DMatrix> CreateDMatrixFromProxy(Context const *ctx,
 }
 
 [[nodiscard]] bool BatchCatsIsRef(DMatrixProxy const *proxy) {
+  if (proxy->Ctx()->IsMPS()) return false;
   if (proxy->Device().IsCUDA()) {
 #if defined(XGBOOST_USE_CUDA)
     return cuda_impl::BatchCatsIsRef(proxy);

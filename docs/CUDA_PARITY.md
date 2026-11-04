@@ -47,8 +47,9 @@ work, not accepted substitutes for CUDA behavior:
   FP32 scans and resident summaries, as detailed below. Explicit MPS
   QuantileDMatrix and both ExtMemQuantileDMatrix cache modes use the GPU adapter
   frontend. Optional Snappy compute cache compression is now implemented under
-  the existing native opt-in; native device arrays and distributed sketch
-  collectives remain open. Scan association,
+  the existing native opt-in. Native Metal DLPack feature tensors now feed
+  in-memory/external quantile construction and inplace prediction; native
+  metadata/ordinary-matrix input and distributed sketch collectives remain open. Scan association,
   sorting ties and rank-repair scheduling are explicitly bounded validation limits.
 - Interaction constraints now follow CUDA's cumulative group unions and ascending
   nonroot queries, with explicit overlapping-group tests; the former CPU history
@@ -97,7 +98,7 @@ must be reported rather than hidden by widening test tolerances.
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; collective transport remains host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
-| Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add GPU dense/columnar ingestion, resident sketches and bins; native device arrays and distributed sketch collectives remain open |
+| Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add host dense/columnar and native Metal tensor ingestion, resident sketches and bins; native metadata and distributed sketch collectives remain open |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Ordinary in-memory DMatrix now compresses raw CSR directly with separate lazy CPU views and cache-generation tracking. MPS-origin external disk caches now store/read compressed pages; internal quantile cuts+ELLPACK save/load is implemented. Ordinary external on_host selection now uses CUDA single-/multiple-page defaults. Optional Snappy compute compression/decompression now follows the native fallback opt-in, sparse eligibility and forced-prefetch rules. Mapped-file zero-copy remains open; CPU-origin external matrices retain their existing compatibility path |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Prediction/SHAP row-level mapping and raw-input preparation now run on GPU; explicit MPS QuantileDMatrix training adapters also recode on GPU; dictionary storage/copies and general metadata remain host |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
@@ -105,7 +106,7 @@ must be reported rather than hidden by widening test tolerances.
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
-| CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | NVIDIA-specific interfaces cannot consume Metal memory; corresponding Apple-device interoperability is missing |
+| CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack feature tensors feed quantile constructors, iterators and inplace prediction through owned GPU snapshots; real PyTorch/MLX, strides, half and capsule lifetimes are tested. Native ordinary DMatrix, metadata/custom-gradient imports, GPU outputs and portable producer stream handshakes remain open. NVIDIA-specific interfaces cannot consume Metal memory |
 | CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Shared-memory Metal runtime, guarded host-memory views for ordinary gradients, quantization and leaf assignment, model-local row workspaces, reused command queue and histogram buffers; persistent end-to-end device ownership and asynchronous scheduling missing |
 
 Paths in the table are relative to `xgboost/src` and denote starting points, not
@@ -2768,7 +2769,76 @@ passes 355 cases, including multi-block cache reconstruction at nonzero offsets.
 Results are recorded in [the validation record](../validation/cuda-snappy-m3.txt).
 
 This closes the optional Snappy compute operation gap, not full CUDA parity.
-Mapped-file zero-copy, native Apple arrays/half, broader state/metadata ownership,
+Native Apple feature arrays/half are covered in the following step. Mapped-file
+zero-copy, broader state/metadata ownership,
 remaining CUDA algorithm audits and GPU collectives still need work. Actual
 NVIDIA and other Apple GPU comparisons remain unperformed. No performance claim
 is made for the initial codec.
+
+## Native Metal feature tensors and float16
+
+CUDA's `c_api/c_api.cu`, `data/device_adapter.cu/.cuh`, array-interface handling and
+quantile/prediction frontends define the corresponding operation coverage. Metal
+uses DLPack's `kDLMetal` representation: `DLTensor.data` is an `id<MTLBuffer>`
+handle, with byte offset and element strides; it is never treated as a CPU float
+pointer. The descriptor frontend validates device, dimensions, dtype, lanes,
+stride arithmetic, alignment and addressed buffer extent before GPU access.
+Valid buffer handles and producer completion are caller preconditions, like valid
+CUDA pointers and stream ordering upstream.
+
+`XGProxyDMatrixSetDataMetal` snapshots the addressed byte span into private Metal
+storage with a completed GPU blit. Dense, sliced, transposed, reversed and
+broadcast views retain their original logical layout. The snapshot remains valid
+after producer mutation or destruction. Empty inputs need no source buffer or
+copy. Features feed the existing bounded raw-sketch/ELLPACK adapter pipeline;
+flattened 2^26-slot windows preserve partial rows. `XGBoosterPredictFromMetal`
+feeds the existing GPU raw prediction pipeline. No feature-payload CPU staging
+or diagnostic readback is used by these native paths. This is an owned GPU copy,
+not zero-copy producer aliasing.
+
+The Python bridge accepts real PyTorch/MLX Metal tensors and legacy/versioned
+DLPack capsules. It consumes each capsule once, retains its owner, invokes the
+managed deleter once with the GIL held and rejects unsupported major versions
+before reading their tensor fields. Known producer work completes before every
+import, including reused exports. Generic producers must supply ready buffers;
+DLPack does not provide a portable Metal queue handshake here. MLX assignment
+can replace an allocation; retained exports describe the allocation exported,
+not a future replacement of the Python array.
+
+Native feature tensors select MPS by default for `QuantileDMatrix` and both
+`ExtMemQuantileDMatrix` cache modes; host metadata remains supported. Explicit
+CPU construction rejects them. Inplace prediction requires an MPS model and
+returns the existing host NumPy result. Float16/32/64, signed/unsigned 8/16/32/64
+and bool are decoded on GPU. Binary16 conversion explicitly preserves subnormals,
+signed zero and infinities; NaNs retain their classification. Producer dtype
+restrictions still apply. BF16, complex and float128 reject explicitly.
+
+Validation uses PyTorch 2.15.0 and MLX/MLX-Metal 0.32.4. Their feature values,
+quantile cuts and trained-model predictions are checked against the existing
+host-input Metal path; CPU evaluation of the same fitted model is checked too.
+It does not compare Metal CUDA-style sketch construction against CPU's different
+sketch algorithm. Native tests independently decode private/shared buffers,
+mutate and release sources before use, check all 65,536 half patterns, signed
+strides, offsets, broadcast windows and invalid extents. Focused results are
+93 Python tests and 105 native cases / 145,567 field checks / nine rejected
+descriptors. The test-only decoder readbacks are explicitly counted.
+
+Seven counters record native imports, copies/bytes, adapter/prediction windows,
+GPU copy time and feature-input CPU staging bytes. CPU builds expose zeros and
+the new C entry points reject clearly. All native callers rebuild for the
+statistics ABI change. [Validation record](../validation/cuda-metal-tensor-m3.txt).
+Full regression passes **2,459 Python tests, one skip**, every rebuilt native
+suite/reference updater and the CPU-only build/API checks (2026-11-04,
+20:06:27Z–20:13:22Z). The final producer-queue tests are included.
+
+The tested macOS setup uses one Homebrew OpenMP runtime for XGBoost and PyTorch,
+selected with `DYLD_LIBRARY_PATH` before Python starts. Loading the wheel's bundled
+runtime alongside Homebrew reproduced a worker-thread crash; this is documented
+and the test launcher configures the shared runtime. Arbitrary mixed-runtime
+packaging is not fixed by the Metal import code.
+
+Remaining interoperability work: native ordinary `DMatrix` input, metadata
+(labels/weights/base margins/groups), custom-gradient imports, GPU outputs and
+broader device ownership. Native sparse/columnar device adapters and a portable
+producer queue protocol also remain open. No new performance benchmark, NVIDIA
+comparison or other Apple-device validation was performed.

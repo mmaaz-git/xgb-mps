@@ -45,7 +45,7 @@ IterativeDMatrix::IterativeDMatrix(DataIterHandle iter_handle, DMatrixHandle pro
   Context ctx;
   ctx.Init(Args{{"nthread", std::to_string(nthread)},
                 {"device", device.empty() ? pctx->DeviceName() : device}});
-  CHECK(ctx.IsMPS() ? !pctx->IsCUDA() : ctx.Device() == pctx->Device())
+  CHECK(ctx.IsMPS() ? !pctx->IsCUDA() : !pctx->IsMPS() && ctx.Device() == pctx->Device())
       << "Construction device must match the input device, except MPS accepts host arrays.";
   // hardcoded parameter.
   BatchParam p{max_bin, tree::TrainParam::DftSparseThreshold()};

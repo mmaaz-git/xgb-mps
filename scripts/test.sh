@@ -2,6 +2,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p results
+libomp_root="${LIBOMP_ROOT:-$(brew --prefix libomp)}"
+# PyTorch wheels bundle another libomp. Use one runtime for all linked clients;
+# mixing their internal weak symbols can crash macOS OpenMP worker threads.
+export DYLD_LIBRARY_PATH="$libomp_root/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+echo "Checking native Metal tensors, private buffers, snapshots, strides and float16"
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_tensor_api.mm \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -framework Metal -framework Foundation -Wl,-rpath,"$PWD/xgboost/lib" \
+  -o results/metal_tensor_api_test
+MTL_DEBUG_LAYER=1 results/metal_tensor_api_test
 echo "Compiling standalone tests against the production Metal shader"
 echo "Checking CUDA ranking random draws and independent engine positions"
 clang++ -O2 -std=c++17 -fobjc-arc tests/metal_ranking_rng.mm \
@@ -79,7 +92,6 @@ echo "Checking integer prefixes, full stable sorts, weighted CDFs and quantiles"
 clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc tests/metal_quantile.mm \
   -framework Metal -framework Foundation -o results/metal_quantile_test
 results/metal_quantile_test xgboost/src/common/metal_histogram.metal
-libomp_root="${LIBOMP_ROOT:-$(brew --prefix libomp)}"
 snappy_root="${SNAPPY_ROOT:-$(brew --prefix snappy)}"
 echo "Checking Metal Snappy against Google's independent CPU codec and malformed streams"
 clang++ -O2 -std=c++17 -ffp-contract=off \

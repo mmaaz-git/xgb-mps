@@ -45,6 +45,7 @@
 #include "metal_snappy.h"
 #include "metal_split.h"
 #include "metal_survival.h"
+#include "metal_tensor.h"
 #include "xgboost/logging.h"
 
 namespace xgboost::common::metal {
@@ -134,6 +135,9 @@ std::atomic<std::uint64_t> ellpack_io_read_pages{0}, ellpack_io_write_pages{0},
 std::atomic<std::uint64_t> snappy_compress_dispatches{0}, snappy_decompress_dispatches{0},
     snappy_copy_dispatches{0}, snappy_input_bytes{0}, snappy_compressed_bytes{0},
     snappy_decoded_bytes{0}, snappy_host_readback_bytes{0}, snappy_gpu_time_ns{0};
+std::atomic<std::uint64_t> tensor_imports{0}, tensor_copy_dispatches{0}, tensor_copied_bytes{0},
+    tensor_adapter_windows{0}, tensor_prediction_windows{0}, tensor_gpu_time_ns{0},
+    input_staging_bytes{0};
 std::atomic<std::uint64_t> ellpack_csr_dispatches{0}, ellpack_csr_values{0}, ellpack_csr_input_bytes{0};
 std::atomic<std::uint64_t> ellpack_view_pages{0}, ellpack_count_dispatches{0},
     ellpack_host_materializations{0}, ellpack_host_readback_bytes{0};
@@ -1920,7 +1924,14 @@ Statistics GetStatistics() {
           snappy_compressed_bytes.load(std::memory_order_relaxed),
           snappy_decoded_bytes.load(std::memory_order_relaxed),
           snappy_host_readback_bytes.load(std::memory_order_relaxed),
-          snappy_gpu_time_ns.load(std::memory_order_relaxed)};
+          snappy_gpu_time_ns.load(std::memory_order_relaxed),
+          tensor_imports.load(std::memory_order_relaxed),
+          tensor_copy_dispatches.load(std::memory_order_relaxed),
+          tensor_copied_bytes.load(std::memory_order_relaxed),
+          tensor_adapter_windows.load(std::memory_order_relaxed),
+          tensor_prediction_windows.load(std::memory_order_relaxed),
+          tensor_gpu_time_ns.load(std::memory_order_relaxed),
+          input_staging_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -6005,8 +6016,95 @@ struct InputParams {
       padding{0};
 };
 static_assert(sizeof(InputArray) == 48 && sizeof(InputParams) == 56);
+class MetalTensor final : public Tensor {
+ public:
+  id<MTLBuffer> buffer;
+  InputArray array;
+  bst_idx_t rows;
+  bst_feature_t columns;
+  explicit MetalTensor(StringView descriptor) {
+    @autoreleasepool {
+      auto json = Json::Load(descriptor);
+      CHECK_EQ(get<Integer const>(json["device_type"]), 8);
+      CHECK_EQ(get<Integer const>(json["device_id"]), 0);
+      auto const& shape = get<Array const>(json["shape"]);
+      auto const& strides = get<Array const>(json["strides"]);
+      CHECK_EQ(shape.size(), 2) << "Metal feature input must be two-dimensional.";
+      CHECK_EQ(strides.size(), 2);
+      auto r = get<Integer const>(shape[0]), c = get<Integer const>(shape[1]);
+      CHECK_GE(r, 0);
+      CHECK_LE(r, std::numeric_limits<std::uint32_t>::max());
+      CHECK_GT(c, 0);
+      CHECK_LE(c, std::numeric_limits<bst_feature_t>::max());
+      rows = r;
+      columns = c;
+      auto code = get<Integer const>(json["dtype_code"]);
+      auto bits = get<Integer const>(json["dtype_bits"]);
+      CHECK_EQ(get<Integer const>(json["dtype_lanes"]), 1);
+      if (code == 2 && (bits == 16 || bits == 32 || bits == 64)) {
+        array.type = bits == 16 ? 0 : bits == 32 ? 1 : 2;
+      } else if ((code == 0 || code == 1 || code == 6) &&
+                 (bits == 8 || bits == 16 || bits == 32 || bits == 64)) {
+        CHECK(code != 6 || bits == 8);
+        array.type = (code == 0 ? 4 : 8) + (bits == 8 ? 0 : bits == 16 ? 1 : bits == 32 ? 2 : 3);
+      } else {
+        LOG(FATAL) << "Unsupported Metal tensor dtype (expected float16/32/64, integer or bool).";
+      }
+      using Wide = __int128;
+      auto item = bits / 8;
+      Wide rs = Wide(get<Integer const>(strides[0])) * item;
+      Wide cs = Wide(get<Integer const>(strides[1])) * item;
+      CHECK(rs >= std::numeric_limits<std::int64_t>::min() && rs <= std::numeric_limits<std::int64_t>::max());
+      CHECK(cs >= std::numeric_limits<std::int64_t>::min() && cs <= std::numeric_limits<std::int64_t>::max());
+      array.row_stride = rs;
+      array.column_stride = cs;
+      auto offset = get<Integer const>(json["byte_offset"]);
+      auto handle = get<Integer const>(json["buffer"]);
+      CHECK_GE(offset, 0);
+      CHECK_GE(handle, 0);
+      CHECK_EQ(offset % item, 0);
+      auto& rt = GetRuntime();
+      if (!rows) {
+        buffer = Allocate(rt, 0);
+      } else {
+        CHECK_NE(handle, 0) << "Nonempty Metal tensor has a null buffer.";
+        // The caller supplies a valid producer-owned MTLBuffer. As with CUDA
+        // array pointers, arbitrary fabricated handles cannot be introspected.
+        id<MTLBuffer> source = (__bridge id<MTLBuffer>)(reinterpret_cast<void*>(handle));
+        CHECK_EQ(source.device.registryID, rt.device.registryID);
+        Wide dr = Wide(rows - 1) * rs, dc = Wide(columns - 1) * cs;
+        Wide low = Wide(offset) + std::min<Wide>(0, dr) + std::min<Wide>(0, dc);
+        Wide high = Wide(offset) + std::max<Wide>(0, dr) + std::max<Wide>(0, dc) + item;
+        CHECK(low >= 0 && high <= Wide(source.length)) << "Metal tensor view exceeds its buffer.";
+        auto bytes = std::size_t(high - low);
+        CHECK_LE(bytes, rt.device.maxBufferLength);
+        buffer = [rt.device newBufferWithLength:std::max<std::size_t>(16, bytes)
+                                        options:MTLResourceStorageModePrivate];
+        CHECK(buffer);
+        array.offset = std::uint64_t(Wide(offset) - low);
+        auto command = [rt.queue commandBuffer];
+        auto blit = [command blitCommandEncoder];
+        [blit copyFromBuffer:source sourceOffset:std::size_t(low) toBuffer:buffer
+          destinationOffset:0 size:bytes];
+        [blit endEncoding];
+        CompleteOperation(command, &tensor_copy_dispatches, &tensor_gpu_time_ns);
+        tensor_copied_bytes.fetch_add(bytes, std::memory_order_relaxed);
+      }
+      tensor_imports.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+  bst_idx_t NumRows() const override { return rows; }
+  bst_feature_t NumColumns() const override { return columns; }
+  InputArray Window(std::size_t begin) const {
+    auto out = array;
+    // Import validated the complete signed-stride range against the buffer.
+    out.offset = std::uint64_t(__int128(array.offset) + __int128(begin) * array.row_stride);
+    return out;
+  }
+};
 struct PackedInput {
   std::vector<std::uint8_t> bytes;
+  id<MTLBuffer> native{nil};
   std::vector<InputArray> arrays;
   InputParams params;
   PackedInput(std::size_t rows, std::uint32_t features, std::uint32_t kind, enc::MappingView map)
@@ -6020,6 +6118,7 @@ struct PackedInput {
     CHECK_LE(offset, GetRuntime().device.maxBufferLength - n);
     bytes.resize(offset + n);
     if (n) std::memcpy(bytes.data() + offset, ptr, n);
+    input_staging_bytes.fetch_add(n, std::memory_order_relaxed);
     return offset;
   }
   InputArray Raw(void const* ptr, std::size_t bytes_count, std::uint32_t type,
@@ -6076,7 +6175,7 @@ struct PackedInput {
       CHECK_LE(params.input_features, params.features);
       if (params.mapped) CHECK_EQ(map.offsets.size(), std::size_t(params.features) + 1);
       CHECK(types.empty() || types.size() >= params.input_features);
-      auto raw = compressed ? compressed->index : Upload(rt, bytes.data(), bytes.size());
+      auto raw = compressed ? compressed->index : native ? native : Upload(rt, bytes.data(), bytes.size());
       auto descriptors = compressed ? compressed->tail
                                     : Upload(rt, arrays.data(), arrays.size() * sizeof(InputArray));
       auto ptrs = compressed ? compressed->offsets : Upload(rt, cuts.data(), cuts.size_bytes());
@@ -6308,7 +6407,7 @@ std::unique_ptr<AdapterInput> PackedInput::FinishAdapter(enc::MappingView map, b
       result->entries = Allocate(rt, 0);
       return result;
     }
-    auto raw = Upload(rt, bytes.data(), bytes.size());
+    auto raw = native ? native : Upload(rt, bytes.data(), bytes.size());
     auto descriptors = Upload(rt, arrays.data(), arrays.size() * sizeof(InputArray));
     auto segments = Upload(rt, map.offsets.data(), map.offsets.size_bytes());
     auto mapping = Upload(rt, map.mapping.data(), map.mapping.size_bytes());
@@ -6377,6 +6476,43 @@ std::unique_ptr<AdapterInput> PrepareAdapterImpl(Adapter const& adapter, float m
   return p.FinishAdapter(map, base, count ? (count + cols - 1) / cols : 0);
 }
 }  // namespace
+std::shared_ptr<Tensor> ImportTensor(StringView descriptor) {
+  return std::make_shared<MetalTensor>(descriptor);
+}
+std::unique_ptr<AdapterInput> PrepareAdapter(Tensor const& source, float missing,
+                                            bst_idx_t begin, bst_idx_t count,
+                                            enc::MappingView mapping) {
+  auto const& input = dynamic_cast<MetalTensor const&>(source);
+  auto cols = input.columns;
+  InputBounds(input.rows * cols, begin, count);
+  CHECK_LE(count, 1ULL << 26);
+  auto base = begin / cols, first = begin % cols;
+  auto rows = count ? (first + count + cols - 1) / cols : 0;
+  PackedInput p{rows, cols, 1, mapping};
+  p.native = input.buffer;
+  p.arrays.push_back(input.Window(base));
+  p.params.first_entry = first;
+  p.params.entries = count;
+  std::memcpy(&p.params.missing, &missing, 4);
+  auto result = p.FinishAdapter(mapping, base, count ? (count + cols - 1) / cols : 0);
+  tensor_adapter_windows.fetch_add(1, std::memory_order_relaxed);
+  return result;
+}
+std::unique_ptr<InputBatch> PrepareInput(Tensor const& source, float missing, std::size_t begin,
+                                        std::size_t rows, std::uint32_t features,
+                                        enc::MappingView mapping) {
+  auto const& input = dynamic_cast<MetalTensor const&>(source);
+  InputBounds(input.rows, begin, rows);
+  CHECK_LE(input.columns, features);
+  PackedInput p{rows, features, 1, mapping};
+  p.params.input_features = input.columns;
+  p.native = input.buffer;
+  p.arrays.push_back(input.Window(begin));
+  std::memcpy(&p.params.missing, &missing, 4);
+  auto result = p.Finish(mapping);
+  tensor_prediction_windows.fetch_add(1, std::memory_order_relaxed);
+  return result;
+}
 std::unique_ptr<AdapterInput> PrepareAdapter(data::ArrayAdapter const& adapter, float missing,
                                              bst_idx_t begin, bst_idx_t count,
                                              enc::MappingView mapping) {

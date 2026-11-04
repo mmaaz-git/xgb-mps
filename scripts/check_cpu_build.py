@@ -33,6 +33,21 @@ finally:
     check(lib.XGBoosterFree(booster))
 print("CPU-only build verified: Metal reports unavailable and device=mps raises a clear error.")
 
+# Native entry points exist in CPU builds but reject before touching Metal handles.
+proxy = ctypes.c_void_p()
+booster = ctypes.c_void_p()
+check(lib.XGProxyDMatrixCreate(ctypes.byref(proxy)))
+check(lib.XGBoosterCreate(None, ctypes.c_uint64(0), ctypes.byref(booster)))
+try:
+    assert lib.XGProxyDMatrixSetDataMetal(proxy, b"{}") != 0
+    assert b"USE_METAL=ON" in lib.XGBGetLastError()
+    assert lib.XGBoosterPredictFromMetal(booster, b"{}", b"{}", None, None, None, None) != 0
+    assert b"USE_METAL=ON" in lib.XGBGetLastError()
+finally:
+    check(lib.XGDMatrixFree(proxy))
+    check(lib.XGBoosterFree(booster))
+print("CPU-only native Metal tensor entry points reject input explicitly.")
+
 # The new construction selector must be usable for CPU and fail clearly for MPS.
 proxy = ctypes.c_void_p()
 check(lib.XGProxyDMatrixCreate(ctypes.byref(proxy)))

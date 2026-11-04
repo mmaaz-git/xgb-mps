@@ -20,6 +20,9 @@
 #include "../data/cat_container.h"           // for CatContainer
 #include "../data/gradient_index.h"          // for GHistIndexMatrix
 #include "../data/proxy_dmatrix.h"           // for DMatrixProxy
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_tensor.h"
+#endif
 #include "../gbm/gbtree_model.h"             // for GBTreeModel, GBTreeModelParam
 #include "../tree/sample_position.h"         // for SamplePosition
 #include "array_tree_layout.h"               // for ProcessArrayTree
@@ -593,6 +596,23 @@ class CPUPredictor : public Predictor {
 
 #if defined(XGBOOST_USE_METAL)
     auto metal_prediction = ctx_->IsMPS() ? MakeMetalPrediction(h_model, weights) : nullptr;
+    if (proxy->Ctx()->IsMPS()) {
+      CHECK(metal_prediction) << "Native Metal inplace prediction requires device=mps.";
+      auto input = std::any_cast<std::shared_ptr<common::metal::Tensor>>(proxy->Adapter());
+      CheckProxyDMatrix(input, proxy, model.learner_model_param);
+      struct View {
+        common::metal::Tensor const &input;
+        float missing;
+        bst_idx_t const base_rowid{0};
+        bst_idx_t Size() const { return input.NumRows(); }
+        auto PrepareMetal(std::size_t begin, std::size_t rows, bst_feature_t features) const {
+          return common::metal::PrepareInput(input, missing, begin, rows, features, {});
+        }
+      } view{*input, missing};
+      auto output = linalg::MakeTensorView(ctx_, predictions, input->NumRows(), n_groups);
+      MetalPredictBatch(view, metal_prediction.get(), h_model, output);
+      return true;
+    }
 #endif
     auto kernel = [&](auto &&view) {
       auto out_predt = linalg::MakeTensorView(ctx_, predictions, view.Size(), n_groups);

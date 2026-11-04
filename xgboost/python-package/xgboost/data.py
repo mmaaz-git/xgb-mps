@@ -44,6 +44,8 @@ from ._data_utils import (
     is_arrow_dict,
     pd_cat_inf,
 )
+from ._metal import is_metal
+from ._metal import transform as transform_metal
 from ._typing import (
     CupyT,
     DataType,
@@ -1307,6 +1309,11 @@ def dispatch_data_backend(
 ) -> DispatchedDataBackendReturnType:
     """Dispatch data for DMatrix."""
 
+    if is_metal(data):
+        raise TypeError(
+            "Native Metal features currently require QuantileDMatrix or ExtMemQuantileDMatrix."
+        )
+
     def check_cats(
         feature_types: Optional[Union[FeatureTypes, Categories]],
     ) -> TypeGuard[Optional[FeatureTypes]]:
@@ -1540,6 +1547,10 @@ def dispatch_meta_backend(
     matrix: "DMatrix", data: DataType, name: str, dtype: Optional[NumpyDType] = None
 ) -> None:
     """Dispatch for meta info."""
+    if is_metal(data):
+        raise TypeError(
+            "Native Metal metadata import is not implemented yet; supply host metadata."
+        )
     handle = matrix.handle
     assert handle is not None
     _validate_meta_shape(data, name)
@@ -1606,6 +1617,8 @@ def _proxy_transform(
     feature_types: Optional[FeatureTypes],
     enable_categorical: bool,
 ) -> TransformedData:
+    if is_metal(data):
+        return transform_metal(data), feature_names, feature_types
     if _is_cudf_pandas(data):
         data = data._fsproxy_fast  # pylint: disable=protected-access
     if _is_cudf_df(data) or _is_cudf_ser(data):
@@ -1655,6 +1668,8 @@ def _proxy_transform(
 
 def is_on_cuda(data: Any) -> bool:
     """Whether the data is a CUDA-based data structure."""
+    if is_metal(data):
+        return False
     return any(
         p(data)
         for p in (
@@ -1672,6 +1687,10 @@ def dispatch_proxy_set_data(
     data: DataType,
 ) -> None:
     """Dispatch for QuantileDMatrix."""
+    if is_metal(data):
+        tensor = transform_metal(data)
+        _check_call(_LIB.XGProxyDMatrixSetDataMetal(proxy.handle, tensor.descriptor))
+        return
     if (
         not _is_cudf_ser(data)
         and not _is_pandas_series(data)

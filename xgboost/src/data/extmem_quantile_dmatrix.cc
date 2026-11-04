@@ -44,7 +44,7 @@ ExtMemQuantileDMatrix::ExtMemQuantileDMatrix(DataIterHandle iter_handle, DMatrix
     Context ctx;
     ctx.Init(Args{{"nthread", std::to_string(config.n_threads)},
                   {"device", config.device.empty() ? pctx->DeviceName() : config.device}});
-    CHECK(ctx.IsMPS() ? !pctx->IsCUDA() : ctx.Device() == pctx->Device())
+    CHECK(ctx.IsMPS() ? !pctx->IsCUDA() : !pctx->IsMPS() && ctx.Device() == pctx->Device())
         << "Construction device must match the input device, except MPS accepts host arrays.";
     this->fmat_ctx_ = ctx;
   }

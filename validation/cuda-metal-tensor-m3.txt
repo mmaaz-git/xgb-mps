@@ -1,0 +1,107 @@
+Native Metal feature tensors and binary16 decoding
+=================================================
+Date: 2026-11-04
+Host: Apple M3 MacBook Air, 8 CPU cores / 10 GPU cores / 16 GB unified memory.
+Baseline: b95be03218de87d7133cb57d0c9f2cae984802dc (GPU Snappy compute caches).
+Producer/test dependencies: PyTorch 2.15.0, MLX 0.32.4, MLX-Metal 0.32.4;
+Python 3.13.5. These are optional test/input producers, not libxgboost link dependencies.
+
+Authority and representation
+----------------------------
+Vendored CUDA c_api/c_api.cu, data/device_adapter.cu/.cuh,
+data/array_interface.h/.cu, data/quantile_dmatrix.cu, predictor/gpu_predictor.cu.
+External primary sources inspected:
+https://raw.githubusercontent.com/dmlc/dlpack/v1.2/include/dlpack/dlpack.h
+https://dmlc.github.io/dlpack/latest/python_spec.html
+https://raw.githubusercontent.com/pytorch/pytorch/v2.15.0/aten/src/ATen/DLConvertor.cpp
+https://raw.githubusercontent.com/ml-explore/mlx/v0.32.4/python/src/convert.cpp
+Installed torch/_tensor.py was also inspected for actual producer synchronization.
+
+kDLMetal=8 data is an id<MTLBuffer>, not a host element pointer. The bridge imports
+offsets and signed element strides. It validates metadata and bounds, copies the
+addressed span by GPU blit into private owned storage, then feeds the existing
+GPU sketch/compression and prediction-input pipelines. No feature payload is
+converted to NumPy, CPU-staged or diagnostically read back in those paths.
+Final quantile summaries/results retain the backend's existing host contracts.
+
+Covered public paths: QuantileDMatrix, ExtMemQuantileDMatrix with host and disk
+caches, DataIter batches, reference cuts and inplace prediction. DLPack input
+infers MPS construction; explicit CPU construction rejects it. Host labels and
+other metadata remain required. Inplace prediction returns NumPy.
+
+Focused validation
+------------------
+Native: PASS 105 cases / 145,567 checked fields / 9 rejected descriptors.
+Shared and private source buffers, float32/64, every signed/unsigned integer
+width, slices, negative row/column strides, broadcasts and nonzero offsets.
+Each typed source is overwritten by a GPU fill and released before decode;
+snapshot values still match independent scalar CPU conversions bit for bit.
+All 65,536 float16 patterns checked for each storage mode against CPU __fp16;
+exact finite/infinite/zero bits and NaN classification, including subnormals.
+Broadcast input tests the actual 2^26-slot adapter-window boundary without a
+huge allocation, with exact sparse feature IDs and global row bases.
+Invalid bounds, alignment, dimensions, null source and unsupported types reject;
+empty tensors copy no source bytes. Native feature CPU staging remains zero.
+Log: results/tensor-native-v1.log; MTL_DEBUG_LAYER=1.
+
+Python: PASS 93 tests in 5.86 seconds; MTL_DEBUG_LAYER=1.
+64 real-producer dtype/layout cases, 12 external iterator/cache/dtype cases,
+source/capsule ownership, legacy/versioned export and exact-once deleters,
+empty batches, unsupported major version (header only), cached export completion,
+reference cuts, multiclass/vector/categorical prediction and rejection cases.
+Quantile cuts and training/prediction match host-input Metal for the same data;
+CPU evaluation of the fitted model agrees. Margin/value, iteration ranges and
+strict multi-output shapes are checked. Input staging, ELLPACK host transfers
+and adapter/prediction diagnostic readbacks stay unchanged during native calls.
+Log: results/tensor-python-v3.log.
+Final queue-strengthening check: PASS 2 tests / 91 deselected in 2.31 seconds.
+Actual Torch in-place GPU arithmetic occurs after a retained export; MLX performs
+lazy GPU arithmetic/async_eval on a nondefault stream before export. Both match
+independent host cuts. Log: results/tensor-producer-queue-v1.log. These final test
+versions are included in the full regression run below.
+
+Corrections during validation
+-----------------------------
+An initial run passed 71 Python cases and failed 12 iterator tests because the
+test incorrectly set cache_host_ratio for disk caches and called set_param with
+an unsupported keyword. Corrected tests passed all 12; no backend workaround.
+Review moved producer completion to each import, including cached exports.
+Capsule rename failure detaches consumer cleanup so ownership is not duplicated.
+
+Without a coordinated OpenMP runtime, actual PyTorch+XGBoost training crashed.
+The macOS crash stack alternated the wheel's bundled libomp and Homebrew libomp
+internal barrier frames. Setting DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib
+before launch resolved this; threadpoolctl reported one Homebrew runtime and
+both producer integrations passed. scripts/test.sh exports the same setup via
+LIBOMP_ROOT (or brew --prefix libomp). No installed package was patched and
+KMP_DUPLICATE_LIB_OK is not used. General mixed-runtime packaging remains open.
+
+Final full regression
+---------------------
+PASS, 2026-11-04T20:06:27Z -> 20:13:22Z (6 minutes 55 seconds), FULL_EXIT=0.
+- Final Metal build: all 22 actions complete.
+- Every native executable/reference updater rebuilt and passed; native tensor
+  totals reproduced exactly under Metal API validation.
+- Python: 2,459 passed, 1 skipped, 387 warnings in 132.06 seconds.
+  This includes both real producers and the final nondefault-stream checks.
+- CPU-only build: all 18 actions complete.
+- CPU-only checks: unavailable Metal reports/zero counters, explicit device
+  errors, new native import/prediction entry-point rejection, both quantile
+  constructors and both ordinary external host-cache options pass.
+- Changed Python files pass ruff F/I checks and formatting; git diff --check clean.
+
+Driver: results/run-tensor-full-v1.sh, tmux xgb-tensor-full-v1 (finished).
+Logs: results/tensor-full-driver-v1.log, build-tensor-final-v2.log,
+test-tensor-full-v1.log, configure-cpu-tensor-v1.log, build-cpu-tensor-v1.log,
+check-cpu-tensor-v1.log. No C++/Metal changes after the final Metal build;
+unused Python import cleanup and queue-test strengthening occurred before
+Python test collection. Documentation was finalized after validation.
+
+Scope limits
+------------
+Not full CUDA parity. Native ordinary DMatrix, labels/weights/base margins/groups,
+custom gradients, GPU output tensors, sparse/columnar device adapters and general
+device-owned state still require work. Foreign producers must finish writes;
+the C API requires a valid handle and source lifetime through synchronous import.
+BF16, complex, float128 and device IDs other than 0 are unsupported.
+No NVIDIA execution, cross-Apple-device comparison or new benchmark performed.

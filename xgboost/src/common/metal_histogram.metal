@@ -7455,6 +7455,17 @@ inline uint xgb_input_float(device const uchar* data, InputArray a, ulong row, u
   if (a.masked && !(data[a.mask + (row + a.mask_bit) / 8] & (1u << ((row + a.mask_bit) % 8))))
     return 0x7fc00000u;
   auto p = data + long(a.offset) + long(row) * a.row_stride + long(column) * a.column_stride;
+  if (a.type == 0) {
+    uint bits = *reinterpret_cast<device const ushort*>(p);
+    uint sign = (bits & 0x8000u) << 16, exponent = (bits >> 10) & 31u, fraction = bits & 1023u;
+    if (exponent == 31) return sign | 0x7f800000u | (fraction << 13);
+    if (!exponent) {
+      if (!fraction) return sign;
+      uint shift = clz(fraction) - 21u;
+      return sign | ((113u - shift) << 23) | ((fraction << (shift + 13)) & 0x7fffffu);
+    }
+    return sign | ((exponent + 112u) << 23) | (fraction << 13);
+  }
   if (a.type == 1) return *reinterpret_cast<device const uint*>(p);
   if (a.type == 2) return as_type<uint>(xgb_dto_float({*reinterpret_cast<device const ulong*>(p)}));
   ulong bits = xgb_input_uint(data, a, row, column);

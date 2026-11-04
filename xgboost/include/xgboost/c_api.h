@@ -81,6 +81,20 @@ XGB_DLL int XGBuildInfo(char const **out);
  */
 XGB_DLL int XGBMetalInfo(char const **out);
 
+/** Import a native Metal feature tensor into a proxy. `data` is a JSON descriptor
+ * with device_type=8, device_id=0, buffer (valid id<MTLBuffer> address), byte_offset,
+ * two-dimensional shape, element strides and DLPack dtype_code/dtype_bits/dtype_lanes.
+ * The caller must finish producer GPU work and retain the source through this call.
+ * Import copies the addressed byte span to owned GPU storage before returning.
+ */
+XGB_DLL int XGProxyDMatrixSetDataMetal(DMatrixHandle handle, char const *data);
+/** Inplace prediction from the same native descriptor. Requires device=mps;
+ * configuration/output follow XGBoosterPredictFromDense, including host results.
+ */
+XGB_DLL int XGBoosterPredictFromMetal(BoosterHandle handle, char const *data, char const *config,
+                                      DMatrixHandle proxy, bst_ulong const **out_shape,
+                                      bst_ulong *out_dim, float const **out_result);
+
 /**
  * @brief Get the string message of the last error.
  *

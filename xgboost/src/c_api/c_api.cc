@@ -273,6 +273,14 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["snappy_host_readback_bytes"] =
       Integer{static_cast<std::int64_t>(stats.snappy_host_readback_bytes)};
   info["snappy_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.snappy_gpu_time_ns)};
+  info["tensor_imports"] = Integer{static_cast<std::int64_t>(stats.tensor_imports)};
+  info["tensor_copy_dispatches"] = Integer{static_cast<std::int64_t>(stats.tensor_copy_dispatches)};
+  info["tensor_copied_bytes"] = Integer{static_cast<std::int64_t>(stats.tensor_copied_bytes)};
+  info["tensor_adapter_windows"] = Integer{static_cast<std::int64_t>(stats.tensor_adapter_windows)};
+  info["tensor_prediction_windows"] =
+      Integer{static_cast<std::int64_t>(stats.tensor_prediction_windows)};
+  info["tensor_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.tensor_gpu_time_ns)};
+  info["input_staging_bytes"] = Integer{static_cast<std::int64_t>(stats.input_staging_bytes)};
   info["ellpack_csr_dispatches"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_dispatches)};
   info["ellpack_csr_values"] = Integer{static_cast<std::int64_t>(stats.ellpack_csr_values)};
   info["ellpack_csr_input_bytes"] =
@@ -526,6 +534,13 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["snappy_decoded_bytes"] = Integer{0};
   info["snappy_host_readback_bytes"] = Integer{0};
   info["snappy_gpu_time_ns"] = Integer{0};
+  info["tensor_imports"] = Integer{0};
+  info["tensor_copy_dispatches"] = Integer{0};
+  info["tensor_copied_bytes"] = Integer{0};
+  info["tensor_adapter_windows"] = Integer{0};
+  info["tensor_prediction_windows"] = Integer{0};
+  info["tensor_gpu_time_ns"] = Integer{0};
+  info["input_staging_bytes"] = Integer{0};
   info["ellpack_csr_dispatches"] = Integer{0};
   info["ellpack_csr_values"] = Integer{0};
   info["ellpack_csr_input_bytes"] = Integer{0};
@@ -977,6 +992,13 @@ XGB_DLL int XGProxyDMatrixSetDataDense(DMatrixHandle handle, char const *data) {
   CHECK_HANDLE();
   xgboost_CHECK_C_ARG_PTR(data);
   GetDMatrixProxy(handle)->SetArray(data);
+  API_END();
+}
+XGB_DLL int XGProxyDMatrixSetDataMetal(DMatrixHandle handle, char const *data) {
+  API_BEGIN();
+  CHECK_HANDLE();
+  xgboost_CHECK_C_ARG_PTR(data);
+  GetDMatrixProxy(handle)->SetMetalArray(data);
   API_END();
 }
 
@@ -1905,6 +1927,26 @@ XGB_DLL int XGBoosterPredictFromDense(BoosterHandle handle, char const *data,
   CHECK(proxy) << "Invalid input type for inplace predict.";
   xgboost_CHECK_C_ARG_PTR(data);
   proxy->SetArray(data);
+  auto *learner = static_cast<xgboost::Learner *>(handle);
+  InplacePredictImpl(p_m, c_json_config, learner, out_shape, out_dim, out_result);
+  API_END();
+}
+XGB_DLL int XGBoosterPredictFromMetal(BoosterHandle handle, char const *data,
+                                      char const *c_json_config, DMatrixHandle m,
+                                      xgboost::bst_ulong const **out_shape,
+                                      xgboost::bst_ulong *out_dim, const float **out_result) {
+  API_BEGIN();
+  CHECK_HANDLE();
+  std::shared_ptr<DMatrix> p_m{nullptr};
+  if (!m) {
+    p_m.reset(new data::DMatrixProxy);
+  } else {
+    p_m = *static_cast<std::shared_ptr<DMatrix> *>(m);
+  }
+  auto proxy = dynamic_cast<data::DMatrixProxy *>(p_m.get());
+  CHECK(proxy) << "Invalid input type for inplace predict.";
+  xgboost_CHECK_C_ARG_PTR(data);
+  proxy->SetMetalArray(data);
   auto *learner = static_cast<xgboost::Learner *>(handle);
   InplacePredictImpl(p_m, c_json_config, learner, out_shape, out_dim, out_result);
   API_END();

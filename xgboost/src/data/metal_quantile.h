@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "../common/metal_adapter.h"
+#include "../common/metal_tensor.h"
 #include "cat_container.h"
 #include "proxy_dmatrix.h"
 #include "quantile_dmatrix.h"
@@ -20,9 +21,10 @@ namespace xgboost::data::metal_impl {
 // missing values and partial boundary rows. Preserve those pruning boundaries.
 template <class Fn>
 void AdapterWindows(Context const* ctx, DMatrixProxy const* proxy, float missing, Fn&& fn) {
-  cpu_impl::DispatchAny<false>(proxy, [&](auto const& adapter) {
+  auto process = [&](auto const& adapter) {
     using A = typename std::decay_t<decltype(adapter)>::element_type;
-    if constexpr (std::is_same_v<A, ArrayAdapter> || std::is_same_v<A, ColumnarAdapter>) {
+    if constexpr (std::is_same_v<A, ArrayAdapter> || std::is_same_v<A, ColumnarAdapter> ||
+                  std::is_same_v<A, common::metal::Tensor>) {
       std::vector<std::int32_t> map;
       enc::MappingView mapping;
       if constexpr (std::is_same_v<A, ColumnarAdapter>) {
@@ -34,7 +36,8 @@ void AdapterWindows(Context const* ctx, DMatrixProxy const* proxy, float missing
           map = std::move(std::get<1>(encoded));
         }
       }
-      auto cols = adapter->NumColumns(), rows = adapter->NumRows();
+      auto cols = adapter->NumColumns();
+      auto rows = adapter->NumRows();
       CHECK_GT(cols, 0);
       CHECK_LE(rows, std::numeric_limits<bst_idx_t>::max() / cols);
       bst_idx_t total = rows * cols;
@@ -47,7 +50,12 @@ void AdapterWindows(Context const* ctx, DMatrixProxy const* proxy, float missing
     } else {
       LOG(FATAL) << "Metal QuantileDMatrix construction currently accepts dense or columnar input.";
     }
-  });
+  };
+  if (proxy->Ctx()->IsMPS()) {
+    process(std::any_cast<std::shared_ptr<common::metal::Tensor>>(proxy->Adapter()));
+  } else {
+    cpu_impl::DispatchAny<false>(proxy, process);
+  }
 }
 
 // The first batch is already fetched, as in cuda_impl::MakeSketches. Leaves the

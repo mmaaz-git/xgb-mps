@@ -14,7 +14,22 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **GPU Snappy compression and decompression for sparse host caches**.
+Latest step: **native PyTorch/MLX Metal feature tensors and float16 input**.
+`QuantileDMatrix`, both external quantile cache modes and `inplace_predict` now
+accept Metal DLPack inputs. Strided views are copied into owned GPU storage and
+decoded on the GPU, without staging feature values through NumPy or CPU arrays.
+Tests cover real PyTorch/MLX producers, private buffers, source mutation/release,
+legacy/versioned capsule ownership and all 65,536 float16 bit patterns.
+
+Focused validation passes **93 Python tests** and **105 native cases / 145,567
+field checks / nine rejected descriptors**. Full regression passes **2,459 Python
+tests, one skip**, every rebuilt native suite and the CPU-only build/API checks.
+Native metadata, ordinary `DMatrix`
+input and GPU output tensors remain open; prediction results still return NumPy.
+PyTorch coexistence requires a single OpenMP runtime, configured below.
+No new benchmark. [Tensor validation](validation/cuda-metal-tensor-m3.txt).
+
+The preceding step added **GPU Snappy compression and decompression for sparse host caches**.
 Metal now implements raw Snappy literals and all copy forms, including overlapping
 backreferences. The independent Google CPU codec validates both directions;
 repeated inputs actually compress. Cache reads reconstruct the original ELLPACK
@@ -265,10 +280,11 @@ The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
-The major remaining areas are compressed disk caches for ordinary/external quantile
-matrices, internal ELLPACK save/load, optional cache compression, native device-array ingestion,
-remaining initialization/state and metadata operations,
-CUDA algorithm alignment, Apple GPU array interoperability and distributed collectives. Sensitive AFT tails and some
+The major remaining areas are native ordinary-matrix input, GPU metadata and
+gradient/output tensor interoperability, remaining initialization/state operations,
+CUDA algorithm alignment and distributed collectives. Compressed disk caches,
+internal ELLPACK save/load and optional Snappy compute compression are implemented.
+Sensitive AFT tails and some
 long-run ranking and Covertype comparisons have numerical differences.
 Persistent GPU ownership and less synchronization also remain unfinished.
 The [coverage ledger](docs/CUDA_PARITY.md) records the details. Performance
@@ -316,6 +332,7 @@ uv venv .venv
 uv pip install --python .venv/bin/python numpy scipy pytest scikit-learn pandas
 bash scripts/build.sh
 export PYTHONPATH="$PWD/xgboost/python-package"
+export DYLD_LIBRARY_PATH="$(brew --prefix libomp)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 ```
 
 ```python
@@ -335,12 +352,41 @@ valid = xgb.QuantileDMatrix(X_valid, y_valid, device="mps", ref=train, max_bin=2
 model = xgb.train({"device": "mps", "tree_method": "hist", "max_bin": 256}, train)
 ```
 
-Construction device is independent of booster device. Omitting it preserves
-upstream input-device selection, including CPU construction for host arrays in
-the sklearn wrapper. The new option supports dense/columnar `DataIter` batches;
-native Metal tensor handles, raw float16 interfaces and sparse device adapters
-remain open. Raw packing, metadata and final gradient-index/column storage remain
-host work.
+Construction device is independent of booster device. Omitting it selects MPS
+for native Metal feature tensors and CPU for host arrays. Dense/columnar host
+and native Metal `DataIter` batches are supported. Native sparse adapters and
+GPU metadata import remain open; CPU quantized views are materialized on demand.
+
+Native feature inputs use the producer's Metal DLPack export:
+
+```sh
+# Optional producer/test dependencies; versions validated on this Mac.
+uv pip install --python .venv/bin/python 'torch==2.15.0' 'mlx==0.32.4'
+```
+
+```python
+import torch
+
+X_gpu = torch.randn(1000, 32, device="mps", dtype=torch.float16)
+y_host = torch.randn(1000).numpy()
+train = xgb.QuantileDMatrix(X_gpu, y_host, max_bin=256)
+model = xgb.train({"device": "mps", "max_bin": 256}, train)
+prediction = model.inplace_predict(X_gpu)  # NumPy output
+```
+
+MLX GPU arrays work through the same interface. The Python bridge completes
+known PyTorch/MLX producer work before each import; generic Metal providers must
+supply ready buffers. Imports make owned GPU snapshots rather than retaining
+mutable feature storage. A DLPack capsule is consumed once; an iterator should
+return its producer tensor on each callback. Labels, weights and base margins
+must currently be host arrays. Float16/32/64, integer widths and bool are supported
+by the native interface, subject to each producer's dtype support.
+
+Set `DYLD_LIBRARY_PATH` above **before starting Python** when using PyTorch with
+this Homebrew OpenMP build. PyTorch's wheel bundles another OpenMP runtime;
+loading both caused a reproduced worker-thread crash. The test launcher selects
+the Homebrew runtime for both libraries. Unconfigured mixed-runtime packaging
+is not resolved by this backend.
 
 For compressed in-memory caching, define your iterator with
 `super().__init__(on_host=True, min_cache_page_bytes=0)` and use:
@@ -392,9 +438,10 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Vector model storage | Bit-preserving GPU copies for parent/child weights and category words, with GPU FP32 learning-rate scaling of new child weights; allocation/growth and metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; explicit MPS quantile adapters also bin on GPU; ordinary in-memory and quantile matrices plus external compressed caches create quantized host mirrors only for explicit CPU batch access; disk-backed ordinary pages retain host bins |
-| Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Explicit MPS in-memory and external quantile adapters feed resident sketches; native device arrays and distributed sketches remain open |
+| Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Host dense/columnar and native Metal quantile inputs feed resident sketches; distributed sketches remain open |
 | Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Model dictionary copies, persistent storage and row-level map application remain host |
-| Quantized data cache | Ordinary in-memory DMatrix pages use raw CSR-to-ELLPACK compression. In-memory quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly. Prefetch retains device-only views; CPU access explicitly materializes host mirrors. Optional Snappy compression, compressed disk storage and internal ELLPACK save/load remain open |
+| Quantized data cache | Ordinary in-memory DMatrix pages use raw CSR-to-ELLPACK compression. Quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly; CPU access explicitly materializes host mirrors. Compressed disk storage, internal ELLPACK save/load and optional native Snappy compression are implemented |
+| Native Apple feature tensors | Metal DLPack inputs for in-memory/external quantile matrices and inplace prediction; strided GPU snapshots, half decoding and PyTorch/MLX synchronization. Metadata imports, ordinary DMatrix input and GPU outputs remain open |
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
 | Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; scalar/vector split statistics retain integers |

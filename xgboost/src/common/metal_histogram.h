@@ -110,6 +110,8 @@ struct Statistics {
   std::uint64_t snappy_compress_dispatches, snappy_decompress_dispatches, snappy_copy_dispatches,
       snappy_input_bytes, snappy_compressed_bytes, snappy_decoded_bytes, snappy_host_readback_bytes,
       snappy_gpu_time_ns;
+  std::uint64_t tensor_imports, tensor_copy_dispatches, tensor_copied_bytes, tensor_adapter_windows,
+      tensor_prediction_windows, tensor_gpu_time_ns, input_staging_bytes;
 };
 
 class Histogram {
