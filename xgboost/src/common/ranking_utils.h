@@ -25,6 +25,7 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "metal_ranking.h"
+#include "metal_vector.h"
 #endif
 
 namespace xgboost::ltr {
@@ -254,7 +255,11 @@ class RankingCache {
   // Create a rank list by model prediction
   common::Span<std::size_t const> SortedIdx(Context const* ctx, common::Span<float const> predt) {
     if (sorted_idx_cache_.Empty()) {
-      sorted_idx_cache_.SetDevice(ctx->Device());
+      auto device = ctx->Device();
+#if defined(XGBOOST_USE_METAL)
+      if (ctx->IsMPS()) device = DeviceOrd::MPS();
+#endif
+      sorted_idx_cache_.SetDevice(device);
       sorted_idx_cache_.Resize(predt.size());
     }
     if (ctx->IsCUDA()) {
@@ -341,11 +346,17 @@ class NDCGCache : public RankingCache {
   }
 
   linalg::VectorView<double const> InvIDCG(Context const* ctx) const {
-  // This function doesn't have sycl-specific implementation yet.
-  // For that reason we transfer data to host in case of sycl is used for propper execution.
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) return inv_idcg_.View(DeviceOrd::MPS());
+#endif
+    // This function doesn't have sycl-specific implementation yet.
+    // For that reason we transfer data to host in case of sycl is used for propper execution.
     return inv_idcg_.View(ctx->Device().IsSycl() ? DeviceOrd::CPU() : ctx->Device());
   }
   common::Span<double const> Discount(Context const* ctx) const {
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) return common::metal::ConstDeviceSpan(discounts_);
+#endif
     return ctx->IsCUDA() ? discounts_.ConstDeviceSpan() : discounts_.ConstHostSpan();
   }
   linalg::VectorView<double> Dcg(Context const* ctx) {

@@ -86,7 +86,7 @@ must be reported rather than hidden by widening test tolerances.
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; multiclass softmax follows source sequential binary64 accumulation of FP32 terms and argmax handles source NaN/subnormal comparisons; identity transforms require no dispatch. Nonranking objective transforms now retain explicit Metal vector storage |
 | Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; checked results publish by GPU blit only on success and retain Metal vector storage; expectile's host margin loop matches upstream host execution |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal source-expression gradients, FP32 residual-root sums, binary64 optional-weight sums and quantile prediction sorting; upstream host scale-statistic collective restored for empty/nonempty workers; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; gradient payloads now retain Metal vector storage. Initialization means/broadcasts/stumps/quantiles now retain Metal storage; source-defined expectile/absolute host finalizers remain. Other generic state work still needs migration |
-| Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
+| Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation, ranking label validation and query-weight normalization now retain Metal input/cache storage; gradient/bias input and output ownership still needs migration. Top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms, now with explicit Metal input/output storage; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Means, medians/quantiles and stump wrappers now consume Metal spans and publish strided outputs/empty fills on GPU. Other state work still requires porting/audit |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
@@ -98,7 +98,7 @@ must be reported rather than hidden by widening test tolerances.
 | AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and complete binary64 sums; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; resident inputs/summaries; host-summary distributed collective fallback |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; resident inputs/summaries; host-summary distributed collective fallback |
-| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
+| Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains, cached sort indices and ranking label validation retain Metal storage; metric inputs bind shared arrays directly. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add host dense/columnar and native Metal tensor/columnar ingestion, resident sketches and bins; native metadata conversion/validation is supported; distributed sketch collectives remain open |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Ordinary in-memory DMatrix now compresses raw CSR directly with separate lazy CPU views and cache-generation tracking. MPS-origin external disk caches now store/read compressed pages; internal quantile cuts+ELLPACK save/load is implemented. Ordinary external on_host selection now uses CUDA single-/multiple-page defaults. Optional Snappy compute compression/decompression now follows the native fallback opt-in, sparse eligibility and forced-prefetch rules. Mapped-file zero-copy remains open; CPU-origin external matrices retain their existing compatibility path |
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `data/data.cu`, `metainfo.cu`, `array_interface.cu` | Category sorting/schema checks/lower-bound mapping/first-unknown search, row-code mapping, native dictionary gathers and metadata conversion/validation/query-ID grouping run on GPU. Native float metadata retains Metal vector storage; internal row gathers, device copies/stacking and feature-type equality run on Metal. Group boundaries and public ordinary row slicing remain host as upstream; persistent dictionary storage/copies and remaining allocation/consumer migration remain open |
@@ -3630,3 +3630,56 @@ Next ownership work is precision/NDCG/MAP caches and metrics, ranking objectives
 predictor/updater consumers, public result plumbing and persistent dictionaries.
 CUDA operation/arithmetic audits, GPU collectives and NVIDIA/other-Apple hardware
 validation remain unfinished. No benchmark was run for this step.
+
+## Ranking metrics and caches retain Metal storage
+
+CUDA authority: `common/ranking_utils.cu` and `metric/rank_metric.cu`. Precision,
+NDCG and MAP already had GPU arithmetic; their consumers and cache accessors still
+requested host inputs and cached arrays. This change retains explicit Metal
+prediction/label/query-weight spans, NDCG discounts/inverse ideal gains and sorted
+indices. Cache construction selects Metal before allocating index arrays; otherwise
+its first use uploads a CPU-allocated array even when the sorter itself is on GPU.
+The new test detected that allocation gap, which is now fixed.
+
+Label validation, grouped sorting, ideal-gain initialization and ranking score
+wrappers bind guarded shared spans with their offsets. Sort/cache results compute
+into scratch, then publish by GPU blit after all input reads. Read-only inputs and
+unaligned/unshareable outputs retain counted compatibility paths. Overlapping
+NDCG discount/inverse output spans use ordered host publication so both shared
+and mixed-eligibility destinations preserve the previous discount-then-inverse
+write order. Production caches have disjoint owned allocations. Optional-weight
+normalization retains its source scalar return; query metadata remains host
+input to the existing owned GPU plan. Final metric score/weight scalars and host
+collectives retain upstream placement. No arithmetic kernel or tolerance changed.
+
+Existing input/publication counters now include ranking metrics, validation and
+cache/index arrays. `metric_final_readback_bytes` includes their 16-byte final
+score/weight return for calls with at least one query, even when its rows are
+empty. No statistics fields or ABI changes were needed for this extension.
+
+New native validation passes **166 cases / 47,135 checks / three rejected calls**
+with Metal API validation. Actual metric `Evaluate` calls use real matrix caches
+and test first use/reuse, NDCG gain-parameter reset, GPU prediction writes,
+CPU/MPS handoffs and GPU-written invalid labels. Tests require no input mirrors,
+no vector reuploads, no metric/cache staging, exact final-result/publication byte
+counts and no repeated allocations. Direct cache tests verify accessor devices,
+CPU reference values and sort indices. Binding tests cover small/medium/radix
+sorts, row strides, every read-only score-input slot, cache-output aliases,
+unaligned fallbacks, overlapping outputs and unchanged guards. Final vector live
+and capacity gauges return to zero. Empty Precision uses CUDA's zero contribution;
+NDCG/MAP retain their source fallback rules rather than the CPU's divergent edges.
+
+All **277 focused Python ranking/AUC tests** pass (27 warnings, 7.28s), including
+existing LambdaRank training and cache lifetime checks and new public binding
+assertions. Full regression completed **2026-11-04 23:27:55–23:35:45 UTC** (7m50s):
+**3,325 Python tests passed, one expected skip** (622 warnings, 190.60s), all **90
+rebuilt native check groups**, the source reference updater and CPU-only build/
+API/device/cache checks. The existing ranking tests passed 896 score cases,
+336 NDCG cache cases, 2,444,200 exact gradient pairs and 2,592 unbiased calls.
+No production/test edits followed the final build/run; docs were finalized afterward.
+[Validation record](../validation/cuda-metal-ranking-metric-state-m3.txt).
+LambdaRank gradients/bias arrays still stage through host-owned consumers;
+GPU bias calculations already exist, but their payload migration is next. Other
+remaining work includes predictor/updater state, result plumbing, dictionaries,
+source coverage audits, GPU collectives and cross-hardware validation. No benchmark
+or NVIDIA execution comparison was run.

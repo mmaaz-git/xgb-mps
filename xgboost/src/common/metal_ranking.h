@@ -34,6 +34,8 @@ std::shared_ptr<RankingPlan const> MakeRankingPlan(Span<bst_group_t const> group
 // Stable descending sort within each query. Output indices are query-relative.
 // Groups begin at zero and end at values.Size(); empty groups are permitted.
 // NaN scores have no defined CPU ordering and are outside this contract.
+// Synchronous guarded shared input/output bindings, with counted fallbacks;
+// index/cache publication occurs after all input reads, so input aliases are safe.
 void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> groups,
                 Span<std::size_t> relative_indices, std::shared_ptr<RankingPlan const> plan = {});
 
@@ -43,6 +45,8 @@ enum class RankingLabelKind : std::uint32_t { kBinary, kNDCG };
 std::uint32_t CheckRankingLabels(linalg::VectorView<float const> labels, RankingLabelKind kind);
 // Sort labels and calculate discounts/inverse ideal gains on GPU. The caller
 // validates labels first; linear gains may include finite negative values.
+// Overlapping discount/inverse destinations use ordered host publication to
+// preserve discount-then-inverse semantics, including mixed sharing eligibility.
 void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> groups,
               std::uint32_t topk, bool exponential, Span<double> discounts,
               Span<double> inverse_idcg, std::shared_ptr<RankingPlan const> plan = {});

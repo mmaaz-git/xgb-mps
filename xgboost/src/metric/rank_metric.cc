@@ -37,6 +37,7 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_ranking.h"
+#include "../common/metal_vector.h"
 #endif
 
 namespace {
@@ -309,9 +310,11 @@ class EvalPrecision : public EvalRankWithCache<ltr::PreCache> {
     if (ctx_->IsMPS()) {
       auto sums = common::metal::RankingScore(
           common::metal::RankingMetricKind::kPrecision,
-          linalg::MakeTensorView(DeviceOrd::CPU(), predt.ConstHostSpan(), predt.Size()),
-          info.labels.HostView().Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
-          info.weights_.ConstHostSpan(), param_.TopK(), false, true, {}, {}, p_cache->MetalPlan());
+          linalg::MakeTensorView(DeviceOrd::MPS(), common::metal::ConstDeviceSpan(predt),
+                                 predt.Size()),
+          info.labels.View(DeviceOrd::MPS()).Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
+          common::metal::ConstDeviceSpan(info.weights_), param_.TopK(), false, true, {}, {},
+          p_cache->MetalPlan());
       return Finalize(ctx_, info, sums.score, sums.weight);
     }
 #endif
@@ -377,10 +380,12 @@ class EvalNDCG : public EvalRankWithCache<ltr::NDCGCache> {
     if (ctx_->IsMPS()) {
       auto sums = common::metal::RankingScore(
           common::metal::RankingMetricKind::kNDCG,
-          linalg::MakeTensorView(DeviceOrd::CPU(), preds.ConstHostSpan(), preds.Size()),
-          info.labels.HostView().Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
-          info.weights_.ConstHostSpan(), param_.TopK(), minus_, param_.ndcg_exp_gain,
-          p_cache->Discount(ctx_), p_cache->InvIDCG(ctx_).Values(), p_cache->MetalPlan());
+          linalg::MakeTensorView(DeviceOrd::MPS(), common::metal::ConstDeviceSpan(preds),
+                                 preds.Size()),
+          info.labels.View(DeviceOrd::MPS()).Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
+          common::metal::ConstDeviceSpan(info.weights_), param_.TopK(), minus_,
+          param_.ndcg_exp_gain, p_cache->Discount(ctx_), p_cache->InvIDCG(ctx_).Values(),
+          p_cache->MetalPlan());
       return Finalize(ctx_, info, sums.score, sums.weight);
     }
 #endif
@@ -447,9 +452,11 @@ class EvalMAPScore : public EvalRankWithCache<ltr::MAPCache> {
     if (ctx_->IsMPS()) {
       auto sums = common::metal::RankingScore(
           common::metal::RankingMetricKind::kMAP,
-          linalg::MakeTensorView(DeviceOrd::CPU(), predt.ConstHostSpan(), predt.Size()),
-          info.labels.HostView().Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
-          info.weights_.ConstHostSpan(), param_.TopK(), minus_, true, {}, {}, p_cache->MetalPlan());
+          linalg::MakeTensorView(DeviceOrd::MPS(), common::metal::ConstDeviceSpan(predt),
+                                 predt.Size()),
+          info.labels.View(DeviceOrd::MPS()).Slice(linalg::All(), 0), p_cache->DataGroupPtr(ctx_),
+          common::metal::ConstDeviceSpan(info.weights_), param_.TopK(), minus_, true, {}, {},
+          p_cache->MetalPlan());
       return Finalize(ctx_, info, sums.score, sums.weight);
     }
 #endif

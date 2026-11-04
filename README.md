@@ -14,7 +14,25 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **resident AUC inputs and summaries**. Binary, multiclass, multilabel
+Latest step: **resident ranking metrics and caches**. Precision, NDCG and MAP now
+consume Metal predictions, labels and query weights. NDCG discounts and inverse
+ideal gains stay in Metal storage, including cache accessors. Cached sort indices
+are allocated and published on GPU from their first use. CUDA's small final
+score/weight return and host collective remain intact.
+
+Focused validation passes **166 native cases / 47,135 checks / three rejected
+calls** and **277 Python tests**, covering cache reuse/reset, GPU writes, CPU/MPS
+handoffs, all grouped-sort sizes, read-only/offset views and aliased publication.
+Full regression passes **3,325 Python tests, one expected skip**, all **90 rebuilt
+native check groups**, and the CPU-only build/API checks.
+[Ranking metric storage validation](validation/cuda-metal-ranking-metric-state-m3.txt).
+
+Ranking gradient and bias arrays still need ownership migration. Predictor/updater
+state, public result plumbing, persistent dictionaries, remaining CUDA audits and
+GPU collective transport also remain open. Generic context storage still defaults
+to CPU. No benchmark or NVIDIA execution comparison was run for this step.
+
+The preceding step added **resident AUC inputs and summaries**. Binary, multiclass, multilabel
 and grouped ROC/PR evaluators now consume Metal predictions, labels and weights.
 Multi-output summaries stay in owned Metal storage through normalization. Sorting
 accepts offset views directly; result publication supports aliased inputs and a
@@ -29,10 +47,9 @@ native check groups**, and the CPU-only build/API checks.
 [AUC storage validation](validation/cuda-metal-auc-state-m3.txt).
 
 Distributed AUC retains a documented host-summary collective fallback; these
-metric tests do not enable distributed MPS training. Precision/NDCG/MAP caches
-and metrics, ranking training, predictor/updater state, public result plumbing
-and persistent dictionaries still need ownership work. Generic context storage
-still defaults to CPU. No new benchmark or NVIDIA execution comparison.
+metric tests do not enable distributed MPS training. Precision/NDCG/MAP ownership
+was still pending at that checkpoint and is addressed by the latest step above.
+No benchmark or NVIDIA execution comparison was run for the AUC step.
 
 The preceding step added **resident scalar metric inputs**. Scalar/multiclass,
 quantile/expectile and AFT likelihood/interval-accuracy evaluators now consume
@@ -715,13 +732,13 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights; GPU raw-input decoding and category-map application |
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input conversion and row-level category mapping on GPU; raw packing/transfers remain host; approximate SHAP uses an explicit CPU fallback, as CUDA does not implement it |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
-| Ranking training | GPU query maxima/counts/integer prefixes and immutable cache reuse; stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, raw bounds, independent sign/cost truncation, parallel MAP prefixes, normalization and combined weights on Metal; unbiased bias updates use a deterministic global cost-factor policy |
+| Ranking training | GPU query maxima/counts/integer prefixes and immutable cache reuse; stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, raw bounds, independent sign/cost truncation, parallel MAP prefixes, normalization and combined weights on Metal; unbiased bias updates use a deterministic global cost-factor policy. Ranking label/weight validation and NDCG cache arrays now retain Metal storage; gradient and bias payload ownership remains pending |
 | ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; resident inputs and summaries; distributed summary collective still stages through host |
 | Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior; resident inputs |
 | Column sampling | CUDA-source Philox weighted draws and Thrust Feistel unweighted shuffle; GPU compaction, stable priority ordering and integer feature sorting; 24 shuffle keys and cache metadata remain host as in CUDA, while feature arrays still stage through host |
 | Grouped ranking PR-AUC | CUDA-source FP32 cast boundaries, original-order positive totals, segmented binary64 prefixes, integral arithmetic and two-row validity; GPU sorting, validation and aggregation; resident inputs |
 | PR-AUC | Binary, multiclass and multilabel; CUDA-source term casts, separate recall/validity totals, source integral and invalid-output rules; GPU aggregation metadata and normalization; resident inputs and summaries; distributed summary collective still stages through host |
-| Metrics | Scalar/multiclass and quantile/expectile FP32 row terms, GPU label checks and complete binary64 GPU sums; survival likelihood/accuracy binary64 terms and sums. These scalar callers and wrappers retain Metal inputs; AUC callers now retain inputs and multi-output summaries; precision/NDCG/MAP ownership migration remains pending. Final ratios and collective transport remain host |
+| Metrics | Scalar/multiclass and quantile/expectile FP32 row terms, GPU label checks and complete binary64 GPU sums; survival likelihood/accuracy binary64 terms and sums. These scalar callers and wrappers retain Metal inputs; AUC callers now retain inputs and multi-output summaries; precision/NDCG/MAP inputs, NDCG cache arrays and cached sort indices now also retain Metal storage. Final ratios and collective transport remain host |
 
 AFT gradient evaluation is entirely on GPU, including numerically sensitive
 censored rows. `survival_cpu_corrections` and `survival_cpu_time_ns` remain in the
@@ -740,15 +757,18 @@ time overlaps GPU duration; adding those numbers would double-count time. Counte
 are process-wide, so concurrent models contribute to the same totals.
 `metric_reduction_passes` counts completed final reduction levels;
 `metric_final_readback_bytes` is 16 bytes per nonempty successful scalar,
-multiclass, quantile/expectile or survival metric call. `metric_label_dispatches`
+multiclass, quantile/expectile or survival metric call, and per precision/NDCG/MAP
+call with at least one query (including empty queries). `metric_label_dispatches`
 counts GPU multiclass validation, including calls rejected for invalid labels.
 `metric_shared_input_bytes` and `metric_host_input_bytes` count eligible bindings
-and fallback uploads for scalar/multiclass, quantile/expectile, survival and AUC
-metric inputs (including grouped AUC and normalization summaries). They exclude
-final scalar results, precision/NDCG/MAP inputs and whole-training transfers.
-`metric_shared_output_bytes` / `metric_host_output_bytes` count AUC summary
-publication, including raw binary triples; `metric_copy_dispatches` /
-`metric_copy_bytes` count its GPU blits. `auc_final_readback_bytes` counts explicit
+and fallback uploads for scalar/multiclass, quantile/expectile, survival, AUC and
+ranking metrics, including normalization summaries and ranking cache/validation
+bindings. They exclude final scalar results
+and whole-training transfers. `metric_shared_output_bytes` /
+`metric_host_output_bytes` count AUC summaries/raw binary triples and ranking
+cache/index publication; `metric_copy_dispatches` / `metric_copy_bytes` count
+those GPU blits. Overlapping NDCG output destinations retain ordered host
+publication; ordinary owned cache outputs are disjoint. `auc_final_readback_bytes` counts explicit
 8-byte normalization returns and 16-byte grouped returns; it excludes raw output
 publication and optional diagnostics. These counters count bindings, not ownership;
 native vector access-state/readback checks establish residency separately.

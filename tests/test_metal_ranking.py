@@ -106,8 +106,14 @@ def test_ranking_metric_ties(metal, metric, largest):
     params = dict(objective="reg:squarederror", eval_metric=metric, nthread=2, base_score=.5)
     cpu = xgb.train(params | {"device": "cpu"}, d, 0)
     gpu = xgb.train(params | {"device": "mps"}, d, 0)
-    before = xgb.metal_info()["group_sort_dispatches"]
+    before_bindings = xgb.metal_info()
+    before = before_bindings["group_sort_dispatches"]
     gpu_value = float(gpu.eval(d).rsplit(":", 1)[1])
+    after = xgb.metal_info()
+    assert after["metric_host_input_bytes"] == before_bindings["metric_host_input_bytes"]
+    assert after["metric_host_output_bytes"] == before_bindings["metric_host_output_bytes"]
+    assert after["metric_shared_input_bytes"] - before_bindings["metric_shared_input_bytes"] >= 8 * n
+    assert after["metric_final_readback_bytes"] - before_bindings["metric_final_readback_bytes"] == 16
     cpu_value = float(cpu.eval(d).rsplit(":", 1)[1])
     np.testing.assert_allclose(gpu_value, cpu_value, rtol=2e-12, atol=2e-12)
     assert xgb.metal_info()["group_sort_dispatches"] > before

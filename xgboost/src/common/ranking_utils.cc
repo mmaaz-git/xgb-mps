@@ -78,6 +78,9 @@ void RankingCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   double sum_weights = 0;
   auto n_groups = Groups();
   auto device = ctx->Device().IsSycl() ? DeviceOrd::CPU() : ctx->Device();
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) device = DeviceOrd::MPS();
+#endif
   auto weight = common::MakeOptionalWeights(device, info.weights_);
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
@@ -95,17 +98,18 @@ void RankingCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
 common::Span<std::size_t const> RankingCache::MakeRankOnCPU(Context const* ctx,
                                                             common::Span<float const> predt) {
   auto gptr = this->DataGroupPtr(ctx);
-  auto rank = this->sorted_idx_cache_.HostSpan();
-  CHECK_EQ(rank.size(), predt.size());
+  CHECK_EQ(this->sorted_idx_cache_.Size(), predt.size());
 
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
-    common::metal::SortGroups(linalg::MakeTensorView(DeviceOrd::CPU(), predt, predt.size()),
-                              gptr, rank, metal_plan_);
+    auto rank = common::metal::DeviceSpan(this->sorted_idx_cache_);
+    common::metal::SortGroups(linalg::MakeTensorView(DeviceOrd::MPS(), predt, predt.size()), gptr,
+                              rank, metal_plan_);
     return rank;
   }
 #endif
 
+  auto rank = this->sorted_idx_cache_.HostSpan();
   common::ParallelFor(this->Groups(), ctx->Threads(), [&](auto g) {
     auto cnt = gptr[g + 1] - gptr[g];
     auto g_predt = predt.subspan(gptr[g], cnt);
@@ -131,6 +135,20 @@ common::Span<std::size_t const> RankingCache::MakeRankOnCUDA(Context const*,
 void NDCGCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   auto const h_group_ptr = this->DataGroupPtr(ctx);
   auto n_groups = h_group_ptr.size() - 1;
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    auto labels = info.labels.View(DeviceOrd::MPS()).Slice(linalg::All(), 0);
+    ValidateNDCGLabels(ctx, this->Param(), labels);
+    discounts_.SetDevice(DeviceOrd::MPS());
+    discounts_.Resize(MaxGroupSize(), 0);
+    inv_idcg_.SetDevice(DeviceOrd::MPS());
+    inv_idcg_.Reshape(n_groups);
+    common::metal::InitNDCG(labels, h_group_ptr, this->Param().TopK(), this->Param().ndcg_exp_gain,
+                            discounts_.DeviceSpan(), inv_idcg_.View(DeviceOrd::MPS()).Values(),
+                            this->MetalPlan());
+    return;
+  }
+#endif
   auto h_labels = info.labels.HostView().Slice(linalg::All(), 0);
   ValidateNDCGLabels(ctx, this->Param(), h_labels);
 
@@ -140,13 +158,6 @@ void NDCGCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
   auto h_inv_idcg = inv_idcg_.HostView();
   std::size_t topk = this->Param().TopK();
   auto const exp_gain = this->Param().ndcg_exp_gain;
-#if defined(XGBOOST_USE_METAL)
-  if (ctx->IsMPS()) {
-    common::metal::InitNDCG(h_labels, h_group_ptr, topk, exp_gain, h_discounts, h_inv_idcg.Values(),
-                            this->MetalPlan());
-    return;
-  }
-#endif
   for (std::size_t i = 0; i < MaxGroupSize(); ++i) {
     h_discounts[i] = CalcDCGDiscount(i);
   }
@@ -173,6 +184,12 @@ void NDCGCache::InitOnCUDA(Context const*, MetaInfo const&) { common::AssertGPUS
 DMLC_REGISTER_PARAMETER(LambdaRankParam);
 
 void PreCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    ValidateBinaryLabels(ctx, "pre", info.labels.View(DeviceOrd::MPS()).Slice(linalg::All(), 0));
+    return;
+  }
+#endif
   auto const& h_label = info.labels.HostView().Slice(linalg::All(), 0);
   ValidateBinaryLabels(ctx, "pre", h_label);
 }
@@ -182,6 +199,12 @@ void PreCache::InitOnCUDA(Context const*, MetaInfo const&) { common::AssertGPUSu
 #endif  // !defined(XGBOOST_USE_CUDA)
 
 void MAPCache::InitOnCPU(Context const* ctx, MetaInfo const& info) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    ValidateBinaryLabels(ctx, "map", info.labels.View(DeviceOrd::MPS()).Slice(linalg::All(), 0));
+    return;
+  }
+#endif
   auto const& h_label = info.labels.HostView().Slice(linalg::All(), 0);
   ValidateBinaryLabels(ctx, "map", h_label);
 }

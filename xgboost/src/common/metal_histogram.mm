@@ -2982,7 +2982,7 @@ Transform TransformFromName(char const* name) {
 }
 
 namespace {
-// Guarded synchronous bindings for scalar and AUC metric payloads.
+// Guarded synchronous bindings for metric and ranking-cache payloads.
 BorrowedMemory MetricInput(Runtime const& rt, void const* data, std::size_t bytes,
                              std::size_t alignment = 4) {
   auto input = TryBorrowMemory(rt.device, data, bytes, alignment);
@@ -2994,8 +2994,9 @@ BorrowedMemory MetricInput(Runtime const& rt, void const* data, std::size_t byte
   return input;
 }
 // Compute into scratch before publication so output may alias any input.
-BorrowedMemory PublishAUC(Runtime const& rt, id<MTLCommandBuffer> command,
+BorrowedMemory PublishMetric(Runtime const& rt, id<MTLCommandBuffer> command,
                            id<MTLBuffer> result, void* output, std::size_t bytes) {
+  if (!bytes) return {};
   auto destination = TryBorrowMemory(rt.device, output, bytes, alignof(double));
   if (destination.buffer) {
     auto e = [command blitCommandEncoder];
@@ -3008,6 +3009,13 @@ BorrowedMemory PublishAUC(Runtime const& rt, id<MTLCommandBuffer> command,
     metric_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
   }
   return destination;
+}
+void FinishMetricPublication(BorrowedMemory destination, id<MTLBuffer> result,
+                              void* output, std::size_t bytes) {
+  if (!destination.buffer && bytes) {
+    std::memcpy(output, result.contents, bytes);
+    metric_host_output_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
 }
 BorrowedMemory InitializationInput(Runtime const& rt, void const* data, std::size_t bytes,
                                    std::size_t alignment = 4) {
@@ -4248,13 +4256,13 @@ void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> 
   if (!values.Size()) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, values.Values().data(), values.Values().size_bytes());
+    auto input = MetricInput(rt, values.Values().data(), values.Values().size_bytes());
     auto offsets = metadata->OffsetsBuffer();
     auto output = Allocate(rt, relative_indices.size_bytes());
     auto command = [rt.queue commandBuffer];
     CHECK(command);
-    auto order = EncodeGroupSort(rt, command, input, offsets, values.Size(), values.Stride(0),
-                                 groups.size() - 1, max_group_size);
+    auto order = EncodeGroupSort(rt, command, input.buffer, offsets, values.Size(), values.Stride(0),
+                                 groups.size() - 1, max_group_size, input.offset);
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.group_sort_export_pipeline];
@@ -4264,10 +4272,13 @@ void SortGroups(linalg::VectorView<float const> values, Span<bst_group_t const> 
     [e dispatchThreads:MTLSizeMake(values.Size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
+    auto destination = PublishMetric(rt, command, output, relative_indices.data(),
+                                     relative_indices.size_bytes());
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-    std::memcpy(relative_indices.data(), output.contents, relative_indices.size_bytes());
+    FinishMetricPublication(destination, output, relative_indices.data(),
+                            relative_indices.size_bytes());
     RecordGroupSort(order.radix, command.GPUEndTime - command.GPUStartTime);
   }
 }
@@ -4382,7 +4393,7 @@ std::uint32_t CheckRankingLabels(linalg::VectorView<float const> labels, Ranking
   if (!labels.Size()) return 0;
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto input = MetricInput(rt, labels.Values().data(), labels.Values().size_bytes());
     std::uint32_t zero = 0;
     auto flags = Upload(rt, &zero, sizeof(zero));
     struct {
@@ -4395,7 +4406,7 @@ std::uint32_t CheckRankingLabels(linalg::VectorView<float const> labels, Ranking
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.ranking_labels_pipeline];
-    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:input.buffer offset:input.offset atIndex:0];
     [e setBuffer:flags offset:0 atIndex:1];
     [e setBytes:&p length:sizeof(p) atIndex:2];
     [e dispatchThreadgroups:MTLSizeMake((labels.Size() + 255) / 256, 1, 1)
@@ -4424,7 +4435,7 @@ void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> gr
   if (!n_groups) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto input = MetricInput(rt, labels.Values().data(), labels.Values().size_bytes());
     auto offsets = metadata->OffsetsBuffer();
     auto discount = Allocate(rt, discounts.size_bytes());
     auto inverse = Allocate(rt, inverse_idcg.size_bytes());
@@ -4432,8 +4443,8 @@ void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> gr
     CHECK(command);
     GroupOrder order{Allocate(rt, 16), false};
     if (labels.Size()) {
-      order = EncodeGroupSort(rt, command, input, offsets, labels.Size(), labels.Stride(0),
-                              n_groups, max_group_size);
+      order = EncodeGroupSort(rt, command, input.buffer, offsets, labels.Size(), labels.Stride(0),
+                              n_groups, max_group_size, input.offset);
     }
     if (max_group_size) {
       auto e = [command computeCommandEncoder];
@@ -4460,7 +4471,7 @@ void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> gr
     CHECK(e);
     [e setComputePipelineState:rt.ndcg_ideal_pipeline];
     [e setBuffer:order.records offset:0 atIndex:0];
-    [e setBuffer:input offset:0 atIndex:1];
+    [e setBuffer:input.buffer offset:input.offset atIndex:1];
     [e setBuffer:offsets offset:0 atIndex:2];
     [e setBuffer:discount offset:0 atIndex:3];
     [e setBuffer:inverse offset:0 atIndex:4];
@@ -4468,12 +4479,19 @@ void InitNDCG(linalg::VectorView<float const> labels, Span<bst_group_t const> gr
     [e dispatchThreadgroups:MTLSizeMake((n_groups + 7) / 8, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
+    // Overlapping outputs retain the legacy discount-then-inverse publication
+    // order, even if only one of the two destinations can be shared with Metal.
+    bool overlap = MemoryRangesOverlap(discounts.data(), discounts.size_bytes(),
+                                       inverse_idcg.data(), inverse_idcg.size_bytes());
+    auto discount_out = overlap ? BorrowedMemory{} :
+        PublishMetric(rt, command, discount, discounts.data(), discounts.size_bytes());
+    auto inverse_out = overlap ? BorrowedMemory{} :
+        PublishMetric(rt, command, inverse, inverse_idcg.data(), inverse_idcg.size_bytes());
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-    if (!discounts.empty())
-      std::memcpy(discounts.data(), discount.contents, discounts.size_bytes());
-    std::memcpy(inverse_idcg.data(), inverse.contents, inverse_idcg.size_bytes());
+    FinishMetricPublication(discount_out, discount, discounts.data(), discounts.size_bytes());
+    FinishMetricPublication(inverse_out, inverse, inverse_idcg.data(), inverse_idcg.size_bytes());
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     if (labels.Size()) RecordGroupSort(order.radix, elapsed);
     ranking_cache_dispatches.fetch_add(1, std::memory_order_relaxed);
@@ -4895,20 +4913,20 @@ RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const>
   if (!n_groups) return {0, 0};
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, predictions.Values().data(), predictions.Values().size_bytes());
-    auto response = Upload(rt, labels.Values().data(), labels.Values().size_bytes());
+    auto input = MetricInput(rt, predictions.Values().data(), predictions.Values().size_bytes());
+    auto response = MetricInput(rt, labels.Values().data(), labels.Values().size_bytes());
     auto offsets = metadata->OffsetsBuffer();
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
-    auto discount = Upload(rt, discounts.data(), discounts.size_bytes());
-    auto inverse = Upload(rt, inverse_idcg.data(), inverse_idcg.size_bytes());
+    auto weight = MetricInput(rt, weights.data(), weights.size_bytes());
+    auto discount = MetricInput(rt, discounts.data(), discounts.size_bytes(), alignof(double));
+    auto inverse = MetricInput(rt, inverse_idcg.data(), inverse_idcg.size_bytes(), alignof(double));
     auto partial = Allocate(rt, n_groups * 2 * sizeof(double));
     auto output = Allocate(rt, 2 * sizeof(double));
     auto command = [rt.queue commandBuffer];
     CHECK(command);
     GroupOrder order{Allocate(rt, 16), false};
     if (predictions.Size()) {
-      order = EncodeGroupSort(rt, command, input, offsets, predictions.Size(),
-                              predictions.Stride(0), n_groups, max_group_size);
+      order = EncodeGroupSort(rt, command, input.buffer, offsets, predictions.Size(),
+                              predictions.Stride(0), n_groups, max_group_size, input.offset);
     }
     struct {
       std::uint64_t rows, label_stride;
@@ -4930,7 +4948,7 @@ RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const>
       CHECK(e);
       [e setComputePipelineState:rt.ranking_map_labels_pipeline];
       [e setBuffer:order.records offset:0 atIndex:0];
-      [e setBuffer:response offset:0 atIndex:1];
+      [e setBuffer:response.buffer offset:response.offset atIndex:1];
       [e setBuffer:offsets offset:0 atIndex:2];
       [e setBuffer:ids offset:0 atIndex:3];
       [e setBuffer:values offset:0 atIndex:4];
@@ -4943,11 +4961,11 @@ RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const>
     CHECK(e);
     [e setComputePipelineState:rt.ranking_score_pipeline];
     [e setBuffer:order.records offset:0 atIndex:0];
-    [e setBuffer:response offset:0 atIndex:1];
+    [e setBuffer:response.buffer offset:response.offset atIndex:1];
     [e setBuffer:offsets offset:0 atIndex:2];
-    [e setBuffer:weight offset:0 atIndex:3];
-    [e setBuffer:discount offset:0 atIndex:4];
-    [e setBuffer:inverse offset:0 atIndex:5];
+    [e setBuffer:weight.buffer offset:weight.offset atIndex:3];
+    [e setBuffer:discount.buffer offset:discount.offset atIndex:4];
+    [e setBuffer:inverse.buffer offset:inverse.offset atIndex:5];
     [e setBuffer:partial offset:0 atIndex:6];
     [e setBytes:&p length:sizeof(p) atIndex:7];
     [e setBuffer:prefix offset:0 atIndex:8];
@@ -4976,6 +4994,7 @@ RankingSums RankingScore(RankingMetricKind kind, linalg::VectorView<float const>
       ranking_metric_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
       metric_gpu_time_ns.fetch_add(ns, std::memory_order_relaxed);
     }
+    metric_final_readback_bytes.fetch_add(sizeof(RankingSums), std::memory_order_relaxed);
     auto result = static_cast<double const*>(output.contents);
     return {result[0], result[1]};
   }
@@ -5150,7 +5169,7 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
     [e setBytes:&result_params length:sizeof(result_params) atIndex:4];
     [e dispatchThreads:MTLSizeMake(targets, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
-    auto destination = PublishAUC(rt, command, result, output, targets * 3 * sizeof(double));
+    auto destination = PublishMetric(rt, command, result, output, targets * 3 * sizeof(double));
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
@@ -5163,10 +5182,7 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
       copy(prefix, 2 * rows * targets, &trace->prefixes);
       copy(totals, rows ? 2 * targets : 0, &trace->totals);
     }
-    if (!destination.buffer) {
-      std::memcpy(output, result.contents, targets * 3 * sizeof(double));
-      metric_host_output_bytes.fetch_add(targets * 3 * sizeof(double), std::memory_order_relaxed);
-    }
+    FinishMetricPublication(destination, result, output, targets * 3 * sizeof(double));
     if (rows) {
       (precision_recall ? pr_auc_dispatches : roc_auc_dispatches)
           .fetch_add(1, std::memory_order_relaxed);

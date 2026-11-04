@@ -1,0 +1,59 @@
+Ranking metric/cache storage validation — Apple M3, 2026-11-04
+===========================================================
+Authority: common/ranking_utils.cu and metric/rank_metric.cu.
+Scope: Precision/NDCG/MAP input storage, label validation, NDCG cache initialization
+and accessors, sorted-index allocation/publication, guarded views and fallbacks.
+No arithmetic kernels, formulas, reduction trees or existing tolerances changed.
+
+New native tests/metal_ranking_metric_state_api.cc with MTL_DEBUG_LAYER=1:
+  166 cases / 47135 checks / 3 rejected calls.
+  Actual Metric::Evaluate with real DMatrix caches; first/repeated evaluations,
+  NDCG parameter reset, CPU/MPS handoffs, GPU writes, absent/positive/zero weights,
+  empty/single/multiple rows, source-defined empty metric edges, GPU invalid labels.
+  Direct NDCG cache accessors and cached sort indices vs CPU references; small,
+  medium and radix sorts, rows up to 8197. No repeat allocations, no host mirrors
+  or vector uploads for resident calls, exact scalar/publication byte counts.
+  All score-input positions tested with read-only fallback and nonzero offsets;
+  cache/sort input-output aliases, overlapping NDCG outputs (including mixed
+  sharing eligibility), unaligned outputs and unchanged guards.
+  Existing metric input/output/copy counters extended to ranking/cache scope;
+  metric_final_readback_bytes counts 16 bytes per score call with queries.
+  No new Statistics fields/ABI growth. Final vector live/capacity gauges: zero.
+  Focused v1: test harness template-deduction compile error; Args type fixed.
+  Focused v2: test detected first-sort CPU allocation/upload; allocation now MPS.
+  Focused v3: passed after rebuild. No numerical change to satisfy the test.
+  Logs: results/ranking-metric-state-focused-v3.log,
+    build-ranking-metric-state-v1.log, build-ranking-metric-state-v2.log.
+
+Focused Python: 277 passed / 27 warnings / 7.28s.
+  tests/test_metal_ranking.py, test_metal_ranking_auc.py, test_metal_auc.py.
+  Existing LambdaRank training and cache lifetime cases retained; public ranking
+  binding/final-result counter assertions added. No new Python test count.
+  Log: results/ranking-metric-state-python-v1.log.
+
+Full regression: 2026-11-04T23:27:55Z -> 23:35:45Z, 7m50s, FULL_EXIT=0.
+  Metal build 6 steps passed. All 90 native groups rebuilt/passed; source
+  coordinate-descent reference updater passed. Python: 3325 passed, 1 expected
+  skip, 622 warnings, 190.60s. Skip: unavailable-device test on an accessible GPU.
+  CPU-only build 5 steps passed; API/device/native-input/output/quantile/cache
+  checks passed. No production/test changes after final build/run.
+  Logs: results/ranking-metric-state-full-driver-v1.log,
+    build-ranking-metric-state-final-v1.log, test-ranking-metric-state-full-v1.log,
+    configure-cpu-ranking-metric-state-v1.log, build-cpu-ranking-metric-state-v1.log,
+    check-cpu-ranking-metric-state-v1.log.
+No performance benchmark, NVIDIA comparison or other Apple hardware execution.
+Full CUDA parity remains incomplete. Ranking gradient/bias ownership is next.
+
+Existing independent checks passed in the full run:
+  120 grouped sorts / 7518270 rows; local/medium/radix paths.
+  15 exact CUDA ranking edge/order cases.
+  896 Precision/NDCG/MAP cases / 9511680 rows;
+    max scaled CUDA-source difference 1.13464793e-13.
+  380 ranking label cases / 1858512 values; strided/boundary/padded lanes.
+  336 NDCG cache cases / 3566880 rows / 3551424 discounts;
+    max discount relative error 3.33066907e-16, gain scaled error 2.72889055e-14.
+  1442 ranking gradient cases / 2444200 rows / 43810880 pairs;
+    all 2444200 gradient pairs exact, batched storage verified.
+  2592 unbiased calls / 852768 rows / 118368 bias values /
+    1705535 exact gradient fields; max scaled gradient error 1.69500709e-07,
+    bias error zero. Four 524288-row batched topk/mean iterations exact.
