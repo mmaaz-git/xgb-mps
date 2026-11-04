@@ -174,6 +174,7 @@ def main(args):
     report = dict(status="in_progress", preset=args.preset, published=preset,
                   dataset=provenance, platform=platform.platform(), cpu_threads=args.threads,
                   xgboost_version=xgb.__version__, numpy_version=np.__version__,
+                  build_info=xgb.build_info(),
                   commit=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                   working_tree=subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True).strip(),
                   rounds=args.rounds or preset["rounds"], repeats=args.repeats,
@@ -184,6 +185,11 @@ def main(args):
                               "Fresh matrices for each run, alternating CPU/MPS order, runtime warmup",
                               "Progress every N rounds instead of printing evaluation every round",
                               "FP32 input cache; explicitly fixed historical base_score=0.5 and histogram defaults"])
+    if sys.platform == "darwin":
+        report["hardware"] = {
+            key: subprocess.check_output(["sysctl", "-n", key], text=True).strip()
+            for key in ("machdep.cpu.brand_string", "hw.memsize", "hw.ncpu")
+        }
     write_json(args.output, report)
     artifacts = args.output.with_suffix("")
     artifacts.mkdir(exist_ok=False)
@@ -218,6 +224,14 @@ def main(args):
                            margin_mismatch_count=int(np.count_nonzero(mismatch)),
                            margin_values=int(cpu.size), class_disagreement_count=int(np.count_nonzero(cclass != mclass)),
                            test_rows=len(cclass))
+            crun, mrun = [report["runs"][d][-1] for d in ("cpu", "mps")]
+            compare["test_accuracy_abs_difference"] = abs(crun["test_accuracy"] - mrun["test_accuracy"])
+            compare["test_logloss_abs_difference"] = abs(crun["test_logloss"] - mrun["test_logloss"])
+            compare["metric_history_max_abs_difference"] = {
+                f"{dataset}/{metric}": float(np.max(np.abs(np.asarray(values) -
+                                                        np.asarray(mrun["metric_history"][dataset][metric]))))
+                for dataset, metrics in crun["metric_history"].items() for metric, values in metrics.items()
+            }
             report["comparisons"].append(compare)
             print(f"Equivalence repeat {repeat+1}: {compare}", flush=True)
             write_json(args.output, report)
