@@ -15,7 +15,7 @@ clang++ -O2 -std=c++17 -fobjc-arc tests/metal_memory.mm \
 MTL_DEBUG_LAYER=1 results/metal_memory_test
 echo "Checking GPU integer histograms against the independent CPU reference"
 results/metal_kernel_test xgboost/src/common/metal_histogram.metal
-echo "Checking gradient bounds, finite validation and quantization scales"
+echo "Checking CUDA sign-sum bounds, truncation and positive-Hessian preservation"
 clang++ -std=c++17 -fobjc-arc tests/metal_bounds.mm \
   -framework Metal -framework Foundation -o results/metal_bounds_test
 results/metal_bounds_test xgboost/src/common/metal_histogram.metal

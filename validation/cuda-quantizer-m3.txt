@@ -1,0 +1,80 @@
+Apple M3, 2026-11-03. CUDA gradient quantizer formula alignment.
+No new performance benchmark. No NVIDIA execution comparison.
+
+Production histogram quantization now follows CUDA's quantiser.cu/quantiser.cuh:
+- separate binary64 positive/negative magnitude sums for gradients and Hessians;
+- max(sign sums), CreateRoundingFactor<double>(bound, n), power-of-two factor;
+- integer truncation toward zero, preserving strictly positive Hessians as >= 1.
+The prior maximum-times-row-count bound and ties-away rounding are removed.
+Software binary64 computes bounds/scales on GPU; exact FP32 bit decoding handles
+power-of-two conversion, including subnormals. Explicit nonfinite rejection and
+the existing 32-bit row limit remain. Quantized gradients/scales stay on GPU.
+
+Independent scalar CUDA-formula oracles check exact chosen scales/integer outputs.
+Exact-representable sign sums compare exactly. Wide-range sign sums use an FP64
+reduction error bound; CUDA and Metal reduction topologies are not claimed bitwise
+identical. Boundaries include zero, powers-of-two, nextafter neighbors, subnormal
+FP32 magnitudes, extreme outliers, signed cancellation, nonfinites and row limits.
+19,305,306 values include 1,507,902 positive Hessians preserved at integer one.
+No existing model-prediction tolerance was changed. Four additional training
+checks in test_metal_cuda_quantizer.py validate the CUDA minimum-one Hessian
+formula through actual hist/approx models, checking child cover and predictions.
+The CPU predictions deliberately differ and that difference is asserted.
+These tests ran after the 1,206-test full suite; production code is unchanged
+apart from formatting. The evidence is 1,206 regression cases plus 4 new cases,
+not a claimed second full-suite run.
+
+Incomplete integration remains explicit: Metal still samples floats before
+quantization; CUDA samples quantized gradients. Root/leaf statistics and histogram
+cache page accumulation/subtraction still need shared integer state. This commit
+does not establish full training or CUDA parity.
+
+Native quantizer output (final all-native run uses the formatted source):
+PASS quantization exponent -100: 199268 values (including subnormals)
+PASS quantization exponent -40: 177628 values (including subnormals)
+PASS quantization exponent 0: 146370 values (including subnormals)
+PASS quantization exponent 30: 122742 values (including subnormals)
+PASS quantization exponent 100: 67800 values (including subnormals)
+PASS quantization exponent 200: 6 values (including subnormals)
+576 actual-GPU histogram cases passed on Apple M3
+Checked CUDA quantizer bounds for 0 rows
+Checked CUDA quantizer bounds for 1 rows
+Checked CUDA quantizer bounds for 31 rows
+Checked CUDA quantizer bounds for 32 rows
+Checked CUDA quantizer bounds for 255 rows
+Checked CUDA quantizer bounds for 256 rows
+Checked CUDA quantizer bounds for 257 rows
+Checked CUDA quantizer bounds for 2048 rows
+Checked CUDA quantizer bounds for 4097 rows
+Checked CUDA quantizer bounds for 65537 rows
+Checked CUDA quantizer bounds for 1000003 rows
+PASS 99 CUDA-formula bound reductions / 19305306 quantized values / 1507902 positive minima and 1210 scale boundary cases on Apple M3
+
+Full Python result (before formatting-only native rerun):
+1206 passed, 1 skipped, 308 warnings in 49.50s
+
+CPU-only build:
+[1/1] Creating library symlink lib/libxgboost.3.dylib lib/libxgboost.dylib
+
+CPU-only check:
+CPU-only build verified: Metal reports unavailable and device=mps raises a clear error.
+
+Focused/native + production build + full Python driver:
+Wed Nov  4 06:19:10 UTC 2026
+Stage 1/3: native CUDA-formula quantizer checks
+Stage 2/3: build production library
+Stage 3/3: full Python integration suite
+CUDA quantizer focused validation finished: 0
+Wed Nov  4 06:20:09 UTC 2026
+
+Final all-native + CPU driver (Python not unnecessarily repeated):
+Wed Nov  4 06:21:10 UTC 2026
+Stage 1/3: rebuild formatted source
+Stage 2/3: compile and run all native suites
+Stage 3/3: CPU-only build/API check
+CUDA quantizer native/CPU validation finished: 0
+Wed Nov  4 06:23:12 UTC 2026
+
+New training checks:
+....                                                                     [100%]
+4 passed in 0.27s

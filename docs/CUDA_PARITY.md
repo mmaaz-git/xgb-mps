@@ -28,9 +28,12 @@ Several earlier kernels deliberately followed CPU behavior. Their tests remain
 useful regression evidence, but the following differences are unfinished porting
 work, not accepted substitutes for CUDA behavior:
 
-- Quantization and tree reductions: Metal uses a different bounded fixed-point
-  scheme and binary64 root/leaf sums; CUDA's `GradientQuantiserGroup` and integer
-  tree statistics need alignment, including quantization before row sampling.
+- Quantized training state and tree reductions: histogram quantization now uses
+  CUDA's sign-separated sum bounds, scale formula, truncation and positive-Hessian
+  minimum. Metal still quantizes after float row sampling and uses binary64
+  root/leaf sums and histogram-cache subtraction. CUDA quantizes first, samples
+  integer gradients and retains integer tree statistics; this integration remains
+  unfinished.
 - Row/column/ranking sampling: CPU-compatible random streams and row thresholds
   need replacement or verification against the CUDA engines, seed consumption,
   quantized norms and scans. Equal seeds do not currently imply equal masks.
@@ -53,9 +56,9 @@ must be reported rather than hidden by widening test tolerances.
 | CUDA subsystem | Principal upstream source | Metal status |
 | --- | --- | --- |
 | Gradient histogram accumulation | `tree/gpu_hist/histogram.cu`, `histogram.cuh` | Implemented: dense/sparse, quantized 64-bit sums, shared-memory dense path |
-| Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Sketch/sampler/quantizer algorithms still differ from CUDA and preprocessing remains hybrid |
-| Gradient quantization | `tree/gpu_hist/quantiser.cuh` | Implemented with a different bounded fixed-point scheme; GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales remain in GPU buffers; eligible raw gradients are read through guarded shared host views |
-| Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata |
+| Approximate tree method | `tree/updater_gpu_hist.cu` (`grow_gpu_approx`) | `tree_method=approx` now runs on MPS; original Hessians are extracted and cuts built before sampling, once per updater call; row/column sampling reset per tree. GPU copy/root/partition operations are integrated. Sketch/sampler algorithms and quantized-state ordering still differ from CUDA; preprocessing remains hybrid |
+| Gradient quantization | `tree/gpu_hist/quantiser.cuh` | GPU positive/negative binary64 bounds, CUDA CreateRoundingFactor scaling, truncation toward zero and minimum-one positive Hessians; scales remain in GPU buffers and guarded shared host views avoid eligible copies. Quantization still occurs after float sampling; root/leaf/cache integer-state integration remains unfinished |
+| Histogram subtraction, cache management | `tree/gpu_hist/histogram.cuh` | Metal-owned shared cache, GPU integer-to-binary64 conversion, external-page accumulation, subtraction and GPU feature gathering; host cache policy/metadata. Cache accumulation/subtraction currently uses binary64, while CUDA retains integer histogram statistics |
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Metal scalar/vector candidate scoring, category ordering and missing directions; software binary64, exact bounded scans, conservative numerical-candidate screening, monotonic bounds and pooled vector weights; host interaction masks and tree updates |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | Metal uniform and gradient-based row sampling/replay, including CPU-compatible draws, norms, sorted thresholds and rescaling; scalar/vector root-gradient sums and dense root histogram sums on Metal; column initialization, uniform/weighted selection and final feature ordering now use Metal |
@@ -615,9 +618,9 @@ each tree. Constant-Hessian tasks cache cuts; other tasks regenerate at the next
 updater invocation. CPU approx intentionally retains its different shared-forest
 sampling and sampled-Hessian sketching order.
 
-This is partial CUDA algorithm alignment. The underlying sketch, row/column RNG,
-quantizer and tree-statistic precision are the existing Metal implementations
-listed above. In particular, Metal still samples float gradients before histogram
+This is partial CUDA algorithm alignment. The underlying sketch, row/column RNG and tree-statistic storage still require
+CUDA alignment. Histogram quantization now follows the CUDA formulas, but its
+placement in training does not yet match CUDA. In particular, Metal still samples float gradients before histogram
 quantization; CUDA samples already quantized gradients. Source value sorting,
 row queue construction and category collection remain host work. The updater is
 usable but not a complete CUDA-equivalent approximate backend. Vector-leaf approx
@@ -657,3 +660,51 @@ checks guards, output padding, staging counters and rejected invalid views.
 `gradient_state_shared_input_bytes`, `gradient_state_shared_output_bytes` and
 `gradient_state_staging_bytes` report view extents, including padding. GPU time
 excludes staging and host allocation. See [validation](../validation/approx-gradient-state-m3.txt).
+
+
+## CUDA gradient quantizer formulas
+
+Histogram quantization now follows `tree/gpu_hist/quantiser.cu`,
+`tree/gpu_hist/quantiser.cuh::GradientQuantiser::ToFixedPointImpl` and
+`common/deterministic.cuh::CreateRoundingFactor<double>`:
+
+1. Accumulate positive and negative gradient/Hessian magnitudes separately in
+   binary64, and take the larger signed magnitude sum for each channel.
+2. Compute `delta = bound / (1 - 2 * n * epsilon<double>)`. Use the exponent
+   returned by `frexp(delta)` to form the power-of-two rounding factor, divide by
+   `2^62` for the dequantization factor, and invert for quantization. This follows
+   the actual CUDA code even at zero and exact powers of two; a mathematical
+   ceiling of a logarithm is not equivalent at those boundaries.
+3. Truncate scaled gradients/Hessians toward zero. A strictly positive Hessian
+   that truncates to zero becomes integer one, preserving positive curvature.
+
+The previous Metal maximum-times-row-count bound and ties-away rounding are
+removed. Metal reduces bounds using software binary64, evaluates the scale on GPU,
+and performs exact power-of-two truncation through integer decoding of FP32 bits.
+The resulting quantized gradients and scales remain in GPU buffers. Eligible raw
+host gradients use guarded shared views. The existing finite-input rejection and
+32-bit row limit remain explicit; CUDA float-to-integer conversion on NaNs or
+infinities does not supply a meaningful finite reference contract.
+
+Native validation compares **99 bound reductions and 19,305,306 quantized values**
+against independent scalar translations of CUDA's formulas, including **1,507,902
+minimum-one Hessians**, and **1,210 scale boundary cases**. Exact representable
+bound sums match bit for bit; wide-exponent sums are checked against an FP64
+reduction error bound, and the chosen scales and integer outputs compare exactly.
+Tests cover empty/zero inputs, sign-separated cancellation, subnormals, outliers,
+nonfinite rejection, maximum row counts, output guards and million-row arrays.
+The separate histogram suite checks **713,814 conversions across six exponents**
+with the new truncation/curvature rule and all 576 integer histogram cases.
+Four additional end-to-end tests in `tests/test_metal_cuda_quantizer.py` check
+both `hist` and `approx`, verifying child Hessian statistics and predictions
+against the CUDA minimum-one formula with tiny/subnormal inputs. They explicitly
+verify that CPU predictions differ; forcing CPU equality would reject the
+intended CUDA behavior in these cases.
+
+This validates the quantizer formulas on Metal, not actual NVIDIA execution or
+the whole CUDA training pipeline. Backend reduction topology can change FP64
+bound sums near rounding boundaries. The remaining work is quantization before
+sampling, sampling quantized gradients, shared per-tree quantized state for root
+and leaf sums, and retaining integer histogram statistics across external pages
+and subtraction. Full Python regression validation passes without tolerance
+changes. See [validation](../validation/cuda-quantizer-m3.txt).

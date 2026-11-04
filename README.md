@@ -80,7 +80,7 @@ vendored upstream version deprecates `gblinear`, but this port supports it.
 
 Approximate training is also available with `tree_method="approx"`. It uses
 unsampled Hessians for cuts and resets sampling per tree, following CUDA's updater
-order. Sketch/sampling/quantization algorithms still require CUDA alignment.
+order. Sketch/sampling algorithms and quantized-state ordering still require CUDA alignment.
 
 Explicit tree updater selection, `exact` and distributed training are rejected
 for `mps`. Inaccessible Metal devices produce an
@@ -91,7 +91,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 
 | Operation | Implemented coverage |
 | --- | --- |
-| Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; underlying sketch/quantizer/sampler still need CUDA alignment |
+| Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; underlying sketch/sampler and quantized-state ordering still need CUDA alignment |
 | Gradient state | GPU strided target/layout copies and bit-preserving Hessian extraction; aliases use staged snapshots |
 | Histograms | Dense/sparse compressed indices, external-memory pages, scaled integer sums, shared-memory dense kernel, GPU binary64 conversion/subtraction and a resident cache |
 | Split evaluation | Numeric and categorical splits, missing directions, scalar/vector leaves, regularization, monotonic bounds; CPU keeps interaction masks |
@@ -101,7 +101,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Quantized data cache | Page-owned GPU bins reused across trees; dense indices transposed on the GPU |
 | Uniform sampling | GPU LCG skip-ahead and Bernoulli masking, both matrix layouts, replay for reduced-gradient leaf fitting; host chooses the per-tree seed |
 | Gradient-based sampling | GPU norms, stable sorting, CPU-ordered FP32 prefixes, threshold selection, random draws and gradient rescaling; includes strided multi-target replay and zero budgets; host chooses the per-tree seed |
-| Gradient quantization | GPU maximum/finite reduction, exact integer scale selection and bit conversion; scales stay on GPU |
+| Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU. Sampling order and integer tree-state integration still need alignment |
 | Root statistics / stump fitting | GPU scalar/vector gradient sums, dense root histogram sums and unregularized stump weights |
 | Reduced-gradient leaf fitting | GPU segmented binary64 sums over resident row IDs, accumulation across external pages, regularized/clipped final weights; existing host tree receives the completed leaf values |
 | Linear coordinate descent | GPU bias/feature gradient sums and residual updates; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
@@ -193,7 +193,8 @@ bash scripts/test.sh
 
 On Apple M3, 2026-11-03:
 
-- Python: **1,206 passed, 1 skipped**. The skip requires a machine without an
+- Python: **1,206 full-suite regression tests plus 4 new quantizer integration
+  tests passed; 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
   fallback cannot satisfy them.
 - Gradient layout copies/Hessian extraction: **276 native cases**, with
@@ -216,9 +217,10 @@ On Apple M3, 2026-11-03:
 - Native bin assignment: **168 exact cases / 216,600 entries / 38,616,312 hit
   counts**, including all index widths, category truncation, subnormal/signed-zero
   boundaries, invalid values and guard regions.
-- Native gradient bounds: **63 reductions / 1,015,196 quantized values** and
-  **1,296 scale boundary cases**, including NaNs/infinities, subnormals and
-  row-count limits. Scales are checked with independent CPU 128-bit arithmetic.
+- Native CUDA-formula quantization: **99 bound reductions / 19,305,306 quantized
+  values**, including **1,507,902 minimum-one positive Hessians**, and **1,210
+  scale boundary cases**. Independent scalar CUDA-formula references cover zero,
+  subnormals, outliers, sign-separated sums, nonfinite rejection and row limits.
 - Native root/stump reductions: **405 cases / 11,964,810 gradient pairs**, with
   both matrix layouts, padded strides, cancellation and subnormal inputs; exact
   representable sums, compensated CPU references, and bitwise stump weights.
@@ -235,8 +237,9 @@ On Apple M3, 2026-11-03:
   values**, including empty inputs, signed values, exact subnormal sums, wide
   exponent ranges, infinities and NaNs. Wide-range sums use documented rounding
   bounds and an independent compensated reference.
-- Native gradient quantization: **713,814 values across six scales**, including
-  subnormal floats, compared exactly against double-precision CPU rounding.
+- Native gradient conversion: **713,814 values across six scales**, including
+  subnormal floats, compared exactly against CUDA's truncation and positive-
+  curvature preservation rules using independent double-precision references.
 - Native partition/transpose kernels: **320 cases** against CPU stable partitions, including empty nodes, unselected rows, categorical/missing values, block boundaries, page offsets and all index widths.
 - Native histogram storage: **168 cases**, with 55,272 converted/accumulated pairs,
   18,424 subtracted pairs and 82,908 gathered pairs checked against CPU references,
@@ -1785,3 +1788,22 @@ The native checks include over 25 million
 copied pairs and extracted Hessians, raw NaN bits, layouts, padding, aliases and
 read-only inputs. Coverage and correctness remain the priority; no new performance
 benchmark accompanies this change.
+
+
+### CUDA gradient quantization alignment
+
+Histogram quantization now uses CUDA's separate positive/negative magnitude sums,
+`CreateRoundingFactor<double>` scale formula, truncation toward zero, and minimum
+integer one for tiny positive Hessians. This replaces the earlier maximum-bound,
+round-to-nearest scheme. Bounds and scales execute on Metal; no CPU gradient
+reduction is introduced.
+
+[Validation](validation/cuda-quantizer-m3.txt) checks over 19.3 million quantized
+values against scalar CUDA formulas, 1,210 scale boundaries, and the separate
+713,814-conversion/576-histogram suite. All 1,206 Python regression tests pass
+(one skipped), plus four new training tests that intentionally differ from CPU:
+`hist` and `approx` preserve tiny positive Hessians according to CUDA's rule.
+All native suites and the CPU-only build/check pass, without tolerance changes. This is formula alignment, not an
+NVIDIA execution comparison. Quantization still needs to move before sampling;
+integer gradient state must also feed sampling, root/leaf statistics and the
+histogram cache. No new performance benchmark was run.

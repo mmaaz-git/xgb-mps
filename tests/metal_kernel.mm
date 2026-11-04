@@ -224,8 +224,10 @@ int main(int argc, char **argv) {
           // Interleaved gradient/Hessian with different signs.
           input.push_back(value);
           input.push_back(-value);
-          reference.push_back(std::llround(scaled));
-          reference.push_back(std::llround(-scaled));
+          reference.push_back(static_cast<int64_t>(scaled));
+          auto h = static_cast<int64_t>(-scaled);
+          if (-value > 0.f && h == 0) h = 1;
+          reference.push_back(h);
         };
         for (float value :
              {0.0f, -0.0f, 0.5f, -0.5f, 1.5f, -1.5f, std::numeric_limits<float>::denorm_min(),
@@ -261,7 +263,8 @@ int main(int argc, char **argv) {
         Require(command.status == MTLCommandBufferStatusCompleted, "Quantization command failed");
         auto actual = static_cast<int64_t const *>(out.contents);
         for (size_t i = 0; i < reference.size(); ++i)
-          Require(actual[i] == reference[i], "GPU quantization differs from CPU double llround");
+          Require(actual[i] == reference[i],
+                  "GPU quantization differs from CUDA truncation/positive-curvature rule");
         printf("PASS quantization exponent %d: %zu values (including subnormals)\n", exponent,
                reference.size());
       }

@@ -176,9 +176,9 @@ kernel void xgb_histogram_dense_shared(
   }
 }
 
-// Exact round-to-nearest, ties away from zero, for float * 2^exponent.
-// Integer bit decoding avoids Metal's lack of double precision and preserves
-// subnormal inputs. Host bounds guarantee the result fits within 61 bits.
+// CUDA GradientQuantiser::ToFixedPointImpl truncates float * 2^exponent.
+// Bit decoding is exact (the equivalent FP64 multiplication is a power-of-two
+// scaling), preserves FP32 subnormals, and avoids unsupported native FP64.
 inline long quantize_float(uint bits, int exponent) {
   uint encoded = (bits >> 23) & 255;
   ulong mantissa = bits & 0x7fffff;
@@ -190,7 +190,7 @@ inline long quantize_float(uint bits, int exponent) {
       magnitude = mantissa << shift;
     else if (shift > -64) {
       uint right = uint(-shift);
-      magnitude = (mantissa >> right) + ((mantissa >> (right - 1)) & 1);
+      magnitude = mantissa >> right;
     }
   }
   long value = long(magnitude);
@@ -200,45 +200,6 @@ struct GradientScale {
   int grad_exponent, hess_exponent;
   uint valid, padding;
 };
-// Absolute FP32 bit patterns sort in the same order as nonnegative magnitudes,
-// including subnormals. Any NaN or infinity makes the final maximum invalid.
-kernel void xgb_gradient_maximum(device const uint2* input [[buffer(0)]],
-                                 device atomic_uint* maximum [[buffer(1)]],
-                                 constant ulong& n [[buffer(2)]],
-                                 uint tid [[thread_position_in_grid]],
-                                 uint lane [[thread_index_in_simdgroup]],
-                                 uint simd [[simdgroup_index_in_threadgroup]]) {
-  uint2 value = ulong(tid) < n ? input[tid] & 0x7fffffffu : uint2(0);
-  value = uint2(simd_max(value.x), simd_max(value.y));
-  threadgroup uint2 maxima[8];
-  if (lane == 0) maxima[simd] = value;
-  threadgroup_barrier(mem_flags::mem_threadgroup);
-  if (simd == 0) {
-    value = lane < 8 ? maxima[lane] : uint2(0);
-    value = uint2(simd_max(value.x), simd_max(value.y));
-    if (lane == 0) {
-      atomic_fetch_max_explicit(maximum, value.x, memory_order_relaxed);
-      atomic_fetch_max_explicit(maximum + 1, value.y, memory_order_relaxed);
-    }
-  }
-}
-inline int xgb_gradient_exponent(uint magnitude, ulong n) {
-  if (!magnitude || !n) return 0;
-  uint encoded = magnitude >> 23;
-  ulong mantissa = (magnitude & 0x7fffffu) | (encoded ? 0x800000u : 0u);
-  // At most 24 + 32 bits: compute the bound exactly instead of rounding a
-  // floating product or logarithm close to a power of two.
-  ulong product = mantissa * n;
-  int ceiling = 63 - int(clz(product)) + int(bool(product & (product - 1)));
-  return 60 - ceiling - (encoded ? int(encoded) - 150 : -149);
-}
-kernel void xgb_gradient_scale(device const uint2& maximum [[buffer(0)]],
-                               device GradientScale& scale [[buffer(1)]],
-                               constant ulong& n [[buffer(2)]]) {
-  bool valid = all(maximum < uint2(0x7f800000u));
-  scale = {valid ? xgb_gradient_exponent(maximum.x, n) : 0,
-           valid ? xgb_gradient_exponent(maximum.y, n) : 0, uint(valid), 0};
-}
 kernel void xgb_quantize_gradients(device const uint2* input [[buffer(0)]],
                                    device long2* output [[buffer(1)]],
                                    constant ulong& n [[buffer(2)]],
@@ -246,9 +207,11 @@ kernel void xgb_quantize_gradients(device const uint2* input [[buffer(0)]],
                                    uint tid [[thread_position_in_grid]]) {
   if (ulong(tid) >= n) return;
   uint2 value = input[tid];
-  output[tid] = scale.valid ? long2(quantize_float(value.x, scale.grad_exponent),
-                                    quantize_float(value.y, scale.hess_exponent))
-                            : long2(0);
+  long2 quantized = scale.valid ? long2(quantize_float(value.x, scale.grad_exponent),
+                                       quantize_float(value.y, scale.hess_exponent)) : long2(0);
+  // CUDA preserves positive curvature that fixed-point truncation would erase.
+  if (scale.valid && value.y > 0u && value.y < 0x80000000u && quantized.y == 0) quantized.y = 1;
+  output[tid] = quantized;
 }
 
 struct ObjectiveParams {
@@ -1833,6 +1796,53 @@ kernel void xgb_gradient_sum_finish(device const ulong2* partial [[buffer(0)]],
   ulong2 total = xgb_reduce_double_pair(g, h, bounds, sums, lane, simd);
   if (simd == 0 && lane == 0) output[target] = total;
 }
+// CUDA quantiser.cu::Clip / MakeQuantiserForTarget: reduce positive and
+// negative magnitudes separately in binary64. The final four sums feed the
+// same CreateRoundingFactor formula. Non-finite inputs are rejected before use.
+kernel void xgb_gradient_bounds(device const uint2* input [[buffer(0)]],
+                                 device ulong2* partial [[buffer(1)]],
+                                 constant ulong& n [[buffer(2)]],
+                                 uint group [[threadgroup_position_in_grid]],
+                                 uint tid [[thread_index_in_threadgroup]],
+                                 uint lane [[thread_index_in_simdgroup]],
+                                 uint simd [[simdgroup_index_in_threadgroup]]) {
+  ulong row = ulong(group) * 256 + tid, blocks = (n + 255) / 256;
+  uint2 value = row < n ? input[row] : uint2(0), magnitude = value & 0x7fffffffu;
+  // Preserve the backend's explicit rejection of NaNs/infinities. CUDA's
+  // float-to-integer conversion has no useful finite contract for these inputs.
+  uint2 positive = select(magnitude, uint2(0), value >= uint2(0x80000000u));
+  uint2 negative = select(uint2(0), magnitude, value >= uint2(0x80000000u));
+  threadgroup int4 bounds[8];
+  threadgroup ulong2 sums[8];
+  ulong2 pos = xgb_reduce_double_pair(xgb_dfrom_float(as_type<float>(positive.x)),
+                                      xgb_dfrom_float(as_type<float>(positive.y)),
+                                      bounds, sums, lane, simd);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  ulong2 neg = xgb_reduce_double_pair(xgb_dfrom_float(as_type<float>(negative.x)),
+                                      xgb_dfrom_float(as_type<float>(negative.y)),
+                                      bounds, sums, lane, simd);
+  if (simd == 0 && lane == 0) {
+    partial[group] = pos;
+    partial[blocks + group] = neg;
+  }
+}
+inline int xgb_gradient_exponent(ulong positive, ulong negative, ulong n) {
+  // Match common::CreateRoundingFactor<double>, including frexp(0)'s exponent
+  // zero and frexp(power-of-two)'s NEXT exponent (not a mathematical ceil-log).
+  XGBDouble bound{max(positive, negative)};
+  XGBDouble correction{xgb_scaled_integer(n, -51)};  // 2*n*epsilon<double>
+  XGBDouble delta = xgb_ddiv(bound, xgb_dsub(xgb_dfrom_float(1.f), correction));
+  int exponent = delta.bits ? int((delta.bits >> 52) & 2047) - 1022 : 0;
+  return 62 - exponent;  // CUDA's to_fixed_point = 2^62 / rounding_factor.
+}
+kernel void xgb_gradient_scale(device const ulong4& sums [[buffer(0)]],
+                               device GradientScale& scale [[buffer(1)]],
+                               constant ulong& n [[buffer(2)]]) {
+  bool valid = all(sums < ulong4(kDoubleInf)) && n <= 0xfffffffful;
+  scale = {valid ? xgb_gradient_exponent(sums.x, sums.z, n) : 0,
+           valid ? xgb_gradient_exponent(sums.y, sums.w, n) : 0, uint(valid), 0};
+}
+
 kernel void xgb_stump_weight(device const ulong2* sums [[buffer(0)]],
                              device float* output [[buffer(1)]],
                              uint tid [[thread_position_in_grid]]) {

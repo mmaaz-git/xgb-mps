@@ -168,7 +168,7 @@ class Runtime {
       ranking_pr_score_pipeline, prefix_segmented_pair_pipeline, prefix_segmented_pair_add_pipeline;
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
-  id<MTLComputePipelineState> shared_pipeline, gradient_maximum_pipeline, gradient_scale_pipeline;
+  id<MTLComputePipelineState> shared_pipeline, gradient_bounds_pipeline, gradient_scale_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
   id<MTLComputePipelineState> row_iota_pipeline, partition_classify_pipeline,
@@ -253,7 +253,7 @@ class Runtime {
       column_output_pipeline = make_pipeline(@"xgb_column_output");
       column_sample_small_pipeline = make_pipeline(@"xgb_column_sample_small");
 
-      gradient_maximum_pipeline = make_pipeline(@"xgb_gradient_maximum");
+      gradient_bounds_pipeline = make_pipeline(@"xgb_gradient_bounds");
       gradient_scale_pipeline = make_pipeline(@"xgb_gradient_scale");
       gradient_sum_pipeline = make_pipeline(@"xgb_gradient_sum_reduce");
       gradient_sum_finish_pipeline = make_pipeline(@"xgb_gradient_sum_finish");
@@ -881,7 +881,7 @@ class MetalHistogram final : public Histogram {
   Runtime& rt_;
   id<MTLCommandQueue> queue_;
   id<MTLBuffer> gradients_, raw_gradients_, histogram_buffer_, row_buffer_, node_buffer_,
-      block_buffer_, gradient_maximum_, gradient_scale_;
+      block_buffer_, gradient_partial_, gradient_bounds_, gradient_scale_;
   bool gradients_ready_{false};
 
   std::size_t UploadGradients(Span<GradientPair const> gradients, id<MTLCommandBuffer> command) {
@@ -898,26 +898,37 @@ class MetalHistogram final : public Histogram {
     } else {
       raw_gradients_ = nil;
     }
-    EnsureBuffer(rt_, &gradient_maximum_, 2 * sizeof(std::uint32_t));
-    EnsureBuffer(rt_, &gradient_scale_, sizeof(GradientScale));
-    auto clear = [command blitCommandEncoder];
-    CHECK(clear);
-    [clear fillBuffer:gradient_maximum_ range:NSMakeRange(0, 2 * sizeof(std::uint32_t)) value:0];
-    [clear endEncoding];
     std::uint64_t count = gradients.size();
+    auto blocks = (count + 255) / 256;
+    EnsureBuffer(rt_, &gradient_partial_, 2 * blocks * sizeof(GradientPairPrecise));
+    EnsureBuffer(rt_, &gradient_bounds_, 2 * sizeof(GradientPairPrecise));
+    EnsureBuffer(rt_, &gradient_scale_, sizeof(GradientScale));
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
-    [encoder setComputePipelineState:rt_.gradient_maximum_pipeline];
+    [encoder setComputePipelineState:rt_.gradient_bounds_pipeline];
     [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
-    [encoder setBuffer:gradient_maximum_ offset:0 atIndex:1];
+    [encoder setBuffer:gradient_partial_ offset:0 atIndex:1];
     [encoder setBytes:&count length:sizeof(count) atIndex:2];
-    [encoder dispatchThreadgroups:MTLSizeMake((count + 255) / 256, 1, 1)
+    [encoder dispatchThreadgroups:MTLSizeMake(blocks, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [encoder endEncoding];
+    struct {
+      std::uint64_t rows, stride0, stride1;
+      std::uint32_t targets, blocks;
+    } reduction{count, 0, 0, 2, static_cast<std::uint32_t>(blocks)};
+    encoder = [command computeCommandEncoder];
+    CHECK(encoder);
+    [encoder setComputePipelineState:rt_.gradient_sum_finish_pipeline];
+    [encoder setBuffer:gradient_partial_ offset:0 atIndex:0];
+    [encoder setBuffer:gradient_bounds_ offset:0 atIndex:1];
+    [encoder setBytes:&reduction length:sizeof(reduction) atIndex:2];
+    [encoder dispatchThreadgroups:MTLSizeMake(2, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
     encoder = [command computeCommandEncoder];
     CHECK(encoder);
     [encoder setComputePipelineState:rt_.gradient_scale_pipeline];
-    [encoder setBuffer:gradient_maximum_ offset:0 atIndex:0];
+    [encoder setBuffer:gradient_bounds_ offset:0 atIndex:0];
     [encoder setBuffer:gradient_scale_ offset:0 atIndex:1];
     [encoder setBytes:&count length:sizeof(count) atIndex:2];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
