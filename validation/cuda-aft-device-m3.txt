@@ -1,0 +1,134 @@
+AFT gradients entirely on Metal, Apple M3
+=======================================
+Date: 2026-11-04
+Source authority:
+  objective/aft_obj.cu::GetGradientImpl
+  common/survival_util.h::AFTLoss, Clip, GetLimitGrad/HessAtInfPred
+  common/probability_distribution.h normal/logistic/extreme distributions
+No NVIDIA execution or new performance benchmark was run.
+
+Production change
+-----------------
+Every AFT gradient row now evaluates on GPU. Removed correction-count/index
+allocation, GPU atomic compaction, host index readback, and CorrectSurvival's
+CPU gradient/Hessian loop. Completed FP32 gradient pairs return to host.
+The legacy survival_cpu_corrections and survival_cpu_time_ns statistics remain
+for compatibility and now stay zero. Input staging/synchronization remain.
+
+The existing software binary64 PDF/CDF/derivative expressions and clipping are
+retained, followed by CUDA's float gradient/Hessian cast and float weight product.
+Two ordered-predicate defects were fixed in Evaluate:
+  - Identical NaN bound bits must not satisfy lower==upper.
+  - NaN lower must not satisfy lower<=0; !(lower>0) was incorrect.
+The analogous metric guards were already fixed in the preceding metric port.
+
+Numerical contract -- explicit change from the previous fallback
+---------------------------------------------------------------
+The former all-rows CPU-equivalence requirement was incompatible with preserving
+CUDA's arithmetic while using independent transcendental implementations in
+ill-conditioned tails. CUDA itself subtracts nearby CDF values. Few-ULP library
+differences can change ratios and their clipping substantially. No stabilized
+CDF-difference replacement or host-formula override is substituted here.
+
+The original 75-case / 307,275-gradient-pair corpus is retained. It now has zero
+CPU corrections (previously 93,660). It reports 322 gradient/Hessian fields beyond
+the former CPU tolerance, maximum weighted absolute difference 44.7845306.
+All these fields are in the previously designated sensitive region. This is a
+real numerical behavior difference, not a GPU/CPU equality claim.
+
+Uncensored and well-conditioned rows retain 1e-6 + 2e-5*abs(reference) CPU checks.
+The 1e-5 likelihood threshold is unchanged from the former fallback selector but
+now ONLY classifies test conditioning. Every row, including the sensitive rows,
+must pass the upstream-expression and primitive checks described next. Public
+training/metric/transform/reload test tolerances are unchanged, and CPU correction
+count/time are required to remain zero in every case.
+
+Independent validation layers
+-----------------------------
+1. tests/build_aft_reference.py extracts actual vendored probability-distribution
+   and AFT class bodies to results/cuda_aft_reference_generated.h, recording
+   source SHA256 hashes. Only exp/erf/log callbacks and distribution/limit type
+   bindings change. Original expression order, guards, limits and clipping stay.
+   It asserts expected substitution counts so source changes cannot silently
+   invalidate the log/limit bindings.
+2. tests/metal_aft_source.mm adds diagnostics to the actual production shader,
+   exposing log inputs, z scores, PDF/CDF/derivatives, transcendental arguments
+   and outputs, and raw Evaluate results. No host correction is used here.
+3. Each GPU log/exp/erf at its ACTUAL argument is independently compared with CPU
+   libm at the existing four-binary64-ULP budget. 1,900,098 fields pass; observed
+   maxima log/exp/erf are 2/1/3 ULP. NaNs match by classification; infinities must
+   agree, and finite outputs use ordered ULP distances (signed zeros compare equal). This is sampled evidence, not a universal
+   error bound or actual NVIDIA libdevice validation.
+4. Replaying those checked values through extracted upstream expressions matches
+   3,166,830 binary64 source fields exactly (NaNs by classification). Source
+   exponential/erf arguments and z scores must also match the GPU arguments.
+   This separately checks distribution composition and full gradient/Hessian
+   arithmetic, including overflow fallback, censoring, clipping and NaN guards.
+5. Each public internal SurvivalGradients result must match the raw GPU result
+   after FP32 narrowing and independently rounded FP32 weight multiplication.
+   Zero discrepancies across 316,683 rows / 633,366 production FP32 fields.
+   GPU dispatch required; CPU correction count and time must remain unchanged.
+6. Production ObjFunction APIs, metrics and transforms retain separate integration
+   coverage; all 27 public Python survival cases pass unchanged numeric tolerances.
+
+Corpus: 96 cases / 316,683 rows, all original 307,275 stress rows plus 9,408
+Cartesian domain-edge rows. Three distributions; scales .1/.5/1/2/10 for stress;
+extra .1/1/0/-1/1e-40/Inf/NaN edge scales. Includes all censor modes, adjacent-FP32
+bounds, extreme margins, zero/tiny/ordinary weights, signed zero, invalid/reversed
+bounds, NaN and both infinities. Domain-invalid cases are direct source/API guard
+checks, not recommended input. 99,831 rows are classified sensitive in total.
+The CPU-tolerance discrepancy count stays 322 including these edge rows.
+
+The diagnostic executable's optional --inspect flag only relaxes production-vs-
+raw/correction checks to inspect the former fallback during development. It does
+not relax math or source-expression checks. scripts/test.sh invokes strict mode
+with no such flag; strict results require zero CPU work and exact raw output.
+
+Iteration record
+----------------
+  Inspect v1, 14:10:00-14:10:03 UTC: all ordinary normal-distribution source checks
+  passed, then NaN-lower/-Inf-upper exposed a genuine raw-GPU predicate error.
+  Fixed the two ordered comparisons described above.
+  Inspect v2 PASS, 14:10:19-14:10:21 UTC: all 96 cases/source/math fields passed;
+  322 CPU-tolerance differences, 4,256 old-production/raw differences (including
+  smaller-than-tolerance differences). The old library still used corrections.
+  Removed production correction path only after this source/math evidence.
+  Focused v1 built the production library successfully. Test compilation failed
+  because clang-format reordered the generated header ahead of its dependencies.
+  The generator now emits its own required base/survival includes.
+  Focused v2 PASS, 14:11:41-14:11:49 UTC: strict source/native API tests and
+  27 Python survival tests (1.56s); production/raw discrepancies zero.
+  Final full regression PASS, 14:12:43-14:17:04 UTC, FULL_EXIT=0:
+    Metal build and all rebuilt native suites/reference updater passed.
+    Strict AFT source: 96 cases / 316,683 rows / 3,166,830 source fields;
+    1,900,098 math fields at maximum log/exp/erf ULP 2/1/3.
+    Zero production/raw discrepancies; zero CPU correction count and time.
+    Original public-objective stress suite: 322 reported sensitive differences,
+    largest absolute weighted difference 44.7845306; zero unsatisfied checks.
+    Python: 1,787 passed / 1 skipped / 371 warnings in 93.79s.
+    CPU-only configure/build/API/device check passed (Metal unavailable,
+    device=mps raises the expected clear error).
+  No production/test edits followed the final run; documentation only.
+
+Local logs
+----------
+  results/aft-source-inspect-v1.log
+  results/aft-source-inspect-v2.log
+  results/build-aft-device-v1.log
+  results/aft-device-focused-v1.log
+  results/aft-device-focused-v2.log
+  results/aft-device-full-driver-v1.log
+  results/build-aft-device-final-v1.log
+  results/test-aft-device-full-v1.log
+  results/configure-cpu-aft-device-v1.log
+  results/build-cpu-aft-device-v1.log
+  results/check-cpu-aft-device-v1.log
+
+Remaining limits
+----------------
+Actual NVIDIA/libdevice/NVCC-contraction behavior and execution on other Apple
+GPU generations are unverified. Exact cross-device output equivalence is not
+claimed. Metadata/category processing, adapter/device-array sketch ingestion,
+remaining objective initialization/state operations, Apple device array interop,
+distributed GPU collectives and persistent/asynchronous ownership still prevent
+full project completion. No performance improvement is claimed by this change.

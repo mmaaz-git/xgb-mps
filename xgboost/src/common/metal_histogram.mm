@@ -36,7 +36,6 @@
 #include "metal_sketch.h"
 #include "metal_split.h"
 #include "metal_survival.h"
-#include "survival_util.h"
 #include "xgboost/logging.h"
 
 namespace xgboost::common::metal {
@@ -4981,7 +4980,7 @@ std::array<double, 2> QuantileMetricSums(bool expectile, Span<float const> predi
 namespace {
 struct SurvivalCommand {
   id<MTLCommandBuffer> command;
-  id<MTLBuffer> result, correction_count, correction_rows;
+  id<MTLBuffer> result;
   std::size_t blocks;
 };
 SurvivalCommand EncodeSurvival(bool metric, std::uint32_t distribution, float scale, bool accuracy,
@@ -5000,8 +4999,6 @@ SurvivalCommand EncodeSurvival(bool metric, std::uint32_t distribution, float sc
   auto blocks = (predictions.size() + 255) / 256;
   auto result = Allocate(
       rt, metric ? blocks * 2 * sizeof(double) : predictions.size() * sizeof(GradientPair));
-  auto count = metric ? nil : Allocate(rt, 4);
-  auto indices = metric ? nil : Allocate(rt, predictions.size() * sizeof(std::uint32_t));
   struct {
     std::uint64_t rows;
     std::uint32_t distribution, weighted, accuracy;
@@ -5010,12 +5007,6 @@ SurvivalCommand EncodeSurvival(bool metric, std::uint32_t distribution, float sc
   static_assert(sizeof(p) == 24);
   auto command = [rt.queue commandBuffer];
   CHECK(command);
-  if (!metric) {
-    auto clear = [command blitCommandEncoder];
-    CHECK(clear);
-    [clear fillBuffer:count range:NSMakeRange(0, 4) value:0];
-    [clear endEncoding];
-  }
   auto e = [command computeCommandEncoder];
   CHECK(e);
   [e setComputePipelineState:metric ? rt.aft_metric_pipeline : rt.aft_gradient_pipeline];
@@ -5025,26 +5016,9 @@ SurvivalCommand EncodeSurvival(bool metric, std::uint32_t distribution, float sc
   [e setBuffer:w offset:0 atIndex:3];
   [e setBuffer:result offset:0 atIndex:4];
   [e setBytes:&p length:sizeof(p) atIndex:5];
-  if (!metric) {
-    [e setBuffer:count offset:0 atIndex:6];
-    [e setBuffer:indices offset:0 atIndex:7];
-  }
   [e dispatchThreadgroups:MTLSizeMake(blocks, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
   [e endEncoding];
-  return {command, result, count, indices, blocks};
-}
-template <typename Distribution>
-void CorrectSurvival(Span<std::uint32_t const> rows, float scale, Span<float const> predictions,
-                     Span<float const> lower, Span<float const> upper, Span<float const> weights,
-                     Span<GradientPair> output) {
-  for (auto row : rows) {
-    float gradient = static_cast<float>(
-        AFTLoss<Distribution>::Gradient(lower[row], upper[row], predictions[row], scale));
-    float hessian = static_cast<float>(
-        AFTLoss<Distribution>::Hessian(lower[row], upper[row], predictions[row], scale));
-    float weight = weights.empty() ? 1.0f : weights[row];
-    output[row] = GradientPair{gradient * weight, hessian * weight};
-  }
+  return {command, result, blocks};
 }
 }  // namespace
 void SurvivalGradients(std::uint32_t distribution, float scale, Span<float const> predictions,
@@ -5056,29 +5030,6 @@ void SurvivalGradients(std::uint32_t distribution, float scale, Span<float const
     auto op = EncodeSurvival(false, distribution, scale, false, predictions, lower, upper, weights);
     CompleteOperation(op.command, &objective_dispatches);
     std::memcpy(output.data(), op.result.contents, output.size_bytes());
-    auto count = *static_cast<std::uint32_t const*>(op.correction_count.contents);
-    CHECK_LE(count, predictions.size());
-    if (count) {
-      auto start = Clock::now();
-      Span<std::uint32_t const> rows{static_cast<std::uint32_t const*>(op.correction_rows.contents),
-                                     count};
-      switch (distribution) {
-        case 0:
-          CorrectSurvival<NormalDistribution>(rows, scale, predictions, lower, upper, weights,
-                                              output);
-          break;
-        case 1:
-          CorrectSurvival<LogisticDistribution>(rows, scale, predictions, lower, upper, weights,
-                                                output);
-          break;
-        case 2:
-          CorrectSurvival<ExtremeDistribution>(rows, scale, predictions, lower, upper, weights,
-                                               output);
-          break;
-      }
-      survival_cpu_time_ns.fetch_add(Elapsed(start), std::memory_order_relaxed);
-      survival_cpu_corrections.fetch_add(count, std::memory_order_relaxed);
-    }
     survival_gradient_dispatches.fetch_add(1, std::memory_order_relaxed);
   }
 }

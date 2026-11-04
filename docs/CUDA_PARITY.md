@@ -82,15 +82,15 @@ must be reported rather than hidden by widening test tolerances.
 | Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; expectile's host margin loop matches upstream host execution |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation use Metal; other initialization work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
-| AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients and prediction/base-score transforms; GPU identifies small censored probabilities for original CPU gradient recomputation, exposed through correction counters/time. Full GPU coverage remains incomplete |
+| AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Other initialization/state work still requires porting/audit |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; CPU input views stage dense chunks and recode categories |
 | Prediction cache from leaf IDs | `predictor/predictor.cu` | Metal; supports strided target slices and negated sampling positions |
 | SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA; dense input staging/category recoding remain host |
-| RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | Metal loss calculation and scaled block reductions; final small reduction in host FP64 |
-| Multiclass error and logloss | `metric/multiclass_metric.cu` | Metal loss calculation and scaled block reductions; final small reduction in host FP64 |
-| Quantile and expectile metrics | `metric/elementwise_metric.cu` | Metal loss calculation, subnormal-preserving products and binary64 block reductions; small final host sum |
-| AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and binary64 block sums; small final host reduction |
+| RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; final ratio/collective transport host |
+| Multiclass error and logloss | `metric/multiclass_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; final ratio/collective transport host |
+| Quantile and expectile metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 terms, subnormal-preserving products and complete binary64 GPU reductions; final ratio/collective transport host |
+| AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and complete binary64 sums; final ratio/collective transport host |
 | ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; collective transport remains host |
 | PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; collective transport remains host |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
@@ -149,8 +149,9 @@ interaction constraints, vector leaves and external-memory pages. Column samplin
 now uses GPU initialization, random draws, selection and ordering. Remaining
 training-state updates and more efficient external-memory staging are still required.
 
-Sensitive AFT gradient corrections, remaining sketch
-construction, CUDA algorithm alignment and collectives are separate coverage requirements.
+Remaining sketch construction, CUDA algorithm alignment and collectives are
+separate coverage requirements. AFT source arithmetic is now fully on GPU, with
+its numerical validation limits recorded below.
 The observed prediction speedups do not establish any of those as complete.
 
 ## Legacy CPU-formula gradient sampler
@@ -165,17 +166,54 @@ Historical performance measurements of the ordered FP32 prefix and its checkpoin
 optimization describe that earlier implementation. They have not been rerun for
 the integer sampler and are not performance claims for the current path.
 
-## Survival precision limitation
+## AFT device execution and numerical behavior
 
-AFT expressions subtract nearby CDF values. A few binary64 ULP of difference
-between CPU libm and GPU transcendental approximations can change gradient/Hessian
-clipping drastically in very small probabilities. Censored rows with computed
-probability at or below `1e-5` are compacted by the GPU and recomputed with the
-original CPU formula. `survival_cpu_corrections` counts rows; `survival_cpu_time_ns`
-measures that host work. These counters are separate from completed GPU dispatches.
-No hidden whole-objective CPU fallback is used. Removing the correction path while
-preserving a defensible numerical contract remains required for full AFT coverage.
+AFT gradients now evaluate every row on GPU. The correction-index buffers, GPU
+compaction, host readback of those indices and `CorrectSurvival` CPU loop are
+removed. Only completed FP32 gradient pairs return to host. The legacy
+`survival_cpu_corrections` and `survival_cpu_time_ns` fields remain zero for API
+compatibility. Input staging and synchronization remain; this change does not
+provide persistent end-to-end device ownership.
 
+The code retains `common/survival_util.h`'s binary64 PDF/CDF expressions,
+censor-specific limits, clipping, FP32 narrowing and weighted FP32 products.
+NaN lower bounds now take the source's ordered `lower <= 0` branch correctly;
+identical NaN bound bits no longer compare equal. Metrics already received those
+guard fixes in the preceding metric port.
+
+**The old all-rows CPU-equivalence contract has changed explicitly.** Nearby CDF
+values can cancel, amplifying a few ULP of transcendental rounding into large
+changes in gradient/Hessian clipping. Preserving CUDA's formula does not imply
+matching Apple CPU libm in that region. The existing 307,275-pair stress corpus
+has 322 fields outside the old CPU tolerance, with a maximum weighted difference
+of 44.7845306. None is hidden by CPU recomputation or a larger tolerance.
+Uncensored and well-conditioned rows retain the original `1e-6 + 2e-5*abs(ref)`
+CPU check. The former `1e-5` likelihood threshold now classifies test conditioning
+only; it does not select a production computation path.
+
+Validation covers every row in that corpus, plus 9,408 domain-edge rows:
+
+- `tests/build_aft_reference.py` extracts the actual upstream probability and
+  AFT class bodies. Only log/exp/erf callbacks and distribution/limit type bindings
+  change; arithmetic, predicates and clipping expressions are retained.
+- Diagnostic kernels expose production log/z/PDF/CDF/derivative values and raw
+  gradients. Each transcendental is independently compared with host libm at the
+  actual argument, retaining the existing four-binary64-ULP test budget. Observed
+  log/exp/erf maxima are 2/1/3 across 1,900,098 fields; this is sampled evidence,
+  not a universal bound or NVIDIA comparison.
+- Replaying those checked values through upstream expressions matches 3,166,830
+  binary64 source fields exactly (NaNs by classification). Production FP32
+  gradients/weights match the resulting raw GPU outputs on all 316,683 rows.
+- Public training, metrics, reload and transform tests retain their existing CPU
+  tolerances and now require zero CPU correction count and time.
+
+This establishes source-expression coverage and checked math-library accuracy,
+not cross-device output equivalence. NVCC contraction, NVIDIA libdevice results
+and execution on other Apple generations remain unverified. No performance
+benchmark was run for this change. Full regression passes **1,787 Python tests,
+one skip**, every native suite and the CPU-only build/device check
+(2026-11-04, 14:12:43–14:17:04 UTC).
+[Validation record](../validation/cuda-aft-device-m3.txt).
 
 ## Ranking metric numerical behavior
 
@@ -1722,5 +1760,6 @@ suite and the CPU-only build/API check. [Validation record](../validation/bound-
 
 Host candidate preparation still reads/stages bounds; full device ownership of
 the training pipeline, generic state/model operations, sketch/CUDA algorithm
-alignment, AFT corrections, interoperability, collectives and actual NVIDIA
-validation remain. No benchmark or NVIDIA execution comparison was run.
+alignment, interoperability, collectives and actual NVIDIA validation remain.
+The AFT corrections listed at that checkpoint have since been removed. No
+benchmark or NVIDIA execution comparison was run for the bound-state change.

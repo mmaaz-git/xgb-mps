@@ -32,12 +32,8 @@ def test_survival_training(metal, distribution, scale, weighted):
     assert after["survival_gradient_dispatches"] - before["survival_gradient_dispatches"] == 5
     assert after["survival_metric_dispatches"] - before["survival_metric_dispatches"] == 10
     corrections = after["survival_cpu_corrections"] - before["survival_cpu_corrections"]
-    if distribution == "extreme" and scale == .5:
-        # This sharp distribution puts a few censored rows in the sensitive tail.
-        # Verify the advertised correction path without allowing bulk CPU fallback.
-        assert 0 < corrections < 5*len(x)/100
-    else:
-        assert corrections == 0
+    assert corrections == 0
+    assert after["survival_cpu_time_ns"] == before["survival_cpu_time_ns"]
     for metric in expected["data"]:
         np.testing.assert_allclose(actual["data"][metric], expected["data"][metric], rtol=2e-6, atol=2e-6)
     before = xgb.metal_info()

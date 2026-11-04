@@ -14,17 +14,28 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **CUDA-derived metric arithmetic and complete GPU reductions**.
-Scalar, multiclass, quantile/expectile and survival metrics now finish their
-binary64 accumulation on Metal and return a single 16-byte result pair.
-Generic metrics preserve CUDA's FP32 row/weight rounding instead of scaled FP32
-block sums. Multiclass label checks also run on GPU, after CUDA's integer cast.
+Latest step: **AFT survival gradients now evaluate every row on Metal**.
+The sensitive-row compaction buffers and CPU recomputation loop are removed.
+Normal, logistic and extreme distributions retain CUDA's PDF/CDF expressions,
+clipping, FP32 conversion and row-weight multiplication. NaN-boundary comparisons
+now follow the source's ordered predicates.
 
-New tests pass **349 production cases / 15,628,618 exact row-result fields**,
-plus **500,285 transcendental fields** matching the host binary64-libm reference
-rounded to FP32. Reduction association and NVIDIA libdevice execution remain
-separate validation limits. Full regression passes **1,787 Python tests**, every
-rebuilt native suite and the CPU-only build/device check.
+New checks cover **316,683 rows / 3,166,830 exact source-expression fields** and
+**1,900,098 math-library fields**. They extract the actual upstream formulas and
+replay the GPU's independently checked intermediate values. Public production
+results match the raw GPU results, with **zero CPU corrections**. Full regression
+passes **1,787 Python tests**, every native suite and the CPU-only build/device check.
+
+**Numerical limit:** tiny CDF differences amplify math-library rounding. In the
+existing extreme stress corpus, **322 gradient/Hessian fields** differ from CPU
+beyond its former tolerance, with a largest weighted difference of **44.78**.
+All rows pass the source-expression checks; ordinary CPU tolerances and public
+training tolerances are unchanged. This follows CUDA's algorithm without claiming
+NVIDIA execution equivalence. [AFT validation](validation/cuda-aft-device-m3.txt).
+
+The preceding metric port moved scalar, multiclass, quantile/expectile and survival
+accumulation entirely to GPU, with one final 16-byte result pair. Its tests pass
+**349 cases / 15,628,618 exact row-result fields** and **500,285 math fields**.
 [Metric validation](validation/cuda-metric-reductions-m3.txt).
 
 The preceding metadata port added GPU query maxima/counts and exact 64-bit
@@ -46,8 +57,8 @@ category deduplication and resident summary pruning/merging.
 The major remaining areas are adapter/device-array sketch ingestion and matrix preprocessing,
 remaining objective initialization and training-state operations, CUDA algorithm
 alignment, categorical/metadata operations, Apple GPU array
-interoperability and distributed collectives. AFT still has CPU corrections;
-some long-run ranking and Covertype comparisons have numerical differences.
+interoperability and distributed collectives. Sensitive AFT tails and some
+long-run ranking and Covertype comparisons have numerical differences.
 Persistent GPU ownership and less synchronization also remain unfinished.
 The [coverage ledger](docs/CUDA_PARITY.md) records the details. Performance
 experiments are deferred while these coverage gaps are addressed.
@@ -142,7 +153,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Objective validation / base scores | GPU logistic, gamma, squared-log, Poisson/Tweedie and multiclass label checks; checked logistic/gamma intercepts and logarithm/logit conversion, including Cox base-score conversion |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
-| AFT survival | GPU normal/logistic/extreme gradients, prediction/base-score transforms, likelihood and interval-accuracy metrics; numerically sensitive censored gradient rows are corrected on CPU and counted explicitly |
+| AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU |
 | Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input staging and category recoding remain host |
@@ -155,11 +166,10 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | PR-AUC | Binary, multiclass and multilabel; CUDA-source term casts, separate recall/validity totals, source integral and invalid-output rules; GPU aggregation metadata and normalization; collective transport remains host |
 | Metrics | Scalar/multiclass and quantile/expectile FP32 row terms, GPU label checks and complete binary64 GPU sums; survival likelihood/accuracy binary64 terms and sums; ranking/AUC source arithmetic as above. Final ratios and collective transport remain host |
 
-AFT gradient evaluation is still hybrid for numerically sensitive censored rows.
-The GPU flags interval probabilities at or below `1e-5`; the host recomputes those
-rows with the original CPU formula. `survival_cpu_corrections` and
-`survival_cpu_time_ns` expose this work. Ordinary and uncensored rows stay on GPU;
-this is not complete AFT GPU coverage. AFT metrics and transforms execute on GPU.
+AFT gradient evaluation is entirely on GPU, including numerically sensitive
+censored rows. `survival_cpu_corrections` and `survival_cpu_time_ns` remain in the
+statistics API for compatibility and are now always zero. Source-formula checks
+cover extreme tails; cross-library output differences are reported above.
 
 Input views and categorical recoding remain on the host. Elementwise and survival
 metric sums now finish on GPU; final ratios and collective transport remain host,
@@ -243,7 +253,7 @@ gradient-view extents; a leaf view can span the full matrix even for one page.
 bash scripts/test.sh
 ```
 
-On Apple M3, 2026-11-03:
+On Apple M3, validated through 2026-11-04:
 
 - Python: **1,278 passed, 1 skipped**. The skip requires a machine without an
   accessible GPU. Positive GPU tests assert completed operation counters so CPU
@@ -318,12 +328,14 @@ On Apple M3, 2026-11-03:
 - Survival mathematics: **240,180 binary64 exp/log/erf results** compared with
   CPU libm; observed maximum differences are 1/3/3 representable steps respectively
   (the test permits four). This is an observed test bound, not a proof for all inputs.
-- Production AFT APIs: **75 cases / 307,275 gradient pairs**, three distributions,
-  five scales, all censoring modes, narrow intervals, extreme margins, zero/tiny
-  weights, empty inputs, transforms and both metrics. Maximum gradient-pair
-  difference is `2.33e-10`. The deliberately extreme corpus uses 93,660 CPU
-  corrections; uncensored cases require none. Ordinary integration cases use none
-  except a sharp extreme-distribution case, which corrects 16/3,505 row updates.
+- AFT source replay: **96 cases / 316,683 gradient pairs / 3,166,830 exact source
+  fields**, plus **1,900,098 log/exp/erf fields** within four binary64 ULP of host
+  libm (observed maxima **2/1/3**). Every production result matches the raw GPU
+  formula, with zero CPU corrections. Includes all previous stress rows and
+  additional NaN/Inf, invalid-scale, signed-zero and domain-guard combinations.
+  The **75-case / 307,275-pair** public-objective stress corpus reports 322 sensitive
+  CPU differences; well-conditioned and ordinary integration tolerances remain
+  unchanged. [Validation](validation/cuda-aft-device-m3.txt).
 - Shared host-memory views: **36 cases / 4,313,492 values** plus six fallback
   checks under Metal API Validation. **51 production objective API cases /
   1,693,795 gradient pairs** cover offsets, guards, read-only inputs, split VM
@@ -549,6 +561,9 @@ all repetitions and operation timings.
 
 ### AFT survival
 
+Historical measurements of the earlier version with CPU corrections; these have
+not been rerun after removing that path.
+
 Ten rounds, depth 6, 32 features, random sample weights and a mix of uncensored,
 left/right/interval-censored labels. Includes fresh DMatrix construction and
 **two evaluation metrics every round**. Three alternating CPU/Metal repetitions.
@@ -566,8 +581,8 @@ left/right/interval-censored labels. Includes fresh DMatrix construction and
 prediction difference of `2.38e-7`. Normal/logistic workloads need no CPU gradient
 corrections; extreme workloads correct 84/1,000,000 and 828/10,000,000 row updates.
 Software binary64 probability calculations add substantial GPU cost, and these
-AFT training runs are slower than CPU. The correction path remains an explicit
-coverage gap.
+AFT training runs were slower than CPU. The current implementation removes CPU
+corrections; these measurements do not establish its performance.
 
 ### Uniform sampling
 
@@ -635,6 +650,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.
 - [x] Port query maxima/counts/prefixes and reuse GPU metadata through ranking caches.
 - [x] Port remaining elementwise/survival metric sums and CUDA FP32 row arithmetic; validate multiclass labels on GPU.
+- [x] Evaluate every AFT gradient row on GPU; validate upstream expressions and report sensitive-tail numerical differences.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.
@@ -835,9 +851,10 @@ The mathematical definitions follow the vendored XGBoost implementation and its
 [AFT paper](https://arxiv.org/abs/2006.04920).
 
 Stress testing exposed large gradient differences when small libm rounding errors
-are amplified by cancellation in tiny interval probabilities. The GPU now marks
-those rows for exact CPU recomputation, with visible correction counts and timing.
-This preserves tested CPU equivalence while leaving full AFT GPU coverage open.
+are amplified by cancellation in tiny interval probabilities. The initial version
+marked those rows for CPU recomputation, with visible correction counts and timing.
+That policy has since been replaced by [GPU evaluation with source-expression
+validation](validation/cuda-aft-device-m3.txt), including reported CPU differences.
 All 411 Python tests, native suites and CPU-only compatibility checks pass. The
 initial AFT benchmark above establishes a reproducible performance baseline,
 including its regression relative to CPU.
@@ -1879,9 +1896,10 @@ penalties, saved-model continuation, million-row reductions, duplicate CSC rows,
 exceptional arithmetic and buffer guards.
 
 Coverage and correctness remain the priority; no new performance measurements
-were run. Sketch ingestion/preprocessing, `approx` training, sensitive AFT
-corrections, generic state/metadata operations, device interoperability and
-distributed execution still need work. Full CUDA parity is not complete.
+were run. At that checkpoint, sketch ingestion/preprocessing, `approx` training,
+sensitive AFT corrections, generic state/metadata operations, interoperability
+and distributed execution remained. Later updates address `approx`, ordinary
+matrix sketches and AFT corrections; full CUDA parity is still incomplete.
 
 
 ### Sketch weighting and streaming compaction coverage update
@@ -2215,9 +2233,10 @@ weights, unchanged views without growth, errors, scalar/vector layouts and both
 growth policies. Final validation passes **1,581 Python tests (one skipped)**, every
 rebuilt native suite and the CPU-only build/API check. [Validation](validation/bound-state-m3.txt).
 
-Candidate staging, generic metadata/model ownership, sketch/CUDA algorithm gaps,
-AFT corrections, interoperability and distributed collectives remain. No benchmark
-or NVIDIA execution comparison was run.
+At that checkpoint, candidate staging, generic metadata/model ownership,
+sketch/CUDA algorithm gaps, AFT corrections, interoperability and distributed
+collectives remained. The later AFT port removes CPU corrections. No benchmark
+or NVIDIA execution comparison was run for the bound-state change.
 
 
 ### CUDA linear coordinate-descent alignment

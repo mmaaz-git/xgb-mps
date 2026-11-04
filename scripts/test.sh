@@ -220,6 +220,15 @@ clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp -framework Metal -framework Foundation \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_metric_api_test
 MTL_DEBUG_LAYER=1 results/metal_metric_api_test xgboost/src/common/metal_histogram.metal
+echo "Checking every AFT row against upstream expressions and GPU math intermediates"
+.venv/bin/python tests/build_aft_reference.py
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_aft_source.mm \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp -framework Metal -framework Foundation \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_aft_source_test
+MTL_DEBUG_LAYER=1 results/metal_aft_source_test xgboost/src/common/metal_histogram.metal
 echo "Checking production AFT gradients, transforms, metrics and correction accounting"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

@@ -2502,7 +2502,7 @@ inline AFTResult Evaluate(uint kind, D lower, D upper, D prediction, D sigma) {
   D gn, gd, hn, hd, likelihood;
   uint censoring = 0;
   bool positive;
-  if (xgb_deq(lower, upper)) {
+  if (!IsNaN(lower) && !IsNaN(upper) && xgb_deq(lower, upper)) {
     D z = (Log(lower) - prediction) / sigma;
     auto d = Probability(kind, z);
     gn = d.grad;
@@ -2521,7 +2521,7 @@ inline AFTResult Evaluate(uint kind, D lower, D upper, D prediction, D sigma) {
       zu = (Log(upper) - prediction) / sigma;
       u = Probability(kind, zu);
     }
-    if (!(lower > zero))
+    if (lower < zero || xgb_dzero(lower))
       censoring = 2;
     else {
       zl = (Log(lower) - prediction) / sigma;
@@ -2567,21 +2567,14 @@ kernel void xgb_aft_gradient(
     device const uint* predictions [[buffer(0)]], device const uint* lower [[buffer(1)]],
     device const uint* upper [[buffer(2)]], device const uint* weights [[buffer(3)]],
     device uint2* output [[buffer(4)]], constant SurvivalParams& p [[buffer(5)]],
-    device atomic_uint* correction_count [[buffer(6)]], device uint* correction_rows [[buffer(7)]],
     uint row [[thread_position_in_grid]]) {
   if (ulong(row) >= p.rows) return;
   using namespace xgb_survival;
   auto value =
       Evaluate(p.distribution, From(as_type<float>(lower[row])), From(as_type<float>(upper[row])),
                From(as_type<float>(predictions[row])), From(p.scale));
-  // CPU libm and GPU approximations can differ by a few binary64 ULP. In
-  // very small CDF differences that changes gradient/Hessian clipping. Mark
-  // only these rows for the original host formula; do not hide the correction.
-  if (!xgb_deq(From(as_type<float>(lower[row])), From(as_type<float>(upper[row]))) &&
-      !(value.likelihood > From(1e-5f))) {
-    uint index = atomic_fetch_add_explicit(correction_count, 1u, memory_order_relaxed);
-    correction_rows[index] = row;
-  }
+  // CUDA evaluates every row on device. Retain its PDF/CDF expressions and
+  // clipping; ill-conditioned CDF subtraction can amplify library rounding.
   float w = p.weighted ? as_type<float>(weights[row]) : 1.0f;
   output[row] = uint2(as_type<uint>(xgb_fmul_preserve(xgb_dto_float(value.gradient), w)),
                       as_type<uint>(xgb_fmul_preserve(xgb_dto_float(value.hessian), w)));
