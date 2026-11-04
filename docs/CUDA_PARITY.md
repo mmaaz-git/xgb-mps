@@ -78,7 +78,7 @@ must be reported rather than hidden by widening test tolerances.
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; columns use modern CUDA Philox weighted priorities and Thrust Feistel shuffle with GPU compaction/ordering; shuffle key setup and cache metadata remain host as in CUDA, while feature arrays still stage through host |
 | Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, multiclass packed class priors and normalization/log/centering, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
-| Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
+| Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; multiclass softmax follows source sequential binary64 accumulation of FP32 terms and argmax handles source NaN/subnormal comparisons; identity transforms require no dispatch |
 | Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; expectile's host margin loop matches upstream host execution |
 | Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; generic initialization/state work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
@@ -165,6 +165,51 @@ fallbacks. Its exact CPU-reference tests are retained as regression coverage.
 Historical performance measurements of the ordered FP32 prefix and its checkpoint
 optimization describe that earlier implementation. They have not been rerun for
 the integer sampler and are not performance claims for the current path.
+
+## Multiclass gradient and transform arithmetic
+
+`multiclass_obj.cu::GetGradient` now has a dedicated Metal kernel with one thread
+per row. It retains CUDA's positive `FLT_MIN` initial maximum, `fmaxf` NaN rules,
+FP32 margin differences/exponentials and a sequential binary64 sum. The final
+sum is cast to FP32 once before probability division. Hessians retain the
+left-associated FP32 products and the unweighted `1e-16f` floor; the label class
+alone subtracts one before multiplying by the row weight. The previous kernel
+repeated a full row scan for each class and used compensated FP32 summation.
+
+Prediction softmax follows `common::Softmax`, whose initial maximum is the first
+margin instead of positive `FLT_MIN`. Exponential terms are stored and reused
+before division, as in the source. This distinction matters for sufficiently
+negative margins: gradient denominators can underflow to zero while transformed
+probabilities remain defined. The source behavior is preserved explicitly.
+`common::FindMaxIndex` also begins with the first element. Argmax therefore keeps
+index zero for a leading NaN, retains the first equal maximum and compares
+subnormals without flushing them to zero.
+
+Existing software FP32 helpers preserve operation boundaries and subnormals;
+software binary64 implements the sum. The exponential oracle rounds host
+binary64 `exp` to FP32. These are source-expression checks, not a claim of NVIDIA
+libdevice or NVCC contraction equivalence. All 12,181,658 checked result fields
+match the oracle exactly (NaNs by classification and signed zeros by equality).
+The unmodified host `common::Softmax` helper is checked separately with a four-ULP
+budget; its observed maximum difference is two ULP. No GPU performance benchmark
+was run, so removing repeated scans is not a measured speedup claim.
+
+Production dispatch keeps the existing synchronous shared-memory eligibility,
+overlap-safe output staging and objective/transform counters. Multiclass requires
+one label per row. Empty operations do not dispatch; invalid label shape does
+not dispatch or change output. All other objective/transform arithmetic remains
+subject to its separate source audit.
+
+Native validation covers 192 cases, 1–4,097 classes, weighted/unweighted rows,
+zero/subnormal/large weights, ordinary and extreme margins, NaNs/infinities,
+leading-NaN argmax, aliases and guards. It includes 7,199 ordinary-FP32 and 1,236
+compensated-FP32 denominator witnesses, 299,290 initial-maximum witnesses and
+2,638 argmax witnesses. Thirty public Python cases cover softprob/softmax,
+2/17/257 classes, extreme/tiny/tied margins, unchanged raw margins, GPU dispatch
+and serialization. Existing training comparisons retain their tolerances. Full
+regression passes **1,841 Python tests, one skip**, every rebuilt native suite
+and the CPU-only build/device check (2026-11-04, 14:41:03–14:45:50 UTC).
+[Validation record](../validation/cuda-multiclass-softmax-m3.txt).
 
 ## Multiclass priors and shared vector arithmetic
 

@@ -291,22 +291,6 @@ kernel void xgb_objective(device const float* predictions [[buffer(0)]],
       output[tid] = raw * sign < 1.0f ? float2(-sign * w, w) : float2(0.0f, FLT_MIN);
       return;
     }
-    case 8: {
-      float maximum = FLT_MIN;
-      for (uint k = 0; k < p.targets; ++k) maximum = max(maximum, predictions[row * p.targets + k]);
-      // Compensated FP32 summation mitigates the absence of native GPU FP64.
-      float sum = 0.0f, correction = 0.0f;
-      for (uint k = 0; k < p.targets; ++k) {
-        float value = exp(predictions[row * p.targets + k] - maximum) - correction;
-        float next = sum + value;
-        correction = (next - sum) - value;
-        sum = next;
-      }
-      float prob = exp(raw - maximum) / sum;
-      output[tid] = float2((prob - (y == float(target) ? 1.0f : 0.0f)) * w,
-                           max(2.0f * prob * (1.0f - prob) * w, 1e-16f));
-      return;
-    }
     case 9: {
       float pred = predictions[row * p.targets];
       for (uint k = 0; k < p.targets; ++k) {
@@ -361,27 +345,6 @@ kernel void xgb_transform(device const float* input [[buffer(0)]],
         value += 1e-6f + xgb_softplus(input[begin + k]);
         output[begin + k] = value;
       }
-    } else {
-      float maximum = -FLT_MAX;
-      uint index = 0;
-      for (uint k = 0; k < p.targets; ++k)
-        if (input[begin + k] > maximum) {
-          maximum = input[begin + k];
-          index = k;
-        }
-      if (p.kind == 5) {
-        output[tid] = float(index);
-        return;
-      }
-      float sum = 0.0f, correction = 0.0f;
-      for (uint k = 0; k < p.targets; ++k) {
-        float value = exp(input[begin + k] - maximum) - correction;
-        float next = sum + value;
-        correction = (next - sum) - value;
-        sum = next;
-      }
-      for (uint k = 0; k < p.targets; ++k)
-        output[begin + k] = exp(input[begin + k] - maximum) / sum;
     }
   }
 }
@@ -3412,6 +3375,82 @@ inline uint2 QuantileTerm(F prediction, F label, F a, F w, bool expectile) {
   return uint2(value.bits, w.bits);
 }
 }  // namespace xgb_metric_math
+
+// multiclass_obj.cu and common::Softmax both accumulate FP32 exp terms in
+// sequential binary64, then round the denominator to FP32 exactly once. Metal
+// has no native binary64; use the existing software arithmetic for that sum.
+namespace xgb_multiclass_math {
+using namespace xgb_metric_math;
+inline F FMax(F a, F b) {
+  // CUDA fmaxf ignores one NaN, unlike std::max. Signed-zero ties do not affect
+  // exp(a - maximum), but prefer +0 as prescribed by fmaxf.
+  if (IsNaN(a)) return b;
+  if (IsNaN(b)) return a;
+  if (((a.bits | b.bits) & 0x7fffffffu) == 0) return F{a.bits & b.bits};
+  return a < b ? b : a;
+}
+}  // namespace xgb_multiclass_math
+
+kernel void xgb_multiclass_objective(
+    device const float* predictions [[buffer(0)]], device const float* labels [[buffer(1)]],
+    device const float* weights [[buffer(2)]], device const float* alpha [[buffer(3)]],
+    device float2* output [[buffer(4)]], constant ObjectiveParams& p [[buffer(5)]],
+    uint row [[thread_position_in_grid]]) {
+  using namespace xgb_multiclass_math;
+  if (ulong(row) >= p.n / p.targets) return;
+  ulong begin = ulong(row) * p.targets;
+  F maximum = From(FLT_MIN);  // Positive min, exactly as in GetGradient.
+  for (uint k = 0; k < p.targets; ++k) maximum = FMax(From(predictions[begin + k]), maximum);
+  D sum = xgb_survival::zero;
+  for (uint k = 0; k < p.targets; ++k)
+    sum = sum + Wide(Exp(From(predictions[begin + k]) - maximum));
+  F denominator = Narrow(sum), one = From(1.f), two = From(2.f);
+  F weight = p.weighted ? From(weights[row]) : one;
+  F label = From(labels[row]);
+  // CUDA assigns one row per thread and writes all classes, rather than
+  // rescanning the whole row independently for every output element.
+  for (uint k = 0; k < p.targets; ++k) {
+    F probability = Exp(From(predictions[begin + k]) - maximum) / denominator;
+    F hess = FMax(two * probability * (one - probability) * weight, From(1e-16f));
+    F grad = (label == From(float(k)) ? probability - one : probability) * weight;
+    output[begin + k] = float2(as_type<float>(grad.bits), as_type<float>(hess.bits));
+  }
+}
+
+kernel void xgb_multiclass_transform(device const float* input [[buffer(0)]],
+                                    device float* output [[buffer(1)]],
+                                    constant TransformParams& p [[buffer(2)]],
+                                    uint row [[thread_position_in_grid]]) {
+  using namespace xgb_multiclass_math;
+  if (ulong(row) >= p.n) return;
+  ulong begin = ulong(row) * p.targets;
+  F maximum = From(input[begin]);
+  if (p.kind == 5) {
+    // common::FindMaxIndex starts from the first element; a leading NaN
+    // therefore keeps index zero. Comparisons also preserve subnormal values.
+    uint index = 0;
+    for (uint k = 1; k < p.targets; ++k) {
+      F value = From(input[begin + k]);
+      if (value > maximum) {
+        maximum = value;
+        index = k;
+      }
+    }
+    output[row] = float(index);
+    return;
+  }
+  for (uint k = 1; k < p.targets; ++k) maximum = FMax(From(input[begin + k]), maximum);
+  D sum = xgb_survival::zero;
+  for (uint k = 0; k < p.targets; ++k) {
+    F value = Exp(From(input[begin + k]) - maximum);
+    output[begin + k] = as_type<float>(value.bits);
+    sum = sum + Wide(value);
+  }
+  F denominator = Narrow(sum);
+  for (uint k = 0; k < p.targets; ++k)
+    output[begin + k] = as_type<float>((From(output[begin + k]) / denominator).bits);
+}
+
 kernel void xgb_metric(
     device const uint* predictions [[buffer(0)]], device const uint* labels [[buffer(1)]],
     device const uint* weights [[buffer(2)]], device ulong2* partial [[buffer(3)]],

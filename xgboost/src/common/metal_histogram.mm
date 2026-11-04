@@ -238,6 +238,7 @@ class Runtime {
   id<MTLComputePipelineState> gradient_sum_pipeline, gradient_sum_finish_pipeline,
       histogram_sum_pipeline, stump_weight_pipeline;
   id<MTLComputePipelineState> shared_pipeline, gradient_bounds_pipeline, gradient_scale_pipeline;
+  id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
   id<MTLComputePipelineState> row_iota_pipeline, partition_classify_pipeline,
@@ -277,6 +278,8 @@ class Runtime {
       aft_gradient_pipeline = make_pipeline(@"xgb_aft_gradient");
       aft_metric_pipeline = make_pipeline(@"xgb_aft_metric");
       aft_transform_pipeline = make_pipeline(@"xgb_aft_transform");
+      multiclass_objective_pipeline = make_pipeline(@"xgb_multiclass_objective");
+      multiclass_transform_pipeline = make_pipeline(@"xgb_multiclass_transform");
       objective_pipeline = make_pipeline(@"xgb_objective");
       transform_pipeline = make_pipeline(@"xgb_transform");
       prediction_pipeline = make_pipeline(@"xgb_predict");
@@ -5302,6 +5305,7 @@ void Gradients(Objective objective, Span<float const> predictions, Span<float co
   CHECK(weights.empty() || weights.size() == rows);
   CHECK_LE(predictions.size(), std::numeric_limits<std::uint32_t>::max());
   if (objective == Objective::kExpectile) CHECK_EQ(alpha.size(), targets);
+  if (objective == Objective::kSoftmax) CHECK_EQ(labels.size(), rows);
   @autoreleasepool {
     auto& rt = GetRuntime();
     auto queue = rt.queue;
@@ -5349,14 +5353,16 @@ void Gradients(Objective objective, Span<float const> predictions, Span<float co
         static_cast<std::uint32_t>(labels.size() / rows),
         parameter,
         scale_pos_weight};
-    [encoder setComputePipelineState:rt.objective_pipeline];
+    bool multiclass = objective == Objective::kSoftmax;
+    [encoder setComputePipelineState:multiclass ? rt.multiclass_objective_pipeline
+                                                : rt.objective_pipeline];
     [encoder setBuffer:pred.buffer offset:pred.offset atIndex:0];
     [encoder setBuffer:label.buffer offset:label.offset atIndex:1];
     [encoder setBuffer:weight.buffer offset:weight.offset atIndex:2];
     [encoder setBuffer:levels.buffer offset:levels.offset atIndex:3];
     [encoder setBuffer:out.buffer offset:out.offset atIndex:4];
     [encoder setBytes:&p length:sizeof(p) atIndex:5];
-    [encoder dispatchThreads:MTLSizeMake(predictions.size(), 1, 1)
+    [encoder dispatchThreads:MTLSizeMake(multiclass ? rows : predictions.size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
     CompleteOperation(command, &objective_dispatches);
@@ -5537,7 +5543,9 @@ void TransformPredictions(Transform transform, Span<float> values, std::uint32_t
       std::uint64_t n;
       std::uint32_t targets, kind;
     } p{n, targets, kind};
-    [encoder setComputePipelineState:rt.transform_pipeline];
+    bool multiclass = transform == Transform::kSoftmax || transform == Transform::kArgmax;
+    [encoder setComputePipelineState:multiclass ? rt.multiclass_transform_pipeline
+                                                : rt.transform_pipeline];
     [encoder setBuffer:in offset:0 atIndex:0];
     [encoder setBuffer:out offset:0 atIndex:1];
     [encoder setBytes:&p length:sizeof(p) atIndex:2];

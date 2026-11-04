@@ -44,6 +44,10 @@ int main(int argc, char** argv) {
       auto function = [library newFunctionWithName:@"xgb_objective"];
       auto pipeline = [device newComputePipelineStateWithFunction:function error:&error];
       Require(pipeline != nil, "Cannot create objective pipeline");
+      auto multiclass_function = [library newFunctionWithName:@"xgb_multiclass_objective"];
+      auto multiclass_pipeline = [device newComputePipelineStateWithFunction:multiclass_function
+                                                                       error:&error];
+      Require(multiclass_pipeline != nil, "Cannot create multiclass pipeline");
       auto queue = [device newCommandQueue];
       auto upload = [&](void const* data, size_t size) {
         auto b = [device newBufferWithLength:std::max<size_t>(size, 16)
@@ -88,14 +92,14 @@ int main(int argc, char** argv) {
           auto output = upload(zero.data(), zero.size() * sizeof(Pair));
           auto command = [queue commandBuffer];
           auto encoder = [command computeCommandEncoder];
-          [encoder setComputePipelineState:pipeline];
+          [encoder setComputePipelineState:kind == 8 ? multiclass_pipeline : pipeline];
           [encoder setBuffer:pred offset:0 atIndex:0];
           [encoder setBuffer:label offset:0 atIndex:1];
           [encoder setBuffer:weight offset:0 atIndex:2];
           [encoder setBuffer:level offset:0 atIndex:3];
           [encoder setBuffer:output offset:0 atIndex:4];
           [encoder setBytes:&p length:sizeof(p) atIndex:5];
-          [encoder dispatchThreads:MTLSizeMake(p.n, 1, 1)
+          [encoder dispatchThreads:MTLSizeMake(kind == 8 ? rows : p.n, 1, 1)
               threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
           [encoder endEncoding];
           [command commit];

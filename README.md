@@ -14,22 +14,27 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **multiclass base-score arithmetic now runs on Metal**.
-Class-weight histograms use stable GPU sorting, run boundaries and FP32 segmented
-sums. Normalization, logarithms and mean subtraction also execute on GPU. The
-shared scalar mean now accumulates FP32 terms in FP32, following CUDA; sample and
-weighted sample means retain their separate binary64 contracts. Quantile
-initialization also uses the shared GPU vector normalization.
+Latest step: **multiclass gradients, softmax and argmax now follow CUDA's
+source calculation order**. Softmax sums FP32 exponential terms sequentially in
+software binary64, then rounds the denominator to FP32 once. Gradient kernels
+process each row once, removing the former repeated scan for every class. Argmax
+now preserves source behavior for leading NaNs and subnormal values.
 
-**Source behavior:** CUDA packs sums for observed classes into consecutive bins.
-For labels `[1, 1, 3]` with four classes, its initial histogram is `[2, 1, 0, 0]`,
-which differs from CPU's `[0, 2, 0, 1]`. The port preserves this behavior and tests
-missing classes explicitly. Objective labels must still be integral; fractional
-labels are rejected before histogram construction.
+New native checks pass **192 cases / 12,181,658 fields**, including **1,236
+witnesses** that distinguish the previous compensated FP32 sum. Thirty new
+public prediction cases cover extreme margins, ties, tiny values and model
+reload. The host-source softmax helper differs from the explicitly rounded math
+oracle by at most two FP32 ULP in this corpus; NVIDIA execution remains untested.
+Full regression passes **1,841 Python tests**, every rebuilt native suite and
+the CPU-only build/check.
+[Multiclass arithmetic validation](validation/cuda-multiclass-softmax-m3.txt).
 
-New native checks pass **258 cases / 10,499,275 fields**, including **660,150
-packed-class witnesses** and **108,340 binary64-scalar witnesses**. Full regression
-passes **1,811 Python tests**, every rebuilt native suite and the CPU-only build/check.
+The preceding step moved multiclass base-score histograms, normalization,
+logarithms and centering to Metal. **CUDA packs observed class sums into consecutive
+bins:** labels `[1, 1, 3]` with four classes produce `[2, 1, 0, 0]`, unlike CPU's
+`[0, 2, 0, 1]`. The port preserves this behavior; objective labels still must be
+integral. Shared scalar means now accumulate FP32 terms in FP32, and quantile
+initialization uses GPU vector normalization.
 [Initialization validation](validation/cuda-multiclass-init-m3.txt).
 
 The preceding AFT port moved every survival-gradient row to GPU, with zero CPU
@@ -160,7 +165,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
 | AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU |
-| Prediction transforms | Sigmoid, exponential, hinge, softmax, argmax, cumulative expectile, quantile row sorting |
+| Prediction transforms | Sigmoid, exponential, hinge, cumulative expectile and quantile row sorting; multiclass softmax uses CUDA sequential binary64 sums of FP32 terms, and argmax preserves source NaN/subnormal comparisons |
 | Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input staging and category recoding remain host |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
@@ -309,6 +314,11 @@ On Apple M3, validated through 2026-11-04:
   subnormals and wide exponent ranges. These retain low-level binary64 reduction
   coverage; production scalar means now use the CUDA-derived FP32 path tested
   separately by the class-prior/vector suite below.
+- Multiclass gradients/transforms: **192 cases / 12,181,658 exact fields**,
+  including 2,828,230 nonfinite classification checks, 1,236 compensated-FP32
+  denominator witnesses, alias/guard checks and empty/invalid-shape handling.
+  Thirty public prediction cases also pass; original CPU-equivalence tests retain
+  their tolerances. [Validation](validation/cuda-multiclass-softmax-m3.txt).
 - Class priors/vector arithmetic: **258 cases / 10,499,275 fields**, with 660,150
   packed-class witnesses and 108,340 cases distinguishing double scalar products.
   Vector results match the sampled host source formulas at observed 0 FP32 ULP;
