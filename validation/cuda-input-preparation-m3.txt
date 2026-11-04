@@ -1,0 +1,127 @@
+CUDA-source prediction input preparation and row-level category mapping
+2026-11-04; Apple M3 / 10 GPU cores / 16 GB unified memory
+
+Scope and authority
+-------------------
+Prediction and SHAP formerly used CPU view.DoFill loops to create dense float
+chunks, including category map application, then uploaded those chunks. They now
+pack raw bytes/metadata and decode them on Metal into a GPU-owned InputBatch.
+Traversal and SHAP consume that buffer directly. SHAP base margins use their
+existing contiguous host span without an extra CPU row-copy loop.
+
+Source authority:
+- predictor/gpu_predictor.cu::DeviceAdapterLoader: raw typed elements, validity
+  checks before category accessor; missing output initialized to NaN.
+- predictor/gpu_data_accessor.cuh::SparsePageLoaderNoShared and EllpackLoader:
+  raw feature values, category lookup, numerical bin lower bounds, absent bins.
+- data/device_adapter.cuh: dense/columnar typed access and validity masks.
+- data/cat_container.h::CatAccessor and common/categorical.h::AsCat: truncation
+  to signed int32, range check and mapping of feature-local category codes.
+- data/array_interface.h: element types, strides, validity masks and casts.
+
+Implementation
+--------------
+common/metal_input.h provides GPU input batches and preparers for raw CSR pages,
+gradient-index matrices and Dense/Array/Columnar/CSRArray adapters. The prediction
+and SHAP APIs accept these batches; existing low-level dense-span overloads remain.
+The common runtime owns the new input_prepare pipeline. Input descriptors carry
+byte offsets, signed byte strides, scalar type, mask offset and mask bit origin.
+
+Host packing copies physical byte windows without per-row conversion, recoding,
+missing filling or bin decoding. Checked wide address arithmetic bounds reversed
+views; zero strides support broadcasts. CSR chunk endpoints are two host offset
+reads. Gradient-index data stays row-wise: compressed dense 8/16/32-bit bins add
+feature offsets; sparse global bins locate their feature by cut boundaries.
+Numeric first bins decode to -Inf, others to the preceding cut. Categorical bins
+use their cut value. The decoder needs no column transpose.
+
+GPU preparation initializes missing slots, reads typed values, applies masks and
+missing sentinels, converts integer/binary64 values to float32, and applies maps.
+Float32 bit copies and bitwise missing comparisons preserve subnormal values and
+signed zero. Binary64 narrowing uses the existing software conversion. Finite
+category values in the representable int32 domain truncate toward zero, including
+negative fractions mapping as zero. NaN, infinity and values outside that domain
+are preserved instead of invoking an undefined C++ cast. Actual NVIDIA behavior
+for those casts is unverified; there is no CPU correction pass.
+
+The current host array interfaces accept float32, float64 and the eight integer
+types. CUDA float16 device-array entry points remain open; existing Apple host
+interfaces reject raw float16/float128. This change does not claim that coverage.
+Raw sparse duplicate indices retain the host view's last-entry behavior. CUDA's
+canonical sparse lookup does not establish equivalence for duplicate/unsorted
+rows; such native fixture checks assert the chosen host-input behavior only.
+
+Raw packing, allocation, uploads, dictionaries/maps and data ownership remain
+host work. Input prep and traversal are separate synchronous commands, with a
+four-byte validation status read between them. The prepared dense chunk stays on
+the GPU. Physical strided windows must fit the device buffer limit. Persistent
+raw-input/dictionary buffers, training adapter ingestion, metadata operations,
+native Apple device arrays, GPU collectives and async scheduling remain open.
+No benchmark, NVIDIA execution or cross-Apple comparison was run.
+
+Counters and CPU-only behavior
+------------------------------
+input_prepare_dispatches counts completed preparation commands, including sparse
+validation failures. input_recode_dispatches counts those with a nonempty map.
+input_prepare_gpu_time_ns is device command time, excluding packing, transfers,
+allocation and waits. input_debug_readback_bytes counts only explicit diagnostic
+InputBatch::Readback calls; production prediction/SHAP do not call it. Empty
+inputs dispatch nothing. All four counters are zero in CPU-only builds.
+Statistics ABI changed; every native suite must be rebuilt against the new header.
+
+Validation
+----------
+tests/metal_input_api.cc: 144 cases / 6,677,824 prepared output fields and two
+expected invalid sparse-input errors. Non-NaN values compare exact float32 bits;
+NaNs compare by classification. No numerical tolerance is used.
+- Every accepted numeric type, signed/unsigned extrema, random bit patterns,
+  double rounding/underflow/overflow boundaries and signed zero/subnormal values.
+- C and Fortran layouts, reversed row/column strides, zero strides/broadcasts,
+  non-unit columns, padded output features and offsets within input chunks.
+- All eight validity-mask bit offsets with masked and unmasked typed columns.
+- Dense missing sentinels including both zeros and positive/negative subnormals.
+- Category fractions, bounds, invalid-domain preservation and GPU map counter.
+- Empty rows, CSR gaps/duplicates, three independently strided CSR arrays,
+  nonzero first-entry offset, invalid feature indices and nonmonotone row offsets.
+- Dense bins at all three widths, sparse bins/empty rows, categorical maps,
+  numeric lower bounds, nonzero base_rowid and no column transpose.
+- Readback guards and byte accounting.
+Focused native v2 passed 16:03:42 UTC. First native attempt reached the final bin
+fixture and crashed because it constructed RefResourceView with a null resource
+owner. The fixture now allocates through MakeFixedVecWithMalloc; production
+code and comparison tolerances were not changed to address that test failure.
+
+Initial implementation build failed on ArrayInterface/TypedIndex namespace
+qualifiers and attempts to print __int128 through CHECK comparison macros.
+Corrected names and boolean bounds checks; subsequent builds succeeded.
+
+tests/test_metal_input.py adds 71 public cases:
+- Ten numeric types x five array layouts for in-place prediction, with a missing
+  sentinel; exact same-model predictions against a contiguous CPU reference.
+- Dense/CSR/quantile/sparse-quantile/nullable inputs x batch/leaf/contribution/
+  interaction calls; unchanged 3e-6 ordinary numerical comparison tolerance.
+- Nullable integer/double columns crossing a 65,536-row boundary; exact results
+  and exactly two input-preparation commands.
+- Every case asserts GPU preparation and zero diagnostic dense-input readback.
+tests/test_metal_category_names.py now also requires row-map GPU commands and
+no prepared-input readback for its existing reorder/model-reload round trips.
+Existing prediction and SHAP suites retain their datasets and tolerances.
+
+Focused public v1: 139 passed / 19 warnings / 4.15 s, 15:59:25 UTC.
+Focused public v2: 210 passed / 19 warnings / 4.42 s, 16:04:51 UTC.
+Warnings are existing DART/empty-data notices and embedded-NUL category notices.
+
+Full validation
+---------------
+Complete: results/run-input-full-v1.sh, tmux xgb-input-full-v1 (exited normally).
+16:05:29–16:10:51 UTC, 5 min 22 s; FULL_EXIT=0.
+- Final Metal build passed.
+- Every native suite and reference updater rebuilt and passed, including the
+  144-case/6,677,824-field input suite under Metal API validation.
+- Python: 1,946 passed, one skipped, 389 warnings in 96.01 seconds.
+- CPU-only configure/build/API/device checks passed, including new zero counters.
+- No implementation/test edits after the full run began; documentation only.
+- git diff --check passed. No benchmark or NVIDIA/cross-Apple run.
+Logs: results/input-full-driver-v1.log, build-input-final-v1.log,
+test-input-full-v1.log, configure-cpu-input-v1.log, build-cpu-input-v1.log,
+check-cpu-input-v1.log.

@@ -122,27 +122,22 @@ std::unique_ptr<common::metal::Prediction> MakeMetalPrediction(HostModel const &
   return common::metal::MakePrediction(packed);
 }
 
-// Reuse the existing input views to preserve category recoding, missing-value
-// semantics, and quantized-bin lower bounds. This host staging is bounded and
-// remains a separate target for GPU acceleration.
+// Prepare raw input chunks and apply category maps on GPU before traversal.
 template <typename Batch>
-void MetalPredictBatch(Batch const &batch, common::metal::Prediction *prediction,
-                       HostModel const &model, int threads, linalg::MatrixView<float> output,
+void MetalPredictBatch(Batch const& batch, common::metal::Prediction* prediction,
+                       HostModel const& model, linalg::MatrixView<float> output,
                        bool leaf = false) {
   auto features = model.n_features;
   std::size_t chunk = std::max<std::size_t>(
       1, std::min<std::size_t>(65536, (16 * 1024 * 1024) / std::max<std::size_t>(features, 1)));
   for (std::size_t begin = 0; begin < batch.Size(); begin += chunk) {
     auto rows = std::min<std::size_t>(chunk, batch.Size() - begin);
-    std::vector<float> data(rows * features, std::numeric_limits<float>::quiet_NaN());
-    common::ParallelFor(rows, threads, [&](std::size_t r) {
-      (void)batch.DoFill(begin + r, data.data() + r * features);
-    });
+    auto data = batch.PrepareMetal(begin, rows, features);
     CHECK_EQ(output.Stride(1), 1);
     auto groups = output.Shape(1);
     CHECK_EQ(output.Stride(0), groups);
     auto ptr = &output(batch.base_rowid + begin, 0);
-    prediction->Predict(data, rows, features, groups, {ptr, rows * groups}, leaf);
+    prediction->Predict(*data, groups, {ptr, rows * groups}, leaf);
   }
 }
 #endif
@@ -533,10 +528,9 @@ class CPUPredictor : public Predictor {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       auto prediction = MakeMetalPrediction(h_model, tree_weights);
-      LaunchPredict(ctx_, p_fmat, model, [&](auto &&policy) {
-        policy.ForEachBatch([&](auto &&batch) {
-          MetalPredictBatch(batch, prediction.get(), h_model, n_threads, out_predt);
-        });
+      LaunchPredict(ctx_, p_fmat, model, [&](auto&& policy) {
+        policy.ForEachBatch(
+            [&](auto&& batch) { MetalPredictBatch(batch, prediction.get(), h_model, out_predt); });
       });
       return;
     }
@@ -604,7 +598,7 @@ class CPUPredictor : public Predictor {
       auto out_predt = linalg::MakeTensorView(ctx_, predictions, view.Size(), n_groups);
 #if defined(XGBOOST_USE_METAL)
       if (metal_prediction) {
-        MetalPredictBatch(view, metal_prediction.get(), h_model, n_threads, out_predt);
+        MetalPredictBatch(view, metal_prediction.get(), h_model, out_predt);
         return;
       }
 #endif
@@ -658,9 +652,9 @@ class CPUPredictor : public Predictor {
       if (ntree_limit == 0) return;
       auto prediction = MakeMetalPrediction(h_model, common::OptionalWeights{1.0f});
       auto output = linalg::MakeTensorView(ctx_, preds, info.num_row_, ntree_limit);
-      LaunchPredict(ctx_, p_fmat, model, [&](auto &&policy) {
-        policy.ForEachBatch([&](auto &&batch) {
-          MetalPredictBatch(batch, prediction.get(), h_model, n_threads, output, true);
+      LaunchPredict(ctx_, p_fmat, model, [&](auto&& policy) {
+        policy.ForEachBatch([&](auto&& batch) {
+          MetalPredictBatch(batch, prediction.get(), h_model, output, true);
         });
       });
       return;

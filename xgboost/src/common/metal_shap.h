@@ -32,6 +32,8 @@ class Shap {
  public:
   virtual ~Shap() = default;
   virtual std::size_t MaxBatchRows() const = 0;
+  virtual void Predict(InputBatch const& data, Span<float const> base_margin,
+                       Span<float> output) = 0;
   virtual void Predict(Span<float const> data, std::size_t rows, Span<float const> base_margin,
                        Span<float> output) = 0;
 };

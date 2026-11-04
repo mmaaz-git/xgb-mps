@@ -4,6 +4,7 @@
 #include <memory>
 #include <vector>
 
+#include "metal_input.h"
 #include "xgboost/span.h"
 namespace xgboost::common::metal {
 struct PredictionNode {
@@ -25,6 +26,8 @@ struct PredictionModel {
 class Prediction {
  public:
   virtual ~Prediction() = default;
+  virtual void Predict(InputBatch const& data, std::uint32_t groups, Span<float> predictions,
+                       bool leaf = false) = 0;
   virtual void Predict(Span<float const> data, std::size_t rows, std::uint32_t features,
                        std::uint32_t groups, Span<float> predictions, bool leaf = false) = 0;
 };

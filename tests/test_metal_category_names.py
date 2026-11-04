@@ -58,6 +58,10 @@ def test_category_names_gpu_roundtrip(metal, kind, surface):
     else:
         actual, reference = restored.predict(dtest, **options), cpu.predict(dtest, **options)
     assert xgb.metal_info()["category_recode_dispatches"] > before["category_recode_dispatches"]
+    after = xgb.metal_info()
+    assert after["input_prepare_dispatches"] > before["input_prepare_dispatches"]
+    assert after["input_recode_dispatches"] > before["input_recode_dispatches"]
+    assert after["input_debug_readback_bytes"] == before["input_debug_readback_bytes"]
     np.testing.assert_array_equal(actual, expected)
     np.testing.assert_allclose(actual, reference, rtol=3e-6, atol=3e-6)
 

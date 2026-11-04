@@ -14,20 +14,24 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **category-name sorting and recoding maps now run on Metal**.
-The kernels retain all eight integer types, including exact 64-bit comparisons,
-and signed-byte string ordering. They validate the complete incoming dictionary
-before searching names, matching CUDA's error precedence. Training, batch and
-in-place prediction, leaf prediction, SHAP contributions and interactions use
-these paths.
+Latest step: **prediction and SHAP now prepare input values and apply category
+maps on Metal**. Dense arrays, typed/strided arrays, masked columns, sparse rows
+and quantized bins feed GPU buffers directly into traversal. The old CPU loop
+that filled dense prediction chunks is removed. Raw byte packing, dictionary
+ownership and transfers remain host work.
 
-New checks pass **33 native dictionary cases / 2,730,917 exact indices**, **80
-expected errors** and **19 public tests**, including reordered/subset dictionaries,
-embedded NULs, Unicode, integer boundaries and model reload. Dictionary storage,
-staging and applying maps to individual rows still use host paths; this is not
-a complete categorical preprocessing port. No new performance measurement was
-made. Full regression passes **1,875 Python tests**, every rebuilt native suite
-and the CPU-only build/check.
+New checks pass **144 native cases / 6,677,824 decoded values** and **71 new
+public tests**. They cover all ten host-adapter numeric types, signed strides,
+broadcasts, masks, sparse rows, compressed bins, missing values and category
+maps. Production tests require GPU preparation and zero dense-input diagnostic
+readback. The focused prediction/SHAP/category suite passes **210 tests**.
+Full regression passes **1,946 Python tests**, every rebuilt native suite and
+the CPU-only build/check. No new performance measurement was made.
+[Input preparation validation](validation/cuda-input-preparation-m3.txt).
+
+The preceding category-name step moved typed sorting, whole-dictionary schema
+checks and name-to-code mapping to Metal: **33 native dictionary cases /
+2,730,917 exact indices**, **80 expected errors** and **19 public tests**.
 [Category-name validation](validation/cuda-category-names-m3.txt).
 
 The preceding adaptive step: **absolute-error and quantile gradients now preserve CUDA's source
@@ -197,8 +201,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Gradients | CUDA-source FP32/FP64 expressions for squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass and expectile; adaptive absolute-error and quantile gradients preserve source expressions, FP32 residual-root sums and binary64 weight sums; host scale-statistic collective matches upstream |
 | AFT survival | Normal/logistic/extreme gradients for every row, prediction/base-score transforms, likelihood and interval-accuracy metrics on GPU; source-expression tests cover sensitive tails, whose numerical outputs can differ from CPU |
 | Prediction transforms | CUDA-source sigmoid, exponential, hinge, cumulative expectile and quantile insertion sorting with preserved subnormals; multiclass softmax uses sequential binary64 sums of FP32 terms, and argmax preserves source NaN/subnormal comparisons |
-| Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights |
-| SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input staging and category recoding remain host |
+| Tree traversal | Batch/inplace/leaf prediction; numeric/categorical splits, missing values, scalar/vector leaves, tree ranges, dropout weights; GPU raw-input decoding and category-map application |
+| SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input conversion and row-level category mapping on GPU; raw packing/transfers remain host |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
 | Ranking training | GPU query maxima/counts/integer prefixes and immutable cache reuse; stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, raw bounds, independent sign/cost truncation, parallel MAP prefixes, normalization and combined weights on Metal; unbiased bias updates use a deterministic global cost-factor policy |
 | ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; collective transport remains host |
@@ -262,9 +266,15 @@ category-name sorting and dictionary validation/mapping commands;
 still count completed work. Empty sorts and zero-feature dictionaries dispatch
 nothing; nonzero-feature empty dictionaries still receive GPU schema validation.
 These counters exclude host dictionary packing, row-level recoding and staging.
+`input_prepare_dispatches` counts completed prediction/SHAP preparation commands;
+`input_recode_dispatches` counts those with a nonempty row mapping.
+`input_prepare_gpu_time_ns` excludes raw packing, uploads and synchronization.
+`input_debug_readback_bytes` counts explicit diagnostic reads of prepared inputs;
+production prediction/SHAP leave it unchanged. Sparse validation failures still
+count completed GPU work; empty input dispatches nothing.
 `shap_dispatches` and `shap_interaction_dispatches` count completed contribution
 and interaction batches; `shap_gpu_time_ns` covers both. These are separate from
-ordinary prediction counters and exclude host preparation and staging.
+ordinary prediction and input-preparation counters and exclude packing/transfers.
 `leaf_sum_init_dispatches`, `leaf_sum_dispatches` and `leaf_weight_dispatches`
 report GPU clearing, per-page leaf reductions and final weight calculation.
 `leaf_integer_sum_dispatches` counts successful quantized page reductions within
@@ -299,6 +309,12 @@ gradient-view extents; a leaf view can span the full matrix even for one page.
 `leaf_shared_output_bytes` counts shared output slices.
 
 ## Validation
+
+- Raw prediction input: **144 native cases / 6,677,824 values**, exact bits for
+  non-NaNs and NaN classification; ten numeric types, signed/broadcast strides,
+  all eight validity-mask bit offsets, missing sentinels, sparse bounds and
+  8/16/32-bit bins. **71 new public tests**, plus existing category tests, require
+  GPU preparation and no dense-input readback.
 
 ```sh
 bash scripts/test.sh

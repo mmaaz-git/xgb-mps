@@ -7294,3 +7294,121 @@ kernel void xgb_category_recode(device const uchar* original_data [[buffer(0)]],
   mapping[i] = idx;
   if (idx < 0) atomic_fetch_min_explicit(status + 1, i, memory_order_relaxed);
 }
+
+// Raw prediction input preparation; output stays resident for traversal/SHAP.
+struct InputArray {
+  ulong offset, mask;
+  long row_stride, column_stride;
+  uint type, mask_bit, masked, padding;
+};
+struct InputParams {
+  ulong rows, first_entry, entries;
+  uint features, kind, dense, width, missing, mapped, input_features, padding;
+};
+inline ulong xgb_input_uint(device const uchar* data, InputArray a, ulong row, ulong column = 0) {
+  auto p = data + long(a.offset) + long(row) * a.row_stride + long(column) * a.column_stride;
+  switch (a.type) {
+    case 4:
+      return ulong(*reinterpret_cast<device const char*>(p));
+    case 5:
+      return ulong(*reinterpret_cast<device const short*>(p));
+    case 6:
+      return ulong(*reinterpret_cast<device const int*>(p));
+    case 7:
+      return ulong(*reinterpret_cast<device const long*>(p));
+    case 8:
+      return *p;
+    case 9:
+      return *reinterpret_cast<device const ushort*>(p);
+    case 10:
+      return *reinterpret_cast<device const uint*>(p);
+    default:
+      return *reinterpret_cast<device const ulong*>(p);
+  }
+}
+inline uint xgb_input_float(device const uchar* data, InputArray a, ulong row, ulong column = 0) {
+  if (a.masked && !(data[a.mask + (row + a.mask_bit) / 8] & (1u << ((row + a.mask_bit) % 8))))
+    return 0x7fc00000u;
+  auto p = data + long(a.offset) + long(row) * a.row_stride + long(column) * a.column_stride;
+  if (a.type == 1) return *reinterpret_cast<device const uint*>(p);
+  if (a.type == 2) return as_type<uint>(xgb_dto_float({*reinterpret_cast<device const ulong*>(p)}));
+  ulong bits = xgb_input_uint(data, a, row, column);
+  float value = (a.type < 8) ? float(as_type<long>(bits)) : float(bits);
+  return as_type<uint>(value);
+}
+inline uint xgb_input_recode(uint value, uint f, device const uint* segments,
+                             device const int* mapping, constant InputParams& p) {
+  if (!p.mapped || segments[f] == segments[f + 1]) return value;
+  uint magnitude = value & 0x7fffffffu;
+  // Source signed int32 truncation: negative fractions truncate to zero.
+  // Preserve missing/invalid codes without invoking an undefined C++ float-to-int
+  // cast. CUDA execution outside the representable int32 domain is unverified.
+  if (magnitude >= 0x4f000000u || ((value & 0x80000000u) && magnitude >= 0x3f800000u)) return value;
+  uint index = magnitude < 0x3f800000u ? 0u : uint(as_type<float>(value));
+  if (index < segments[f + 1] - segments[f])
+    return as_type<uint>(float(mapping[segments[f] + index]));
+  return value;
+}
+inline bool xgb_input_missing(uint value, uint missing) {
+  if ((value & 0x7fffffffu) > 0x7f800000u) return true;
+  return value == missing || ((value & 0x7fffffffu) == 0 && (missing & 0x7fffffffu) == 0);
+}
+kernel void xgb_prepare_input(
+    device const uchar* data [[buffer(0)]], device const InputArray* arrays [[buffer(1)]],
+    device const uint* cuts [[buffer(2)]], device const uint* cut_values [[buffer(3)]],
+    device const uchar* feature_types [[buffer(4)]], device const uint* segments [[buffer(5)]],
+    device const int* mapping [[buffer(6)]], device uint* output [[buffer(7)]],
+    device atomic_uint* error [[buffer(8)]], constant InputParams& p [[buffer(9)]],
+    uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.rows) return;
+  ulong base = ulong(row) * p.features;
+  for (uint f = 0; f < p.features; ++f) output[base + f] = 0x7fc00000u;
+  if (p.kind == 1 || p.kind == 2) {
+    for (uint f = 0; f < p.input_features; ++f) {
+      uint v = p.kind == 1 ? xgb_input_float(data, arrays[0], row, f)
+                           : xgb_input_float(data, arrays[f], row);
+      if (!xgb_input_missing(v, p.missing))
+        output[base + f] = xgb_input_recode(v, f, segments, mapping, p);
+    }
+    return;
+  }
+  ulong raw_begin = xgb_input_uint(data, arrays[0], row),
+        raw_end = xgb_input_uint(data, arrays[0], row + 1);
+  if (raw_begin < p.first_entry || raw_end < raw_begin || raw_end - p.first_entry > p.entries) {
+    atomic_store_explicit(error, 1u, memory_order_relaxed);
+    return;
+  }
+  ulong begin = raw_begin - p.first_entry, end = raw_end - p.first_entry;
+  uint f = 0;
+  for (ulong j = begin; j < end; ++j) {
+    uint v;
+    if (p.kind == 4) {
+      uint bin = uint(xgb_input_uint(data, arrays[1], j));
+      if (p.dense) {
+        f = uint(j - begin);
+        if (f < p.input_features) bin += cuts[f];
+      } else {
+        while (f < p.input_features && bin >= cuts[f + 1]) ++f;
+      }
+      if (f >= p.input_features) {
+        atomic_store_explicit(error, 1u, memory_order_relaxed);
+        continue;
+      }
+      if (bin < cuts[f] || bin >= cuts[f + 1]) {
+        atomic_store_explicit(error, 1u, memory_order_relaxed);
+        continue;
+      }
+      v = feature_types[f] ? cut_values[bin] : bin == cuts[f] ? 0xff800000u : cut_values[bin - 1];
+    } else {
+      ulong column = xgb_input_uint(data, arrays[1], j);
+      if (column >= p.features) {
+        atomic_store_explicit(error, 1u, memory_order_relaxed);
+        continue;
+      }
+      f = uint(column);
+      v = xgb_input_float(data, arrays[2], j);
+      if (p.kind == 3 && xgb_input_missing(v, p.missing)) continue;
+    }
+    output[base + f] = xgb_input_recode(v, f, segments, mapping, p);
+  }
+}

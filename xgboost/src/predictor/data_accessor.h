@@ -20,7 +20,15 @@
 #include "xgboost/span.h"             // for Span
 #include "xgboost/tree_model.h"       // for RegTree::FVec
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_input.h"
+#endif
+
 namespace xgboost::predictor {
+#if defined(XGBOOST_USE_METAL)
+inline enc::MappingView MetalMapping(NoOpAccessor const&) { return {}; }
+inline enc::MappingView MetalMapping(CatAccessor const& accessor) { return accessor.enc; }
+#endif
 // Convert a single sample in batch view to FVec.
 template <typename BatchView>
 struct DataToFeatVec {
@@ -63,6 +71,12 @@ class SparsePageView : public DataToFeatVec<SparsePageView<EncAccessor>> {
       : acc_{std::move(acc)}, view_{p}, base_rowid{base_rowid} {}
 
   [[nodiscard]] std::size_t Size() const { return view_.Size(); }
+#if defined(XGBOOST_USE_METAL)
+  [[nodiscard]] auto PrepareMetal(std::size_t begin, std::size_t rows,
+                                  bst_feature_t features) const {
+    return common::metal::PrepareInput(view_, begin, rows, features, MetalMapping(acc_));
+  }
+#endif
 
   [[nodiscard]] bst_idx_t DoFill(bst_idx_t ridx, float* out) const {
     auto p_data = view_[ridx].data();
@@ -163,6 +177,12 @@ class GHistIndexMatrixView : public DataToFeatVec<GHistIndexMatrixView<EncAccess
   }
 
   [[nodiscard]] bst_idx_t Size() const { return page_.Size(); }
+#if defined(XGBOOST_USE_METAL)
+  [[nodiscard]] auto PrepareMetal(std::size_t begin, std::size_t rows,
+                                  bst_feature_t features) const {
+    return common::metal::PrepareInput(page_, ft_, begin, rows, features, MetalMapping(acc_));
+  }
+#endif
 };
 
 template <typename Adapter, typename EncAccessor = NoOpAccessor>
@@ -191,6 +211,13 @@ class AdapterView : public DataToFeatVec<AdapterView<Adapter, EncAccessor>> {
   }
 
   [[nodiscard]] bst_idx_t Size() const { return adapter_->NumRows(); }
+#if defined(XGBOOST_USE_METAL)
+  [[nodiscard]] auto PrepareMetal(std::size_t begin, std::size_t rows,
+                                  bst_feature_t features) const {
+    return common::metal::PrepareInput(*adapter_, missing_, begin, rows, features,
+                                       MetalMapping(acc_));
+  }
+#endif
 
   bst_idx_t const static base_rowid = 0;  // NOLINT
 };

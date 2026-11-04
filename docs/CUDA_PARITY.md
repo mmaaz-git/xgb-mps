@@ -84,9 +84,9 @@ must be reported rather than hidden by widening test tolerances.
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Other initialization/state work still requires porting/audit |
-| Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; CPU input views stage dense chunks and recode categories |
+| Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application; raw packing/transfers remain host |
 | Prediction cache from leaf IDs | `predictor/predictor.cu` | Metal; supports strided target slices and negated sampling positions |
-| SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA; dense input staging/category recoding remain host |
+| SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA; input decoding/category mapping now runs on GPU; raw packing/transfers remain host |
 | RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; final ratio/collective transport host |
 | Multiclass error and logloss | `metric/multiclass_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; final ratio/collective transport host |
 | Quantile and expectile metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 terms, subnormal-preserving products and complete binary64 GPU reductions; final ratio/collective transport host |
@@ -96,7 +96,7 @@ must be reported rather than hidden by widening test tolerances.
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains and ranking label validation also use Metal; cache values are read back to existing host-owned arrays. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Adapter/device-array ingestion, adapter-built QuantileDMatrix bins and distributed sketch collectives remain open |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | Host GHistIndexMatrix remains authoritative; page-owned Metal copies and dense GPU transpose cache persist for each source page lifetime |
-| Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Dictionary storage/copies, row-level recoding, general metadata and adapter preprocessing remain host |
+| Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `metainfo.cu`, `array_interface.cu` | Category-name typed sorting, whole-dictionary schema/empty validation, lower-bound mapping and first-unknown search on GPU. Prediction/SHAP row-level mapping and raw-input preparation now run on GPU; dictionary storage/copies, general metadata and training adapter preprocessing remain host |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
@@ -231,6 +231,64 @@ regression passes **1,856 Python tests, one skip**, every rebuilt native suite
 and the CPU-only build/device check (2026-11-04, 14:59:14–15:03:58 UTC).
 [Validation record](../validation/cuda-objective-arithmetic-m3.txt).
 
+## Prediction input preparation and row-level recoding
+
+Prediction and SHAP use a GPU-owned input chunk, replacing CPU `DoFill` loops.
+Raw CSR pages, dense float arrays, typed/strided arrays, masked columnar arrays,
+CSR array interfaces and dense/sparse gradient-index pages are decoded by Metal.
+The prepared buffer feeds traversal or SHAP directly; it is not read back to
+fill another host array. SHAP base margins use a contiguous source span instead
+of a separate CPU row-copy loop.
+
+CUDA authority is `gpu_predictor.cu::DeviceAdapterLoader`,
+`gpu_data_accessor.cuh::SparsePageLoaderNoShared/EllpackLoader`,
+`device_adapter.cuh`, `CatAccessor` and the typed array-interface conversions.
+Missing values are filtered before mapping for adapter input. Quantized numeric
+bins use negative infinity for the first bin and the preceding cut otherwise;
+categorical bins use their stored category value. The Metal backend reads its
+existing row-wise gradient-index representation rather than adding ELLPACK just
+for prediction. No column transpose is needed by the decoder.
+
+All ten numeric types accepted by the current host adapters are covered: float32,
+float64 and signed/unsigned 8/16/32/64-bit integers. Binary64 input narrows on GPU
+through the existing software conversion. Raw float bits and missing comparisons
+preserve subnormal values and signed zero. Byte-window packing supports negative,
+zero and positive strides and keeps mask bit offsets intact across chunks.
+CUDA float16 device-array entry points and native Apple device-array interop
+remain open; Apple host adapters already reject float16 interfaces and float128.
+
+Finite category codes in the int32 conversion domain follow truncation toward
+zero and mapping bounds, including negative fractions mapping as zero. Missing,
+infinite and out-of-range codes are preserved without invoking an undefined C++
+cast. Actual NVIDIA behavior for casts outside that domain is unverified. The
+raw CSR decoder retains the host view's last-entry behavior for duplicate feature
+indices; CUDA's lookup assumes canonical rows, so duplicate/unsorted rows are not
+a CUDA-equivalence claim.
+
+Host work remains: raw byte/descriptor packing, allocation, uploading input/maps,
+two CSR chunk-boundary offset reads and a four-byte GPU status read. Preparation
+and traversal are separate synchronous commands. Physical strided windows must
+fit the Metal buffer limit. Training data ingestion/bin construction, persistent
+dictionary/raw-input ownership, device-array adapters, metadata operations and
+collectives remain open. No performance improvement is claimed for this change.
+
+Direct native checks pass 144 cases / 6,677,824 values (exact bits except NaN
+classification), plus two invalid sparse-input errors. All integer extrema,
+random bit patterns, double rounding boundaries, strides, masks, custom missing
+sentinels, category bounds, empty inputs, compressed bin widths and nonzero page
+base IDs are exercised. Public tests add 71 cases and strengthen the existing
+category round trips with GPU-preparation/recode and zero-readback assertions.
+The focused suite passes 210 tests without relaxed prediction tolerances.
+
+Counters: `input_prepare_dispatches`, `input_recode_dispatches`,
+`input_prepare_gpu_time_ns`, `input_debug_readback_bytes`. They report completed
+GPU commands and explicit diagnostic reads; production consumers leave dense
+input readback at zero. Raw packing, transfers and waits are outside GPU time.
+CPU-only builds report zeros. Full regression passed **1,946 Python tests, one
+skip**, every rebuilt native suite and the CPU-only build/check
+(2026-11-04, 16:05:29–16:10:51 UTC).
+[Validation](../validation/cuda-input-preparation-m3.txt).
+
 ## Typed categorical name sorting and recoding
 
 `CatContainer::Sort` now routes MPS dictionaries to GPU segmented index
@@ -275,12 +333,11 @@ recoding require no dispatch; nonzero-feature recoding validates schemas even
 with no category entries. Invalid schemas/unknown names still count GPU work.
 All counters report zero in CPU-only builds.
 
-Still unfinished: dictionary copy/storage ownership, cached GPU dictionaries and
-maps, applying the maps to every input row on GPU, general metadata operations,
-and adapter/device-array preprocessing. Current prediction staging still invokes
-`CatAccessor` on the host while filling dense chunks. This milestone ports the
-name algorithms and their production routing, not the entire data preparation
-pipeline. No performance benchmark or NVIDIA/cross-Apple comparison was run.
+The later input-preparation step below removes host row-level recoding from
+prediction and SHAP. Dictionary copy/storage ownership, cached GPU dictionaries
+and maps, general metadata operations and training adapter/device-array
+preprocessing remain unfinished. The name milestone alone did not port the
+entire data preparation pipeline. No performance benchmark or NVIDIA/cross-Apple comparison was run.
 Full regression passed **1,875 Python tests, one skip**, every rebuilt native suite
 and the CPU-only build/check (2026-11-04, 15:41:19–15:46:40 UTC).
 [Validation](../validation/cuda-category-names-m3.txt).

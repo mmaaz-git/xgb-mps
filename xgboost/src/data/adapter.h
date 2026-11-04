@@ -131,6 +131,7 @@ class DenseAdapterBatch : public detail::NoMetaInfo {
   }
   [[nodiscard]] std::size_t NumRows() const { return num_rows_; }
   [[nodiscard]] std::size_t NumCols() const { return num_features_; }
+  [[nodiscard]] float const* Values() const { return values_; }
   static constexpr bool kIsRowMajor = true;
 
  private:
@@ -207,6 +208,7 @@ class ArrayAdapter : public detail::SingleBatchDataIter<ArrayAdapterBatch> {
   [[nodiscard]] ArrayAdapterBatch const& Value() const override { return batch_; }
   [[nodiscard]] std::size_t NumRows() const { return array_interface_.Shape<0>(); }
   [[nodiscard]] std::size_t NumColumns() const { return array_interface_.Shape<1>(); }
+  [[nodiscard]] ArrayInterface<2> const& Array() const { return array_interface_; }
 
  private:
   ArrayAdapterBatch batch_;
@@ -297,6 +299,9 @@ class CSRArrayAdapter : public detail::SingleBatchDataIter<CSRArrayAdapterBatch>
     return size;
   }
   [[nodiscard]] std::size_t NumColumns() const { return num_cols_; }
+  [[nodiscard]] ArrayInterface<1> const& Indptr() const { return indptr_; }
+  [[nodiscard]] ArrayInterface<1> const& Indices() const { return indices_; }
+  [[nodiscard]] ArrayInterface<1> const& Values() const { return values_; }
 
  private:
   CSRArrayAdapterBatch batch_;

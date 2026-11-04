@@ -624,18 +624,15 @@ void PredictShap(Context const* ctx, DMatrix* data, HostDeviceVector<float>* out
   auto process = [&](auto&& view) {
     for (std::size_t begin = 0; begin < view.Size(); begin += gpu->MaxBatchRows()) {
       auto rows = std::min<std::size_t>(gpu->MaxBatchRows(), view.Size() - begin);
-      std::vector<float> values(rows * features, std::numeric_limits<float>::quiet_NaN());
-      std::vector<float> margins(margin.Size() ? rows * groups : 0);
-      common::ParallelFor(rows, ctx->Threads(), [&](auto row) {
-        static_cast<void>(view.DoFill(begin + row, values.data() + row * features));
-        if (margin.Size()) {
-          for (bst_target_t g = 0; g < groups; ++g) {
-            margins[row * groups + g] = margin(view.base_rowid + begin + row, g);
-          }
-        }
-      });
+      auto values = view.PrepareMetal(begin, rows, features);
+      common::Span<float const> margins;
+      if (margin.Size()) {
+        CHECK_EQ(margin.Stride(1), 1);
+        CHECK_EQ(margin.Stride(0), groups);
+        margins = {&margin(view.base_rowid + begin, 0), rows * groups};
+      }
       auto offset = (view.base_rowid + begin) * per_row;
-      gpu->Predict(values, rows, margins, {result.data() + offset, rows * per_row});
+      gpu->Predict(*values, margins, {result.data() + offset, rows * per_row});
     }
   };
   LaunchShap(ctx, data, model, process);

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "../collective/aggregator.h"
+#include "../data/adapter.h"
 #include "../data/gradient_index.h"
 #include "metal_auc.h"
 #include "metal_category.h"
@@ -114,6 +115,8 @@ std::atomic<std::uint64_t> small_histogram_dispatches{0}, vector_arithmetic_disp
     float_mean_dispatches{0};
 std::atomic<std::uint64_t> category_sort_dispatches{0}, category_recode_dispatches{0},
     category_gpu_time_ns{0};
+std::atomic<std::uint64_t> input_prepare_dispatches{0}, input_recode_dispatches{0},
+    input_prepare_gpu_time_ns{0}, input_debug_readback_bytes{0};
 std::atomic<std::uint64_t> radix_sort_dispatches{0}, quantile_dispatches{0},
     quantile_gpu_time_ns{0};
 std::atomic<std::uint64_t> index_uploads{0}, index_uploaded_bytes{0},
@@ -246,6 +249,7 @@ class Runtime {
       float32_sum_pipeline;
   id<MTLComputePipelineState> category_iota_pipeline, category_merge_pipeline,
       category_extract_pipeline, category_validate_pipeline, category_recode_pipeline;
+  id<MTLComputePipelineState> input_prepare_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
       prediction_pipeline, leaf_pipeline, metric_pipeline;
@@ -329,6 +333,7 @@ class Runtime {
       category_extract_pipeline = make_pipeline(@"xgb_category_extract");
       category_validate_pipeline = make_pipeline(@"xgb_category_validate");
       category_recode_pipeline = make_pipeline(@"xgb_category_recode");
+      input_prepare_pipeline = make_pipeline(@"xgb_prepare_input");
       residual_reduce_pipeline = make_pipeline(@"xgb_residual_scale_reduce");
       residual_finish_pipeline = make_pipeline(@"xgb_residual_scale_finish");
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
@@ -1786,7 +1791,11 @@ Statistics GetStatistics() {
           float_mean_dispatches.load(std::memory_order_relaxed),
           category_sort_dispatches.load(std::memory_order_relaxed),
           category_recode_dispatches.load(std::memory_order_relaxed),
-          category_gpu_time_ns.load(std::memory_order_relaxed)};
+          category_gpu_time_ns.load(std::memory_order_relaxed),
+          input_prepare_dispatches.load(std::memory_order_relaxed),
+          input_recode_dispatches.load(std::memory_order_relaxed),
+          input_prepare_gpu_time_ns.load(std::memory_order_relaxed),
+          input_debug_readback_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -5834,6 +5843,245 @@ void TransformPredictions(Transform transform, Span<float> values, std::uint32_t
 }
 
 namespace {
+class MetalInputBatch final : public InputBatch {
+ public:
+  id<MTLBuffer> values;
+  std::size_t rows;
+  std::uint32_t features;
+  MetalInputBatch(id<MTLBuffer> values, std::size_t rows, std::uint32_t features)
+      : values{values}, rows{rows}, features{features} {}
+  std::size_t Rows() const override { return rows; }
+  std::uint32_t Features() const override { return features; }
+  void Readback(Span<float> output) const override {
+    CHECK_EQ(output.size(), rows * features);
+    if (!output.empty()) std::memcpy(output.data(), values.contents, output.size_bytes());
+    input_debug_readback_bytes.fetch_add(output.size_bytes(), std::memory_order_relaxed);
+  }
+};
+struct InputArray {
+  std::uint64_t offset{0}, mask{0};
+  std::int64_t row_stride{0}, column_stride{0};
+  std::uint32_t type{0}, mask_bit{0}, masked{0}, padding{0};
+};
+struct InputParams {
+  std::uint64_t rows, first_entry{0}, entries{0};
+  std::uint32_t features, kind, dense{0}, width{0}, missing{0x7fc00000u}, mapped{0}, input_features,
+      padding{0};
+};
+static_assert(sizeof(InputArray) == 48 && sizeof(InputParams) == 56);
+struct PackedInput {
+  std::vector<std::uint8_t> bytes;
+  std::vector<InputArray> arrays;
+  InputParams params;
+  PackedInput(std::size_t rows, std::uint32_t features, std::uint32_t kind, enc::MappingView map)
+      : params{rows, 0, 0, features, kind, 0, 0, 0x7fc00000u, !map.mapping.empty(), features, 0} {
+    CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
+    CHECK(!rows || features <= std::numeric_limits<std::size_t>::max() / rows / 4);
+  }
+  std::uint64_t Append(void const* ptr, std::size_t n) {
+    auto offset = (bytes.size() + 7) & ~std::size_t{7};
+    CHECK_LE(n, GetRuntime().device.maxBufferLength);
+    CHECK_LE(offset, GetRuntime().device.maxBufferLength - n);
+    bytes.resize(offset + n);
+    if (n) std::memcpy(bytes.data() + offset, ptr, n);
+    return offset;
+  }
+  InputArray Raw(void const* ptr, std::size_t bytes_count, std::uint32_t type,
+                 std::int64_t stride) {
+    return {Append(ptr, bytes_count), 0, stride, 0, type, 0, 0, 0};
+  }
+  template <int D, bool M>
+  InputArray Window(ArrayInterface<D, M> const& array, std::size_t begin, std::size_t rows,
+                    std::size_t columns = 1) {
+    auto type = static_cast<unsigned>(array.type);
+    CHECK_LT(type, 12);
+    CHECK(type != 0 && type != 3)
+        << "Metal prediction input requires float32/float64 or an integer array.";
+    auto size = array.ElementSize();
+    InputArray out;
+    out.type = type;
+    // ArrayInterface stores element strides unsigned. Reconstruct signed byte
+    // strides so reversed views remain bounded windows instead of huge copies.
+    out.row_stride = static_cast<std::int64_t>(array.strides[0] * size);
+    if constexpr (D == 2) out.column_stride = static_cast<std::int64_t>(array.strides[1] * size);
+    if (rows && columns) {
+      using Wide = __int128;
+      Wide start = Wide(begin) * out.row_stride;
+      Wide r = Wide(rows - 1) * out.row_stride, c = Wide(columns - 1) * out.column_stride;
+      Wide low = std::min<Wide>(0, r) + std::min<Wide>(0, c),
+           high = std::max<Wide>(0, r) + std::max<Wide>(0, c);
+      Wide length = high - low + size,
+           address = Wide(reinterpret_cast<std::uintptr_t>(array.data)) + start + low;
+      CHECK(address > 0);
+      CHECK(address + length <= Wide(std::numeric_limits<std::uintptr_t>::max()));
+      CHECK(length <= Wide(GetRuntime().device.maxBufferLength));
+      out.offset = Append(reinterpret_cast<void const*>(static_cast<std::uintptr_t>(address)),
+                          std::size_t(length)) -
+                   std::int64_t(low);
+    }
+    if (array.valid.Data() && rows) {
+      out.masked = 1;
+      out.mask_bit = begin % 8;
+      out.mask = Append(array.valid.Data() + begin / 8, (out.mask_bit + rows + 7) / 8);
+    }
+    return out;
+  }
+  std::unique_ptr<InputBatch> Finish(enc::MappingView map, Span<std::uint32_t const> cuts = {},
+                                     Span<float const> cut_values = {},
+                                     Span<FeatureType const> types = {}) {
+    auto& rt = GetRuntime();
+    @autoreleasepool {
+      auto output = Allocate(rt, params.rows * params.features * 4);
+      auto result = std::make_unique<MetalInputBatch>(output, params.rows, params.features);
+      if (!params.rows || !params.features) return result;
+      CHECK_LE(params.input_features, params.features);
+      if (params.mapped) CHECK_EQ(map.offsets.size(), std::size_t(params.features) + 1);
+      CHECK(types.empty() || types.size() >= params.input_features);
+      auto raw = Upload(rt, bytes.data(), bytes.size()),
+           descriptors = Upload(rt, arrays.data(), arrays.size() * sizeof(InputArray));
+      auto ptrs = Upload(rt, cuts.data(), cuts.size_bytes()),
+           values = Upload(rt, cut_values.data(), cut_values.size_bytes());
+      std::vector<FeatureType> numerical(types.empty() ? params.input_features : 0,
+                                         FeatureType::kNumerical);
+      if (types.empty()) types = numerical;
+      auto ft = Upload(rt, types.data(), types.size_bytes());
+      auto segments = Upload(rt, map.offsets.data(), map.offsets.size_bytes()),
+           mapping = Upload(rt, map.mapping.data(), map.mapping.size_bytes());
+      std::uint32_t zero = 0;
+      auto error = Upload(rt, &zero, 4);
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.input_prepare_pipeline];
+      [e setBuffer:raw offset:0 atIndex:0];
+      [e setBuffer:descriptors offset:0 atIndex:1];
+      [e setBuffer:ptrs offset:0 atIndex:2];
+      [e setBuffer:values offset:0 atIndex:3];
+      [e setBuffer:ft offset:0 atIndex:4];
+      [e setBuffer:segments offset:0 atIndex:5];
+      [e setBuffer:mapping offset:0 atIndex:6];
+      [e setBuffer:output offset:0 atIndex:7];
+      [e setBuffer:error offset:0 atIndex:8];
+      [e setBytes:&params length:sizeof(params) atIndex:9];
+      [e dispatchThreads:MTLSizeMake(params.rows, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &input_prepare_dispatches, &input_prepare_gpu_time_ns);
+      if (params.mapped) input_recode_dispatches.fetch_add(1, std::memory_order_relaxed);
+      CHECK_EQ(*static_cast<std::uint32_t const*>(error.contents), 0)
+          << "Invalid sparse prediction row or feature index.";
+      return result;
+    }
+  }
+};
+void InputBounds(std::size_t total, std::size_t begin, std::size_t rows) {
+  CHECK_LE(begin, total);
+  CHECK_LE(rows, total - begin);
+}
+}  // namespace
+std::unique_ptr<InputBatch> PrepareInput(HostSparsePageView page, std::size_t begin,
+                                         std::size_t rows, std::uint32_t features,
+                                         enc::MappingView map) {
+  InputBounds(page.Size(), begin, rows);
+  PackedInput p{rows, features, 0, map};
+  if (!rows) return p.Finish(map);
+  auto first = page.offset[begin], last = page.offset[begin + rows];
+  CHECK_LE(first, last);
+  CHECK_LE(last, page.data.size());
+  p.params.first_entry = first;
+  p.params.entries = last - first;
+  p.arrays.push_back(p.Raw(page.offset.data() + begin, (rows + 1) * 8, 11, 8));
+  auto offset = p.Append(page.data.data() + first, (last - first) * sizeof(Entry));
+  static_assert(sizeof(Entry) == 8 && sizeof(bst_idx_t) == 8);
+  p.arrays.push_back({offset, 0, 8, 0, 10, 0, 0, 0});
+  p.arrays.push_back({offset + 4, 0, 8, 0, 1, 0, 0, 0});
+  return p.Finish(map);
+}
+std::unique_ptr<InputBatch> PrepareInput(GHistIndexMatrix const& page,
+                                         Span<FeatureType const> types, std::size_t begin,
+                                         std::size_t rows, std::uint32_t features,
+                                         enc::MappingView map) {
+  InputBounds(page.Size(), begin, rows);
+  PackedInput p{rows, features, 4, map};
+  CHECK_LE(page.Features(), features);
+  p.params.input_features = page.Features();
+  p.params.dense = page.IsDense();
+  if (!rows) return p.Finish(map);
+  auto first = page.row_ptr[begin], last = page.row_ptr[begin + rows];
+  CHECK_LE(first, last);
+  CHECK_LE(last, page.index.Size());
+  p.params.first_entry = first;
+  p.params.entries = last - first;
+  p.arrays.push_back(p.Raw(page.row_ptr.data() + begin, (rows + 1) * 8, 11, 8));
+  auto width = static_cast<unsigned>(page.index.GetBinTypeSize());
+  p.arrays.push_back(p.Raw(page.index.data<std::uint8_t>() + first * width, (last - first) * width,
+                           width == 1   ? 8
+                           : width == 2 ? 9
+                                        : 10,
+                           width));
+  return p.Finish(map, page.cut.Ptrs(), page.cut.Values(), types);
+}
+std::unique_ptr<InputBatch> PrepareInput(data::DenseAdapter const& adapter, float missing,
+                                         std::size_t begin, std::size_t rows,
+                                         std::uint32_t features, enc::MappingView map) {
+  InputBounds(adapter.NumRows(), begin, rows);
+  PackedInput p{rows, features, 1, map};
+  auto columns = adapter.NumColumns();
+  CHECK_LE(columns, features);
+  p.params.input_features = columns;
+  std::memcpy(&p.params.missing, &missing, 4);
+  auto ptr = adapter.Value().Values();
+  if (rows && columns) ptr += begin * columns;
+  auto array = p.Raw(ptr, rows * columns * 4, 1, columns * 4);
+  array.column_stride = 4;
+  p.arrays.push_back(array);
+  return p.Finish(map);
+}
+std::unique_ptr<InputBatch> PrepareInput(data::ArrayAdapter const& adapter, float missing,
+                                         std::size_t begin, std::size_t rows,
+                                         std::uint32_t features, enc::MappingView map) {
+  InputBounds(adapter.NumRows(), begin, rows);
+  PackedInput p{rows, features, 1, map};
+  CHECK_LE(adapter.NumColumns(), features);
+  p.params.input_features = adapter.NumColumns();
+  std::memcpy(&p.params.missing, &missing, 4);
+  p.arrays.push_back(p.Window(adapter.Array(), begin, rows, adapter.NumColumns()));
+  return p.Finish(map);
+}
+std::unique_ptr<InputBatch> PrepareInput(data::ColumnarAdapter const& adapter, float missing,
+                                         std::size_t begin, std::size_t rows,
+                                         std::uint32_t features, enc::MappingView map) {
+  InputBounds(adapter.NumRows(), begin, rows);
+  PackedInput p{rows, features, 2, map};
+  CHECK_LE(adapter.NumColumns(), features);
+  p.params.input_features = adapter.NumColumns();
+  std::memcpy(&p.params.missing, &missing, 4);
+  for (auto const& column : adapter.Columns()) p.arrays.push_back(p.Window(column, begin, rows));
+  return p.Finish(map);
+}
+std::unique_ptr<InputBatch> PrepareInput(data::CSRArrayAdapter const& adapter, float missing,
+                                         std::size_t begin, std::size_t rows,
+                                         std::uint32_t features, enc::MappingView map) {
+  InputBounds(adapter.NumRows(), begin, rows);
+  PackedInput p{rows, features, 3, map};
+  CHECK_LE(adapter.NumColumns(), features);
+  std::memcpy(&p.params.missing, &missing, 4);
+  if (!rows) return p.Finish(map);
+  auto first = TypedIndex<std::uint64_t, 1>{adapter.Indptr()}(begin);
+  auto last = TypedIndex<std::uint64_t, 1>{adapter.Indptr()}(begin + rows);
+  CHECK_LE(first, last);
+  CHECK_LE(last, adapter.Indices().n);
+  CHECK_LE(last, adapter.Values().n);
+  p.params.first_entry = first;
+  p.params.entries = last - first;
+  p.arrays.push_back(p.Window(adapter.Indptr(), begin, rows + 1));
+  p.arrays.push_back(p.Window(adapter.Indices(), first, last - first));
+  p.arrays.push_back(p.Window(adapter.Values(), first, last - first));
+  return p.Finish(map);
+}
+
+namespace {
 class MetalPrediction final : public Prediction {
   Runtime& rt_;
   id<MTLCommandQueue> queue_;
@@ -5855,14 +6103,23 @@ class MetalPrediction final : public Prediction {
       leaves_ = Upload(rt_, model.leaves.data(), model.leaves.size() * sizeof(float));
     }
   }
+  void Predict(InputBatch const& data, std::uint32_t groups, Span<float> predictions,
+               bool leaf) override {
+    auto const* input = dynamic_cast<MetalInputBatch const*>(&data);
+    CHECK(input);
+    Run(input->values, data.Rows(), data.Features(), groups, predictions, leaf);
+  }
   void Predict(Span<float const> data, std::size_t rows, std::uint32_t features,
                std::uint32_t groups, Span<float> predictions, bool leaf) override {
     CHECK_EQ(data.size(), rows * features);
+    Run(Upload(rt_, data.data(), data.size_bytes()), rows, features, groups, predictions, leaf);
+  }
+  void Run(id<MTLBuffer> input, std::size_t rows, std::uint32_t features, std::uint32_t groups,
+           Span<float> predictions, bool leaf) {
     CHECK_EQ(predictions.size(), rows * groups);
     CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
     if (!rows || !n_trees_) return;
     @autoreleasepool {
-      auto input = Upload(rt_, data.data(), data.size_bytes());
       auto output = Upload(rt_, predictions.data(), predictions.size_bytes());
       auto command = [queue_ commandBuffer];
       CHECK(command);
@@ -5967,15 +6224,24 @@ class MetalShap final : public Shap {
     }
   }
   std::size_t MaxBatchRows() const override { return batch_rows_; }
+  void Predict(InputBatch const& data, Span<float const> base_margin, Span<float> output) override {
+    auto const* input = dynamic_cast<MetalInputBatch const*>(&data);
+    CHECK(input);
+    CHECK_EQ(data.Features(), params_.features);
+    Run(input->values, data.Rows(), base_margin, output);
+  }
   void Predict(Span<float const> data, std::size_t rows, Span<float const> base_margin,
                Span<float> output) override {
-    CHECK_LE(rows, batch_rows_);
     CHECK_EQ(data.size(), rows * params_.features);
+    Run(Upload(rt_, data.data(), data.size_bytes()), rows, base_margin, output);
+  }
+  void Run(id<MTLBuffer> input, std::size_t rows, Span<float const> base_margin,
+           Span<float> output) {
+    CHECK_LE(rows, batch_rows_);
     CHECK_EQ(output.size_bytes(), rows * row_output_);
     CHECK(base_margin.empty() || base_margin.size() == rows * params_.groups);
     if (!rows) return;
     @autoreleasepool {
-      auto input = Upload(rt_, data.data(), data.size_bytes());
       auto bases =
           base_margin.empty() ? bases_ : Upload(rt_, base_margin.data(), base_margin.size_bytes());
       auto result = Allocate(rt_, output.size_bytes());
