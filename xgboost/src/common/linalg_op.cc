@@ -39,6 +39,12 @@ void SmallHistogram(Context const*, linalg::MatrixView<float const>, common::Opt
 
 void SmallHistogram(Context const* ctx, linalg::MatrixView<float const> indices,
                     common::OptionalWeights const& weights, linalg::VectorView<float> bins) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    common::metal::SmallHistogram(indices, weights, bins);
+    return;
+  }
+#endif
   auto n = indices.Size();
   if (ctx->IsCUDA()) {
     cuda_impl::SmallHistogram(ctx, indices, weights, bins);

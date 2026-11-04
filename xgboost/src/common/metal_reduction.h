@@ -10,8 +10,8 @@
 
 namespace xgboost::common::metal {
 class HistogramBuffer;
-// kFloat32 preserves FP32 per-term division; reductions use binary64 and can
-// differ from CPU FP32 accumulation order. Sample means use binary64 terms.
+// kFloat32 preserves FP32 per-term division and accumulation; parallel
+// association can differ from CUB/CPU. Sample means use binary64 terms.
 enum class MeanKind : std::uint32_t { kFloat32, kSample, kWeightedSample };
 double Sum(Span<float const> values);
 void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float const> weights,

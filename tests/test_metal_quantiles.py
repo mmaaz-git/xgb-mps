@@ -28,6 +28,7 @@ def test_quantile_initialization(metal, rows, mode):
     assert after["quantile_dispatches"] - before["quantile_dispatches"] == 1
     assert after["radix_sort_dispatches"] - before["radix_sort_dispatches"] == 1
     assert after["quantile_gpu_time_ns"] > before["quantile_gpu_time_ns"]
+    assert after["vector_arithmetic_dispatches"] == before["vector_arithmetic_dispatches"] + 1
     cpu_base = json.loads(json.loads(cpu.save_config())["learner"]["learner_model_param"]["base_score"])
     gpu_base = json.loads(json.loads(gpu.save_config())["learner"]["learner_model_param"]["base_score"])
     np.testing.assert_array_equal(gpu_base, cpu_base)

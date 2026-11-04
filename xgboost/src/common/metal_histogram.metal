@@ -3460,6 +3460,98 @@ kernel void xgb_quantile_metric(
   if (simd == 0 && lane == 0) partial[group] = total;
 }
 
+// Source linalg operations use FP32 sums and explicit FP32/double boundaries.
+inline uint xgb_reduce_float32(uint value, threadgroup uint* shared, uint tid) {
+  shared[tid] = value;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint step = 128; step; step >>= 1) {
+    if (tid < step) shared[tid] = xgb_rank_fadd(shared[tid], shared[tid + step]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  return shared[0];
+}
+struct VectorArithmeticParams {
+  ulong count, stride, parameter;
+  uint op, padding;
+};
+kernel void xgb_vector_arithmetic(device uint* values [[buffer(0)]],
+                                  constant VectorArithmeticParams& p [[buffer(1)]],
+                                  uint row [[thread_position_in_grid]]) {
+  using namespace xgb_metric_math;
+  F v{values[ulong(row) * p.stride]}, argument = Narrow(D{p.parameter}), result;
+  if (p.op == 0) result = Narrow(Wide(v) * D{p.parameter});
+  else if (p.op == 1) result = Log(v + argument);
+  else result = v - argument;
+  values[ulong(row) * p.stride] = result.bits;
+}
+kernel void xgb_float32_mean(device const uint* values [[buffer(0)]],
+                              device uint* output [[buffer(1)]],
+                              constant GradientSumParams& p [[buffer(2)]],
+                              uint target [[threadgroup_position_in_grid]],
+                              uint tid [[thread_index_in_threadgroup]]) {
+  using namespace xgb_metric_math;
+  uint total = 0;
+  F n = From(float(p.rows));
+  for (ulong row = tid; row < p.rows; row += 256) {
+    F value{values[row * p.stride0 + ulong(target) * p.stride1]};
+    total = xgb_rank_fadd(total, (value / n).bits);
+  }
+  threadgroup uint shared[256];
+  total = xgb_reduce_float32(total, shared, tid);
+  if (!tid) output[target] = total;
+}
+struct SmallHistogramParams {
+  ulong rows, bins, output_stride;
+  uint weighted;
+  float default_weight;
+};
+kernel void xgb_small_hist_init(device uint* boundaries [[buffer(0)]],
+                                 device atomic_uint* error [[buffer(1)]],
+                                 constant SmallHistogramParams& p [[buffer(2)]],
+                                 uint index [[thread_position_in_grid]]) {
+  boundaries[index] = uint(p.rows);
+  if (!index) atomic_store_explicit(error, 0u, memory_order_relaxed);
+}
+kernel void xgb_small_hist_flags(device const uint2* sorted [[buffer(0)]],
+                                  device uint* flags [[buffer(1)]],
+                                  device atomic_uint* error [[buffer(2)]],
+                                  uint row [[thread_position_in_grid]]) {
+  uint key = sorted[row].x;
+  uint bits = key & 0x80000000u ? key ^ 0x80000000u : ~key;
+  if ((bits & 0x7fffffffu) >= 0x7f800000u)
+    atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+  flags[row] = row == 0 || key != sorted[row - 1].x;
+}
+kernel void xgb_small_hist_boundaries(device const uint* flags [[buffer(0)]],
+                                       device const uint* prefix [[buffer(1)]],
+                                       device uint* boundaries [[buffer(2)]],
+                                       device atomic_uint* error [[buffer(3)]],
+                                       constant SmallHistogramParams& p [[buffer(4)]],
+                                       uint row [[thread_position_in_grid]]) {
+  if (flags[row]) {
+    uint run = prefix[row];
+    if (ulong(run) < p.bins) boundaries[run] = row;
+    else atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+  }
+}
+kernel void xgb_small_hist_sum(device const uint2* sorted [[buffer(0)]],
+                                device const uint* boundaries [[buffer(1)]],
+                                device const uint* weights [[buffer(2)]],
+                                device uint* output [[buffer(3)]],
+                                constant SmallHistogramParams& p [[buffer(4)]],
+                                uint bin [[threadgroup_position_in_grid]],
+                                uint tid [[thread_index_in_threadgroup]]) {
+  ulong begin = boundaries[bin], end = boundaries[bin + 1];
+  uint total = 0;
+  for (ulong row = begin + tid; row < end; row += 256) {
+    uint w = p.weighted ? weights[sorted[row].y] : as_type<uint>(p.default_weight);
+    total = xgb_rank_fadd(total, w);
+  }
+  threadgroup uint shared[256];
+  total = xgb_reduce_float32(total, shared, tid);
+  if (!tid) output[ulong(bin) * p.output_stride] = total;
+}
+
 struct RankingPairTask {
   ulong pair_begin, tile_begin;
   uint begin, count, topk, padding;

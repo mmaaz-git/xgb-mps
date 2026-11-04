@@ -209,11 +209,11 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["roc_auc_dispatches"] = Integer{static_cast<std::int64_t>(stats.roc_auc_dispatches)};
   info["roc_auc_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.roc_auc_gpu_time_ns)};
 
-
-
-
-
-
+  info["small_histogram_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.small_histogram_dispatches)};
+  info["vector_arithmetic_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.vector_arithmetic_dispatches)};
+  info["float_mean_dispatches"] = Integer{static_cast<std::int64_t>(stats.float_mean_dispatches)};
   info["mean_dispatches"] = Integer{static_cast<std::int64_t>(stats.mean_dispatches)};
   info["mean_gpu_time_ns"] = Integer{static_cast<std::int64_t>(stats.mean_gpu_time_ns)};
   info["binning_dispatches"] = Integer{static_cast<std::int64_t>(stats.binning_dispatches)};
@@ -413,7 +413,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["leaf_shared_gradient_bytes"] = Integer{0};
   info["leaf_shared_output_bytes"] = Integer{0};
 
-
+  info["small_histogram_dispatches"] = Integer{0};
+  info["vector_arithmetic_dispatches"] = Integer{0};
+  info["float_mean_dispatches"] = Integer{0};
   info["mean_dispatches"] = Integer{0};
   info["mean_gpu_time_ns"] = Integer{0};
   info["binning_dispatches"] = Integer{0};

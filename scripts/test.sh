@@ -212,6 +212,14 @@ clang++ -O2 -std=c++17 -fobjc-arc \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
   -Wl,-rpath,"$PWD/xgboost/lib" -framework Metal -framework Foundation -o results/metal_memory_api_test
 MTL_DEBUG_LAYER=1 results/metal_memory_api_test
+echo "Checking CUDA class priors, FP32 means and vector arithmetic"
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_linalg_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_linalg_api_test
+MTL_DEBUG_LAYER=1 results/metal_linalg_api_test
 echo "Checking CUDA metric row formulas, GPU binary64 reductions and class validation"
 clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

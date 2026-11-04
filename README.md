@@ -14,24 +14,30 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **AFT survival gradients now evaluate every row on Metal**.
-The sensitive-row compaction buffers and CPU recomputation loop are removed.
-Normal, logistic and extreme distributions retain CUDA's PDF/CDF expressions,
-clipping, FP32 conversion and row-weight multiplication. NaN-boundary comparisons
-now follow the source's ordered predicates.
+Latest step: **multiclass base-score arithmetic now runs on Metal**.
+Class-weight histograms use stable GPU sorting, run boundaries and FP32 segmented
+sums. Normalization, logarithms and mean subtraction also execute on GPU. The
+shared scalar mean now accumulates FP32 terms in FP32, following CUDA; sample and
+weighted sample means retain their separate binary64 contracts. Quantile
+initialization also uses the shared GPU vector normalization.
 
-New checks cover **316,683 rows / 3,166,830 exact source-expression fields** and
-**1,900,098 math-library fields**. They extract the actual upstream formulas and
-replay the GPU's independently checked intermediate values. Public production
-results match the raw GPU results, with **zero CPU corrections**. Full regression
-passes **1,787 Python tests**, every native suite and the CPU-only build/device check.
+**Source behavior:** CUDA packs sums for observed classes into consecutive bins.
+For labels `[1, 1, 3]` with four classes, its initial histogram is `[2, 1, 0, 0]`,
+which differs from CPU's `[0, 2, 0, 1]`. The port preserves this behavior and tests
+missing classes explicitly. Objective labels must still be integral; fractional
+labels are rejected before histogram construction.
 
-**Numerical limit:** tiny CDF differences amplify math-library rounding. In the
-existing extreme stress corpus, **322 gradient/Hessian fields** differ from CPU
-beyond its former tolerance, with a largest weighted difference of **44.78**.
-All rows pass the source-expression checks; ordinary CPU tolerances and public
-training tolerances are unchanged. This follows CUDA's algorithm without claiming
-NVIDIA execution equivalence. [AFT validation](validation/cuda-aft-device-m3.txt).
+New native checks pass **258 cases / 10,499,275 fields**, including **660,150
+packed-class witnesses** and **108,340 binary64-scalar witnesses**. Full regression
+passes **1,811 Python tests**, every rebuilt native suite and the CPU-only build/check.
+[Initialization validation](validation/cuda-multiclass-init-m3.txt).
+
+The preceding AFT port moved every survival-gradient row to GPU, with zero CPU
+corrections. Its source checks cover **316,683 rows / 3,166,830 exact fields**.
+Tiny CDF differences can amplify library rounding: 322 stress-corpus fields differ
+from CPU beyond its former tolerance, with a maximum weighted difference of
+44.78. These differences remain explicit; NVIDIA equivalence is unverified.
+[AFT validation](validation/cuda-aft-device-m3.txt).
 
 The preceding metric port moved scalar, multiclass, quantile/expectile and survival
 accumulation entirely to GPU, with one final 16-byte result pair. Its tests pass
@@ -148,8 +154,8 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Reduced-gradient leaf fitting | Original value scales → float sampling replay → per-row integer conversion → integer leaf/page sums; binary64 view for regularized/clipped final weights; host tree receives completed leaves |
 | Linear coordinate descent | GPU FP32 sums, CUDA residual/Hessian rules and original selector snapshots; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
 | Generic sums | GPU float-to-binary64 reductions and optional-weight sums; scalar default weights need no array dispatch |
-| Means | GPU scalar, column-wise and weighted means; binary64 reductions and weight sums; other objective-specific initialization work remains CPU |
-| Objective initialization | GPU expectile initial gradients/Hessians and absolute-error target-mean broadcast; small final base-score adjustments remain host, as in CUDA |
+| Means | GPU scalar FP32 terms and accumulation; per-target sample and weighted sample means use binary64 terms/reductions; parallel association can differ from CUB |
+| Objective initialization | GPU multiclass packed class-weight histogram, normalization/logarithm/centering, expectile initial gradients/Hessians and absolute-error target-mean broadcast; quantile vector normalization also runs on GPU; generic allocation/state remain host |
 | Objective validation / base scores | GPU logistic, gamma, squared-log, Poisson/Tweedie and multiclass label checks; checked logistic/gamma intercepts and logarithm/logit conversion, including Cox base-score conversion |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort |
 | Gradients | Squared error, squared log error, logistic/logitraw, gamma, pseudo-Huber, Poisson, Tweedie, hinge, multiclass, expectile; adaptive absolute-error and quantile gradients with GPU residual-scale reductions |
@@ -204,8 +210,11 @@ materialization. `sketch_weight_dispatches` also covers group/Hessian weighting.
 The older `sketch_sorted_*`, `sketch_update_*` and `sketch_finalize_*` counters
 belong to CPU-compatible summary helpers; ordinary MPS training bypasses them.
 `expectile_init_dispatches` and `prediction_init_dispatches` expose the new
-objective-specific initialization work. Their combined GPU duration is reported
-by `initialization_gpu_time_ns`, separately from ordinary objective GPU time.
+objective-specific initialization work. `small_histogram_dispatches` and
+`vector_arithmetic_dispatches` count the new class-run histogram and vector paths;
+all four contribute to `initialization_gpu_time_ns`, separately from ordinary
+objective GPU time. `float_mean_dispatches` is a subset of `mean_dispatches`,
+whose duration remains in `mean_gpu_time_ns`; do not add these counts together.
 `label_validation_dispatches` / `label_validation_gpu_time_ns` and
 `base_score_dispatches` / `base_score_gpu_time_ns` report objective label checking
 and intercept conversion separately. Invalid checked inputs still count completed
@@ -297,8 +306,15 @@ On Apple M3, validated through 2026-11-04:
   **168 root histogram sums** also match CPU left-to-right addition exactly.
 - Native means: **1,080 cases / 34,880,670 values**, covering weights, FP32
   per-term division, multiple targets, matrix strides, constant values, zeros,
-  subnormals and wide exponent ranges. The scalar mean uses binary64 accumulation
-  of FP32 terms, so its rounding order can differ from CPU FP32 accumulation.
+  subnormals and wide exponent ranges. These retain low-level binary64 reduction
+  coverage; production scalar means now use the CUDA-derived FP32 path tested
+  separately by the class-prior/vector suite below.
+- Class priors/vector arithmetic: **258 cases / 10,499,275 fields**, with 660,150
+  packed-class witnesses and 108,340 cases distinguishing double scalar products.
+  Vector results match the sampled host source formulas at observed 0 FP32 ULP;
+  FP32 reduction errors stay below 0.107 of the documented association bound.
+  **24 new public tests** cover initial scores, missing classes, invalid labels,
+  reload and weight errors. [Validation](validation/cuda-multiclass-init-m3.txt).
 - Native quantiles/sorting: **240 cases / 4,227,960 stable records and exact CDF
   entries / 8,640 exact quantiles**, plus **2,140,938 integer prefix values**.
   Covers ties, signed zeros, subnormals, extreme values, multiple columns, strides
@@ -651,6 +667,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port query maxima/counts/prefixes and reuse GPU metadata through ranking caches.
 - [x] Port remaining elementwise/survival metric sums and CUDA FP32 row arithmetic; validate multiclass labels on GPU.
 - [x] Evaluate every AFT gradient row on GPU; validate upstream expressions and report sensitive-tail numerical differences.
+- [x] Port multiclass class-prior initialization, shared vector arithmetic and scalar FP32 mean accumulation.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [ ] Add Apple-device array interoperability and distributed GPU collectives.
 - [ ] Validate across Apple GPU generations and broader real datasets.

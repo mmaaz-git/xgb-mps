@@ -22,6 +22,7 @@
 #include "metal_gradient.h"
 #include "metal_histogram.h"
 #include "metal_leaf.h"
+#include "metal_linalg.h"
 #include "metal_linear.h"
 #include "metal_memory.h"
 #include "metal_model.h"
@@ -107,6 +108,8 @@ std::atomic<std::uint64_t> row_workspace_allocations{0}, row_workspace_reuses{0}
 std::atomic<std::uint64_t> index_gpu_time_ns{0};
 std::atomic<std::uint64_t> binning_dispatches{0}, binning_gpu_time_ns{0};
 std::atomic<std::uint64_t> mean_dispatches{0}, mean_gpu_time_ns{0};
+std::atomic<std::uint64_t> small_histogram_dispatches{0}, vector_arithmetic_dispatches{0},
+    float_mean_dispatches{0};
 std::atomic<std::uint64_t> radix_sort_dispatches{0}, quantile_dispatches{0},
     quantile_gpu_time_ns{0};
 std::atomic<std::uint64_t> index_uploads{0}, index_uploaded_bytes{0},
@@ -171,6 +174,9 @@ class Runtime {
   id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
   id<MTLComputePipelineState> quantile_metric_pipeline, binning_pipeline, metric_sum_pipeline;
   id<MTLComputePipelineState> mean_weight_pipeline, mean_pipeline, mean_result_pipeline;
+  id<MTLComputePipelineState> vector_arithmetic_pipeline, float_mean_pipeline,
+      small_hist_init_pipeline, small_hist_flags_pipeline, small_hist_boundaries_pipeline,
+      small_hist_sum_pipeline;
   id<MTLComputePipelineState> sort_init_pipeline, radix_rank_pipeline, radix_scatter_pipeline,
       prefix_u32_pipeline, prefix_add_pipeline, quantile_cdf_pipeline, quantile_select_pipeline;
   id<MTLComputePipelineState> roc_sort_init_pipeline, roc_counts_pipeline, roc_area_pipeline,
@@ -376,6 +382,12 @@ class Runtime {
       mean_weight_pipeline = make_pipeline(@"xgb_mean_weight_reduce");
       mean_pipeline = make_pipeline(@"xgb_mean_reduce");
       mean_result_pipeline = make_pipeline(@"xgb_mean_result");
+      vector_arithmetic_pipeline = make_pipeline(@"xgb_vector_arithmetic");
+      float_mean_pipeline = make_pipeline(@"xgb_float32_mean");
+      small_hist_init_pipeline = make_pipeline(@"xgb_small_hist_init");
+      small_hist_flags_pipeline = make_pipeline(@"xgb_small_hist_flags");
+      small_hist_boundaries_pipeline = make_pipeline(@"xgb_small_hist_boundaries");
+      small_hist_sum_pipeline = make_pipeline(@"xgb_small_hist_sum");
       sort_init_pipeline = make_pipeline(@"xgb_sort_columns_init");
       radix_rank_pipeline = make_pipeline(@"xgb_radix_rank");
       radix_scatter_pipeline = make_pipeline(@"xgb_radix_scatter");
@@ -1749,7 +1761,10 @@ Statistics GetStatistics() {
           cuda_sketch_dispatches.load(std::memory_order_relaxed),
           cuda_sketch_batches.load(std::memory_order_relaxed),
           cuda_sketch_input_entries.load(std::memory_order_relaxed),
-          cuda_sketch_gpu_time_ns.load(std::memory_order_relaxed)};
+          cuda_sketch_gpu_time_ns.load(std::memory_order_relaxed),
+          small_histogram_dispatches.load(std::memory_order_relaxed),
+          vector_arithmetic_dispatches.load(std::memory_order_relaxed),
+          float_mean_dispatches.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2253,6 +2268,35 @@ double Sum(Span<float const> values) {
   }
 }
 
+void VectorArithmetic(VectorOp op, linalg::VectorView<float> values, double parameter) {
+  CHECK_LE(static_cast<std::uint32_t>(op), 2);
+  CHECK_LE(values.Size(), std::numeric_limits<std::uint32_t>::max());
+  CHECK(values.Size() <= 1 || values.Stride(0) > 0);
+  if (!values.Size()) return;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto buffer = Upload(rt, values.Values().data(), values.Values().size_bytes());
+    struct {
+      std::uint64_t count, stride;
+      double parameter;
+      std::uint32_t op, padding;
+    } p{values.Size(), values.Stride(0), parameter, static_cast<std::uint32_t>(op), 0};
+    static_assert(sizeof(p) == 32);
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.vector_arithmetic_pipeline];
+    [e setBuffer:buffer offset:0 atIndex:0];
+    [e setBytes:&p length:sizeof(p) atIndex:1];
+    [e dispatchThreads:MTLSizeMake(values.Size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &vector_arithmetic_dispatches, &initialization_gpu_time_ns);
+    std::memcpy(values.Values().data(), buffer.contents, values.Values().size_bytes());
+  }
+}
+
 void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float const> weights,
           linalg::VectorView<float> output) {
   bool weighted = kind == MeanKind::kWeightedSample;
@@ -2280,6 +2324,23 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
     } shape{rows, values.Stride(0), values.Stride(1), static_cast<std::uint32_t>(targets),
             static_cast<std::uint32_t>((rows + 255) / 256)};
     static_assert(sizeof(Shape) == 32);
+    if (kind == MeanKind::kFloat32) {
+      auto output_buffer = Allocate(rt, targets * sizeof(float));
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.float_mean_pipeline];
+      [e setBuffer:input offset:0 atIndex:0];
+      [e setBuffer:output_buffer offset:0 atIndex:1];
+      [e setBytes:&shape length:sizeof(shape) atIndex:2];
+      [e dispatchThreadgroups:MTLSizeMake(targets, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      CompleteOperation(command, &mean_dispatches, &mean_gpu_time_ns);
+      for (std::size_t t = 0; t < targets; ++t)
+        output(t) = static_cast<float const*>(output_buffer.contents)[t];
+      float_mean_dispatches.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
     auto finish = [&](id<MTLBuffer> partial, Shape p) {
       auto result = Allocate(rt, p.targets * sizeof(GradientPairPrecise));
       auto e = [command computeCommandEncoder];
@@ -2854,6 +2915,87 @@ void MetalQuantizedGradients::SampleGradient(float probability, std::uint32_t se
 }
 
 }  // namespace
+
+void SmallHistogram(linalg::MatrixView<float const> indices, OptionalWeights const& weights,
+                    linalg::VectorView<float> bins) {
+  CHECK_EQ(indices.Shape(1), 1);
+  auto rows = indices.Shape(0);
+  CHECK_LT(rows, std::numeric_limits<std::uint32_t>::max());
+  CHECK_LT(bins.Size(), std::numeric_limits<std::uint32_t>::max());
+  CHECK(weights.Empty() || weights.Size() == rows);
+  CHECK(bins.Size() <= 1 || bins.Stride(0) > 0);
+  if (!bins.Size()) {
+    CHECK_EQ(rows, 0);
+    return;
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto input = Upload(rt, indices.Values().data(), indices.Values().size_bytes());
+    auto weight = Upload(rt, weights.Data(), weights.Size() * sizeof(float));
+    auto output = Upload(rt, bins.Values().data(), bins.Values().size_bytes());
+    auto bounds = Allocate(rt, (bins.Size() + 1) * sizeof(std::uint32_t));
+    auto error = Allocate(rt, sizeof(std::uint32_t));
+    struct {
+      std::uint64_t rows, bins, output_stride;
+      std::uint32_t weighted;
+      float default_weight;
+    } p{rows, bins.Size(), bins.Stride(0), !weights.Empty(), weights.dft};
+    static_assert(sizeof(p) == 32);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.small_hist_init_pipeline];
+    [e setBuffer:bounds offset:0 atIndex:0];
+    [e setBuffer:error offset:0 atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(bins.Size() + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    id<MTLBuffer> sorted = Allocate(rt, sizeof(std::uint64_t));
+    if (rows) {
+      sorted = EncodeColumnSort(rt, command, input,
+                                SortShape{rows, indices.Stride(0), indices.Stride(1), 1,
+                                          static_cast<std::uint32_t>((rows + 255) / 256)});
+      auto flags = Allocate(rt, rows * sizeof(std::uint32_t));
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.small_hist_flags_pipeline];
+      [e setBuffer:sorted offset:0 atIndex:0];
+      [e setBuffer:flags offset:0 atIndex:1];
+      [e setBuffer:error offset:0 atIndex:2];
+      [e dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+      auto prefix = EncodePrefixSum(rt, command, flags, rows);
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.small_hist_boundaries_pipeline];
+      [e setBuffer:flags offset:0 atIndex:0];
+      [e setBuffer:prefix offset:0 atIndex:1];
+      [e setBuffer:bounds offset:0 atIndex:2];
+      [e setBuffer:error offset:0 atIndex:3];
+      [e setBytes:&p length:sizeof(p) atIndex:4];
+      [e dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.small_hist_sum_pipeline];
+    [e setBuffer:sorted offset:0 atIndex:0];
+    [e setBuffer:bounds offset:0 atIndex:1];
+    [e setBuffer:weight offset:0 atIndex:2];
+    [e setBuffer:output offset:0 atIndex:3];
+    [e setBytes:&p length:sizeof(p) atIndex:4];
+    [e dispatchThreadgroups:MTLSizeMake(bins.Size(), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &small_histogram_dispatches, &initialization_gpu_time_ns);
+    CHECK_EQ(*static_cast<std::uint32_t const*>(error.contents), 0)
+        << "SmallHistogram requires finite labels and no more distinct labels than bins.";
+    std::memcpy(bins.Values().data(), output.contents, bins.Values().size_bytes());
+    if (rows) radix_sort_dispatches.fetch_add(1, std::memory_order_relaxed);
+  }
+}
 
 namespace {
 class MetalRankingPlan final : public RankingPlan {

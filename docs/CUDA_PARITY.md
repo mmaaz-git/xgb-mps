@@ -77,10 +77,10 @@ must be reported rather than hidden by widening test tolerances.
 | Split evaluation, categorical partitions, constraints | `tree/gpu_hist/evaluate_splits.cu`, `evaluate_splits.cuh`, `multi_evaluate_splits.cu` | Scalar CUDA-order integer prefixes/children, exclusive numeric scans, strict missing-direction ties, stable categories and software-binary64 gains. Vector integer scans retain inclusive forward/backward order, double chunk argmax followed by FP32 updates, projected stable category ordering, bounded/pooled weights and persistent child sums. GPU feature winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly from resident sorted indices; GPU-owned interaction masks and monotonic bounds, group unions, ascending feature filtering, bound initialization/growth; candidate staging and tree metadata remain host |
 | Row partition and final leaf assignment | `tree/gpu_hist/row_partitioner.cu` | Metal stable classify/prefix/scatter with cooperative scans for large nodes, resident row IDs, GPU leaf positions with guarded shared gradient inputs/output slices; supports numerical/categorical splits and missing values |
 | Sampling and gradient sums | `tree/gpu_hist/sampler.cu`, `tree/updater_gpu_hist.cu`, `common/random.cu` | CUDA Philox uniform/gradient-based integer row sampling and shared integer root sums for every layout; gradient sampling uses original quantizers, binary64 norms, quantized prefixes, integer rescaling and saved-state replay; columns use modern CUDA Philox weighted priorities and Thrust Feistel shuffle with GPU compaction/ordering; shuffle key setup and cache metadata remain host as in CUDA, while feature arrays still stage through host |
-| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
+| Squared/logistic/squared-log/gamma/pseudo-Huber/Poisson/Tweedie/hinge/multiclass/expectile gradients | `objective/regression_obj.cu`, `hinge.cu`, `multiclass_obj.cu` | Metal kernels with guarded synchronous host-memory sharing where eligible; means/weighted means, multiclass packed class priors and normalization/log/centering, expectile initial gradients/Hessians and Newton stump fitting use Metal; regression and multiclass objective label predicates now use Metal; generic metadata validation and other initialization work remain CPU |
 | Sigmoid/exp/hinge/softmax/argmax/expectile prediction transforms | Same objective files | Metal kernels; identity transforms require no dispatch |
 | Base-score validation and margin conversion | `objective/regression_obj.cu` | Metal checked logistic/gamma intercepts, clamped FP32 logit and logarithms for gamma/Poisson/Tweedie/Cox. Identity mappings require no dispatch; expectile's host margin loop matches upstream host execution |
-| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation use Metal; other initialization work remains CPU |
+| Absolute-error and quantile objectives, associated statistics | `objective/regression_obj.cu`, `quantile_obj.cu` | Metal per-iteration residual scales, gradients and quantile prediction sorting; absolute-error initial weight sums, means, target-mean broadcast and stump fitting, and initial quantile estimation/vector normalization use Metal; generic initialization/state work remains CPU |
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. NDCG discounts, ideal-gain calculation and ranking label validation also use Metal; top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates also execute on GPU; small bias vectors return to host for serialization |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Other initialization/state work still requires porting/audit |
@@ -165,6 +165,59 @@ fallbacks. Its exact CPU-reference tests are retained as regression coverage.
 Historical performance measurements of the ordered FP32 prefix and its checkpoint
 optimization describe that earlier implementation. They have not been rerun for
 the integer sampler and are not performance claims for the current path.
+
+## Multiclass priors and shared vector arithmetic
+
+`multiclass_obj.cu::InitEstimation` now uses Metal for its class-weight histogram,
+normalization, logarithms and subtraction of the log mean. Weight sums and the
+mean already dispatched Metal; scalar mean accumulation is now FP32 to match
+`stats.cu::Mean`, replacing its former binary64 accumulation of FP32 terms.
+Sample/weighted-sample means retain their distinct source binary64 expressions.
+The shared `VecScaDiv` path also covers quantile initialization.
+
+The histogram follows `linalg_op.cu::SmallHistogram`: stable ascending label sort,
+run-length segment boundaries and segmented FP32 weight sums. Run-start flags
+and an exclusive integer prefix give the same boundaries as CUDA's run counts
+followed by inclusive scan. Tail bins are zeroed on GPU, including empty input.
+The CUDA ArgSort dispatch uses `is_overwrite_okay=false`; labels and weights
+remain unchanged. Outputs retain strided guards.
+
+**Missing-class behavior follows CUDA, not the CPU histogram.** CUDA allocates
+unique labels but does not scatter sums to those class IDs. It packs distinct
+runs into the leading output bins. Labels `[1,1,3]`, four classes, therefore
+produce `[2,1,0,0]` instead of CPU's `[0,2,0,1]`. This can alter initial predictions
+when classes are absent. Source witnesses and public tests cover that difference.
+The objective's existing predicate requires integral in-range labels, so
+fractional labels are rejected. The low-level helper additionally rejects
+nonfinite labels or more distinct runs than bins without modifying host output;
+CUDA's fixed-size run buffers have no safe result for the latter case.
+
+`VecScaMul` performs binary64 `float_value * double_scalar` then narrows to FP32;
+`VecScaDiv` retains the host-computed binary64 reciprocal. `LogE` first adds its
+FP32 epsilon and then evaluates logarithm; centering subtracts in FP32. The
+existing software math helpers preserve subnormals. Vector operations update
+only selected elements in strided views, using staged snapshots.
+
+Histogram sums and scalar means use FP32 local additions and a 256-lane tree.
+Mean terms divide by `float(n)` before reduction. CUB association is not reproduced;
+tests compare exact integer/power-of-two cases and independent high-precision
+sums. Finite error budgets use `k*epsilon/(1-k*epsilon)*sum(abs(terms))`, with
+`k=ceil(n/256)+8`; overflow and nonfinite outputs have separate classification
+checks. A cancellation witness distinguishes the FP32 mean from its former wider
+accumulation. Host allocation, scalar staging and shared collective call sites
+remain; this does not establish full device residency or distributed transport.
+
+New counters: `small_histogram_dispatches`, `vector_arithmetic_dispatches`,
+`float_mean_dispatches`. The first two use `initialization_gpu_time_ns`; float
+means are also included in `mean_dispatches`/`mean_gpu_time_ns`. CPU-only builds
+report zero. Actual NVIDIA/libdevice execution and other Apple GPUs remain
+unverified; no performance benchmark was run. Native checks pass **258 cases /
+10,499,275 fields**, including 660,150 packed-class and 108,340 binary64-scalar
+witnesses. Observed vector error is 0 FP32 ULP; the maximum finite reduction error
+is 0.1068 of its association bound. Full regression passes **1,811 Python tests,
+one skip**, every rebuilt native suite and the CPU-only build/device check
+(2026-11-04, 14:27:19–14:32:28 UTC).
+[Validation record](../validation/cuda-multiclass-init-m3.txt).
 
 ## AFT device execution and numerical behavior
 

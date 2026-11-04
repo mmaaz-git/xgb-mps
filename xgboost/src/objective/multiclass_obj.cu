@@ -249,6 +249,12 @@ class SoftmaxMultiClassObj : public ObjFunction {
     linalg::LogE(this->ctx_, intercept, kRtEps);
     common::Mean(this->ctx_, intercept, &mean);
     auto d_mean = mean.View(this->ctx_->Device());
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::VectorArithmetic(common::metal::VectorOp::kSubtract, intercept, d_mean(0));
+      return;
+    }
+#endif
     TransformKernel(this->ctx_, intercept, [=] XGBOOST_DEVICE(float v) { return v - d_mean(0); });
   }
 
