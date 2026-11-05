@@ -23,7 +23,7 @@ Configuring XGBoost with Metal and OpenMP
 -- xgboost VERSION: 3.4.2
 -- Could NOT find OpenMP_C (missing: OpenMP_C_FLAGS OpenMP_C_LIB_NAMES) (found version "5.0")
 -- Could NOT find OpenMP_CXX (missing: OpenMP_CXX_FLAGS OpenMP_CXX_LIB_NAMES) (found version "5.0")
--- Could NOT find OpenMP (missing: OpenMP_C_FOUND OpenMP_CXX_FOUND) 
+-- Could NOT find OpenMP (missing: OpenMP_C_FOUND OpenMP_CXX_FOUND)
 -- Found OpenMP_C: -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include (found version "5.0")
 -- Found OpenMP_CXX: -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include (found version "5.0")
 -- Found OpenMP_C: -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include (found version "5.0")

@@ -4591,5 +4591,10 @@
     "1-, 4- and 8-bit compressed histogram microbenchmarks use randomized ordering and exact integer CPU references for every trial. Full symbol-width correctness (1..32) is covered by the existing focused native test.",
     "The previous full 106-native/3919-Python regression remains at 41d4dc2; this production change has the focused six-native/160-Python regression recorded here.",
     "No NVIDIA execution; no change to arithmetic, tolerances, or quantile construction."
-  ]
+  ],
+  "acceptance_log": {
+    "raw_sha256": "8e254f9b32b4352a4c374d6950ff1e57d2b95b6176d76b51847c30374587fb96",
+    "published_sha256": "92a44a018cefbb9d305367d510cbc9b60a4422ebd215081873c83cbf8aa14a2f",
+    "normalization": "Trailing whitespace removed from the published text log; original retained in results/ellpack-read-final/acceptance.log."
+  }
 }
