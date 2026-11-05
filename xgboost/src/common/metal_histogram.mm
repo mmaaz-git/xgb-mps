@@ -8012,10 +8012,12 @@ void CopyTensorToSparsePage(Tensor const& source, float missing, SparsePage* out
   CHECK(!packed.has_inf) << error::InfInData();
   // CUDA reads the last row offset to size the entry allocation. All entry
   // conversion/filtering and prefix work above remains on GPU.
+  output->offset.SetDevice(DeviceOrd::MPS());
+  output->data.SetDevice(DeviceOrd::MPS());
   output->offset.Resize(input.NumRows() + 1);
   output->data.Resize(packed.nnz);
-  auto rows = output->offset.HostSpan();
-  auto entries = output->data.HostSpan();
+  auto rows = output->offset.DeviceSpan();
+  auto entries = output->data.DeviceSpan();
   static_assert(sizeof(Entry) == 8 && sizeof(bst_idx_t) == 8);
   auto& rt = GetRuntime();
   @autoreleasepool {
@@ -8043,6 +8045,9 @@ void CopyTensorToSparsePage(Tensor const& source, float missing, SparsePage* out
                                          std::memory_order_relaxed);
     tensor_csr_values.fetch_add(packed.nnz, std::memory_order_relaxed);
   }
+  // CopyToSparsePage publishes row offsets on the host for sizing/window
+  // selection. Entry payloads remain device-authoritative until CPU access.
+  CHECK_EQ(output->offset.HostVector().back(), packed.nnz);
 }
 void CopyNativeGradients(StringView grad, StringView hess, bst_idx_t rows,
                          linalg::Matrix<GradientPair>* output) {
@@ -8648,7 +8653,7 @@ class MetalCompressedPage final : public CompressedPage {
       CHECK_EQ(cuts.NumFeatures(), info_.features);
       CHECK(types.empty() || types.size() == info_.features);
       auto const& offsets = input.offset.ConstHostVector();
-      auto const& values = input.data.ConstHostVector();
+      auto values = ConstDeviceSpan(input.data);
       CHECK_EQ(offsets.size(), input.Size() + 1);
       CHECK_LE(offsets.front(), offsets.back());
       CHECK_LE(offsets.back(), values.size());

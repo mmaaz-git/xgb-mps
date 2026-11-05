@@ -58,6 +58,11 @@ def test_native_ordinary_csr(metal, name, dtype, layout, missing):
         after["adapter_debug_readback_bytes"] == before["adapter_debug_readback_bytes"]
     )
     assert after["input_staging_bytes"] == before["input_staging_bytes"]
+    assert (
+        after["vector_readback_bytes"] - before["vector_readback_bytes"]
+        == (actual.num_row() + 1) * 8
+    )
+    assert after["tensor_csr_host_copy_bytes"] == before["tensor_csr_host_copy_bytes"]
     # Captured source data must outlive neither the producer nor its allocation.
     del raw
     gc.collect()
@@ -113,7 +118,6 @@ def test_native_ordinary_training_and_reuse(metal, name, method, kind, tmp_path)
         raw, producer(name, label), weight=producer(name, weights), nthread=2, **kwargs
     )
     expected = xgb.DMatrix(values, label, weight=weights, nthread=2, **kwargs)
-    same_csr(actual, expected)
     if kind == "vector" and method == "approx":
         # This combination is rejected by the common CPU/CUDA training gate.
         for device in ["cpu", "mps"]:
@@ -131,6 +135,7 @@ def test_native_ordinary_training_and_reuse(metal, name, method, kind, tmp_path)
     reference = xgb.train(params, expected, 3)
     assert model.save_raw() == reference.save_raw()
     np.testing.assert_array_equal(model.predict(actual), reference.predict(expected))
+    same_csr(actual, expected)
     for bins in [9, 33, 17]:
         config = params | {"max_bin": bins}
         a = xgb.train(config, actual, 1)

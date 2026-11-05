@@ -13,6 +13,10 @@
 #include "../xgboost/src/common/metal_tensor.h"
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/metal_cuda_sketch.h"
+#include "../xgboost/src/common/metal_ellpack.h"
+#include "../xgboost/src/data/adapter.h"
+#include "../xgboost/src/data/simple_dmatrix.h"
+#include "../xgboost/src/data/gradient_index.h"
 
 namespace metal = xgboost::common::metal;
 using xgboost::StringView;
@@ -52,6 +56,15 @@ void Import(std::shared_ptr<metal::Tensor> const& tensor, std::vector<float> con
   auto before = metal::GetStatistics();
   metal::CopyTensorToSparsePage(*tensor, missing, output);
   auto after = metal::GetStatistics();
+  Check(output->data.Device().IsMPS() && output->data.DeviceCanWrite() &&
+            !output->data.HostCanRead(), "CSR entries lost Metal authority");
+  Check(output->offset.Device().IsMPS() && output->offset.HostCanWrite(),
+        "CSR offsets must publish CUDA's host view");
+  Check(after.vector_readback_bytes - before.vector_readback_bytes ==
+            (tensor->NumRows() + 1) * sizeof(xgboost::bst_idx_t),
+        "Import read back more than row offsets");
+  Check(after.tensor_csr_host_copy_bytes == before.tensor_csr_host_copy_bytes,
+        "CSR destination did not bind owned Metal buffers");
   auto const& ptr = output->offset.ConstHostVector();
   auto const& entries = output->data.ConstHostVector();
   std::size_t n = 0;
@@ -190,6 +203,77 @@ void SharedAndFallbackSketch() {
     ++cases;
   }
 }
+void ResidentConsumers(id<MTLDevice> device, id<MTLCommandQueue> queue) {
+  using namespace xgboost;
+  Context ctx;
+  ctx.Init({{"device", "mps"}, {"nthread", "2"}});
+  auto cpu = ctx.MakeCPU();
+  for (std::size_t rows : {0, 33, 257}) for (std::size_t columns : {1, 7}) {
+    for (int kind : {0, 1, 2}) for (bool weighted : {false, true}) {
+      std::vector<float> values(rows * columns);
+      for (std::size_t r = 0; r < rows; ++r) for (std::size_t c = 0; c < columns; ++c)
+        values[r * columns + c] = kind == 2 || (kind == 1 && (r % 7 == 0 || c % 3 == 2))
+                                     ? NAN : float((r * 13 + c * 7) % 31) / 4;
+      auto buffer = Source(device, queue, values.data(), values.size() * 4, weighted);
+      auto descriptor = Descriptor(buffer, rows, columns, 0, columns, 1, 2, 32);
+      auto tensor = metal::ImportTensor(StringView{descriptor});
+      data::SimpleDMatrix actual{*tensor, NAN, 2};
+      tensor.reset(); buffer = nil;
+      data::DenseAdapter adapter{values.data(), rows, columns};
+      data::SimpleDMatrix expected{&adapter, NAN, 2};
+      auto raw_batches = actual.GetBatches<SparsePage>();
+      auto const& raw = *raw_batches.begin();
+      Check(raw.data.Device().IsMPS() && !raw.data.HostCanRead(),
+            "Native constructor materialized entry payloads");
+      if (weighted) {
+        std::vector<float> weights(rows);
+        for (std::size_t r = 0; r < rows; ++r) weights[r] = float(r % 5 + 1) / 4;
+        actual.Info().weights_.HostVector() = weights;
+        expected.Info().weights_.HostVector() = weights;
+      }
+      std::vector<float> hessian(rows, 2.f);
+      // Hist/approx regeneration and cache reuse must preserve entry authority.
+      for (bool approx : {false, true}) for (bst_bin_t bins : {9, 17, 17}) {
+        auto param = approx ? BatchParam{bins, hessian, true} : BatchParam{bins, .2};
+        auto before = metal::GetStatistics();
+        auto batches = actual.GetBatches<GHistIndexMatrix>(&ctx, param);
+        auto const& gpu = *batches.begin();
+        auto after = metal::GetStatistics();
+        Check(raw.data.DeviceCanRead() && !raw.data.HostCanRead(),
+              "Sketch/compression published entry host mirror");
+        Check(after.vector_readback_bytes == before.vector_readback_bytes,
+              "Sketch/compression implicitly read back vector payloads");
+        Check(after.vector_upload_bytes == before.vector_upload_bytes || weighted,
+              "Resident entries were uploaded again");
+        Check(after.csr_input_copy_bytes == before.csr_input_copy_bytes,
+              "Resident CSR consumer copied input through CPU");
+        Check(gpu.metal_page != nullptr, "Native matrix lost compressed GPU representation");
+        Check(metal::CompressedNonMissing(gpu) == actual.Info().num_nonzero_,
+              "Compressed nonmissing count differs");
+        auto references = expected.GetBatches<GHistIndexMatrix>(&ctx, param);
+        auto const& reference = *references.begin();
+        Check(gpu.cut.Ptrs() == reference.cut.Ptrs(), "Host/native cut offsets differ");
+        Check(gpu.cut.Values() == reference.cut.Values(), "Host/native cut values differ");
+        auto oracle_rows = expected.GetBatches<SparsePage>();
+        GHistIndexMatrix oracle{&cpu, *oracle_rows.begin(), {}, gpu.cut, bins,
+                               actual.IsDense(), param.sparse_thresh};
+        auto host_batches = actual.GetBatches<GHistIndexMatrix>(&cpu, BatchParam{});
+        auto const& host = *host_batches.begin();
+        Check(host.index.Size() == oracle.index.Size(), "CPU bin count differs");
+        for (std::size_t r = 0; r <= rows; ++r)
+          Check(host.row_ptr[r] == oracle.row_ptr[r], "CPU row offset differs");
+        for (std::size_t k = 0; k < oracle.index.Size(); ++k)
+          Check(host.index[k] == oracle.index[k], "Independent CPU bin search differs");
+        Check(!raw.data.HostCanRead(), "Reference comparison read native entries");
+        ++cases;
+      }
+      // Explicit CPU access remains usable after the entire GPU pipeline.
+      auto const& host = raw.data.ConstHostVector();
+      Check(raw.data.HostCanRead() && host.size() == actual.Info().num_nonzero_,
+            "Explicit CPU entry handoff failed");
+    }
+  }
+}
 int main() {
   @autoreleasepool {
     try {
@@ -203,6 +287,7 @@ int main() {
         Half(device, queue, p);
       }
       Edges(device, queue); SharedAndFallbackSketch();
+      ResidentConsumers(device, queue);
       auto s = metal::GetStatistics();
       std::printf("Native tensor CSR PASS: %zu cases / %zu fields / %zu rejected; "
                   "%llu entries / %llu shared output bytes / %llu host copies; "

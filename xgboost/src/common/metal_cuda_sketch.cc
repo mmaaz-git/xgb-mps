@@ -32,7 +32,7 @@ HistogramCuts CudaSketchOnDMatrix(Context const* ctx, DMatrix* data, bst_bin_t m
   auto sketch = MakeCudaSketch(info.num_col_, max_bin, types, weights);
   constexpr std::size_t kWindow = 1 << 26;  // hist_util.cuh::kSketchBatchNumElements
   for (auto const& page : data->GetBatches<SparsePage>()) {
-    auto entries = page.data.ConstHostSpan();
+    auto entries = ConstDeviceSpan(page.data);
     auto ptr = page.offset.ConstHostSpan();
     for (std::size_t begin = 0; begin < entries.size(); begin += kWindow) {
       auto end = std::min(entries.size(), begin + kWindow);

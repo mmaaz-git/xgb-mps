@@ -21,7 +21,8 @@ class Tensor {
 };
 std::shared_ptr<Tensor> ImportTensor(StringView descriptor);
 // CUDA CopyToSparsePage: GPU missing filtering, counts, prefix and entry packing.
-// Destinations use safe shared views where possible; existing host APIs remain valid.
+// Entries retain Metal storage; row offsets publish the host view used by CUDA's
+// sizing/window consumers. Explicit CPU access lazily reads back entry payloads.
 void CopyTensorToSparsePage(Tensor const& input, float missing, SparsePage* output);
 std::unique_ptr<AdapterInput> PrepareAdapter(Tensor const& input, float missing, bst_idx_t begin,
                                              bst_idx_t count, enc::MappingView mapping = {});
