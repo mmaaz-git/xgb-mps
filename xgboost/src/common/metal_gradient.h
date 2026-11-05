@@ -11,6 +11,8 @@
 namespace xgboost::common::metal {
 // Immutable original per-target bounds/scales, without allocating integer rows.
 // Value-gradient leaf fitting retains these scales BEFORE float sampling replay.
+// Distributed calls require ctx and combine bounds/row counts before quantizing.
+// Omitting ctx retains the single-worker low-level API only.
 class GradientQuantizer {
  public:
   virtual ~GradientQuantizer() = default;
@@ -18,7 +20,7 @@ class GradientQuantizer {
   virtual std::size_t Targets() const = 0;
 };
 std::shared_ptr<GradientQuantizer> MakeGradientQuantizer(
-    linalg::MatrixView<GradientPair const> original);
+    linalg::MatrixView<GradientPair const> original, Context const* ctx = nullptr);
 
 // Per-tree, GPU-owned integer gradients and their original per-target scales.
 // Histogram builders retain this state explicitly. Floating-point replay is for
@@ -42,7 +44,7 @@ class QuantizedGradients {
   virtual void ApplySampling(linalg::MatrixView<GradientPair> values) const = 0;
 };
 std::shared_ptr<QuantizedGradients> MakeQuantizedGradients(
-    linalg::MatrixView<GradientPair const> gradients);
+    linalg::MatrixView<GradientPair const> gradients, Context const* ctx = nullptr);
 
 // Synchronous bit-preserving layout copies and Hessian extraction. Inputs can
 // broadcast; output elements must be disjoint. Aliases use snapshot semantics.

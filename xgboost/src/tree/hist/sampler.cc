@@ -196,7 +196,7 @@ void Sampler::Sample(Context const* ctx, linalg::MatrixView<GradientPair> out) {
   if (ctx->IsMPS()) {
     // GPUHistMakerDevice::Reset: original gradients -> quantizer -> integers ->
     // sample. Histogram builders and all roots retain these exact integers.
-    quantized_ = common::metal::MakeQuantizedGradients(out);
+    quantized_ = common::metal::MakeQuantizedGradients(out, ctx);
     is_sampling_ = subsample_ < 1.f;
     if (is_sampling_) {
       initial_seed_ = ctx->Rng()();  // CUDA also draws a seed for an empty input.

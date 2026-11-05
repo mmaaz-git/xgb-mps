@@ -14,7 +14,28 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **distributed feature sketches now run on Metal**. Variable-size
+Latest step: **workers now share gradient quantizers, and initialization uses
+GPU collective reductions**. Local positive/negative gradient bounds run on GPU;
+CUDA's host reductions combine those small bounds and row counts to produce common
+per-target scales. Both sampling methods and original value-gradient leaf
+quantizers use those scales. Stump initialization and weighted/unweighted sample
+means now combine their GPU results across workers, including empty workers.
+
+The new suite passes **1,474 cases / 1,733,293 exact field checks across 1/2/3/5
+local workers**, with **282 invalid calls rejected**. It exercises production
+sampling, extreme differences between workers, value-gradient scale reuse,
+column-major inputs, empty workers, zero-column inputs and zero-weight workers.
+Counters verify resident inputs and GPU initialization reductions. Full regression
+passes **99 native groups**, **3,429 Python tests with one expected skip**, and
+the CPU-only build/API checks.
+[Global quantizer/initialization validation](validation/cuda-metal-global-quantizer-m3.txt).
+
+**Distributed MPS training remains disabled.** Histograms, roots and leaf sums
+still need their integer collective reductions; other consumers and the remaining
+CUDA audit are also open. Federated MPS, asynchronous streams and NVIDIA execution
+validation remain unfinished. This step makes no performance claim.
+
+Previous step: **distributed feature sketches now run on Metal**. Variable-size
 reductions preserve CUDA's binomial-tree merge/prune order. Ordinary matrices and
 in-memory/external quantile constructors share the resulting global cuts,
 including empty workers and native Metal tensor inputs. Summary arithmetic and
@@ -30,12 +51,11 @@ Full regression passes **98 native groups**, **3,429 Python tests with one
 expected skip**, and the CPU-only build/API checks.
 [Distributed sketch validation](validation/cuda-metal-distributed-sketch-m3.txt).
 
-**Distributed MPS training remains disabled.** Global quantizer scales and
-histogram/root/leaf reductions, initialization and other collective consumers
-still need integration. Federated MPS and asynchronous streams also remain open.
-No new performance or NVIDIA execution-equivalence claim is made.
+At that checkpoint, global quantizers and initialization collectives were still
+open. The latest step above adds them; histogram/root/leaf reductions and other
+training consumers remain unfinished.
 
-Previous step: **Metal has a collective backend for multiple workers**. Numeric
+Earlier step: **Metal has a collective backend for multiple workers**. Numeric
 sum/min/max reductions and bytewise AND/OR/XOR run on GPU; broadcast, allgather
 and variable-size allgather use shared Metal buffers with the existing TCP
 transport. Local copies run on Metal. CPU control values keep their CPU backend.
@@ -882,7 +902,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Operation | Implemented coverage |
 | --- | --- |
 | Approximate training | GPU Hessian extraction, copies and tree operations; cuts before sampling and fresh sampling per tree; both sampling methods/roots share integer state; CUDA-derived raw CSR sketches |
-| Gradient state | Shared per-tree integer gradients/scales for both sampling methods, all roots and histograms; GPU target/layout copies and bit-preserving Hessian extraction |
+| Gradient state | Shared per-tree integer gradients/scales for both sampling methods, all roots and histograms; CUDA-defined global bounds/row reductions produce common per-target scales across workers, including original value gradients; GPU target/layout copies and bit-preserving Hessian extraction |
 | Histograms | Dense/sparse indices, external pages, scaled integer sums and shared-memory accumulation; resident integer cache retains page additions/subtractions; scalar/vector split scans read integers directly, with a binary64 view for host consumers |
 | Split evaluation | Scalar/vector CUDA-order integer scans and persistent children; vector double-precision chunk winners feed FP32 updates, with CUDA numeric/categorical enumeration. GPU feature-winner reduction, parent gains, unscaled final weights, monotonic-bound updates and categorical bitset assembly; GPU-owned interaction masks and monotonic bounds, including initialization/growth; unions and feature filtering on GPU; candidate staging and tree metadata remain host |
 | Vector model storage | Bit-preserving GPU copies for parent/child weights and category words, with GPU FP32 learning-rate scaling of new child weights; allocation/growth and metadata remain host |
@@ -899,11 +919,11 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Uniform sampling | CUDA Philox4x64 row masks applied after original-gradient quantization; exact replay for reduced value gradients, both matrix layouts; targets the modern CCCL branch, not the older Thrust stream |
 | Gradient-based sampling | Original quantized gradients → binary64 norm terms → FP32 target reduction → integer prefixes/threshold → Philox decisions → binary64 rescaling/requantization; saved norms/threshold replay reduced value gradients; pinned CCCL reduction policy, with NVIDIA compiler/hardware validation still required |
 | Gradient quantization | GPU sign-separated binary64 bounds and CUDA scale formula; truncation and minimum-one positive Hessians; scales stay on GPU and feed both integer sampling methods/all roots/histograms. Value-leaf quantizers retain original scales; scalar/vector split statistics retain integers |
-| Root statistics / stump fitting | All scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; final root weights run on GPU; vector cover sums targets in binary64 before FP32 conversion; objective stump fitting retains its separate binary64 GPU reduction and owned Metal input/output storage |
+| Root statistics / stump fitting | Local scalar/vector/hist/approx roots reduce shared integer gradients, including empty-bin roots; final root weights run on GPU; vector cover sums targets in binary64 before FP32 conversion; objective stump fitting adds GPU binary64 global reduction before weights, including empty workers, with owned Metal input/output storage |
 | Reduced-gradient leaf fitting | Original value scales → float sampling replay → per-row integer conversion → integer leaf/page sums; binary64 view for regularized/clipped final weights; host tree receives completed leaves |
 | Linear coordinate descent | GPU FP32 sums, CUDA residual/Hessian rules and original selector snapshots; all five feature selectors supported; scalar weight updates, selectors, CSC preparation and linear prediction remain host, as in CUDA |
 | Generic sums | CUDA-source FP32 generic reductions with final double return; optional-weight reductions use binary64; scalar default weights need no array dispatch |
-| Means | GPU scalar FP32 terms and accumulation; per-target sample and weighted sample means use binary64 terms/reductions; parallel association can differ from CUB; resident inputs and GPU result publication |
+| Means | GPU scalar FP32 terms and accumulation; per-target sample and weighted sample means use binary64 terms/reductions with source-defined global host denominators and GPU FP32 output reductions; empty workers supported; parallel association can differ from CUB; resident inputs and GPU result publication |
 | Objective initialization | GPU multiclass packed class-weight histogram, normalization/logarithm/centering, expectile initial gradients/Hessians and absolute-error target-mean broadcast; quantile vector normalization also runs on GPU; these callers retain Metal payload storage, with source-defined scalar returns and expectile/absolute-error host finalizers |
 | Objective validation / base scores | GPU logistic, gamma, squared-log, Poisson/Tweedie and multiclass label checks; checked logistic/gamma intercepts and logarithm/logit conversion, including Cox base-score conversion; device label views and owned scalar base-margin storage, with results published only after validation succeeds |
 | Quantiles / medians | GPU stable radix sorting, integer prefix scans, CPU-compatible interpolation and sequential FP32 weighted CDFs; multiple quantile levels share one sort; resident inputs and GPU result/empty-NaN publication |
@@ -1511,7 +1531,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [x] Add Metal fixed reductions, broadcast and fixed/variable allgather with local-worker tests.
 - [x] Port ordered variable-size GPU reductions and distributed sketch construction.
-- [ ] Integrate global quantization, histogram/root/leaf reductions and other distributed training consumers.
+- [x] Integrate global quantizer scales, GPU stump initialization and GPU sample-mean collectives.
+- [ ] Integrate histogram/root/leaf integer reductions and remaining distributed training consumers.
 - [ ] Complete federated communication and asynchronous stream interoperability.
 - [ ] Validate across Apple GPU generations and broader real datasets.
 - [ ] Reach complete CUDA-operation coverage and competitive training performance.

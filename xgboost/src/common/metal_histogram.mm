@@ -14,6 +14,7 @@
 #include <memory>
 #include <numeric>
 #include <random>
+#include <utility>
 #include <vector>
 
 #include "../collective/aggregator.h"
@@ -1249,8 +1250,8 @@ class MetalQuantizedColumn {
     gradient_partial_ = nil;
     gradient_bounds_ = nil;
   }
-  std::size_t Encode(Span<GradientPair const> gradients, id<MTLCommandBuffer> command,
-                     bool quantize) {
+  std::pair<BorrowedMemory, std::size_t> EncodeBounds(Span<GradientPair const> gradients,
+      id<MTLCommandBuffer> command, bool quantize) {
     CHECK_LE(gradients.size(), std::numeric_limits<std::uint32_t>::max());
     if (quantize && (!gradients_ || gradients_.length < gradients.size() * sizeof(QuantizedPair)))
       gradients_ = Allocate(rt_, gradients.size() * sizeof(QuantizedPair));
@@ -1293,7 +1294,10 @@ class MetalQuantizedColumn {
     [encoder dispatchThreadgroups:MTLSizeMake(2, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
-    encoder = [command computeCommandEncoder];
+    return {input, shared_bytes};
+  }
+  void EncodeScale(std::uint64_t count, id<MTLCommandBuffer> command) {
+    auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
     [encoder setComputePipelineState:rt_.gradient_scale_pipeline];
     [encoder setBuffer:gradient_bounds_ offset:0 atIndex:0];
@@ -1301,27 +1305,49 @@ class MetalQuantizedColumn {
     [encoder setBytes:&count length:sizeof(count) atIndex:2];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    if (quantize) {
-      encoder = [command computeCommandEncoder];
-      CHECK(encoder);
-      [encoder setComputePipelineState:rt_.quantize_pipeline];
-      [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
-      [encoder setBuffer:gradients_ offset:0 atIndex:1];
-      [encoder setBytes:&count length:sizeof(count) atIndex:2];
-      [encoder setBuffer:gradient_scale_ offset:0 atIndex:3];
-      if (count) {
-        [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-      }
-      [encoder endEncoding];
+  }
+  void EncodeQuantize(BorrowedMemory input, std::uint64_t count, id<MTLCommandBuffer> command) {
+    auto encoder = [command computeCommandEncoder];
+    CHECK(encoder);
+    [encoder setComputePipelineState:rt_.quantize_pipeline];
+    [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
+    [encoder setBuffer:gradients_ offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder setBuffer:gradient_scale_ offset:0 atIndex:3];
+    if (count) {
+      [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     }
-    return shared_bytes;
+    [encoder endEncoding];
+  }
+  void ReadBounds(double* out) const {
+    std::memcpy(out, gradient_bounds_.contents, 4 * sizeof(double));
+  }
+  void SetGlobalScale(double const* bounds, std::uint64_t rows) {
+    // CUDA quantiser.cu::BuildQuantiserFromPair runs on HOST after GlobalSum.
+    // Each factor is a power of two; Metal stores its reciprocal's exponent.
+    for (unsigned i = 0; i < 4; ++i)
+      CHECK(std::isfinite(bounds[i])) << "Metal quantization requires finite gradients and Hessians.";
+    auto exponent = [&](unsigned component) {
+      auto magnitude = std::max(bounds[component], bounds[component + 2]);
+      auto delta = magnitude / (1.0 - 2.0 * static_cast<double>(rows) *
+                                         std::numeric_limits<double>::epsilon());
+      CHECK(std::isfinite(delta)) << "Metal quantizer rounding factor is not finite.";
+      int exp = 0;
+      std::frexp(delta, &exp);
+      return 62 - exp;
+    };
+    GradientScale scale{exponent(0), exponent(1), 1, 0};
+    std::memcpy(gradient_scale_.contents, &scale, sizeof(scale));
   }
 };
 
 std::vector<std::unique_ptr<MetalQuantizedColumn>> MakeGradientColumns(
-    Runtime& rt, linalg::MatrixView<GradientPair const> gradients, bool quantize) {
+    Runtime& rt, linalg::MatrixView<GradientPair const> gradients, bool quantize,
+    Context const* ctx) {
   std::vector<std::unique_ptr<MetalQuantizedColumn>> columns;
+  auto distributed = collective::GlobalCommGroup()->IsDistributed();
+  CHECK(ctx || !distributed) << "Distributed Metal quantization requires a Context.";
   CheckGradientView(gradients, false);
   auto rows = gradients.Shape(0);
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
@@ -1341,15 +1367,48 @@ std::vector<std::unique_ptr<MetalQuantizedColumn>> MakeGradientColumns(
     auto command = [rt.queue commandBuffer];
     CHECK(command);
     std::size_t shared_bytes = 0;
+    std::vector<BorrowedMemory> inputs;
     for (std::size_t t = 0; t < gradients.Shape(1); ++t) {
       auto column = std::make_unique<MetalQuantizedColumn>(rt);
-      shared_bytes += column->Encode(gradients.Slice(linalg::All(), t).Values().subspan(0, rows),
-                                     command, quantize);
+      auto [input, shared] = column->EncodeBounds(
+          gradients.Slice(linalg::All(), t).Values().subspan(0, rows), command, quantize);
+      inputs.push_back(input);
+      shared_bytes += shared;
+      if (!distributed) {
+        column->EncodeScale(rows, command);
+        if (quantize) column->EncodeQuantize(input, rows, command);
+      }
       columns.push_back(std::move(column));
     }
-    [command commit];
-    [command waitUntilCompleted];
-    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    auto complete = [&] {
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      if (!quantize && command.GPUEndTime > command.GPUStartTime)
+        leaf_fitting_gpu_time_ns.fetch_add(
+            static_cast<std::uint64_t>((command.GPUEndTime - command.GPUStartTime) * 1e9),
+            std::memory_order_relaxed);
+    };
+    complete();
+    if (distributed) {
+      std::vector<double> bounds(4 * columns.size());
+      for (std::size_t t = 0; t < columns.size(); ++t) columns[t]->ReadBounds(bounds.data() + 4 * t);
+      // These small control reductions intentionally use HOST storage, as CUDA.
+      std::uint64_t global_rows = rows;
+      auto rc = collective::GlobalSum(ctx, linalg::MakeVec(bounds.data(), bounds.size())) << [&] {
+        return collective::GlobalSum(ctx, linalg::MakeVec(&global_rows, 1));
+      };
+      collective::SafeColl(rc);
+      for (std::size_t t = 0; t < columns.size(); ++t)
+        columns[t]->SetGlobalScale(bounds.data() + 4 * t, global_rows);
+      if (quantize) {
+        command = [rt.queue commandBuffer];
+        CHECK(command);
+        for (std::size_t t = 0; t < columns.size(); ++t)
+          columns[t]->EncodeQuantize(inputs[t], rows, command);
+        complete();
+      }
+    }
     for (auto const& column : columns) {
       CHECK(static_cast<GradientScale const*>(column->gradient_scale_.contents)->valid)
           << "Metal quantization requires finite gradients and Hessians.";
@@ -1359,10 +1418,6 @@ std::vector<std::unique_ptr<MetalQuantizedColumn>> MakeGradientColumns(
     if (quantize) quantization_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
     (quantize ? histogram_shared_gradient_bytes : leaf_shared_gradient_bytes)
         .fetch_add(shared_bytes, std::memory_order_relaxed);
-    if (!quantize && command.GPUEndTime > command.GPUStartTime)
-      leaf_fitting_gpu_time_ns.fetch_add(
-          static_cast<std::uint64_t>((command.GPUEndTime - command.GPUStartTime) * 1e9),
-          std::memory_order_relaxed);
   }
   return columns;
 }
@@ -1371,8 +1426,8 @@ class MetalGradientQuantizer final : public GradientQuantizer {
 
  public:
   std::vector<std::unique_ptr<MetalQuantizedColumn>> columns;
-  explicit MetalGradientQuantizer(linalg::MatrixView<GradientPair const> original)
-      : rows_{original.Shape(0)}, columns{MakeGradientColumns(GetRuntime(), original, false)} {}
+  explicit MetalGradientQuantizer(linalg::MatrixView<GradientPair const> original, Context const* ctx)
+      : rows_{original.Shape(0)}, columns{MakeGradientColumns(GetRuntime(), original, false, ctx)} {}
   std::size_t Rows() const override { return rows_; }
   std::size_t Targets() const override { return columns.size(); }
 };
@@ -1435,9 +1490,9 @@ class MetalQuantizedGradients final : public QuantizedGradients {
 
  public:
   std::vector<std::unique_ptr<MetalQuantizedColumn>> columns;
-  explicit MetalQuantizedGradients(linalg::MatrixView<GradientPair const> gradients)
+  explicit MetalQuantizedGradients(linalg::MatrixView<GradientPair const> gradients, Context const* ctx)
       : rt_{GetRuntime()}, rows_{gradients.Shape(0)} {
-    columns = MakeGradientColumns(rt_, gradients, true);
+    columns = MakeGradientColumns(rt_, gradients, true, ctx);
   }
   std::size_t Rows() const override { return rows_; }
   std::size_t Targets() const override { return columns.size(); }
@@ -1763,16 +1818,16 @@ class MetalHistogram final : public Histogram {
 }  // namespace
 
 std::shared_ptr<GradientQuantizer> MakeGradientQuantizer(
-    linalg::MatrixView<GradientPair const> original) {
+    linalg::MatrixView<GradientPair const> original, Context const* ctx) {
   @autoreleasepool {
-    return std::make_shared<MetalGradientQuantizer>(original);
+    return std::make_shared<MetalGradientQuantizer>(original, ctx);
   }
 }
 
 std::shared_ptr<QuantizedGradients> MakeQuantizedGradients(
-    linalg::MatrixView<GradientPair const> gradients) {
+    linalg::MatrixView<GradientPair const> gradients, Context const* ctx) {
   @autoreleasepool {
-    return std::make_shared<MetalQuantizedGradients>(gradients);
+    return std::make_shared<MetalQuantizedGradients>(gradients, ctx);
   }
 }
 
@@ -3541,9 +3596,13 @@ void SumGradients(linalg::MatrixView<GradientPair const> gradients,
     CopyInitializationResult(rt, result, output);
   }
 }
-void FitStump(linalg::MatrixView<GradientPair const> gradients, linalg::VectorView<float> output) {
+void FitStump(linalg::MatrixView<GradientPair const> gradients, linalg::VectorView<float> output,
+              Context const* ctx) {
   CHECK_EQ(gradients.Shape(1), output.Size());
-  if (!gradients.Size()) {
+  auto distributed = collective::GlobalCommGroup()->IsDistributed();
+  CHECK(ctx || !distributed) << "Distributed Metal stump fitting requires a Context.";
+  if (!output.Size()) return;
+  if (!gradients.Size() && !distributed) {
     FillInitialization(output, 0.0f);
     return;
   }
@@ -3551,7 +3610,25 @@ void FitStump(linalg::MatrixView<GradientPair const> gradients, linalg::VectorVi
     auto& rt = GetRuntime();
     auto command = [rt.queue commandBuffer];
     CHECK(command);
-    auto sums = EncodeGradientSum(rt, gradients, command);
+    id<MTLBuffer> sums;
+    if (gradients.Size()) {
+      sums = EncodeGradientSum(rt, gradients, command);
+    } else {
+      // CUDA initializes per-target GPU sums to zero even for empty workers.
+      sums = Allocate(rt, output.Size() * sizeof(GradientPairPrecise));
+      auto clear = [command blitCommandEncoder];
+      CHECK(clear);
+      [clear fillBuffer:sums range:NSMakeRange(0, output.Size() * sizeof(GradientPairPrecise)) value:0];
+      [clear endEncoding];
+    }
+    if (distributed) {
+      CompleteGradientSum(command);
+      auto view = linalg::MakeVec(static_cast<double*>(sums.contents), output.Size() * 2,
+                                  DeviceOrd::MPS());
+      collective::SafeColl(collective::GlobalSum(ctx, view));
+      command = [rt.queue commandBuffer];
+      CHECK(command);
+    }
     auto result = Allocate(rt, output.Size() * sizeof(float));
     auto e = [command computeCommandEncoder];
     CHECK(e);
@@ -3727,20 +3804,36 @@ void Center(linalg::VectorView<float> values, linalg::VectorView<float const> me
 }
 
 void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float const> weights,
-          linalg::VectorView<float> output) {
+          linalg::VectorView<float> output, Context const* ctx) {
   bool weighted = kind == MeanKind::kWeightedSample;
+  bool distributed = kind != MeanKind::kFloat32 && collective::GlobalCommGroup()->IsDistributed();
+  CHECK(ctx || !distributed) << "Distributed Metal sample means require a Context.";
   auto rows = values.Shape(0), targets = values.Shape(1);
   CHECK_EQ(output.Size(), std::max<std::size_t>(targets, 1));
   if (weighted) {
     CHECK_EQ(weights.size(), rows);
-    CHECK_GT(rows, 0) << "weights must contain at least one non-zero value.";
+    if (!distributed) CHECK_GT(rows, 0) << "weights must contain at least one non-zero value.";
   }
-  if (!rows || (!targets && !weighted)) {
+  if (!distributed && (!rows || (!targets && !weighted))) {
     FillInitialization(output, 0.0f);
     return;
   }
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
   CHECK_LE(targets, 65535);
+  double global_denominator = 0;
+  if (distributed) {
+    // stats.cu deliberately reduces this scalar on HOST, after a GPU local
+    // weight sum when weighted. Empty workers must participate as well.
+    if (weighted) {
+      global_denominator = Sum(weights);
+      collective::SafeColl(collective::GlobalSum(ctx, linalg::MakeVec(&global_denominator, 1)));
+      CHECK_GT(global_denominator, 0.0) << "weights must contain at least one non-zero value.";
+    } else {
+      std::uint64_t global_rows = rows;
+      collective::SafeColl(collective::GlobalSum(ctx, linalg::MakeVec(&global_rows, 1)));
+      global_denominator = static_cast<double>(global_rows);
+    }
+  }
   @autoreleasepool {
     auto& rt = GetRuntime();
     auto command = [rt.queue commandBuffer];
@@ -3783,7 +3876,11 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
       return result;
     };
     auto denominator = Allocate(rt, sizeof(GradientPairPrecise));
-    if (weighted) {
+    if (distributed) {
+      GradientPairPrecise host_denominator{global_denominator, 0.0};
+      std::memcpy(denominator.contents, &host_denominator, sizeof(host_denominator));
+    }
+    if (weighted && !distributed) {
       auto partial = Allocate(rt, shape.blocks * sizeof(GradientPairPrecise));
       auto e = [command computeCommandEncoder];
       CHECK(e);
@@ -3798,15 +3895,21 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
       weight_shape.targets = 1;
       denominator = finish(partial, weight_shape);
     }
-    id<MTLBuffer> result;
+    auto result = Allocate(rt, output.Size() * sizeof(float));
+    if (!targets && distributed) {
+      auto clear = [command blitCommandEncoder];
+      CHECK(clear);
+      [clear fillBuffer:result range:NSMakeRange(0, sizeof(float)) value:0];
+      [clear endEncoding];
+    }
     if (targets) {
       auto partial = Allocate(rt, shape.blocks * targets * sizeof(GradientPairPrecise));
       struct {
         Shape shape;
-        std::uint32_t weighted, float32_terms;
-      } p{shape, static_cast<std::uint32_t>(weighted),
-          static_cast<std::uint32_t>(kind == MeanKind::kFloat32)};
-      static_assert(sizeof(p) == 40);
+        std::uint32_t weighted, float32_terms, global_denominator, padding;
+      } p{shape, static_cast<std::uint32_t>(weighted), 0,
+          static_cast<std::uint32_t>(distributed), 0};
+      static_assert(sizeof(p) == 48);
       auto e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.mean_pipeline];
@@ -3815,11 +3918,11 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
       [e setBuffer:denominator offset:0 atIndex:2];
       [e setBuffer:partial offset:0 atIndex:3];
       [e setBytes:&p length:sizeof(p) atIndex:4];
-      [e dispatchThreadgroups:MTLSizeMake(shape.blocks, targets, 1)
-          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      if (shape.blocks)
+        [e dispatchThreadgroups:MTLSizeMake(shape.blocks, targets, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [e endEncoding];
       auto sums = finish(partial, shape);
-      result = Allocate(rt, targets * sizeof(float));
       e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.mean_result_pipeline];
@@ -3835,7 +3938,12 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
       CHECK_GT(static_cast<GradientPairPrecise const*>(denominator.contents)->GetGrad(), 0.0)
           << "weights must contain at least one non-zero value.";
     }
-    if (targets) CopyInitializationResult(rt, result, output);
+    if (distributed) {
+      // CUDA casts each local binary64 mean to FP32 before its GPU GlobalSum.
+      auto view = linalg::MakeVec(static_cast<float*>(result.contents), output.Size(), DeviceOrd::MPS());
+      collective::SafeColl(collective::GlobalSum(ctx, view));
+    }
+    if (targets || distributed) CopyInitializationResult(rt, result, output);
     else FillInitialization(output, 0.0f);
     mean_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;

@@ -70,7 +70,7 @@ void Mean(Context const* ctx, linalg::VectorView<float const> v, linalg::Vector<
     out->Reshape(1);
     std::size_t shape[2]{v.Size(), 1}, strides[2]{v.Stride(0), 1};
     linalg::MatrixView<float const> matrix{v.Values(), shape, strides, v.Device()};
-    metal::Mean(metal::MeanKind::kFloat32, matrix, {}, out->View(DeviceOrd::MPS()));
+    metal::Mean(metal::MeanKind::kFloat32, matrix, {}, out->View(DeviceOrd::MPS()), ctx);
     return;
   }
 #endif
@@ -95,8 +95,8 @@ void SampleMean(Context const* ctx, linalg::Matrix<float> const& v, linalg::Vect
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
     *out = linalg::Vector<float>({std::max<std::size_t>(v.Shape(1), 1)}, DeviceOrd::MPS());
-    metal::Mean(metal::MeanKind::kSample, v.View(DeviceOrd::MPS()), {},
-                out->View(DeviceOrd::MPS()));
+    metal::Mean(metal::MeanKind::kSample, v.View(DeviceOrd::MPS()), {}, out->View(DeviceOrd::MPS()),
+                ctx);
     return;
   }
 #endif
@@ -132,7 +132,7 @@ void WeightedSampleMean(Context const* ctx, linalg::Matrix<float> const& v,
   if (ctx->IsMPS()) {
     *out = linalg::Vector<float>({std::max<std::size_t>(v.Shape(1), 1)}, DeviceOrd::MPS());
     metal::Mean(metal::MeanKind::kWeightedSample, v.View(DeviceOrd::MPS()),
-                metal::ConstDeviceSpan(w), out->View(DeviceOrd::MPS()));
+                metal::ConstDeviceSpan(w), out->View(DeviceOrd::MPS()), ctx);
     return;
   }
 #endif

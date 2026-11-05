@@ -754,7 +754,8 @@ class QuantileHistMaker : public TreeUpdater {
             common::metal::CopyGradients(original_value_grad, sampled_value_grad);
             // CUDA constructs original value scales and replays float sampling
             // before tree growth. Leaf sums later use these original scales.
-            p_mtimpl_->SetValueQuantizer(common::metal::MakeGradientQuantizer(original_value_grad));
+            p_mtimpl_->SetValueQuantizer(
+                common::metal::MakeGradientQuantizer(original_value_grad, ctx_));
           } else
 #endif
           {

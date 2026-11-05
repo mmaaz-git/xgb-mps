@@ -75,7 +75,7 @@ struct GradientSampling {
   std::vector<IntegerPair> original, sampled;
   std::vector<float> norms;
   GradientSampling(std::vector<Pair> const& source, std::size_t n, std::size_t t, float p,
-                   std::uint32_t s)
+                   std::uint32_t s, std::vector<Scale> const& global_scales = {})
       : rows{n}, targets{t}, fraction{p}, seed{s}, scales(t), original(n * t), norms(n) {
     for (std::size_t c = 0; c < t; ++c) {
       double positive[2]{}, negative[2]{};
@@ -88,8 +88,9 @@ struct GradientSampling {
           else
             negative[k] -= values[k];
       }
-      auto scale = scales[c] = {Exponent(positive[0], negative[0], n),
-                                Exponent(positive[1], negative[1], n)};
+      auto scale = scales[c] = global_scales.empty() ? Scale{Exponent(positive[0], negative[0], n),
+                                                             Exponent(positive[1], negative[1], n)}
+                                                     : global_scales.at(c);
       for (std::size_t r = 0; r < n; ++r) {
         auto pair = source[r * t + c];
         auto& fixed = original[r * t + c];

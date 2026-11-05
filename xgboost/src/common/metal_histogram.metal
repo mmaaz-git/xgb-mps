@@ -1932,7 +1932,7 @@ kernel void xgb_bin_entries(
 
 struct MeanParams {
   GradientSumParams shape;
-  uint weighted, float32_terms;
+  uint weighted, float32_terms, global_denominator, padding;
 };
 kernel void xgb_mean_weight_reduce(device const uint* weights [[buffer(0)]],
                                    device ulong2* partial [[buffer(1)]],
@@ -1955,7 +1955,7 @@ kernel void xgb_mean_reduce(
     uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]],
     uint simd [[simdgroup_index_in_threadgroup]]) {
   ulong row = ulong(group.x) * 256 + tid;
-  XGBDouble denominator = p.weighted
+  XGBDouble denominator = p.weighted || p.global_denominator
                               ? XGBDouble{weight_sum[0].x}
                               : (p.float32_terms ? xgb_dfrom_float(float(p.shape.rows))
                                                  : XGBDouble{xgb_scaled_integer(p.shape.rows, 0)});

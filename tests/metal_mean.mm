@@ -19,12 +19,12 @@ struct Shape {
 };
 struct Params {
   Shape shape;
-  uint32_t weighted, float32_terms;
+  uint32_t weighted, float32_terms, global_denominator{0}, padding{0};
 };
 struct Pair {
   double g, h;
 };
-static_assert(sizeof(Shape) == 32 && sizeof(Params) == 40);
+static_assert(sizeof(Shape) == 32 && sizeof(Params) == 48);
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }

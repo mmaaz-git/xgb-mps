@@ -89,7 +89,7 @@ void FitStump(Context const* ctx, linalg::Matrix<GradientPair> const& gpair, bst
   if (ctx->IsMPS()) {
     out->SetDevice(DeviceOrd::MPS());
     out->Reshape(n_targets);
-    common::metal::FitStump(gpair.View(DeviceOrd::MPS()), out->View(DeviceOrd::MPS()));
+    common::metal::FitStump(gpair.View(DeviceOrd::MPS()), out->View(DeviceOrd::MPS()), ctx);
     return;
   }
 #endif

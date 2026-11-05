@@ -17,10 +17,11 @@ double Sum(Span<float const> values);
 // CUDA numeric::Reduce uses plus<float>; its FP32 result is returned as double.
 double SumFloat32(Span<float const> values);
 void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float const> weights,
-          linalg::VectorView<float> output);
+          linalg::VectorView<float> output, Context const* ctx = nullptr);
 void SumGradients(linalg::MatrixView<GradientPair const> gradients,
                   linalg::VectorView<GradientPairPrecise> output);
-void FitStump(linalg::MatrixView<GradientPair const> gradients, linalg::VectorView<float> output);
+void FitStump(linalg::MatrixView<GradientPair const> gradients, linalg::VectorView<float> output,
+              Context const* ctx = nullptr);
 // Sum one feature's bins. Quantized caches sum integers first, then convert;
 // their quantizer bounds require that each source row occurs at most once.
 GradientPairPrecise SumHistogram(HistogramBuffer const* storage, std::size_t offset,
