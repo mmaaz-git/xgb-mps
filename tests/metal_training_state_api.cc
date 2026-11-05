@@ -19,6 +19,7 @@
 #include "../xgboost/src/common/metal_training.h"
 #include "../xgboost/src/data/adapter.h"
 #include "../xgboost/src/tree/param.h"
+#include "../xgboost/src/tree/hist/histogram.h"
 #include "../xgboost/src/tree/tree_view.h"
 #include "xgboost/gradient.h"
 #include "xgboost/task.h"
@@ -328,6 +329,14 @@ void CategoricalUpdater(unsigned targets, bool onehot, bool lossguide) {
   Check(after.split_category_store_dispatches > before.split_category_store_dispatches &&
             after.partition_category_shared_input_bytes > before.partition_category_shared_input_bytes,
         "Production categorical storage/partition consumers missing");
+  Check(after.gradient_sum_readback_bytes == before.gradient_sum_readback_bytes &&
+            after.split_sum_readback_bytes == before.split_sum_readback_bytes &&
+            after.split_sum_host_input_bytes == before.split_sum_host_input_bytes,
+        "Production vector sums used CPU publication/staging");
+  Check(after.split_sum_store_dispatches > before.split_sum_store_dispatches &&
+            after.split_sum_gather_dispatches > before.split_sum_gather_dispatches &&
+            after.split_sum_apply_dispatches > before.split_sum_apply_dispatches,
+        "Production vector sum chain missing");
   Owned(positions[0]);
   auto view = model.HostMtView();  // First intentional CPU category inspection.
   Check(view.HasCategoricalSplit(), "Fixture did not select a category split");
@@ -400,7 +409,17 @@ void Updater(bool approx, unsigned targets, bool reduced, unsigned forest, unsig
       owners.push_back(std::make_unique<RegTree>(targets, columns));
       trees.push_back(owners.back().get());
     }
+    auto sum_before = metal::GetStatistics();
     updater->Update(&param, &gradients, matrix.get(), positions, trees);
+    if (gpu && targets > 1) {
+      auto sum_after = metal::GetStatistics();
+      Check(sum_after.gradient_sum_readback_bytes == sum_before.gradient_sum_readback_bytes &&
+                sum_after.split_sum_readback_bytes == sum_before.split_sum_readback_bytes &&
+                sum_after.split_sum_host_input_bytes == sum_before.split_sum_host_input_bytes,
+            "Vector/reduced/forest sum chain used CPU publication/staging");
+      Check(sum_after.split_sum_gather_dispatches > sum_before.split_sum_gather_dispatches,
+            "Production node sums were not gathered on GPU");
+    }
     if (gpu) {
       Owned(*gradients.gpair.Data());
       if (reduced) Owned(*gradients.value_gpair.Data());
@@ -440,6 +459,33 @@ void Updater(bool approx, unsigned targets, bool reduced, unsigned forest, unsig
   std::fflush(stdout);
 }
 
+void HistogramScheduling() {
+  current = "vector scalar Hessian scheduling";
+  Context ctx;
+  ctx.Init({{"device", "cpu"}, {"nthread", "1"}});
+  RegTree model(3, 1);
+  std::vector<float> weights(3, 0.f);
+  model.SetRoot(linalg::MakeVec(weights), 2.f);
+  tree::ExpandBatch batch{1.f};
+  batch.Push(0, 0, .5f, false, weights, weights, weights, 1.f, 1., 1., {});
+  model.Expand(&ctx, batch);
+  for (auto hessians : {std::pair{1., 3.}, std::pair{3., 1.}, std::pair{2., 2.}}) {
+    std::vector<tree::MultiExpandEntry> host{{0, 0}}, device{{0, 0}};
+    host[0].split.left_sum = {{0., hessians.first}, {0., 0.}, {0., 0.}};
+    host[0].split.right_sum = {{0., hessians.second}, {0., 0.}, {0., 0.}};
+    device[0].child_hessians = hessians;  // Target arrays remain empty.
+    std::vector<bst_node_t> host_build(1), host_sub(1), device_build(1), device_sub(1);
+    tree::AssignNodes(model.HostMtView(), host, host_build, host_sub);
+    tree::AssignNodes(model.HostMtView(), device, device_build, device_sub);
+    Check(host_build == device_build && host_sub == device_sub,
+          "Resident sums changed smaller-child histogram scheduling");
+    Check(device_build[0] == (hessians.second < hessians.first ? model.RightChild(0)
+                                                             : model.LeftChild(0)),
+          "Wrong smaller-child/tie scheduling");
+    ++cases;
+  }
+}
+
 int main() {
   try {
     Context ctx;
@@ -447,6 +493,7 @@ int main() {
     GroupCopies(ctx);
     VectorLeafSampling();
     WeightFallback();
+    HistogramScheduling();
     for (auto rows : {0u, 1u, 257u, 4097u})
       for (unsigned layout = 0; layout < 3; ++layout)
         for (bool gradient : {false, true}) Replay(rows, layout, gradient);

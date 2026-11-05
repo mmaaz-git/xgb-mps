@@ -146,5 +146,8 @@ struct Statistics {
   std::uint64_t prediction_shared_input_bytes;
   std::uint64_t split_category_store_dispatches, split_category_readback_bytes,
       partition_category_shared_input_bytes, partition_category_host_copy_bytes;
+  std::uint64_t gradient_sum_shared_output_bytes, gradient_sum_readback_bytes,
+      split_sum_store_dispatches, split_sum_gather_dispatches, split_sum_apply_dispatches,
+      split_sum_shared_input_bytes, split_sum_host_input_bytes, split_sum_readback_bytes;
 };
 }  // namespace xgboost::common::metal

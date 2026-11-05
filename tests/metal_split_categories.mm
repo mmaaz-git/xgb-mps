@@ -308,7 +308,7 @@ void Production(bool multi, unsigned targets) {
   ctx.Init({{"device", "mps"}, {"nthread", "1"}});
   unsigned n = 8;
   SparsePage page;
-  page.offset.HostVector().push_back(0);
+  page.offset.HostVector() = {0};
   common::HistogramCuts cuts{1};
   cuts.cut_ptrs_.HostVector() = {0, n};
   for (unsigned i = 0; i < n; ++i) {

@@ -5,6 +5,7 @@
 #define XGBOOST_TREE_HIST_EXPAND_ENTRY_H_
 
 #include <ostream>  // for ostream
+#include <optional>  // for optional
 #include <utility>  // for move
 #include <vector>   // for vector
 
@@ -46,6 +47,9 @@ struct CPUExpandEntry : public ExpandEntryImpl<CPUExpandEntry> {
 
 struct MultiExpandEntry : public ExpandEntryImpl<MultiExpandEntry> {
   SplitEntryContainer<std::vector<GradientPairPrecise>> split;
+  // Device evaluators retain target-length sums on GPU. These scalar totals
+  // preserve smaller-child histogram scheduling without publishing the arrays.
+  std::optional<std::pair<double, double>> child_hessians;
 
   MultiExpandEntry() = default;
   MultiExpandEntry(bst_node_t nidx, bst_node_t depth) : ExpandEntryImpl{nidx, depth} {}

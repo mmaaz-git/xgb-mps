@@ -30,10 +30,12 @@ void AssignNodes(MultiTargetTreeView const &tree,
     auto subtract_nidx = right_nidx;
     auto lit =
         common::MakeIndexTransformIter([&](auto i) { return c.split.left_sum[i].GetHess(); });
-    auto left_sum = std::accumulate(lit, lit + c.split.left_sum.size(), .0);
+    auto left_sum = c.child_hessians ? c.child_hessians->first
+                                   : std::accumulate(lit, lit + c.split.left_sum.size(), .0);
     auto rit =
         common::MakeIndexTransformIter([&](auto i) { return c.split.right_sum[i].GetHess(); });
-    auto right_sum = std::accumulate(rit, rit + c.split.right_sum.size(), .0);
+    auto right_sum = c.child_hessians ? c.child_hessians->second
+                                    : std::accumulate(rit, rit + c.split.right_sum.size(), .0);
     auto fewer_right = right_sum < left_sum;
     if (fewer_right) {
       std::swap(build_nidx, subtract_nidx);

@@ -32,6 +32,9 @@
 #include "../../common/metal_split.h"
 #endif
 
+namespace xgboost::common::metal {
+class QuantizedGradients;
+}
 namespace xgboost::tree {
 #if defined(XGBOOST_USE_METAL)
 inline std::unique_ptr<common::metal::InteractionConstraints> MakeMetalInteractionConstraints(
@@ -617,7 +620,7 @@ class HistMultiEvaluator {
   std::unique_ptr<common::metal::SplitWorkspace> metal_workspace_;
   std::unique_ptr<common::metal::InteractionConstraints> metal_constraints_;
   // Exact node sums and selected child sums persist by node ID across queues.
-  std::vector<GradientPairInt64> metal_node_sums_, metal_split_sums_;
+  std::unique_ptr<common::metal::SplitSumStorage> metal_sums_;
   std::unique_ptr<common::metal::SplitWeightStorage> metal_weights_;
   std::unique_ptr<common::metal::SplitCategoryStorage> metal_categories_;
   std::vector<common::metal::SplitNodeResult> metal_node_results_;
@@ -831,9 +834,8 @@ class HistMultiEvaluator {
       std::vector<common::metal::QuantizedMultiSplitTask> tasks;
       std::vector<common::metal::SplitFinalizeNode> nodes;
       std::vector<common::metal::SplitFinalizeFeature> final_features;
-      std::vector<GradientPairPrecise> final_parents;
+      std::vector<std::uint32_t> node_ids, feature_nodes;
       std::vector<common::metal::SplitBounds> final_bounds;
-      std::vector<GradientPairInt64> parents;
       std::size_t bins = 0;
       std::vector<common::metal::HistogramInput> inputs;
       for (auto target : hist) inputs.push_back({target->MetalBuffer(), {}});
@@ -843,10 +845,10 @@ class HistMultiEvaluator {
       for (std::size_t i = 0; i < entries.size(); ++i) {
         auto nid = entries[i].nid;
         auto begin = static_cast<std::uint32_t>(tasks.size());
-        auto parent_begin = static_cast<std::uint32_t>(final_parents.size());
-        CHECK_LE(final_parents.size() + targets, std::numeric_limits<std::uint32_t>::max());
+        CHECK_LE((node_ids.size() + 1) * targets, std::numeric_limits<std::uint32_t>::max());
+        auto parent_begin = static_cast<std::uint32_t>(node_ids.size() * targets);
+        node_ids.push_back(nid);
         for (std::size_t t = 0; t < targets; ++t) {
-          final_parents.push_back(stats_(nid, t));
           final_bounds.push_back(
               {evaluator.has_constraint ? evaluator.lower[nid * targets + t] : -INFINITY,
                evaluator.has_constraint ? evaluator.upper[nid * targets + t] : INFINITY});
@@ -861,18 +863,18 @@ class HistMultiEvaluator {
           auto n = ptr[f + 1] - ptr[f];
           if (!n) continue;
           CHECK_LE(bins + n * targets, std::numeric_limits<std::uint32_t>::max());
-          CHECK_LE(parents.size() + targets, std::numeric_limits<std::uint32_t>::max());
+          CHECK_LE((feature_nodes.size() + 1) * targets, std::numeric_limits<std::uint32_t>::max());
           bool categorical = common::IsCat(feature_types, f);
           std::uint32_t kind =
               categorical ? (common::UseOneHot(n, param_->max_cat_to_onehot) ? 1 : 2) : 0;
           tasks.push_back(
               {static_cast<std::uint32_t>(bins), static_cast<std::uint32_t>(bins + n * targets),
                kind, static_cast<std::uint32_t>(param_->max_cat_threshold),
-               static_cast<std::uint32_t>(parents.size()), static_cast<std::uint32_t>(targets),
+               static_cast<std::uint32_t>(feature_nodes.size() * targets), static_cast<std::uint32_t>(targets),
                evaluator.has_constraint ? evaluator.constraints[f] : 0,
                static_cast<std::uint32_t>(evaluator.has_constraint)});
+          feature_nodes.push_back(nid);
           for (std::size_t t = 0; t < targets; ++t) {
-            parents.push_back(metal_node_sums_.at(nid * targets + t));
             bounds.push_back({evaluator.has_constraint ? evaluator.lower[nid * targets + t]
                                                        : -std::numeric_limits<float>::infinity(),
                               evaluator.has_constraint ? evaluator.upper[nid * targets + t]
@@ -893,15 +895,20 @@ class HistMultiEvaluator {
       common::metal::SplitParameters parameters{param_->reg_lambda, param_->reg_alpha,
                                                 param_->max_delta_step, param_->min_child_weight};
       std::vector<common::metal::QuantizedMultiSplitResult> results;
-      std::vector<GradientPairInt64> integer_children;
-      std::vector<GradientPairPrecise> children;
+      // One resident gather supplies node-order finalization and feature-order scans.
+      auto node_count = node_ids.size();
+      node_ids.insert(node_ids.end(), feature_nodes.begin(), feature_nodes.end());
+      auto sums = metal_sums_->Gather(node_ids);
+      auto parents = sums.integers.subspan(node_count * targets);
+      auto final_parents = sums.precise.subspan(0, node_count * targets);
       common::metal::EvaluateQuantizedMultiSplits(inputs, tasks, parents, bounds, parameters,
-                                                  &results, &integer_children, &children, nullptr,
+                                                  &results, nullptr, nullptr, nullptr,
                                                   metal_workspace_.get());
       std::vector<common::metal::SplitNodeResult> finalized;
       common::metal::FinalizeSplitNodes(nodes, final_features, final_parents, final_bounds,
                                         parameters, true, &finalized, nullptr,
                                         metal_workspace_.get());
+      std::vector<common::metal::SplitSumCopy> sum_copies;
       std::vector<common::metal::SplitWeightCopy> weight_copies;
       std::vector<common::metal::SplitCategoryCopy> category_copies;
       std::vector<common::metal::SplitCategoryTask> category_tasks;
@@ -934,16 +941,15 @@ class HistMultiEvaluator {
         else
           split = cut.Values()[ptr[f] + r.bin];
         SplitEntryContainer<std::vector<GradientPairPrecise>> candidate;
-        auto left = linalg::MakeVec(children.data() + 2 * task.parent_begin, targets);
-        auto right = linalg::MakeVec(children.data() + 2 * task.parent_begin + targets, targets);
+        // Driver validity/ordering use scalar loss, feature and depth only.
+        auto left = linalg::MakeVec(DeviceOrd::CPU(), common::Span<GradientPairPrecise const>{});
+        auto right = left;
         candidate.Update(finalized[entry].loss_chg, f, split, r.default_left, task.kind != 0, left,
                          right);
         if (entries[entry].split.Update(candidate)) {
-          auto offset = std::size_t(nid) * 2 * targets;
-          if (metal_split_sums_.size() < offset + 2 * targets)
-            metal_split_sums_.resize(offset + 2 * targets);
-          std::copy_n(integer_children.data() + 2 * task.parent_begin, 2 * targets,
-                      metal_split_sums_.data() + offset);
+          sum_copies.push_back({i, static_cast<std::uint32_t>(nid)});
+          entries[entry].child_hessians = {finalized[entry].left_hess,
+                                            finalized[entry].right_hess};
           weight_copies.push_back(
               {static_cast<std::uint32_t>(entry), static_cast<std::uint32_t>(nid)});
           if (category_words)
@@ -953,6 +959,7 @@ class HistMultiEvaluator {
           metal_node_results_[nid] = finalized[entry];
         }
       }
+      metal_sums_->Store(*metal_workspace_, sum_copies);
       metal_weights_->Store(*metal_workspace_, weight_copies);
       if (!category_copies.empty()) {
         if (!metal_categories_)
@@ -1063,20 +1070,22 @@ class HistMultiEvaluator {
 
   linalg::Vector<float> InitRoot(linalg::VectorView<GradientPairPrecise const> root_sum,
                                  common::Span<GradientPairInt64 const> quantized = {},
-                                 float* metal_root_cover = nullptr) {
+                                 float* metal_root_cover = nullptr,
+                                 std::shared_ptr<common::metal::QuantizedGradients const> gradients = {}) {
     auto n_targets = root_sum.Size();
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       CHECK_EQ(quantized.size(), n_targets);
       if (metal_constraints_) metal_constraints_->Reset();
-      metal_node_sums_.assign(quantized.begin(), quantized.end());
-      metal_split_sums_.clear();
+      metal_sums_ = common::metal::MakeSplitSumStorage(std::move(gradients));
+      metal_sums_->InitRoot(quantized);
       metal_weights_ = common::metal::MakeSplitWeightStorage(n_targets);
       metal_categories_.reset();
       metal_node_results_.clear();
     }
 #endif
-    stats_ = linalg::Constant(ctx_, GradientPairPrecise{}, 1, n_targets);
+    if (ctx_->IsMPS()) stats_.Reshape(0, n_targets);
+    else stats_ = linalg::Constant(ctx_, GradientPairPrecise{}, 1, n_targets);
     gain_.resize(1);
 
     linalg::Vector<float> weight({n_targets}, ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU());
@@ -1101,6 +1110,7 @@ class HistMultiEvaluator {
                                      common::metal::ModelBufferKind::kWeights);
       gain_.front() = metal_node_results_[0].parent_gain;
       if (metal_root_cover) *metal_root_cover = metal_node_results_[0].parent_hess;
+      return weight;
     } else
 #endif
     {
@@ -1117,8 +1127,7 @@ class HistMultiEvaluator {
   void ApplyTreeSplit(MultiExpandEntry const &candidate, RegTree *p_tree) {
     // Use the split gradient's number of targets for intermediate weights
     // This may differ from p_tree->NumTargets() when using reduced gradient
-    auto n_split_targets = candidate.split.left_sum.size();
-    auto parent_sum = stats_.Slice(candidate.nid, linalg::All());
+    auto n_split_targets = ctx_->IsMPS() ? stats_.Shape(1) : candidate.split.left_sum.size();
 
     auto evaluator = tree_evaluator_.GetEvaluator();
     linalg::Matrix<float> weight;
@@ -1145,6 +1154,7 @@ class HistMultiEvaluator {
       auto base = weight.Slice(0, linalg::All());
       auto left = weight.Slice(1, linalg::All());
       auto right = weight.Slice(2, linalg::All());
+      auto parent_sum = stats_.Slice(candidate.nid, linalg::All());
       evaluator.CalcWeight(candidate.nid, *param_, parent_sum, base);
       evaluator.CalcSplitWeights(*param_, candidate.nid, candidate.split.SplitIndex(), left_sum,
                                  right_sum, left, right);
@@ -1203,13 +1213,8 @@ class HistMultiEvaluator {
     std::size_t n_nodes = p_tree->Size();
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      metal_node_sums_.resize(n_nodes * n_split_targets);
-      auto offset = std::size_t(candidate.nid) * 2 * n_split_targets;
-      CHECK_LE(offset + 2 * n_split_targets, metal_split_sums_.size());
-      std::copy_n(metal_split_sums_.data() + offset, n_split_targets,
-                  metal_node_sums_.data() + left_child * n_split_targets);
-      std::copy_n(metal_split_sums_.data() + offset + n_split_targets, n_split_targets,
-                  metal_node_sums_.data() + right_child * n_split_targets);
+      metal_sums_->Apply(candidate.nid, left_child, right_child);
+      return;
     }
 #endif
     gain_.resize(n_nodes);

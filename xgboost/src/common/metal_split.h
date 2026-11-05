@@ -7,6 +7,7 @@
 #include "xgboost/base.h"
 #include "xgboost/span.h"
 namespace xgboost::common::metal {
+class QuantizedGradients;
 class SplitWorkspace {
  public:
   virtual ~SplitWorkspace() = default;
@@ -100,6 +101,30 @@ struct QuantizedMultiSplitResult {
   std::int32_t bin;
   std::uint32_t default_left, partition;
 };
+struct SplitSumCopy {
+  std::uint32_t candidate, node;
+};
+struct SplitSumViews {
+  Span<GradientPairInt64 const> integers;
+  Span<GradientPairPrecise const> precise;
+};
+// Exact node and selected-child payloads survive queued candidates and workspace
+// reuse. Only descriptors live on the host. Gather derives binary64 views on GPU
+// using the original quantizers; integers are never reconstructed from floats.
+class SplitSumStorage {
+ public:
+  virtual ~SplitSumStorage() = default;
+  // One root per storage instance; input must be resident on Metal.
+  virtual void InitRoot(Span<GradientPairInt64 const> root) = 0;
+  virtual void Store(SplitWorkspace const& workspace, Span<SplitSumCopy const> copies) = 0;
+  virtual void Apply(std::uint32_t parent, std::uint32_t left, std::uint32_t right) = 0;
+  // Views remain valid until the next Gather or destruction. Duplicate/reordered
+  // node IDs are allowed; all requested nodes must have been initialized.
+  virtual SplitSumViews Gather(Span<std::uint32_t const> nodes) = 0;
+};
+std::unique_ptr<SplitSumStorage> MakeSplitSumStorage(
+    std::shared_ptr<QuantizedGradients const> gradients);
+// Null child destinations retain both exact and precise payloads on the GPU.
 void EvaluateQuantizedMultiSplits(
     Span<HistogramInput const> histograms, Span<QuantizedMultiSplitTask const> tasks,
     Span<GradientPairInt64 const> parents, Span<SplitBounds const> bounds,

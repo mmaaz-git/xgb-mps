@@ -260,19 +260,23 @@ class MultiTargetHistBuilder {
 
     auto n_targets = gpair.Shape(1);
     auto root_sum = linalg::Empty<GradientPairPrecise>(ctx_, n_targets);
-    std::vector<GradientPairInt64> quantized_root(n_targets);
-    auto h_root_sum = root_sum.HostView();
-    CHECK(h_root_sum.CContiguous());
+    auto device = ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU();
+    HostDeviceVector<GradientPairInt64> quantized_root(n_targets, {}, device);
+    auto root_view = root_sum.View(device);
+    auto exact = ctx_->IsMPS() ? quantized_root.DeviceSpan() : quantized_root.HostSpan();
+    std::shared_ptr<common::metal::QuantizedGradients const> root_gradients;
+    CHECK(root_view.CContiguous());
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      quantized_->SumRoot(ctx_, DeviceOrd::MPS(), h_root_sum, quantized_root);
+      quantized_->SumRoot(ctx_, DeviceOrd::MPS(), root_view, exact);
+      root_gradients = quantized_;
     } else
 #endif
     {
-      cpu_impl::SumGradients(ctx_, gpair, h_root_sum);
+      cpu_impl::SumGradients(ctx_, gpair, root_view);
       auto rc = collective::GlobalSum(
-          ctx_, linalg::MakeVec(reinterpret_cast<double *>(h_root_sum.Values().data()),
-                                h_root_sum.Size() * 2));
+          ctx_, linalg::MakeVec(reinterpret_cast<double *>(root_view.Values().data()),
+                                root_view.Size() * 2));
       collective::SafeColl(rc);
     }
 
@@ -280,7 +284,7 @@ class MultiTargetHistBuilder {
                                       HistBatch(param_));
 
     float root_sum_hess = 0.0f;
-    auto weight = evaluator_->InitRoot(h_root_sum, quantized_root, &root_sum_hess);
+    auto weight = evaluator_->InitRoot(root_view, exact, &root_sum_hess, std::move(root_gradients));
     // This is the common CPU updater even if manually selected with a CUDA
     // context. Only the explicit Metal branch below consumes a device view.
     auto weight_t = weight.View(ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU());
@@ -298,7 +302,7 @@ class MultiTargetHistBuilder {
     // Compute root sum_hess by summing hessians across all targets
     if (!ctx_->IsMPS()) {
       for (bst_target_t t{0}; t < n_targets; ++t) {
-        root_sum_hess += static_cast<float>(h_root_sum(t).GetHess());
+        root_sum_hess += static_cast<float>(root_view(t).GetHess());
       }
     }
     p_tree->SetRoot(weight_t, root_sum_hess);

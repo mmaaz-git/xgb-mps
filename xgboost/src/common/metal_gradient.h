@@ -36,6 +36,8 @@ class QuantizedGradients {
                    Span<GradientPairInt64> integers = {}) const = 0;
   // Global exact roots: CUDA scalar roots reduce host integers, vector roots
   // reduce device integers. Dequantize only after the collective completes.
+  // MPS output views and resident integer spans are published with GPU copies;
+  // host output views remain available for scalar orchestration and diagnostics.
   virtual void SumRoot(Context const* ctx, DeviceOrd reduction_device,
                        linalg::VectorView<GradientPairPrecise> output,
                        Span<GradientPairInt64> integers) const = 0;

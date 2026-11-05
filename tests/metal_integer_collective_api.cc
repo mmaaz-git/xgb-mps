@@ -17,6 +17,7 @@
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/metal_leaf.h"
 #include "../xgboost/src/common/metal_reduction.h"
+#include "../xgboost/src/common/metal_split.h"
 #include "../xgboost/src/common/metal_training.h"
 #include "../xgboost/src/data/adapter.h"
 #include "../xgboost/src/data/gradient_index.h"
@@ -179,6 +180,51 @@ void Roots(Context const& ctx, int rank, int world, Reference const& reference,
           "Wrong root collective placement");
     Check(after.staging_bytes == before.staging_bytes, "Root integers staged");
   }
+  // Resident global roots must feed a GPU finalizer before any host inspection.
+  HostDeviceVector<GradientPairInt64> resident_exact(targets + 2, {19, 23}, DeviceOrd::MPS());
+  HostDeviceVector<GradientPairPrecise> resident_fp(2 * targets + 2, {13, 17}, DeviceOrd::MPS());
+  auto ints = resident_exact.DeviceSpan();
+  auto fp = resident_fp.DeviceSpan();
+  linalg::VectorView<GradientPairPrecise> view{
+      fp.subspan(1, 2 * targets), {targets}, {std::size_t{2}}, DeviceOrd::MPS()};
+  auto before = metal::GetStatistics();
+  auto coll_before = metal::GetCollectiveStatistics();
+  state.SumRoot(&ctx, DeviceOrd::MPS(), view, ints.subspan(1, targets));
+  // Finalize one target per descriptor directly from the offset GPU span;
+  // alternating descriptors read the intentionally initialized guard values.
+  std::vector<metal::SplitFinalizeNode> nodes;
+  for (std::uint32_t t = 0; t < 2 * targets; ++t) nodes.push_back({0, 0, t, 1});
+  std::vector<metal::SplitBounds> bounds(2 * targets, {-INFINITY, INFINITY});
+  std::vector<metal::SplitNodeResult> finalized;
+  auto workspace = metal::MakeSplitWorkspace();
+  metal::FinalizeSplitNodes(nodes, {}, fp.subspan(1, 2 * targets), bounds, {1, 0, 0, 0}, true,
+                            &finalized, nullptr, workspace.get());
+  auto after = metal::GetStatistics();
+  auto coll_after = metal::GetCollectiveStatistics();
+  Check(after.gradient_sum_readback_bytes == before.gradient_sum_readback_bytes &&
+            after.split_sum_host_input_bytes == before.split_sum_host_input_bytes &&
+            after.vector_readback_bytes == before.vector_readback_bytes &&
+            after.vector_upload_bytes == before.vector_upload_bytes,
+        "Resident collective root published through CPU");
+  Check((coll_after.reduce_dispatches > coll_before.reduce_dispatches) == (world > 1),
+        "Resident root collective placement");
+  Check(!resident_exact.HostCanRead() && !resident_fp.HostCanRead(), "Root acquired host mirror");
+  auto hi = resident_exact.ConstDeviceSpan();
+  auto hf = resident_fp.ConstDeviceSpan();
+  for (std::size_t t = 0; t < targets; ++t) {
+    Sum expected;
+    for (auto const& rows : reference.integers)
+      for (std::size_t row = 0; row < rows.size() / targets; ++row)
+        expected.Add(rows[row * targets + t]);
+    Same(hi[t + 1].GetQuantisedGrad(), expected.Integer().GetQuantisedGrad());
+    Same(hi[t + 1].GetQuantisedHess(), expected.Integer().GetQuantisedHess());
+    SamePair(hf[1 + 2 * t], expected.Floating(reference.scales[t]));
+    Same(finalized[2 * t].parent_hess, expected.Floating(reference.scales[t]).GetHess());
+    SamePair(hf[2 + 2 * t], {13, 17});
+  }
+  Check(hi.front() == GradientPairInt64{19, 23} && hi.back() == GradientPairInt64{19, 23} &&
+            hf.front() == GradientPairPrecise{13, 17} && hf.back() == GradientPairPrecise{13, 17},
+        "Resident root guards changed");
   state.Sum(out);  // Global roots must not mutate the per-row local state.
   for (std::size_t t = 0; t < targets; ++t) {
     Sum expected;

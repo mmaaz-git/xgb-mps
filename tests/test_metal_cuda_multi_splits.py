@@ -203,3 +203,30 @@ def test_reduced_vector_tree_integer_state(metal, split_targets, sampling, fract
                               integers=integers, value_integers=(qvalues, scales))) > 0
     cpu = xgb.Booster(params={"device": "cpu"}, model_file=model.save_raw())
     np.testing.assert_array_equal(model.predict(d), cpu.predict(d))
+
+
+@pytest.mark.parametrize("targets", [2, 17])
+@pytest.mark.parametrize("reason", ["no_features", "no_gain", "leaf_limit"])
+def test_vector_root_only_sum_residency(metal, targets, reason):
+    x = np.arange(64, dtype=np.float32).reshape(32, 2)
+    if reason == "no_features":
+        x[:] = np.nan
+    g = np.tile(np.arange(targets, dtype=np.float32) + 1, (len(x), 1))
+    h = np.ones_like(g)
+    if reason == "leaf_limit":
+        g[16:] *= -3
+    d = xgb.DMatrix(x, label=np.zeros_like(g))
+    params = dict(device="mps", tree_method="hist", multi_strategy="multi_output_tree",
+                  base_score=0, learning_rate=1, max_depth=3, nthread=1)
+    if reason == "leaf_limit":
+        params.update(max_leaves=1, grow_policy="lossguide")
+    before = xgb.metal_info()
+    model = xgb.train(params, d, 1, obj=lambda pred, data: (g, h))
+    after = xgb.metal_info()
+    for key in ("gradient_sum_readback_bytes", "split_sum_readback_bytes", "split_sum_host_input_bytes"):
+        assert after[key] == before[key], key
+    assert after["split_sum_gather_dispatches"] > before["split_sum_gather_dispatches"]
+    assert after["split_sum_apply_dispatches"] == before["split_sum_apply_dispatches"]
+    assert len(trees(model)[0]["left_children"]) == 1
+    expected = np.tile(-g.astype(np.float64).sum(axis=0) / (len(x) + 1), (len(x), 1)).astype(np.float32)
+    np.testing.assert_array_equal(model.predict(d), expected)
