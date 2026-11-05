@@ -56,6 +56,9 @@ def test_complete_cuda_scalar_tree(metal, layout, constraints, growth, cache, tm
     model = xgb.train(p, d, 2, obj=recorded)
     after = xgb.metal_info()
     assert after["cuda_integer_split_dispatches"] > before["cuda_integer_split_dispatches"]
+    assert after["split_bounds_gather_dispatches"] > before["split_bounds_gather_dispatches"]
+    assert after["split_bounds_shared_input_bytes"] > before["split_bounds_shared_input_bytes"]
+    assert after["split_bounds_host_copy_bytes"] == before["split_bounds_host_copy_bytes"]
     counts = [0, 0]
     for tree, (g, h) in zip(trees(model), recorded.gradients, strict=True):
         result = audit_tree(tree, x, d.get_quantile_cut(), types, g.reshape(-1), h.reshape(-1), p)

@@ -73,6 +73,13 @@ struct MultiSplitTask {
 struct SplitBounds {
   float lower, upper;
 };
+// Gather node-major bounds on GPU. Node IDs are host scheduling metadata; lower
+// and upper are resident payloads (empty means unconstrained +/-infinity).
+// The result is an owned snapshot in workspace, valid until its next gather or
+// destruction. Evaluating/finalizing splits does not invalidate the snapshot.
+Span<SplitBounds const> GatherSplitBounds(Span<std::uint32_t const> nodes,
+                                         std::uint32_t targets, Span<float const> lower,
+                                         Span<float const> upper, SplitWorkspace* workspace);
 // GPU-owned monotonic bounds. Grow preserves existing values and initializes
 // only the new tail to +/-FLT_MAX, as CUDA HostDeviceVector::Resize does.
 // Shared read views are valid until the next growth or destruction; operations

@@ -308,7 +308,7 @@ class HistEvaluator {
       auto evaluator = tree_evaluator_.GetEvaluator();
       std::vector<GradientPairInt64> parents;
       std::vector<GradientPairPrecise> final_parents;
-      std::vector<common::metal::SplitBounds> final_bounds;
+      std::vector<std::uint32_t> node_ids;
       std::vector<HostDeviceVector<bst_feature_t>> allowed;
       std::vector<common::Span<bst_feature_t const>> resident_features;
       std::vector<common::metal::HistogramInput> inputs{{hist.MetalBuffer(), {}}};
@@ -317,8 +317,7 @@ class HistEvaluator {
         auto nid = entries[i].nid;
         parents.push_back(snode_[nid].quantized);
         final_parents.emplace_back(snode_[nid].stats.GetGrad(), snode_[nid].stats.GetHess());
-        final_bounds.push_back({evaluator.has_constraint ? evaluator.lower[nid] : -INFINITY,
-                                evaluator.has_constraint ? evaluator.upper[nid] : INFINITY});
+        node_ids.push_back(nid);
         auto sampled = features[i]->ConstDeviceSpan();
         if (metal_constraints_) {
           allowed.push_back(metal_constraints_->QueryDevice(sampled, nid));
@@ -335,6 +334,7 @@ class HistEvaluator {
       std::vector<common::metal::SplitNodeWeights> node_weights;
       common::Span<std::int32_t const> constraints;
       if (evaluator.has_constraint) constraints = {evaluator.constraints, ptr.size() - 1};
+      auto final_bounds = tree_evaluator_.GatherBounds(node_ids, metal_workspace_.get());
       common::metal::EvaluateFeatureSplits(
           inputs, resident_features, ptr, feature_types, constraints, param_->max_cat_to_onehot,
           param_->max_cat_threshold, parents, final_parents, final_bounds, parameters, false,
@@ -539,14 +539,13 @@ class HistEvaluator {
       if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
       common::metal::SplitFinalizeNode node{0, 0, 0, 1};
       GradientPairPrecise parent{root_sum.GetGrad(), root_sum.GetHess()};
-      auto evaluator = tree_evaluator_.GetEvaluator();
-      common::metal::SplitBounds bounds{evaluator.has_constraint ? evaluator.lower[0] : -INFINITY,
-                                        evaluator.has_constraint ? evaluator.upper[0] : INFINITY};
+      std::uint32_t root_id = RegTree::kRoot;
+      auto bounds = tree_evaluator_.GatherBounds({&root_id, 1}, metal_workspace_.get());
       common::metal::SplitParameters params{param_->reg_lambda, param_->reg_alpha,
                                             param_->max_delta_step, param_->min_child_weight};
       std::vector<common::metal::SplitNodeResult> result;
       std::vector<common::metal::SplitNodeWeights> weights;
-      common::metal::FinalizeSplitNodes({&node, 1}, {}, {&parent, 1}, {&bounds, 1}, params, false,
+      common::metal::FinalizeSplitNodes({&node, 1}, {}, {&parent, 1}, bounds, params, false,
                                         &result, &weights, metal_workspace_.get());
       snode_[0].root_gain = result[0].parent_gain;
       snode_[0].metal_weights = weights[0];
@@ -810,7 +809,6 @@ class HistMultiEvaluator {
       auto evaluator = tree_evaluator_.GetEvaluator();
       auto targets = hist.size();
       std::vector<std::uint32_t> node_ids;
-      std::vector<common::metal::SplitBounds> final_bounds;
       std::vector<HostDeviceVector<bst_feature_t>> allowed;
       std::vector<common::Span<bst_feature_t const>> resident_features;
       std::vector<common::metal::HistogramInput> inputs;
@@ -820,9 +818,6 @@ class HistMultiEvaluator {
         auto nid = entries[i].nid;
         node_ids.push_back(nid);
         for (std::size_t t = 0; t < targets; ++t) {
-          final_bounds.push_back(
-              {evaluator.has_constraint ? evaluator.lower[nid * targets + t] : -INFINITY,
-               evaluator.has_constraint ? evaluator.upper[nid * targets + t] : INFINITY});
           inputs[t].segments.push_back(
               {hist[t]->Offset(nid), 0, static_cast<std::uint32_t>(cut.TotalBins()), 1, 0});
         }
@@ -840,6 +835,7 @@ class HistMultiEvaluator {
       if (evaluator.has_constraint) constraints = {evaluator.constraints, ptr.size() - 1};
       std::vector<common::metal::SplitNodeResult> finalized;
       std::vector<common::metal::FeatureSplitResult> selected;
+      auto final_bounds = tree_evaluator_.GatherBounds(node_ids, metal_workspace_.get());
       common::metal::EvaluateFeatureSplits(
           inputs, resident_features, ptr, feature_types, constraints, param_->max_cat_to_onehot,
           param_->max_cat_threshold, sums.integers, sums.precise, final_bounds, parameters, true,
@@ -1030,10 +1026,8 @@ class HistMultiEvaluator {
     if (ctx_->IsMPS()) {
       if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
       common::metal::SplitFinalizeNode node{0, 0, 0, static_cast<std::uint32_t>(n_targets)};
-      std::vector<common::metal::SplitBounds> bounds;
-      for (std::size_t t = 0; t < n_targets; ++t)
-        bounds.push_back({evaluator.has_constraint ? evaluator.lower[t] : -INFINITY,
-                          evaluator.has_constraint ? evaluator.upper[t] : INFINITY});
+      std::uint32_t root_id = RegTree::kRoot;
+      auto bounds = tree_evaluator_.GatherBounds({&root_id, 1}, metal_workspace_.get());
       common::metal::SplitParameters params{param_->reg_lambda, param_->reg_alpha,
                                             param_->max_delta_step, param_->min_child_weight};
       common::metal::FinalizeSplitNodes({&node, 1}, {}, root_sum.Values().subspan(0, n_targets),

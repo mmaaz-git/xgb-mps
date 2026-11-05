@@ -6,6 +6,8 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/metal_split.h"
@@ -14,6 +16,7 @@
 using namespace xgboost;
 namespace metal = common::metal;
 std::size_t values = 0, updates = 0, cases = 0;
+std::size_t gathers = 0;
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
@@ -30,6 +33,101 @@ void Reject(F f) {
     rejected = true;
   }
   Check(rejected, "Invalid bound operation accepted");
+}
+void Consume(common::Span<metal::SplitBounds const> bounds,
+             std::vector<metal::SplitBounds> const& expected, unsigned targets, bool multi,
+             metal::SplitWorkspace* workspace) {
+  std::vector<metal::SplitFinalizeNode> nodes;
+  std::vector<metal::SplitWeightCopy> copies;
+  for (unsigned n = 0; n < expected.size() / targets; ++n) {
+    nodes.push_back({0, 0, n * targets, targets});
+    copies.push_back({n, n});
+  }
+  HostDeviceVector<GradientPairPrecise> parents(expected.size(), {2.0, 1.0}, DeviceOrd::MPS());
+  auto stored = metal::MakeSplitWeightStorage(targets);
+  std::vector<metal::SplitNodeResult> actual, oracle;
+  auto before = metal::GetStatistics();
+  metal::FinalizeSplitNodes(nodes, {}, parents.ConstDeviceSpan(), bounds, {1, 0, 0, 0}, multi,
+                            &actual, nullptr, workspace);
+  stored->Store(*workspace, copies);
+  auto after = metal::GetStatistics();
+  Check(after.split_bounds_host_copy_bytes == before.split_bounds_host_copy_bytes &&
+            after.vector_readback_bytes == before.vector_readback_bytes &&
+            after.split_weight_readback_bytes == before.split_weight_readback_bytes,
+        "Gather/finalizer/weight consumer copied payloads through CPU");
+  auto reference = metal::MakeSplitWorkspace();
+  metal::FinalizeSplitNodes(nodes, {}, parents.ConstDeviceSpan(), expected, {1, 0, 0, 0}, multi,
+                            &oracle, nullptr, reference.get());
+  Check(actual.size() == oracle.size() &&
+            !std::memcmp(actual.data(), oracle.data(), actual.size() * sizeof(actual[0])),
+        "Gathered bounds changed split finalization");
+  Check(bounds.size() == expected.size() &&
+            !std::memcmp(bounds.data(), expected.data(), bounds.size_bytes()),
+        "Gathered bound bits differ");
+  values += bounds.size() * 2;
+}
+
+void GatherEdges() {
+  auto workspace = metal::MakeSplitWorkspace();
+  auto state = metal::MakeSplitBoundsStorage(6);
+  float a = -.5f, b = .25f;
+  state->Update(0, 1, 2, 1, {&a, 1}, {&b, 1}, false);
+  std::vector<std::uint32_t> ids{2, 0, 1, 2};
+  float limit = std::numeric_limits<float>::max();
+  std::vector<metal::SplitBounds> expected{{-.125f, limit}, {-limit, limit},
+                                           {-limit, -.125f}, {-.125f, limit}};
+  auto before = metal::GetStatistics();
+  auto snapshot = metal::GatherSplitBounds(ids, 1, state->Lower(), state->Upper(), workspace.get());
+  state->Grow(513);
+  state->Update(0, 1, 2, -1, {&b, 1}, {&b, 1}, false);
+  state.reset();
+  Check(metal::GetStatistics().split_bounds_host_copy_bytes == before.split_bounds_host_copy_bytes,
+        "Gather snapshot used a host copy");
+  Consume(snapshot, expected, 1, false, workspace.get());
+  ++gathers;
+
+  // Both source arrays alias the old gather. A new publication cannot overwrite
+  // inputs while other GPU threads still read them.
+  common::Span<float const> alias{reinterpret_cast<float const*>(snapshot.data()), snapshot.size() * 2};
+  ids = {3, 1, 2, 0};
+  std::vector<float> flat;
+  for (auto bound : expected) { flat.push_back(bound.lower); flat.push_back(bound.upper); }
+  expected.clear();
+  for (auto id : ids) for (unsigned t = 0; t < 2; ++t)
+    expected.push_back({flat[id * 2 + t], flat[id * 2 + t]});
+  snapshot = metal::GatherSplitBounds(ids, 2, alias, alias, workspace.get());
+  Consume(snapshot, expected, 2, true, workspace.get());
+  ++gathers;
+
+  before = metal::GetStatistics();
+  auto valid = snapshot;
+  Reject([&] { metal::GatherSplitBounds(ids, 0, {}, {}, workspace.get()); });
+  Reject([&] { metal::GatherSplitBounds(ids, 1, {}, {}, nullptr); });
+  Reject([&] { metal::GatherSplitBounds(ids, 1, {flat.data(), 1}, {}, workspace.get()); });
+  Reject([&] { metal::GatherSplitBounds(ids, 3, flat, flat, workspace.get()); });
+  Reject([&] { metal::GatherSplitBounds(ids, 1, {flat.data(), 1}, {flat.data(), 1}, workspace.get()); });
+  Reject([&] { metal::GatherSplitBounds(ids, 0xffffffffu, {}, {}, workspace.get()); });
+  Check(metal::GetStatistics().split_bounds_gather_dispatches == before.split_bounds_gather_dispatches,
+        "Invalid gathers dispatched");
+  Consume(valid, expected, 2, true, workspace.get());  // Rejections preserve the previous result.
+
+  auto bytes = static_cast<std::size_t>(getpagesize());
+  auto* memory = static_cast<float*>(mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                                         MAP_PRIVATE | MAP_ANON, -1, 0));
+  Check(memory != MAP_FAILED, "mmap failed");
+  std::copy(flat.begin(), flat.end(), memory);
+  Check(mprotect(memory, bytes, PROT_READ) == 0, "mprotect failed");
+  before = metal::GetStatistics();
+  snapshot = metal::GatherSplitBounds(ids, 2, {memory, flat.size()}, {memory, flat.size()}, workspace.get());
+  Check(metal::GetStatistics().split_bounds_host_copy_bytes - before.split_bounds_host_copy_bytes ==
+            2 * flat.size() * sizeof(float), "Read-only diagnostic fallback accounting");
+  Check(munmap(memory, bytes) == 0, "munmap failed");
+  Consume(snapshot, expected, 2, true, workspace.get());
+  ++gathers;
+  before = metal::GetStatistics();
+  Check(metal::GatherSplitBounds({}, 1, {}, {}, workspace.get()).empty(), "Empty gather output");
+  Check(metal::GetStatistics().split_bounds_gather_dispatches == before.split_bounds_gather_dispatches,
+        "Empty gather dispatched");
 }
 void Storage() {
   auto before = metal::GetStatistics();
@@ -104,6 +202,7 @@ void Evaluators() {
         tree::TreeEvaluator cpu{param, 2, DeviceOrd::CPU(), targets};
         auto before = metal::GetStatistics();
         tree::TreeEvaluator gpu{param, 2, DeviceOrd::CPU(), targets, true};
+        auto workspace = metal::MakeSplitWorkspace();
         Check(metal::GetStatistics().split_bounds_init_dispatches ==
                   before.split_bounds_init_dispatches + 1,
               "Evaluator did not initialize on GPU");
@@ -152,6 +251,19 @@ void Evaluators() {
               metal::GetStatistics().split_bounds_dispatches == before.split_bounds_dispatches + 1,
               "Missing resident bound update");
           n = std::max(n, required);
+          std::vector<std::uint32_t> selected{unsigned(ids[2]), unsigned(ids[1]), 0, unsigned(ids[2])};
+          before = metal::GetStatistics();
+          auto gathered = gpu.GatherBounds(selected, workspace.get());
+          Check(metal::GetStatistics().split_bounds_gather_values - before.split_bounds_gather_values ==
+                    selected.size() * targets &&
+                    metal::GetStatistics().split_bounds_host_copy_bytes == before.split_bounds_host_copy_bytes,
+                "Evaluator bounds were not gathered on GPU");
+          std::vector<metal::SplitBounds> expected;
+          auto c = cpu.GetEvaluator();
+          for (auto node : selected) for (unsigned t = 0; t < targets; ++t)
+            expected.push_back({c.lower[node * targets + t], c.upper[node * targets + t]});
+          Consume(gathered, expected, targets, multi, workspace.get());
+          ++gathers;
           compare();
           ++updates;
         }
@@ -170,14 +282,22 @@ void Evaluators() {
                   before.split_bounds_init_dispatches &&
               metal::GetStatistics().split_bounds_dispatches == before.split_bounds_dispatches,
           "Unconstrained evaluator dispatched bounds");
+    auto workspace = metal::MakeSplitWorkspace();
+    std::vector<std::uint32_t> ids{512, 0, 512};
+    auto snapshot = gpu.GatherBounds(ids, workspace.get());
+    Consume(snapshot, std::vector<metal::SplitBounds>(ids.size(), {-INFINITY, INFINITY}),
+            1, false, workspace.get());
+    ++gathers;
   }
 }
 int main() {
   try {
     Storage();
     Evaluators();
+    GatherEdges();
     std::printf("PASS %zu bound-storage cases / %zu updates / %zu exact values\n", cases, updates,
                 values);
+    std::printf("PASS %zu GPU bound gather/consumer chains, snapshots, aliases and invalid inputs\n", gathers);
   } catch (std::exception const& e) {
     std::fprintf(stderr, "FAIL: %s\n", e.what());
     return 1;

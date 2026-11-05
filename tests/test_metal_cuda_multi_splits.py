@@ -54,9 +54,13 @@ def test_complete_cuda_vector_tree(metal, layout, constraints, growth, cache, tm
     elif constraints == "interaction":
         p["interaction_constraints"] = "[[0,1],[2,3,4]]"
     recorded = RecordedSquaredError()
-    before = xgb.metal_info()["cuda_integer_multi_split_dispatches"]
+    before = xgb.metal_info()
     model = xgb.train(p, d, 2, obj=recorded)
-    assert xgb.metal_info()["cuda_integer_multi_split_dispatches"] > before
+    after = xgb.metal_info()
+    assert after["cuda_integer_multi_split_dispatches"] > before["cuda_integer_multi_split_dispatches"]
+    assert after["split_bounds_gather_dispatches"] > before["split_bounds_gather_dispatches"]
+    assert after["split_bounds_shared_input_bytes"] > before["split_bounds_shared_input_bytes"]
+    assert after["split_bounds_host_copy_bytes"] == before["split_bounds_host_copy_bytes"]
     assert min(audit_recorded(model, d, x, recorded, p)) > 0
     cpu = xgb.Booster(params={"device": "cpu"}, model_file=model.save_raw())
     np.testing.assert_array_equal(model.predict(d), cpu.predict(d))

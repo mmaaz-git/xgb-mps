@@ -88,7 +88,9 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
   auto stored = metal::MakeSplitWeightStorage(targets);
   std::vector<std::pair<unsigned, std::vector<metal::SplitNodeWeights>>> expected_weights;
   metal::SplitParameters parameters{1, .25f, 0, 0};
+  auto bound_state = metal::MakeSplitBoundsStorage(0);
   for (unsigned repeat = 0; repeat < 3; ++repeat) {
+    auto before = metal::GetStatistics();
     std::vector<std::vector<bst_feature_t>> sets{{3, 2, 0, 2, 1}, {1}, {2, 0}, {}};
     if (repeat == 1) sets = {{1}, {}};
     if (repeat == 2) {
@@ -100,6 +102,7 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
     std::vector<GradientPairInt64> node_parents, feature_parents;
     std::vector<GradientPairPrecise> node_fp;
     std::vector<metal::SplitBounds> node_bounds, feature_bounds;
+    std::vector<std::uint32_t> node_ids;
     std::vector<metal::HistogramInput> inputs, reference_inputs;
     for (auto const& cache : caches) {
       inputs.push_back({cache.get(), {}});
@@ -122,6 +125,16 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
       metal::SplitBounds bound = constrained ? metal::SplitBounds{-2.f - node, 2.f + node}
                                              : metal::SplitBounds{-INFINITY, INFINITY};
       node_bounds.insert(node_bounds.end(), targets, bound);
+      auto base = repeat * 300 + node * 4;
+      node_ids.push_back(base + 3);
+      if (constrained) {
+        bound_state->Grow(std::size_t(base + 5) * targets);
+        HostDeviceVector<float> upper(targets, bound.upper, device), lower(targets, bound.lower, device);
+        bound_state->Update(0, base + 1, base + 2, 1, upper.ConstDeviceSpan(),
+                             upper.ConstDeviceSpan(), vector_leaf);
+        bound_state->Update(base + 1, base + 3, base + 4, -1, lower.ConstDeviceSpan(),
+                             lower.ConstDeviceSpan(), vector_leaf);
+      }
       auto first = static_cast<unsigned>(final_features.size());
       for (auto& input : inputs) input.segments.push_back({0, 0, bins, 1, 0});
       for (auto f : sets[node]) {
@@ -147,15 +160,22 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
     HostDeviceVector<GradientPairPrecise> resident_fp(node_fp, device);
     std::vector<metal::SplitNodeResult> actual, expected;
     std::vector<metal::FeatureSplitResult> selected;
-    auto before = metal::GetStatistics();
+    auto resident_bounds = metal::GatherSplitBounds(
+        node_ids, targets, constrained ? bound_state->Lower() : Span<float const>{},
+        constrained ? bound_state->Upper() : Span<float const>{}, workspace.get());
     metal::EvaluateFeatureSplits(inputs, features, ptr, types, monotone, onehot, 4,
                                  resident_parents.ConstDeviceSpan(), resident_fp.ConstDeviceSpan(),
-                                 node_bounds, parameters, vector_leaf, &actual, &selected, nullptr,
+                                 resident_bounds, parameters, vector_leaf, &actual, &selected, nullptr,
                                  workspace.get());
     std::vector<metal::SplitWeightCopy> copies;
     for (unsigned node = 0; node < sets.size(); ++node) copies.push_back({node, repeat * 300 + node});
     stored->Store(*workspace, copies);  // GPU consumer before inspecting any result payload.
     auto after = metal::GetStatistics();
+    Check(after.split_bounds_gather_dispatches == before.split_bounds_gather_dispatches + 1 &&
+              after.split_bounds_gather_values - before.split_bounds_gather_values == sets.size() * targets &&
+              after.split_bounds_host_copy_bytes == before.split_bounds_host_copy_bytes &&
+              after.split_bounds_shared_input_bytes > before.split_bounds_shared_input_bytes,
+          "GPU-updated bounds did not remain resident through feature evaluation/finalization");
     Check(after.feature_host_input_bytes == before.feature_host_input_bytes &&
               after.feature_readback_bytes == before.feature_readback_bytes &&
               after.vector_readback_bytes == before.vector_readback_bytes &&

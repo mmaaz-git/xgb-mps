@@ -154,5 +154,8 @@ struct Statistics {
   std::uint64_t feature_shared_input_bytes, feature_shared_output_bytes,
       feature_host_input_bytes, feature_readback_bytes;
   std::uint64_t feature_task_dispatches, feature_task_candidates;
+  // Active-node gathers and bound input bindings in feature evaluation/finalization.
+  std::uint64_t split_bounds_gather_dispatches, split_bounds_gather_values,
+      split_bounds_shared_input_bytes, split_bounds_host_copy_bytes;
 };
 }  // namespace xgboost::common::metal

@@ -108,6 +108,8 @@ std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches
 std::atomic<std::uint64_t> feature_shared_input_bytes{0}, feature_shared_output_bytes{0},
     feature_host_input_bytes{0}, feature_readback_bytes{0};
 std::atomic<std::uint64_t> feature_task_dispatches{0}, feature_task_candidates{0};
+std::atomic<std::uint64_t> split_bounds_gather_dispatches{0}, split_bounds_gather_values{0},
+    split_bounds_shared_input_bytes{0}, split_bounds_host_copy_bytes{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
 std::atomic<std::uint64_t> cuda_gradient_sampling_dispatches{0};
@@ -255,7 +257,7 @@ class Runtime {
   id<MTLComputePipelineState> feature_lengths_pipeline, feature_tasks_pipeline,
       feature_winners_pipeline;
   id<MTLComputePipelineState> split_finalize_pipeline, split_bounds_pipeline,
-      split_bounds_init_pipeline;
+      split_bounds_init_pipeline, split_bounds_gather_pipeline;
   id<MTLComputePipelineState> model_scale_pipeline, split_weight_store_pipeline;
   id<MTLComputePipelineState> split_category_pipeline;
   id<MTLComputePipelineState> interaction_restore_pipeline, interaction_split_pipeline,
@@ -417,6 +419,7 @@ class Runtime {
       split_weight_store_pipeline = make_pipeline(@"xgb_store_split_weights");
       split_bounds_pipeline = make_pipeline(@"xgb_update_split_bounds");
       split_bounds_init_pipeline = make_pipeline(@"xgb_init_split_bounds");
+      split_bounds_gather_pipeline = make_pipeline(@"xgb_gather_split_bounds");
       model_scale_pipeline = make_pipeline(@"xgb_scale_model_weights");
       split_category_pipeline = make_pipeline(@"xgb_build_split_categories");
       interaction_restore_pipeline = make_pipeline(@"xgb_interaction_restore");
@@ -740,7 +743,8 @@ class MetalSplitWorkspace final : public SplitWorkspace {
  public:
   id<MTLBuffer> hist, input, output, order, weights, scans, parent, bounds, children;
   id<MTLBuffer> scales, integer_children;
-  id<MTLBuffer> node_input, feature_input, node_parents, node_bounds, node_results, node_weights;
+  id<MTLBuffer> node_input, feature_input, node_parents, node_results, node_weights;
+  id<MTLBuffer> gathered_bounds;
   id<MTLBuffer> category_input, category_cuts, category_output, category_error;
   id<MTLBuffer> feature_ids, feature_lengths, feature_segments, feature_offsets,
       feature_error, feature_selected;
@@ -777,6 +781,16 @@ BorrowedMemory BindSplitSums(Runtime const& rt, id<MTLBuffer> __strong* fallback
   } else {
     input = {Scratch(rt, fallback, bytes, data), 0};
     split_sum_host_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
+BorrowedMemory BindSplitBounds(Runtime const& rt, void const* data, std::size_t bytes) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, 4);
+  if (input.buffer) {
+    split_bounds_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  } else {
+    input = {Upload(rt, data, bytes), 0};
+    split_bounds_host_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
   }
   return input;
 }
@@ -2401,7 +2415,11 @@ Statistics GetStatistics() {
           feature_host_input_bytes.load(std::memory_order_relaxed),
           feature_readback_bytes.load(std::memory_order_relaxed),
           feature_task_dispatches.load(std::memory_order_relaxed),
-          feature_task_candidates.load(std::memory_order_relaxed)};
+          feature_task_candidates.load(std::memory_order_relaxed),
+          split_bounds_gather_dispatches.load(std::memory_order_relaxed),
+          split_bounds_gather_values.load(std::memory_order_relaxed),
+          split_bounds_shared_input_bytes.load(std::memory_order_relaxed),
+          split_bounds_host_copy_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -10096,7 +10114,7 @@ static void FinalizeSplitNodesImpl(
     auto feature = Scratch(rt, &scratch->feature_input, features.size_bytes(),
                             resident_features ? nullptr : features.data());
     auto parent = BindSplitSums(rt, &scratch->node_parents, parents.data(), parents.size_bytes());
-    auto bound = Scratch(rt, &scratch->node_bounds, bounds.size_bytes(), bounds.data());
+    auto bound = BindSplitBounds(rt, bounds.data(), bounds.size_bytes());
     auto out = Scratch(rt, &scratch->node_results, results->size() * sizeof(SplitNodeResult));
     auto weight = Scratch(rt, &scratch->node_weights, parents.size() * sizeof(SplitNodeWeights));
     auto command = [rt.queue commandBuffer];
@@ -10110,7 +10128,7 @@ static void FinalizeSplitNodesImpl(
     [e setBuffer:input offset:0 atIndex:2];
     [e setBytes:&parameters length:sizeof(parameters) atIndex:3];
     [e setBuffer:parent.buffer offset:parent.offset atIndex:4];
-    [e setBuffer:bound offset:0 atIndex:5];
+    [e setBuffer:bound.buffer offset:bound.offset atIndex:5];
     [e setBuffer:children offset:0 atIndex:6];
     [e setBuffer:out offset:0 atIndex:7];
     [e setBuffer:weight offset:0 atIndex:8];
@@ -10614,6 +10632,53 @@ class MetalSplitBoundsStorage final : public SplitBoundsStorage {
 std::unique_ptr<SplitBoundsStorage> MakeSplitBoundsStorage(std::size_t count) {
   return std::make_unique<MetalSplitBoundsStorage>(count);
 }
+Span<SplitBounds const> GatherSplitBounds(Span<std::uint32_t const> nodes,
+                                         std::uint32_t targets, Span<float const> lower,
+                                         Span<float const> upper, SplitWorkspace* workspace) {
+  static_assert(sizeof(SplitBounds) == 8);
+  CHECK(workspace);
+  CHECK_GT(targets, 0);
+  CHECK_EQ(lower.size(), upper.size());
+  CHECK_EQ(lower.size() % targets, 0);
+  CHECK_LE(nodes.size(), std::numeric_limits<std::uint32_t>::max() / targets);
+  if (!lower.empty()) {
+    for (auto node : nodes) CHECK_LT(node, lower.size() / targets);
+  }
+  auto scratch = static_cast<MetalSplitWorkspace*>(workspace);
+  auto count = nodes.size() * targets;
+  if (!count) {
+    scratch->gathered_bounds = nil;
+    return {};
+  }
+  id<MTLBuffer> output;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto ids = Upload(rt, nodes.data(), nodes.size_bytes());
+    auto lo = BindSplitBounds(rt, lower.data(), lower.size_bytes());
+    auto hi = BindSplitBounds(rt, upper.data(), upper.size_bytes());
+    // Publish a separate snapshot only after completion. Sources may alias the
+    // previous gather, and later bound updates/growth must not change the result.
+    output = Allocate(rt, count * sizeof(SplitBounds));
+    std::uint32_t p[]{targets, static_cast<std::uint32_t>(!lower.empty())};
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    [e setComputePipelineState:rt.split_bounds_gather_pipeline];
+    [e setBuffer:ids offset:0 atIndex:0];
+    [e setBuffer:lo.buffer offset:lo.offset atIndex:1];
+    [e setBuffer:hi.buffer offset:hi.offset atIndex:2];
+    [e setBuffer:output offset:0 atIndex:3];
+    [e setBytes:p length:sizeof(p) atIndex:4];
+    [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &split_bounds_gather_dispatches, &split_gpu_time_ns);
+    split_bounds_gather_values.fetch_add(count, std::memory_order_relaxed);
+  }
+  // Release borrowed aliases/command references before replacing their owner.
+  scratch->gathered_bounds = output;
+  return {static_cast<SplitBounds const*>(output.contents), count};
+}
 void UpdateSplitBounds(Span<float> lower, Span<float> upper, std::uint32_t parent,
                        std::uint32_t left, std::uint32_t right, std::int32_t monotone,
                        Span<float const> left_weight, Span<float const> right_weight,
@@ -10961,9 +11026,9 @@ void EvaluateFeatureSplits(
     auto hist = Scratch(rt, &scratch->hist, bins * sizeof(GradientPairInt64));
     auto source_offsets = Scratch(rt, &scratch->feature_offsets, offsets.size() * sizeof(std::uint64_t),
                                    offsets.data());
-    // Node bounds remain the explicitly tracked PORT-8 host gather. Repeating
-    // them and exact node sums by selected feature executes on the GPU here.
-    auto node_bounds = Scratch(rt, &scratch->node_bounds, bounds.size_bytes(), bounds.data());
+    // Gathered node bounds and exact sums remain resident while the GPU repeats
+    // them by selected feature. The finalizer consumes the same bound snapshot.
+    auto node_bounds = BindSplitBounds(rt, bounds.data(), bounds.size_bytes());
     auto node_parents = BindSplitSums(rt, &scratch->node_parents, parents.data(), parents.size_bytes());
     auto feature_parents = Scratch(rt, &scratch->parent, vector_leaf ? count * targets * sizeof(GradientPairInt64) : 0);
     auto feature_bounds = Scratch(rt, &scratch->bounds, vector_leaf ? count * targets * sizeof(SplitBounds) : 0);
@@ -10982,7 +11047,7 @@ void EvaluateFeatureSplits(
       [e setBuffer:prefix offset:0 atIndex:4];
       [e setBuffer:source_offsets offset:0 atIndex:5];
       [e setBuffer:node_parents.buffer offset:node_parents.offset atIndex:6];
-      [e setBuffer:node_bounds offset:0 atIndex:7];
+      [e setBuffer:node_bounds.buffer offset:node_bounds.offset atIndex:7];
       [e setBuffer:tasks offset:0 atIndex:8];
       [e setBuffer:final_features offset:0 atIndex:9];
       [e setBuffer:segments offset:0 atIndex:10];

@@ -6998,6 +6998,21 @@ kernel void xgb_init_split_bounds(device uint* lower [[buffer(0)]],
   lower[index] = 0xff7fffffu;
   upper[index] = 0x7f7fffffu;
 }
+// CUDA split kernels index device bounds by node/target. Preserve every bit
+// while selecting active nodes; disabled constraints use infinite bounds.
+kernel void xgb_gather_split_bounds(device const uint* nodes [[buffer(0)]],
+                                    device const uint* lower [[buffer(1)]],
+                                    device const uint* upper [[buffer(2)]],
+                                    device uint2* output [[buffer(3)]],
+                                    constant uint2& p [[buffer(4)]],
+                                    uint i [[thread_position_in_grid]]) {
+  if (p.y) {
+    ulong source = ulong(nodes[i / p.x]) * p.x + i % p.x;
+    output[i] = uint2(lower[source], upper[source]);
+  } else {
+    output[i] = uint2(0xff800000u, 0x7f800000u);
+  }
+}
 struct SplitBoundsUpdate {
   uint parent, left, right, targets;
   int monotone;

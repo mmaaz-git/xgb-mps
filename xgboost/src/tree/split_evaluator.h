@@ -366,6 +366,15 @@ class TreeEvaluator {
   };
 
  public:
+#if defined(XGBOOST_USE_METAL)
+  auto GatherBounds(common::Span<std::uint32_t const> nodes,
+                    common::metal::SplitWorkspace* workspace) const {
+    CHECK(use_metal_);
+    return common::metal::GatherSplitBounds(
+        nodes, n_targets_, metal_bounds_ ? metal_bounds_->Lower() : common::Span<float const>{},
+        metal_bounds_ ? metal_bounds_->Upper() : common::Span<float const>{}, workspace);
+  }
+#endif
   /* Get a view to the evaluator that can be passed down to device. */
   template <typename ParamT = TrainParam>
   auto GetEvaluator() const {

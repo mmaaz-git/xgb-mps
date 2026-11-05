@@ -706,6 +706,14 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.feature_task_dispatches)};
   info["feature_task_candidates"] =
       Integer{static_cast<std::int64_t>(stats.feature_task_candidates)};
+  info["split_bounds_gather_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.split_bounds_gather_dispatches)};
+  info["split_bounds_gather_values"] =
+      Integer{static_cast<std::int64_t>(stats.split_bounds_gather_values)};
+  info["split_bounds_shared_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.split_bounds_shared_input_bytes)};
+  info["split_bounds_host_copy_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.split_bounds_host_copy_bytes)};
 
   info["model_state_gpu_time_ns"] =
       Integer{static_cast<std::int64_t>(stats.model_state_gpu_time_ns)};
