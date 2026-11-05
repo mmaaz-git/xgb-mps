@@ -74,9 +74,13 @@ tasks. PORT-12 (`4a05813`) removes the artificial 65,535-output AUC limit and ma
 empty normalization return NaN, as CUDA's reduction does. Native and Python
 checks exercise 65,536 outputs through the public metric/learner paths. The
 [focused record](../validation/auc-capacity-m3-run.json) preserves the failing
-baseline and exact tested source. Five other output-size guards remain for
-PORT-13 review; this does not enable arbitrary-width training or establish
-unlimited buffer/index capacity.
+baseline and exact tested source. PORT-13 (`41d4dc2`) corrects the five remaining
+artificial limits in gradient columns, leaf sums, gradient sums, means and
+quantiles. Its [boundary and caller tests](../validation/output-capacity-m3-run.json)
+pass at 65,535/65,536/65,537 outputs, including a complete 65,536-target vector tree
+with exact CPU/analytic predictions. Kernel index and device buffer limits remain;
+extreme-width per-column quantization is memory-intensive. The new full regression
+is running; no NVIDIA execution or arbitrary-width training claim is implied.
 
 Scalar control fields, topology, serialization and finalizers that CUDA itself
 runs on the host are not missing kernels merely because they access host memory.

@@ -6,7 +6,11 @@ This report describes that historical acceptance milestone. A later production
 fix, PORT-12 at `4a05813`, removes an artificial AUC output limit and changes empty
 normalization to return NaN. Its two native groups and 99 Python tests have
 [separate focused evidence](../validation/auc-capacity-m3-run.json); the full
-regression below has not been rerun on that later production revision.
+regression below remains historical. PORT-13 at `41d4dc2` corrects the five other
+artificial output-width limits. Its two new native groups pass 8,847,360 exact
+checks and one Python test trains a complete 65,536-target vector tree, matching
+CPU and analytic predictions. [Focused evidence](../validation/output-capacity-m3-run.json).
+A full run of 106 native groups and the Python tests is in progress at `41d4dc2`.
 
 **The ten implementation tasks and seventeen numerical contracts from the frozen
 audit now have local acceptance evidence, including a passing CUDA compile/link

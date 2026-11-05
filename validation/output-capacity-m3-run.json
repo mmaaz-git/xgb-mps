@@ -1,0 +1,91 @@
+{
+  "task": "PORT-13",
+  "status": "passed-focused-Metal-CPU-acceptance; full regression running; current-revision CUDA compilation pending",
+  "recorded_utc": "2026-11-05T22:14:53.578878+00:00",
+  "production_commit": "41d4dc26cc23bf58357e59f986cbbf7aec0e2864",
+  "production_tree": "145fdffbc52f59354bed55b96d184d9e50c23ff4",
+  "library_sha256": "71517892c338586cb0da4e4fcad3ae18b1335a1b0f424e5ad982837b8abb48ca",
+  "source_sha256": {
+    "tests/native_tests.json": "075bb5f9021f1d26c6601ee9e04ae464b81926f4699a6d6484c42db19adf9cf7",
+    "xgboost/src/common/metal_histogram.mm": "5162e18402213c9d7ccb23028a486afa4bf0d385d5fe369eac65ae97b0ddbc1e",
+    "tests/metal_capacity_api.cc": "0ca08867cf10de4d20fc13c0784785e02a80a58f6b52d0134d72127e6a9da406",
+    "tests/test_metal_capacity.py": "b8fb962e1189db269f92b6695db381723a853356fa94fe5a91afc1cf0d2a19c2"
+  },
+  "problem": "Five artificial 65,535-target guards rejected otherwise representable gradient columns, leaf sums, gradient sums, means and quantiles.",
+  "change": "Use the existing uint32 kernel/target field limit at those five sites; no arithmetic, reduction ordering or storage-path change.",
+  "cuda_source_review": [
+    "include/xgboost/base.h: bst_target_t is uint32_t",
+    "src/common/stats.cu: per-column means and segmented medians use size_t indices/segments",
+    "src/tree/fit_stump.cu: column keys use bst_target_t",
+    "src/tree/gpu_hist/quantiser.cu: per-target quantizers loop over bst_target_t",
+    "src/tree/gpu_hist/leaf_sum.cu: per-target integer sums loop over bst_target_t"
+  ],
+  "reproduction": {
+    "production_commit": "4a0581351fe63dc980fea439167ed320884d59de",
+    "library_sha256": "ded194b703e6e21371cd799b080e0f9569cb36f75ee153d0eff11b5789f6d507",
+    "width": 65536,
+    "failures": [
+      "[14:10:46] /Users/maaz/Documents/xgb-mps/xgboost/src/common/metal_histogram.mm:4139: Check failed: targets <= 65535 (65536 vs. 65535) : ",
+      "[14:10:46] /Users/maaz/Documents/xgb-mps/xgboost/src/common/metal_histogram.mm:6232: Check failed: targets <= 65535 (65536 vs. 65535) : ",
+      "[14:10:46] /Users/maaz/Documents/xgb-mps/xgboost/src/common/metal_histogram.mm:3857: Check failed: targets <= 65535 (65536 vs. 65535) : ",
+      "[14:10:46] /Users/maaz/Documents/xgb-mps/xgboost/src/common/metal_histogram.mm:1554: Check failed: targets <= 65535 (65536 vs. 65535) : ",
+      "[14:10:46] /Users/maaz/Documents/xgb-mps/xgboost/src/common/metal_histogram.mm:1470: Check failed: gradients.Shape(1) <= 65535 (65536 vs. 65535) : "
+    ]
+  },
+  "focused_run": {
+    "command": "bash scripts/test.sh --native metal_capacity_api metal_capacity_quantizer_api --python tests/test_metal_capacity.py --log-dir results/capacity-expanded",
+    "summary_sha256": "c5eab1ecdc04bde576b89504fa594ec2713191fbea57d4def47c4d62cc0f13fc",
+    "base_revision": "2d879fee0a5d6e7f7e8a22b70eb35bccc603ea87",
+    "tracked_diff_sha256": "9f8d81ecf535ceddbfed88e9e188d816074d61500e81a5810406a7cf4aa71ef1",
+    "started_utc": "20261105T221228Z",
+    "finished_utc": "2026-11-05T22:13:50.180431+00:00",
+    "native_groups": [
+      "metal_capacity_api",
+      "metal_capacity_quantizer_api"
+    ],
+    "python_passes": 1,
+    "native_exact_fields": 8847360,
+    "widths": [
+      65535,
+      65536,
+      65537
+    ],
+    "coverage": [
+      "Public sample/weighted means and medians versus CPU and exact formulas",
+      "Public stump fitting versus CPU and exact formulas; resident gradient sums",
+      "Repeated floating and original-scale integer leaf accumulation, including empty leaves",
+      "FP32/sample/weighted strided means with output sentinels",
+      "Strided weighted/unweighted quantiles at five alphas for every target",
+      "Both original-scale and quantized-gradient factories, with actual quantized root sums",
+      "GPU dispatch counters and resident initialization I/O checks",
+      "One complete 65,536-target vector tree: CPU/MPS exact analytic predictions, saved Metal model evaluated on CPU"
+    ],
+    "logs_sha256": {
+      "001-build-metal.log": "3f5af70021740a281d5aee02276105084b3ece7c668018c563cec900699b90c7",
+      "002-compile-metal_capacity_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "003-metal_capacity_api.log": "f1a32d03c8d691e3fc83be542774dd54b75fa8d85c496a4b51b79ed5b73f8c35",
+      "004-compile-metal_capacity_quantizer_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "005-metal_capacity_quantizer_api.log": "c226678f4ec410ac75708109d75dd9aa8ce6de83104728de052224fe0319bf47",
+      "006-linear-reference.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "007-pytest.log": "27f76898580144eb7ae2998a2f1e40ea7554e695323ed8f513d16ba4b8f1fabf"
+    }
+  },
+  "limits": [
+    "Actual NVIDIA execution has not occurred. Source review is not CUDA runtime equivalence.",
+    "The full regression remains historical at 68c800e until the current job completes.",
+    "Device maxBufferLength and uint32 kernel/index limits remain, including the sorting row*target limit.",
+    "The shared-histogram 65,535-feature optimization threshold retains its fallback and was not changed.",
+    "Extreme-width per-column quantization is memory-intensive: a separate four-row, 65,536-target scale/leaf probe took 7.03 seconds and had 4,890,447,832-byte peak footprint under Metal API validation; this is not a CPU/GPU speed comparison."
+  ],
+  "full_regression": {
+    "status": "running",
+    "session": "xgb-capacity-full",
+    "log": "results/capacity-full.log",
+    "summary": "results/capacity-full/summary.json",
+    "revision": "41d4dc26cc23bf58357e59f986cbbf7aec0e2864"
+  },
+  "cuda_compilation": {
+    "status": "pending push after existing run 42117995770 completes",
+    "gpu_execution": false
+  }
+}

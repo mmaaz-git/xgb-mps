@@ -39,15 +39,20 @@ connects every original fix and all 17 numerical contracts to passing fixtures
 and states the remaining limits. Further review found an unnecessary AUC limit:
 `4a05813` now supports more than 65,535 outputs and matches CUDA's empty
 normalization semantics. Two native groups and 99 Python tests pass for this
-[focused fix](validation/auc-capacity-m3-run.json). The full regression milestone
+[focused fix](validation/auc-capacity-m3-run.json).
+`41d4dc2` removes the remaining five artificial output limits in initialization,
+quantization and leaf accumulation. Two new native groups pass 8.8 million exact
+checks around that boundary; a complete 65,536-target vector tree also matches CPU
+and analytic predictions. [Capacity evidence](validation/output-capacity-m3-run.json).
+The full regression is running on this revision; the completed full milestone
 below remains at `68c800e`.
-**Next: review the remaining capacity guards, finish comparison harnesses and
-run them on NVIDIA.** Full parity remains unproven.
+**Next: finish comparison harnesses and run them on NVIDIA.** Full parity remains
+unproven.
 
 | Validation stage | Current status |
 | --- | --- |
 | Local Metal/CPU acceptance | Passed for the audited implementation; details below |
-| CUDA compilation | [Linear build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537); the [grouped PR/AUC follow-up build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770) |
+| CUDA compilation | [Linear build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537); the [grouped PR/AUC follow-up build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770). The later `41d4dc2` capacity fix awaits its build |
 | CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
 | Performance | Mixed; the latest full HIGGS run is slower on MPS |
 
@@ -134,8 +139,9 @@ checks. PyTorch and MLX GPU interop tests ran. The
 The optional federated suite also passed at this revision: 14 transport, sketch,
 and learner groups, including TLS, with all workers on the same M3. A subsequent
 focused run passed four native groups and 49 Python tests, including a new group
-with 21 explicit numerical witnesses. There are now 104 native groups; the new
-group passed separately from the 103-group full run. [Acceptance evidence](docs/LOCAL_ACCEPTANCE.md).
+with 21 explicit numerical witnesses. That 104th group passed separately from the
+103-group full run. Two capacity groups bring the current suite to 106; its full
+run is in progress. [Acceptance evidence](docs/LOCAL_ACCEPTANCE.md).
 A subsequent focused run expands that numerical group to **39 witnesses and
 3,491 exact checks**, adding threshold-precision boundaries for the shared
 [NVIDIA comparison](validation/cuda-comparison-threshold-m3.json).
