@@ -214,7 +214,8 @@ The current sampling replay preserves all 143 low-level attempts, 54 lifecycle
 calls and two nonfinite-norm guards. Metal observations, exact input provenance,
 the C++ codec and 19 synthetic report checks pass. Eight undefined CUDA conversion
 cases are explicit exclusions, leaving 191 planned CUDA executions; no NVIDIA
-execution is claimed. Its compiler gate remains pending. See the
+execution is claimed. Its compiler/link gate and 10,005-case host RNG check passed
+in [run 42103889374](https://github.com/mmaaz-git/xgb-mps/actions/runs/42103889374). See the
 [sampling record](../validation/sampling-contract-m3-run.json).
 The integer leaf replay preserves the 250 counted cases plus six previously
 uncounted curvature/range checks. All 256 Metal records pass independent input

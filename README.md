@@ -66,7 +66,7 @@ The sampling extension now preserves all 199 current CUDA-derived sampling
 records, including 54 calls across persistent sampler lifetimes. Its Metal
 observations and reference checks pass; eight undefined CUDA conversion cases
 are explicit exclusions. Its [CUDA build](https://github.com/mmaaz-git/xgb-mps/actions/runs/42103889374)
-is running; NVIDIA execution remains pending. See
+passed, including the 10,005-case host RNG check; NVIDIA execution remains pending. See
 the [sampling record](validation/sampling-contract-m3-run.json).
 The integer leaf and histogram-cache extensions preserve all 256 leaf records
 and 48 cache cases, including paged cancellation, growth, subtraction and tree

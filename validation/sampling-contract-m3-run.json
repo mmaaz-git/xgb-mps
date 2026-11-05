@@ -1,5 +1,5 @@
 {
-  "status": "Complete Metal sampling/reference checks passed; corrected CUDA consumer compiling; NVIDIA execution pending",
+  "status": "Complete Metal sampling/reference checks and CUDA compile/link/host gates passed; NVIDIA execution pending",
   "suite": "sampling-v1",
   "recorded_utc": "2026-11-05T20:18:09.859519+00:00",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -284,18 +284,76 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "in_progress",
+    "status": "passed-compile-link-and-host-checks",
     "gpu_execution": false,
     "run_id": 42103889374,
     "head": "2b2e298f9fb8648331a5034f1736bca3cd398194",
-    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42103889374"
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42103889374",
+    "finished_utc": "2026-11-05T20:53:36.302862+00:00",
+    "production_steps": 197,
+    "harness_objects": 6,
+    "linked_binaries": 6,
+    "verified_input_hashes": 43,
+    "nvcomp_loader_probe": {
+      "status": "passed",
+      "gpu_execution": false
+    },
+    "nvcomp_runtime_path": "/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13/libnvcomp.so.5.3.0.16\n/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13",
+    "metric_source_isolation": {
+      "status": "passed",
+      "gpu_execution": false,
+      "registry_entries": 24,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-baseline.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-probe.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-defined-dynamic-symbols.txt": "599daf66f208e7929a234db26b14838d909627adddc34cd1ed850d0dfdd1cc58"
+      }
+    },
+    "sampling_rng_alignment": {
+      "status": "passed",
+      "gpu_execution": false,
+      "cases": 10005,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/sampling-rng-alignment.txt": "918099a29222fdb9b4e2c25ff8dc75f10c22537f7a5a7af6188a3ce889a05b1d"
+      }
+    },
+    "log_sha256": "5ae3f700463e19c7451f632ddf2469322372d16bdfed15e8473affa668c69593",
+    "build_record_sha256": "735701c43f04e11640c42110f4af8e5c5a94d82d189b0a03371992b8a3f6108f",
+    "library_sha256": "247c7b480e792d66712c6707a6b1beb7eac03af8fb92f7e77fd10bda201e4a1d",
+    "binaries": {
+      "numerical": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_numerical_contracts",
+        "sha256": "f0999072c6d475798f3e035f41503954aafa9996dd6180dc8a11bda039c9e1a3"
+      },
+      "aft": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_aft_contracts",
+        "sha256": "248c50dc5f438903b30d4215a96fe266283c190d4259d5f8ec9fb7f1203b8557"
+      },
+      "rng": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_rng_contracts",
+        "sha256": "4a2a58c0e2c46220431ac83bfa5770b4279d94eaf7cd86822bd42911eb80b5a8"
+      },
+      "math": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_math_contracts",
+        "sha256": "c8ae916f970b2b072d40a132ac56fdc147ec521f50ac59547c7091a54915323c"
+      },
+      "ranking": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_ranking_contracts",
+        "sha256": "79d34440a35b0a4b7e54192947e8f59f89f36b94a12f3d2cd7db5634fc738abc"
+      },
+      "metric": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_metric_contracts",
+        "sha256": "bc1271f39019060ad3da873ed10749d8cee9c21010b3d898bb938c07d426e018"
+      }
+    },
+    "scope": "Includes sampling consumer and host RNG alignment; predates integer leaf and cache consumers"
   },
   "cuda_runtime": {
     "status": "not_run",
     "command": "results/cuda-comparison-build/cmake/cuda_numerical_contracts --sampling results/sampling-inputs.bin results/sampling-cuda.bin"
   },
   "limits": [
-    "No NVIDIA kernel execution; CUDA consumer is not yet compiler-validated.",
+    "No NVIDIA kernel execution; CUDA consumer compiled and linked in run42103889374.",
     "This covers the current CUDA-derived sampling corpus, not the legacy unused498-case CPU-derived sampler.",
     "CUDA padded floating replay uses GPU gather/scatter around the actual owning-matrix API.",
     "Root observations call scalar source primitives and actual vector CalcRootSum, not a complete tree updater; single-worker only.",

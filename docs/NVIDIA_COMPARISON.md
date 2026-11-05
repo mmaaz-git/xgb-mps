@@ -987,7 +987,9 @@ python3 scripts/compare_sampling_contracts.py compare \
 
 Preserve the CUDA output's `.json` metadata, runtime log and compiler `build.json`.
 The separate `--sampling-rng` command runs only the host seed-alignment check and
-does not initialize a GPU. To export fresh Metal observations:
+does not initialize a GPU. Compilation, linking and all 10,005 host seed checks
+passed in [run 42103889374](https://github.com/mmaaz-git/xgb-mps/actions/runs/42103889374);
+NVIDIA execution remains pending. To export fresh Metal observations:
 
 ```sh
 bash scripts/test.sh --native metal_cuda_gradient_api

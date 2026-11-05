@@ -271,3 +271,17 @@ VERIFY-2 sampling initial consumer build (terminal object-compile failure):
   Log SHA256: 920da21381d92d753719d20f6be77c99bae207cd66b34157fecc42c553b4c52f
   Fix: select common aggregator.h (same GlobalSum body), mutable gather lambda.
   No NVIDIA kernel execution. Corrected compile verification pending.
+
+VERIFY-2 corrected sampling compiler run (terminal success; no NVIDIA execution):
+  2b2e298f9fb8648331a5034f1736bca3cd398194:42103889374, completed 2026-11-05T20:53:36.302862+00:00
+  https://github.com/mmaaz-git/xgb-mps/actions/runs/42103889374
+  All43 declared source/input hashes verified against the exact CI revision.
+  Six CUDA objects, all197 production steps and six executable links passed.
+  Actual nvCOMP host loader check passed before production compilation.
+  Host metric factory signatures match for24 entries; dynamic symbol isolation passed.
+  Host sampling MT19937 row-seed alignment passed all10005 cases.
+  Log SHA256: 5ae3f700463e19c7451f632ddf2469322372d16bdfed15e8473affa668c69593
+  Build record SHA256: 735701c43f04e11640c42110f4af8e5c5a94d82d189b0a03371992b8a3f6108f
+  Library SHA256: 247c7b480e792d66712c6707a6b1beb7eac03af8fb92f7e77fd10bda201e4a1d
+  Resolves the initial sampling compilation failure recorded above.
+  This run predates integer leaf/cache consumers; no CUDA kernels executed.
