@@ -37,10 +37,12 @@ metal::ShapModel Model(unsigned groups, float scale) {
   split.right_weight = .75f;
   m.nodes[1].node.leaf_begin = 0;
   m.nodes[2].node.leaf_begin = groups;
-  for (unsigned g = 0; g < groups; ++g) m.leaves.push_back(-1.5f * (g + 1));
-  for (unsigned g = 0; g < groups; ++g) m.leaves.push_back(.5f * (g + 1));
+  for (unsigned g = 0; g < groups; ++g)
+    m.leaves.push_back((-1.5f * (g + 1)) * scale);
+  for (unsigned g = 0; g < groups; ++g)
+    m.leaves.push_back((.5f * (g + 1)) * scale);
   for (unsigned g = 0; g < groups; ++g) {
-    m.trees.push_back({0, g, g, scale});
+    m.trees.push_back({0, g, g});
     m.root_means.push_back(0.f);
     m.base_scores.push_back(.25f * g);
   }

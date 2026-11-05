@@ -533,7 +533,7 @@ void LaunchShap(Context const *ctx, DMatrix *p_fmat, gbm::GBTreeModel const &mod
 namespace metal_impl {
 namespace {
 template <typename Tree>
-std::uint32_t AppendShapTree(Tree const& tree, common::metal::ShapModel* model) {
+std::uint32_t AppendShapTree(Tree const &tree, float weight, common::metal::ShapModel *model) {
   auto root = model->nodes.size();
   constexpr auto kLimit = std::numeric_limits<std::uint32_t>::max();
   CHECK_LE(root + tree.Size(), kLimit);
@@ -549,7 +549,7 @@ std::uint32_t AppendShapTree(Tree const& tree, common::metal::ShapModel* model) 
       CHECK_LE(model->leaves.size() + tree.NumTargets(), kLimit);
       out.node.leaf_begin = model->leaves.size();
       for (bst_target_t target = 0; target < tree.NumTargets(); ++target) {
-        model->leaves.push_back(LeafValue(tree, id, target));
+        model->leaves.push_back(LeafValue(tree, id, target) * weight);
       }
       continue;
     }
@@ -601,13 +601,16 @@ void PredictShap(Context const* ctx, DMatrix* data, HostDeviceVector<float>* out
   auto prepared = MakeQuadratureTreeShapModelData(model, tree_end, tree_weights);
   common::metal::ShapModel gpu_model;
   std::vector<std::uint32_t> roots;
-  for (auto const& tree : prepared.trees) {
+  for (std::size_t t = 0; t < prepared.trees.size(); ++t) {
+    // CUDA CompressTree weights leaf payloads on the host before recurrence.
+    float weight = tree_weights == nullptr ? 1.0f : (*tree_weights)[t];
     roots.push_back(
-        std::visit([&](auto const& view) { return AppendShapTree(view, &gpu_model); }, tree));
+        std::visit([&](auto const &view) { return AppendShapTree(view, weight, &gpu_model); },
+                   prepared.trees[t]));
   }
   for (auto const& entry : prepared.entries) {
     gpu_model.trees.push_back({roots[entry.tree_idx], static_cast<std::uint32_t>(entry.group_idx),
-                               static_cast<std::uint32_t>(entry.target_idx), entry.weight});
+                               static_cast<std::uint32_t>(entry.target_idx)});
   }
   gpu_model.root_means = std::move(prepared.group_root_mean_sums);
   auto base_score = model.learner_model_param->BaseScore(DeviceOrd::CPU());

@@ -14,7 +14,28 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **prediction model publication runs on Metal**. Batch, inplace and
+Latest step: **SHAP arithmetic follows CUDA's recurrence and operation order**.
+Tree weights are applied to leaf payloads before traversal. Branch probabilities
+now enter each quadrature basis, edge extraction follows the CUDA expressions,
+and the eight-point reduction uses CUDA's 4/2/1 association. Contributions and
+interactions use the same revised path; model compression/root means stay on CPU
+as they do upstream.
+
+The new CUDA-derived scalar reference passes **52 exact FP32 cases**, including
+weighted scalar/vector trees, categories, missing values, repeated features,
+extreme payloads and deep trees. **592 native analytic cases** pass, as do
+**127 focused Python tests**. Full regression passes **3,426 Python tests, one
+expected skip**, all **96 native groups**, and the CPU-only build/API checks.
+[SHAP source validation](validation/cuda-metal-shap-source-m3.txt).
+
+Four deep zero-cover comparisons exposed a real CPU/CUDA algorithm difference:
+the CPU formulation returns NaNs, while Metal matches the finite CUDA-derived
+recurrence. Those cases now require exact source-reference agreement and retain
+CPU comparisons for finite fields. Comparison tolerances were not widened.
+NVIDIA execution, compiler contraction and cross-tree atomic-add scheduling remain
+unverified. GPU collective integration and the remaining CUDA audit are still open.
+
+The preceding step: **prediction model publication runs on Metal**. Batch, inplace and
 leaf prediction now reuse the trees' device arrays and pack traversal buffers on
 GPU. Model updates invalidate those arrays through the existing XGBoost ownership
 rules; host code assembles only per-tree descriptors and weights. The traversal
@@ -1415,7 +1436,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port final numeric sketch level merging and pruning.
 - [x] Port sketch weighting, sorted-column summaries and streaming level compaction.
 - [x] Port exact SHAP contributions and interactions.
-- [ ] Finish SHAP arithmetic alignment with CUDA, including tree-weight placement.
+- [x] Align SHAP leaf weights, basis recurrence, edge/pair extraction and eight-point sums with CUDA source.
 - [x] Implement Metal coordinate-descent reductions and residual updates.
 - [x] Align linear FP32 arithmetic and selector snapshots with CUDA source.
 - [x] Align precision/NDCG/MAP arithmetic, prefixes and degenerate-query weighting with CUDA source.

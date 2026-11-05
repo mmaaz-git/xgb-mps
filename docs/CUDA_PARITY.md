@@ -91,7 +91,7 @@ must be reported rather than hidden by widening test tolerances.
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Means, medians/quantiles and stump wrappers now consume Metal spans and publish strided outputs/empty fills on GPU. Other state work still requires porting/audit |
 | Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu`, `predictor/predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application. Initialization, base margins, prediction caches and outputs now retain Metal storage, including learner copies; scalar fills/vector broadcasts reuse existing kernels. Tree node/category/leaf arrays now use persistent device mirrors; per-call traversal packing runs on Metal from those arrays, while per-tree metadata stays on host. Host-input packing remains on CPU; native dense/columnar snapshots use GPU copies; public result APIs retain existing Metal arrays without an extra host mirror; native outputs snapshot them on GPU and NumPy explicitly copies |
 | Prediction cache from leaf IDs | `predictor/gpu_predictor.cu` | Metal IDs and output arrays, guarded input bindings and alias snapshots; supports strided target slices and negated sampling positions. GBTree retains Metal prediction storage through cache updates; hist/approx gradient and leaf-position producers now retain Metal arrays |
-| SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA. Outputs/base margins now retain Metal storage; raw feature inputs bind guarded shared memory with GPU alias snapshots. Input decoding/category mapping runs on GPU; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
+| SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal CUDA-source leaf weighting, branch-weighted basis, FP32 edge/pair extraction and 4/2/1 eight-point sums; repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA. Outputs/base margins now retain Metal storage; raw feature inputs bind guarded shared memory with GPU alias snapshots. Input decoding/category mapping runs on GPU; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
 | RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
 | Multiclass error and logloss | `metric/multiclass_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
 | Quantile and expectile metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 terms, subnormal-preserving products and complete binary64 GPU reductions; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
@@ -149,9 +149,9 @@ serialization and SHAP compression remain on CPU. The detailed records below
 show which consumers and edge cases have actually been exercised.
 
 The remaining work includes a complete CUDA operation/arithmetic audit and GPU
-collective integration. One concrete arithmetic follow-up is SHAP tree-weight
-placement: CUDA weights leaves before traversal, while Metal currently weights
-later contributions. Distributed sketch reduction also needs the GPU collective
+collective integration. SHAP leaf weighting, basis recurrence, edge/pair expressions and eight-point
+reduction association now follow the CUDA source, as recorded below; NVIDIA
+compiler behavior and cross-tree atomic scheduling remain unverified. Distributed sketch reduction also needs the GPU collective
 path. CUDA/NVIDIA execution comparison and testing on other Apple hardware remain
 separate validation requirements; local passing tests cannot establish them.
 
@@ -4046,10 +4046,10 @@ unchanged and CPU-only builds report zero for the new JSON fields.
 GPU operation. CUDA `interpretability/shap.cu::CompressTreeBucket` explicitly
 builds host node/category/leaf arrays and uploads them, and
 `PrepareGpuQuadratureModel` computes root means and depth buckets on the host.
-Metal's corresponding host preparation remains intentional. SHAP arithmetic
-still needs a separate source audit: for example CUDA applies tree weights to
-leaf payloads during compression, while Metal currently weights accumulated
-contributions. This step does not resolve that operation-order difference.
+Metal's corresponding host preparation remains intentional. At this checkpoint,
+SHAP arithmetic still needed a separate source audit: CUDA applied tree weights
+to leaf payloads during compression, while Metal weighted accumulated
+contributions. The following SHAP step addresses that operation-order difference.
 
 Focused validation passes the original 98 new native cases / 719,746 checks and
 123 existing prediction/storage cases / 19,058,906 checks / four expected
@@ -4072,3 +4072,79 @@ the new zero-valued diagnostics. No production or test edits followed that run.
 [Validation record](../validation/cuda-metal-prediction-model-m3.txt).
 Remaining CUDA operation/arithmetic audits, GPU collectives and cross-hardware
 validation remain open. No benchmark or NVIDIA execution comparison was run.
+
+
+### CUDA-source SHAP recurrence and arithmetic
+
+Authority is `predictor/interpretability/shap.cu`: `CompressTree`,
+`QuadratureShapTaskRunner` and `QuadratureShapInteractionTaskRunner`,
+`ExtractQuadratureEdgeDeltaLocal`, `ExtractQuadratureInteractionDeltaLocal`,
+`SubgroupOps::Sum` and the interaction finalizer. This corrects specific earlier
+CPU-formula choices, rather than moving CUDA's intentional host model preparation.
+
+- Host compression applies each tree's FP32 weight to scalar/vector leaf payloads
+  before traversal. The internal `ShapTree` weight slot is now padding; leaf
+  payloads include the weight. Root means retain the shared source-defined double
+  host computation and weighting.
+- Each descent multiplies the parent quadrature basis by the branch probability,
+  then the new basis factor, and divides out the previous factor for repeated
+  features. The old separate path-probability product has been removed. Leaves
+  return basis times the weighted leaf; quadrature weights apply at edge
+  extraction, after returned subtree values have been combined.
+- Edge extraction forms `ret * quadrature_weight`, subtracts the exit ratio from
+  the enter ratio, then multiplies. Pair extraction forms the partner factor
+  times that per-point edge result, then divides by the partner basis.
+- Eight values reduce in shuffle-down association at offsets 4, 2, 1. Metal
+  evaluates those dependencies within each row thread. Contributions accumulate
+  at each returned edge, without a late tree-weight multiply or per-tree feature
+  subtotal. Right/left subtree return order, bias addition, interaction symmetry
+  and diagonal subtraction follow the source expressions.
+
+Metal uses explicit FP32-preserving arithmetic, including subnormal handling.
+Its existing per-row traversal and dynamic stack remain: this is not a claim to
+reproduce NVIDIA warp placement, compiler FMA contraction or nondeterministic
+cross-tree atomic-add scheduling. The reference fixes a serial tree order and
+uncontracted FP32 expressions. Actual NVIDIA comparison is still required before
+claiming measured CUDA equivalence. CUDA supports depth through 127 edges; the
+existing Metal depth130 extension is checked against the same recurrence, not
+claimed as a supported CUDA execution case.
+
+`tests/cuda_shap_reference.py` is an independent recursive replay of the CUDA
+expressions using saved model data, host root means and the endpoint quadrature
+rule. It does not use Metal's iterative frame algorithm. The production API
+passes **52 new exact FP32 cases**: scalar regression, multiclass, vector leaves,
+weighted scalar/vector trees, numeric/categorical splits, unknown/missing values,
+repeated features, depths 2/17/65/127/130, zero covers, subnormal and large leaves,
+clamped tiny branch probabilities and large cover ratios. Every ordinary model
+case includes a witness that serial eight-point summation gives different bits.
+NaN location/classification is checked; NaN payload bits are unspecified. Finite
+fields and infinities are compared as raw FP32 bits. Native analytic checks pass
+**592 cases / 425,748,672 output values**, with maximum absolute error zero.
+
+The first focused run exposed four deep zero-cover differences: the CPU path's
+separate probability product underflows while its unscaled basis overflows,
+producing NaNs. CUDA's branch-weighted recurrence remains finite on these cases.
+They now require exact agreement with the independent CUDA replay and keep the
+unchanged CPU tolerance on all finite CPU fields. This is an explicit reference
+correction, not relaxed accuracy or a fallback to the old algorithm. The initial
+new oracle also needed to read current-format dropout weights from
+`gradient_booster.model.weight_drop`; fixture weights are now checked after
+reload so an ignored field cannot pass unnoticed.
+
+Focused validation passes **127 Python tests** (2 warnings, 4.41s), including
+40 initial source-reference cases and the existing SHAP suite. Twelve additional
+extreme-payload cases pass (0.26s). Existing mathematical coalition, symmetry,
+CPU-comparison, guards/aliasing, batching and malformed-input checks retain their
+expectations and tolerances. Native fixtures now provide preweighted leaves to
+match the revised internal packed-model contract. The public API and Statistics
+layout are unchanged; native callers must rebuild for the internal ShapTree
+semantic change. Stack-frame storage decreases from 88 to 84 bytes.
+
+Full validation completed **2026-11-05 01:42:51–01:51:15 UTC** (8m24s), exit 0:
+all **96 native groups** rebuilt and passed; **3,426 Python tests passed, one
+expected skip** (638 warnings, 205.30s); and the CPU-only incremental build (three
+steps) plus device/native input/output/quantile/cache API checks passed.
+No production or test edits followed the full run.
+[Validation record](../validation/cuda-metal-shap-source-m3.txt).
+GPU collective integration, remaining CUDA operation/arithmetic audits and
+cross-hardware validation remain open. No benchmark was run for this step.

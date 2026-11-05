@@ -16,12 +16,13 @@ struct ShapNode {
 };
 struct ShapTree {
   std::uint32_t root, group, target;
-  float weight;
+  std::uint32_t padding{0};
 };
 struct ShapModel {
   std::vector<ShapNode> nodes;
   std::vector<ShapTree> trees;
   std::vector<std::uint32_t> categories;
+  // Leaf payloads already include the tree weight, as in CUDA CompressTree.
   std::vector<float> leaves, root_means, base_scores;
   float quadrature_nodes[8], quadrature_weights[8];
   std::uint32_t depth{1};

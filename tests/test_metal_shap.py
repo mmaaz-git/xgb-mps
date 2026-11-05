@@ -1,4 +1,4 @@
-"""CPU-equivalent eight-point SHAP on the GPU, using identical saved trees."""
+"""Same-model CPU comparisons plus explicit CUDA-reference deep-tree cases."""
 import json
 import math
 
@@ -138,7 +138,23 @@ def handcrafted_tree(depth=2, zero_cover=False):
 def test_shap_repeated_features_and_depth(metal, depth, zero_cover, interactions):
     cpu, _ = handcrafted_tree(depth, zero_cover)
     x = np.array([[-1, -1, -1], [1, 1, 1], [np.nan] * 3, [.5, -1, np.nan]], dtype=np.float32)
-    compare_shap(cpu, xgb.DMatrix(x, nthread=2), interactions)
+    if zero_cover and depth >= 127:
+        from cuda_shap_reference import predict as source_predict
+        data = xgb.DMatrix(x, nthread=2)
+        args = {"pred_interactions" if interactions else "pred_contribs": True, "strict_shape": True}
+        cpu_result = cpu.predict(data, **args)
+        assert np.isnan(cpu_result).any()  # Separate CPU basis overflows here.
+        expected = source_predict(json.loads(cpu.save_raw(raw_format="json")), x, interactions)
+        before = xgb.metal_info()
+        actual = metal_copy(cpu).predict(data, **args)
+        key = "shap_interaction_dispatches" if interactions else "shap_dispatches"
+        assert xgb.metal_info()[key] > before[key]
+        assert np.isfinite(actual).all()
+        np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+        finite = np.isfinite(cpu_result)
+        np.testing.assert_allclose(actual[finite], cpu_result[finite], rtol=2e-5, atol=2e-5)
+    else:
+        compare_shap(cpu, xgb.DMatrix(x, nthread=2), interactions)
 
 
 @pytest.mark.parametrize("interactions", [False, True])

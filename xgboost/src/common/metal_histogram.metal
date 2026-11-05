@@ -5519,10 +5519,10 @@ kernel void xgb_sketch_finalize(device const float4* entries [[buffer(0)]],
 // Each lane owns one row/group and traverses trees in their original order.
 // The runtime-sized stack avoids a compile-time depth ceiling.
 struct ShapNode { PredictionNode node; float left_weight, right_weight; };
-struct ShapTree { uint root, group, target; float weight; };
+struct ShapTree { uint root, group, target, padding; };
 struct ShapFrame {
   uint node, stage, feature;
-  float p_enter, p_exit, w_prod;
+  float p_enter, p_exit;
   float c[8], h[8];
 };
 struct ShapParams {
@@ -5532,38 +5532,38 @@ struct ShapParams {
 inline float xgb_shap_basis(float alpha, float node) {
   return xgb_fadd_preserve(1.f, xgb_fmul_preserve(alpha, node));
 }
-inline float xgb_shap_delta(constant ShapParams& p, device const float* h,
-                            float enter, float exit) {
-  float acc = 0;
-  if (enter != 1.f) {
-    float alpha = xgb_fsub_preserve(enter, 1.f);
-    for (uint i = 0; i < 8; ++i) {
-      acc = xgb_fadd_preserve(acc, xgb_fdiv_preserve(xgb_fmul_preserve(alpha, h[i]),
-                                                   xgb_shap_basis(alpha, p.quad_nodes[i])));
-    }
-  }
-  if (exit != 1.f) {
-    float alpha = xgb_fsub_preserve(exit, 1.f);
-    for (uint i = 0; i < 8; ++i) {
-      acc = xgb_fsub_preserve(acc, xgb_fdiv_preserve(xgb_fmul_preserve(alpha, h[i]),
-                                                   xgb_shap_basis(alpha, p.quad_nodes[i])));
-    }
-  }
-  return acc;
+// CUDA SubgroupOps::Sum uses an eight-lane shuffle-down tree (4, 2, 1).
+// A row thread evaluates the same dependencies explicitly on Metal.
+inline float xgb_shap_sum(thread float* values) {
+  for (uint offset = 4; offset; offset /= 2)
+    for (uint i = 0; i < offset; ++i)
+      values[i] = xgb_fadd_preserve(values[i], values[i + offset]);
+  return values[0];
 }
-inline float xgb_shap_pair(constant ShapParams& p, device const float* h,
-                           float enter, float exit, float partner) {
-  if (partner == 1.f) return 0;
-  float alpha = xgb_fsub_preserve(enter, 1.f), old = xgb_fsub_preserve(exit, 1.f);
-  float other = xgb_fsub_preserve(partner, 1.f), acc = 0;
+inline void xgb_shap_edge(constant ShapParams& p, device const float* ret,
+                          float enter, float exit, thread float* local) {
   for (uint i = 0; i < 8; ++i) {
-    float edge = xgb_fdiv_preserve(alpha, xgb_shap_basis(alpha, p.quad_nodes[i]));
-    if (exit != 1.f)
-      edge = xgb_fsub_preserve(edge, xgb_fdiv_preserve(old, xgb_shap_basis(old, p.quad_nodes[i])));
-    float term = xgb_fmul_preserve(xgb_fmul_preserve(other, h[i]), edge);
-    acc = xgb_fadd_preserve(acc, xgb_fdiv_preserve(term, xgb_shap_basis(other, p.quad_nodes[i])));
+    float weighted_ret = xgb_fmul_preserve(ret[i], p.quad_weights[i]);
+    float edge = 0.f;
+    if (enter != 1.f) {
+      float alpha = xgb_fsub_preserve(enter, 1.f);
+      edge = xgb_fadd_preserve(edge, xgb_fdiv_preserve(alpha, xgb_shap_basis(alpha, p.quad_nodes[i])));
+    }
+    if (exit != 1.f) {
+      float alpha = xgb_fsub_preserve(exit, 1.f);
+      edge = xgb_fsub_preserve(edge, xgb_fdiv_preserve(alpha, xgb_shap_basis(alpha, p.quad_nodes[i])));
+    }
+    local[i] = xgb_fmul_preserve(weighted_ret, edge);
   }
-  return acc;
+}
+inline float xgb_shap_pair(constant ShapParams& p, thread const float* edge, float partner) {
+  if (partner == 1.f) return 0.f;
+  float alpha = xgb_fsub_preserve(partner, 1.f);
+  float local[8];
+  for (uint i = 0; i < 8; ++i)
+    local[i] = xgb_fdiv_preserve(xgb_fmul_preserve(alpha, edge[i]),
+                                xgb_shap_basis(alpha, p.quad_nodes[i]));
+  return xgb_shap_sum(local);
 }
 inline bool xgb_shap_left(PredictionNode node, float value, device const uint* categories) {
   uint bits = as_type<uint>(value);
@@ -5597,12 +5597,8 @@ kernel void xgb_shap(device const float* data [[buffer(0)]],
   for (uint t = 0; t < p.trees; ++t) {
     ShapTree tree = trees[t];
     if (tree.group != group) continue;
-    if (!p.interactions) {
-      for (ulong i = 0; i < columns; ++i) diag[i] = 0;
-    }
     stack[0].node = tree.root;
     stack[0].stage = 0;
-    stack[0].w_prod = 1.f;
     for (uint i = 0; i < 8; ++i) stack[0].c[i] = 1.f;
     uint depth = 0;
     while (true) {
@@ -5629,10 +5625,10 @@ kernel void xgb_shap(device const float* data [[buffer(0)]],
         child.feature = node.node.feature;
         child.p_enter = enter;
         child.p_exit = previous;
-        child.w_prod = xgb_fmul_preserve(frame.w_prod, weight);
         float alpha = xgb_fsub_preserve(enter, 1.f), old = xgb_fsub_preserve(previous, 1.f);
         for (uint i = 0; i < 8; ++i) {
-          child.c[i] = xgb_fmul_preserve(frame.c[i], xgb_shap_basis(alpha, p.quad_nodes[i]));
+          child.c[i] = xgb_fmul_preserve(xgb_fmul_preserve(frame.c[i], weight),
+                                         xgb_shap_basis(alpha, p.quad_nodes[i]));
           if (previous != 1.f)
             child.c[i] = xgb_fdiv_preserve(child.c[i], xgb_shap_basis(old, p.quad_nodes[i]));
         }
@@ -5640,15 +5636,17 @@ kernel void xgb_shap(device const float* data [[buffer(0)]],
         continue;
       }
       if (node.node.left < 0) {
-        float scale = xgb_fmul_preserve(frame.w_prod, leaves[node.node.leaf_begin + tree.target]);
-        for (uint i = 0; i < 8; ++i)
-          frame.h[i] = xgb_fmul_preserve(xgb_fmul_preserve(frame.c[i], scale), p.quad_weights[i]);
+        float leaf = leaves[node.node.leaf_begin + tree.target];
+        for (uint i = 0; i < 8; ++i) frame.h[i] = xgb_fmul_preserve(frame.c[i], leaf);
       }
       if (!depth) break;
-      float delta = xgb_shap_delta(p, frame.h, frame.p_enter, frame.p_exit);
+      float edge[8], reduced[8];
+      xgb_shap_edge(p, frame.h, frame.p_enter, frame.p_exit, edge);
+      for (uint i = 0; i < 8; ++i) reduced[i] = edge[i];
+      float delta = xgb_shap_sum(reduced);
       uint feature = frame.feature;
-      diag[feature] = xgb_fadd_preserve(diag[feature], p.interactions
-          ? xgb_fmul_preserve(tree.weight, delta) : delta);
+      if (p.interactions) diag[feature] = xgb_fadd_preserve(diag[feature], delta);
+      else phi[feature] = xgb_fadd_preserve(phi[feature], delta);
       if (p.interactions) {
         for (uint d = depth - 1; d > 0; --d) {
           uint partner = stack[d].feature;
@@ -5657,24 +5655,20 @@ kernel void xgb_shap(device const float* data [[buffer(0)]],
             if (stack[newer].feature == partner) { shadowed = true; break; }
           }
           if (shadowed) continue;
-          float pair = xgb_shap_pair(p, frame.h, frame.p_enter, frame.p_exit, stack[d].p_enter);
+          float pair = xgb_shap_pair(p, edge, stack[d].p_enter);
           ulong at = ulong(feature) * columns + partner;
-          phi[at] = xgb_fadd_preserve(phi[at], xgb_fmul_preserve(tree.weight, pair));
+          phi[at] = xgb_fadd_preserve(phi[at], pair);
         }
       }
       device ShapFrame& parent = stack[depth - 1];
       for (uint i = 0; i < 8; ++i)
-        parent.h[i] = parent.stage == 1 ? frame.h[i] : xgb_fadd_preserve(parent.h[i], frame.h[i]);
+        parent.h[i] = parent.stage == 1 ? frame.h[i] : xgb_fadd_preserve(frame.h[i], parent.h[i]);
       --depth;
-    }
-    if (!p.interactions) {
-      for (uint i = 0; i < p.features; ++i)
-        phi[i] = xgb_fadd_preserve(phi[i], xgb_fmul_preserve(diag[i], tree.weight));
     }
   }
   float bias = xgb_fadd_preserve(roots[group], bases[p.margin ? task : group]);
-  if (!p.interactions) { phi[p.features] = bias; return; }
-  diag[p.features] = bias;
+  if (!p.interactions) { phi[p.features] = xgb_fadd_preserve(phi[p.features], bias); return; }
+  diag[p.features] = xgb_fadd_preserve(diag[p.features], bias);
   for (ulong r = 0; r < columns; ++r) {
     for (ulong c = r + 1; c < columns; ++c) {
       float sym = xgb_fmul_preserve(.5f, xgb_fadd_preserve(phi[r * columns + c], phi[c * columns + r]));

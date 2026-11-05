@@ -9086,7 +9086,7 @@ class MetalShap final : public Shap {
     float quad_nodes[8], quad_weights[8];
   } params_{};
   std::size_t batch_rows_, row_output_, row_stack_;
-  static constexpr std::size_t kFrameBytes = 88;
+  static constexpr std::size_t kFrameBytes = 84;
 
  public:
   MetalShap(ShapModel const& model, std::uint32_t features, std::uint32_t groups, bool interactions)

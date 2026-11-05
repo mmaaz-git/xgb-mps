@@ -1,0 +1,55 @@
+CUDA-source SHAP recurrence — Apple M3, 2026-11-04 local
+======================================================
+Authority: predictor/interpretability/shap.cu CompressTree, task runners,
+ExtractQuadrature*Local, SubgroupOps::Sum and interaction finalizer.
+
+Production:
+- Host FP32 leaf weighting before traversal, as CUDA CompressTree does.
+- Branch probability incorporated into the quadrature basis on every descent.
+- Returned subtree values combine before quadrature weighting/edge extraction.
+- CUDA edge/pair expressions and eight-point4/2/1 reduction association.
+- Per-edge contribution accumulation; no late tree weight or per-tree subtotal.
+- Right-plus-left returns, bias addition, symmetry and diagonal source order.
+- Existing Metal per-row traversal, dynamic stack and FP32-preserving helpers.
+  Stack frame84bytes (formerly88); model compression/root means stayhost asCUDA.
+- Internal ShapTree weight slot becomes padding and leaves arepreweighted.
+  Public API/Statistics layout unchanged; native model callers must recompile.
+
+Validation before full run:
+- Metal buildv1 PASS; no subsequent production edits.
+- Existing native SHAP:592 cases /425748672 analytic output values PASS;
+  max absolute error0; guards, aliasing, empty input and batch bounds checked.
+- InitialfocusedPython:117PASS,4FAIL (deepzero-coverCPUreturnsNaNs).
+  Source-derived recurrence verifies finite results. Those4cases now require
+  exactCUDA-source output and retainCPU comparisons on finitefields; no widened
+  tolerance and no reversion toCPU's overflowing formulation.
+- Initialsourceoracle:32PASS,4FAIL; currentdropoutweights live inmodel.weight_drop,
+  notlegacywrapper/top-level. Fixedreference/fixturelocation; reload checks ensure
+  the chosen weights are actually loaded. Added weightedvector fixtures.
+- Focusedsource+existingSHAP:127PASS,2warnings,4.41s. Includes40newsourcecases.
+- Additionalextremepayloads:12PASS,40deselected,0.26s. Total52newsourcecases.
+- IndependentPython recursiveCUDA replay uses explicitFP32 operations, hostroot
+  means andquadrature rule. Exactfinite/Inf bits; matchingNaNclassification, not
+  NaNpayload. Ordinarycases witness differentserial-reductionbits.
+- Scalar/multiclass/vector/dropout, categories, missing/unknownvalues, repeated
+  features, depth2/17/65/127/130, zerocovers, clampedtinyweights, subnormals,
+  largeleaves/coverratios, contributions/interactions and explicitbasemargins.
+- ExistingCPU2e-5 comparison/coalition/nativeanalytic tolerances unchanged.
+
+Logs: results/build-shap-source-v1.log, shap-source-focused-v1.log,
+  shap-source-oracle-v1.log/v2.log, shap-source-extreme-v1.log.
+Full regression: PASS, exit0.
+  2026-11-05T01:42:51Z–01:51:15Z (8minutes24seconds).
+  All96 native groups rebuilt and passed, including the592 SHAP cases above.
+  Python:3426 passed, one expected skip,638 warnings,205.30seconds.
+  CPU-only:three incremental build steps and device/native input/output/
+    quantile/cache API checks passed.
+  All52 new source-reference cases passed. No production/test edits followed.
+Full driver/log: results/run-shap-source-full-v1.sh,
+  results/shap-source-full-v1.log.
+
+Limits: reference fixes serialtreeorder and uncontractedFP32expressions. NVIDIA
+execution, NVCCcontraction andcross-treeatomic-add scheduling unverified. Depth130
+isMetalextension beyondCUDA127limit, validatedwithsamearithmeticrecurrence only.
+GPUcollectives andremainingCUDAoperation/arithmetic/cross-hardwareaudits remain
+open. No benchmark; fullCUDAparity isnotcomplete.
