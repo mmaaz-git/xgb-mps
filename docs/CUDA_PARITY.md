@@ -37,7 +37,7 @@ regression evidence. The source-alignment work and remaining differences include
   before GPU quantization, including original value-gradient scales. Scalar roots
   use host integer collectives; vector roots, histograms and value leaves use
   Metal integer collectives. Native production-updater integration is tested;
-  full distributed learner support remains guarded.
+  public row-partitioned tree learners are now enabled and tested across workers.
 - Row/column/ranking sampling: uniform row sampling targets CUDA's modern
   `<cuda/std/random>` Philox4x64 branch, including seed consumption and replay.
   The older Thrust branch is not an equivalent stream. Gradient-based sampling now
@@ -101,8 +101,8 @@ must be reported rather than hidden by widening test tolerances.
 | Multiclass error and logloss | `metric/multiclass_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
 | Quantile and expectile metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 terms, subnormal-preserving products and complete binary64 GPU reductions; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
 | AFT likelihood and interval-regression accuracy | `metric/survival_metric.cu` | GPU probability calculations and complete binary64 sums; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
-| ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; resident inputs/summaries; host-summary distributed collective fallback |
-| PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; resident inputs/summaries; host-summary distributed collective fallback |
+| ROC-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, batched sorting, binary64 prefixes and tied-score trapezoids; raw curve outputs, per-output aggregation metadata and normalization on GPU; resident inputs/summaries; distributed multi-output summary reductions on Metal |
+| PR-AUC | `metric/auc.cu` | Binary, multiclass and multilabel CUDA-source term casts, separate FP32 validity/recall totals, binary64 source integral and distinct binary/multi-output invalid results; GPU metadata and normalization; resident inputs/summaries; distributed multi-output summary reductions on Metal |
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains, cached sort indices and ranking label validation retain Metal storage; metric inputs bind shared arrays directly. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add host dense/columnar and native Metal tensor/columnar ingestion, resident sketches and bins; native metadata conversion/validation is supported; distributed sketches use CUDA-order variable reductions with GPU payloads, including empty workers and all these constructors |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Ordinary in-memory DMatrix now compresses raw CSR directly with separate lazy CPU views and cache-generation tracking. MPS-origin external disk caches now store/read compressed pages; internal quantile cuts+ELLPACK save/load is implemented. Ordinary external on_host selection now uses CUDA single-/multiple-page defaults. Optional Snappy compute compression/decompression now follows the native fallback opt-in, sparse eligibility and forced-prefetch rules. Mapped-file zero-copy remains open; CPU-origin external matrices retain their existing compatibility path |
@@ -111,7 +111,7 @@ must be reported rather than hidden by widening test tolerances.
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
-| Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/allreduce_v.cuh`, `collective/aggregator.cuh` | Metal numeric/bytewise fixed reductions, broadcast and fixed/variable allgather over shared buffers and host TCP; 1/2/3/4-worker tests. Ordered variable-size reduction and sketch consumers are implemented (1/2/3/5-worker tests); global quantizers use source-defined host bounds/row controls, and stump/weighted-unweighted sample means use GPU output reductions. Scalar roots use host integer reductions; vector roots, histograms and value-leaf sums use Metal integer reductions. Production updater integration is tested with 1/2/3/5 workers. Other consumers and full learner integration remain open; distributed `mps` training still rejected |
+| Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/allreduce_v.cuh`, `collective/aggregator.cuh` | Metal numeric/bytewise fixed reductions, broadcast and fixed/variable allgather over shared buffers and host TCP; 1/2/3/4-worker tests. Ordered variable-size reduction and sketch consumers are implemented (1/2/3/5-worker tests); global quantizers use source-defined host bounds/row controls, and stump/weighted-unweighted sample means use GPU output reductions. Scalar roots use host integer reductions; vector roots, histograms and value-leaf sums use Metal integer reductions. Production updater integration is tested with 1/2/3/5 workers. Public row-partitioned hist/approx/DART learners are enabled and tested across 1/2/3 workers, including objectives, metrics, empty workers and external memory. Mixed optional weights use a globally consistent initialization mode. Federated Metal remains unsupported |
 | CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack tensors and native columnar tables feed ordinary/quantile constructors, iterators and inplace prediction/CPU fallback through owned GPU snapshots. Metadata imports use GPU conversion/validation/grouping; custom gradients use GPU typed pair packing. Explicit `output_device="mps"` returns owned GPU predictions, including leaves and SHAP, with legacy/versioned DLPack exports to PyTorch/MLX. Public prediction result pointers retain synchronized shared Metal storage; native output snapshots avoid intermediate host mirrors, while NumPy copies explicitly. Known runtimes synchronize; generic producers/consumers must finish writes. Portable stream handshakes and end-to-end device ownership remain open. NVIDIA-specific interfaces cannot consume Metal memory |
 | CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Owned shared Metal vector allocations with CUDA-derived access states, GPU fills/copies/growth and lazy host mirrors; native float metadata uses them. Reused queues/histograms/workspaces and guarded host views remain. The execution context still defaults generic state to host storage; remaining consumers, persistent end-to-end ownership and asynchronous scheduling are unfinished |
 
@@ -985,8 +985,8 @@ Each adaptive call reduces its statistics completely on GPU, copies only the
 `targets + 1` double statistics to the host collective, then computes scales and
 gradients on GPU. This matches CUDA's explicit CPU-context GlobalSum. Empty
 workers participate before returning and dispatch no kernels. The independent
-Learner guard still rejects distributed MPS training: this change restores
-objective behavior and does not implement GPU collectives or distributed trees.
+learner guard still rejected distributed MPS training at that checkpoint. Later
+steps below implement collectives and enable distributed tree learners.
 
 The extracted-source reference rebinds the actual objective lambda bodies and
 substitutes only math primitives. Tests check 2,359,332 source-composition fields
@@ -4162,8 +4162,8 @@ cross-hardware validation remain open. No benchmark was run for this step.
 
 `CommGroup` now selects a distinct Metal backend for explicit MPS payload views.
 Generic MPS contexts still expose CPU to existing generic consumers, so CPU
-control scalars continue using the CPU backend. This does not remove distributed
-training guards or silently reinterpret CPU payloads as Metal.
+control scalars continue using the CPU backend. That checkpoint retained the
+distributed training guards; later integration below enables tree learners.
 
 Implemented operations:
 
@@ -4208,13 +4208,13 @@ resident-payload staging. The ordinary workers pass 6,026 cases and 12,230,282
 field checks. Full regression passes all 97 native groups, 3,426 Python tests
 (one expected skip), and the CPU-only build/API checks.
 
-Variable-size `AllreduceV` and resident sketch pack/merge/prune/load are next.
-Global quantizer scales and integer histogram/root/leaf reductions must then be
-connected before distributed training is enabled. CUDA intentionally aggregates
+At that checkpoint, variable-size `AllreduceV`, sketch consumers, global quantizer
+scales and integer histogram/root/leaf reductions still needed integration. Later
+steps add these and enable tree learners. CUDA intentionally aggregates
 quantizer bounds and row counts on the host (`gpu_hist/quantiser.cu`); that control
-work does not require a GPU collective to match the source. AUC's earlier host-summary
-fallback, other consumers, federated transport, cross-machine testing and NVIDIA
-execution validation remain open. No benchmark or performance claim accompanies
+work does not require a GPU collective to match the source. The latest learner
+step also removes AUC's host-summary fallback. Federated transport, cross-machine
+testing and NVIDIA execution validation remain open. No performance claim accompanies
 this change. See the [validation record](../validation/cuda-metal-collectives-m3.txt).
 
 
@@ -4268,7 +4268,70 @@ Sampled primitives use the CUDA-derived scalar oracle instead of CPU RNG streams
 
 Full regression passes 100 native groups, 3,431 Python tests (one expected skip)
 and the CPU-only build/API checks. See the
-[validation record](../validation/cuda-metal-integer-collectives-m3.txt). The learner-wide distributed guard is retained: other training
-consumers, full learner/external-memory integrations and federated transport still
-need validation or implementation. These localhost tests do not establish
+[validation record](../validation/cuda-metal-integer-collectives-m3.txt). That
+checkpoint retained the learner-wide distributed guard; the following step adds
+objective/metric and full learner/external-memory integration. Federated transport
+remains unfinished. These localhost tests do not establish
 cross-machine, NVIDIA or performance equivalence.
+
+## Distributed tree learners and objective/metric integration
+
+Public `device="mps"` tree training now uses the completed collective paths.
+`hist`, `approx` and DART are enabled for row-partitioned workers. Distributed
+`gblinear` remains explicitly rejected, matching the upstream supported scope;
+federated Metal still has a separate unsupported guard. Communication uses the
+existing TCP transport over CPU-addressable shared Metal allocations.
+
+Multi-output ROC/PR-AUC now uses an explicit MPS summary view for `GlobalSum`,
+matching CUDA `auc.cu::ScaleOutputs`. Its summaries remain resident through
+normalization. Binary/ranking final scalar aggregation and shape-control values
+retain their source-defined host placement. This combines per-worker summaries;
+it does not claim the AUC of globally pooled predictions.
+
+Mixed weighted/unweighted workers exposed a shared initialization bug:
+`FitInterceptGlmLike`, expectile and absolute-error initialization selected mean
+reducers using only local weight presence. Nonempty workers then reduced integer
+row counts against other workers' floating-point weight sums. A two-worker probe
+returned 3.66388893 instead of 2.74525309 on both CPU and Metal. The shared
+`OptionalWeightedSampleMean` now globally agrees on the mode and supplies unit
+weights to populated workers without explicit weights. Afterward both return
+2.74525332, within the existing FP32 mean tolerance. Metal unit-weight fills and
+mean outputs stay on GPU; empty workers participate with zero contributions.
+This also changes shared CUDA call-site selection; NVIDIA compilation/execution
+has not been validated. The CUDA mean arithmetic itself is unchanged.
+
+A tracker-connected communicator can have one worker while reporting that it is
+distributed. Metal `Allreduce` now returns its unchanged input after validation
+for that case, avoiding an invalid final ring-gather offset. The transport runner
+tests both standalone and tracker-connected one-worker communicators, alongside
+2/3/4 workers and deliberate disconnection.
+
+The actual-objective initialization suite covers 5,632 cases across 1/2/3/5
+workers: 14 objective families, multiple targets, Newton scaling, optional/zero
+weights, empty roots, only-root and all-empty layouts. CPU rejection behavior and
+valid values agree; square-error means also have an independent global weighted
+reference. Tests check all-rank result bits, GPU collective dispatches and zero
+payload mirrors/staging. Source-defined expectile/absolute host finalizers remain.
+
+Public learner tests cover 382 cases across 1/2/3 workers, with three rounds each:
+all GPU objective families, ranking, AFT distributions, vector/reduced gradients,
+sampling and DART; dense/sparse/categorical/missing data; native MPS inputs;
+ordinary/in-memory-quantile/host-cache/disk-cache matrices; and empty workers.
+All learned model state, predictions and evaluation histories agree across ranks.
+Upstream Python skips feature-type assignment on empty workers: tests assert this
+metadata rule separately and exclude only that field from model equality.
+JSON reload predictions agree exactly, and external cache files are cleaned up.
+Unsampled numeric fixtures pass 9,600 CPU prediction comparisons at 2e-5 absolute
+and relative tolerance. Quantile learner fixtures supply an intercept because
+CUDA's mean-of-local-quantiles initialization can include NaN from empty workers;
+the separate initialization tests retain and check that source behavior.
+
+AUC validation covers 1,132 cases and 394,472 fields across 1/2/3/5 workers,
+requiring no payload readbacks/uploads or collective staging. Full regression
+passes 100 native groups, 3,434 Python tests (one expected skip), and the CPU-only
+build/API checks. The run completed 2026-11-05 04:33:15–04:43:06 UTC (9m51s),
+exit 0. No implementation changes followed it. See the
+[validation record](../validation/cuda-metal-distributed-learner-m3.txt).
+These tests share one physical Apple M3. Cross-machine transport, federated MPS,
+asynchronous interoperability, remaining operation/state audits and NVIDIA
+execution validation remain open. No benchmark was run for this checkpoint.

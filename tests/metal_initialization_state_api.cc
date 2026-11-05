@@ -12,7 +12,9 @@
 #include <string>
 #include <vector>
 
+#include "../xgboost/src/collective/broadcast.h"
 #include "../xgboost/src/common/linalg_op.h"
+#include "../xgboost/src/common/metal_collective.h"
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/metal_linalg.h"
 #include "../xgboost/src/common/metal_ops.h"
@@ -22,12 +24,14 @@
 #include "../xgboost/src/common/numeric.h"
 #include "../xgboost/src/common/stats.h"
 #include "../xgboost/src/tree/fit_stump.h"
+#include "xgboost/c_api.h"
 #include "xgboost/objective.h"
 
 using namespace xgboost;
 namespace metal = common::metal;
 std::size_t cases = 0, fields = 0, rejected = 0;
 std::string current;
+std::size_t distributed_cases = 0, mean_fields = 0, expected_errors = 0;
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(current + ": " + message);
 }
@@ -234,6 +238,139 @@ void Objectives(Context const& gpu) {
     std::fflush(stdout);
   }
 }
+
+std::size_t WorkerRows(int rank, unsigned layout) {
+  return layout == 3 || (layout == 1 && rank == 0) || (layout == 2 && rank != 0) ? 0
+                                                                                 : 33 + rank * 19;
+}
+float WorkerWeight(int rank, std::size_t row, unsigned mode) {
+  if (!mode || (mode == 2 && rank == 0)) return 1.f;
+  return mode == 3 && rank == 0 ? 0.f : .25f + float(row % 5) / 4;
+}
+void SameWorkers(Context const& ctx, linalg::Vector<float> const& values) {
+  auto local = values.HostView().Values();
+  std::vector<float> root(local.data(), local.data() + local.size());
+  std::uint64_t size = root.size();
+  collective::SafeColl(collective::Broadcast(&ctx, linalg::MakeVec(&size, 1), 0));
+  root.resize(size);
+  collective::SafeColl(collective::Broadcast(&ctx, linalg::MakeVec(root.data(), size), 0));
+  Check(local.size() == root.size(), "Workers produced different base-score shapes");
+  Check(!std::memcmp(local.data(), root.data(), local.size_bytes()),
+        "Workers produced different base-score bits");
+}
+void DistributedObjectives(Context const& gpu, int rank, int world) {
+  auto cpu = gpu.MakeCPU();
+  for (auto name : {"reg:squarederror", "reg:logistic", "binary:logistic", "binary:logitraw",
+                    "reg:squaredlogerror", "reg:gamma", "reg:pseudohubererror", "count:poisson",
+                    "reg:tweedie", "reg:expectileerror", "reg:quantileerror", "reg:absoluteerror",
+                    "multi:softprob", "multi:softmax"}) {
+    std::string kind{name};
+    bool multi = kind.find("multi:") == 0;
+    bool binary = kind.find("logistic") != std::string::npos || kind == "binary:logitraw";
+    bool expectile = kind == "reg:expectileerror", absolute = kind == "reg:absoluteerror";
+    bool ordered = expectile || kind == "reg:quantileerror";
+    for (std::size_t targets : {1ul, 3ul}) {
+      if (multi && targets == 1) continue;
+      for (unsigned layout = 0; layout < 4; ++layout)
+        for (unsigned mode = 0; mode < 4; ++mode)
+          for (unsigned newton = 0; newton < (binary ? 2u : 1u); ++newton) {
+            current = kind + "/world" + std::to_string(world) + "/rank" + std::to_string(rank) +
+                      "/targets" + std::to_string(targets) + "/layout" + std::to_string(layout) +
+                      "/weights" + std::to_string(mode) + "/newton" + std::to_string(newton);
+            auto rows = WorkerRows(rank, layout);
+            auto columns = multi || ordered ? 1ul : targets;
+            auto label = [&](int peer, std::size_t row, std::size_t column) {
+              return multi    ? float(row % targets)
+                     : binary ? float((row + column) % 2)
+                              : .5f + float((row + column) % 11) / 4 + peer * 2.f;
+            };
+            MetaInfo info;
+            info.num_row_ = rows;
+            info.labels.Reshape(rows, columns);
+            for (std::size_t r = 0; r < rows; ++r)
+              for (std::size_t t = 0; t < columns; ++t)
+                info.labels.HostView()(r, t) = label(rank, r, t);
+            if (mode && !(mode == 2 && rank == 0)) {
+              info.weights_.Resize(rows);
+              for (std::size_t r = 0; r < rows; ++r)
+                info.weights_.HostVector()[r] = WorkerWeight(rank, r, mode);
+            }
+            double sum_weight = 0;
+            std::vector<double> numerator(targets, 0);
+            for (int peer = 0; peer < world; ++peer)
+              for (std::size_t r = 0; r < WorkerRows(peer, layout); ++r) {
+                double w = WorkerWeight(peer, r, mode);
+                sum_weight += w;
+                for (std::size_t t = 0; t < targets; ++t)
+                  numerator[t] += double(label(peer, r, t)) * w;
+              }
+            Args args{{"num_class", std::to_string(targets)},
+                      {"expectile_alpha", targets == 1 ? "[0.5]" : "[0.1,0.5,0.9]"},
+                      {"quantile_alpha", targets == 1 ? "[0.5]" : "[0.1,0.5,0.9]"},
+                      {"scale_pos_weight", newton ? "1.7" : "1"}};
+            std::unique_ptr<ObjFunction> reference{ObjFunction::Create(name, &cpu)},
+                objective{ObjFunction::Create(name, &gpu)};
+            reference->Configure(args);
+            objective->Configure(args);
+            linalg::Vector<float> expected, actual;
+            auto initialize = [&](ObjFunction const& obj, linalg::Vector<float>* out,
+                                  std::string* error) {
+              try {
+                obj.InitEstimation(info, out);
+                return true;
+              } catch (dmlc::Error const& e) {
+                *error = e.what();
+                return false;
+              }
+            };
+            std::string cpu_error, gpu_error;
+            auto cpu_ok = initialize(*reference, &expected, &cpu_error);
+            Resident(info.labels.Data());
+            Resident(&info.weights_);
+            auto before = metal::GetStatistics();
+            auto collective_before = metal::GetCollectiveStatistics();
+            auto gpu_ok = initialize(*objective, &actual, &gpu_error);
+            if (cpu_ok != gpu_ok)
+              std::fprintf(stderr, "CPU: %s\nMetal: %s\n", cpu_error.c_str(), gpu_error.c_str());
+            Check(cpu_ok == gpu_ok, "CPU/Metal initialization rejection differs");
+            if (!gpu_ok) {
+              Check(sum_weight == 0, "Unexpected rejection of positive-weight data");
+              ++expected_errors;
+              ++distributed_cases;
+              continue;
+            }
+            std::uint64_t finalizer = expectile                    ? (targets + 1) * 4
+                                      : absolute && sum_weight > 0 ? targets * 8
+                                                                   : 0;
+            NoTransfers(before, finalizer);
+            Check(!info.labels.Data()->HostCanRead() && !info.weights_.HostCanRead(),
+                  "Distributed initialization mirrored metadata");
+            auto collective_after = metal::GetCollectiveStatistics();
+            Check((collective_after.reduce_dispatches > collective_before.reduce_dispatches) ==
+                      (world > 1 && !(absolute && sum_weight == 0)),
+                  "Missing GPU initialization collective");
+            Check(collective_after.staging_bytes == collective_before.staging_bytes,
+                  "Initialization collective staged payloads");
+            Check(actual.Size() == targets && expected.Size() == targets, "Base-score shape");
+            for (std::size_t t = 0; t < targets; ++t) {
+              Near(actual.HostView()(t), expected.HostView()(t));
+              if (kind == "reg:squarederror") {
+                double mean = sum_weight > 0 ? numerator[t] / sum_weight : 0;
+                Near(actual.HostView()(t), mean);
+                ++mean_fields;
+              }
+            }
+            SameWorkers(gpu, actual);
+            ++distributed_cases;
+          }
+    }
+    std::printf(
+        "PASS world%d rank%d %s: %zu initialization cases / %zu "
+        "expected errors\n",
+        world, rank, name, distributed_cases, expected_errors);
+    std::fflush(stdout);
+  }
+}
 void Bindings() {
   for (std::size_t rows : {0ul, 1ul, 33ul, 257ul, 4097ul})
     for (std::size_t stride : {1ul, 3ul}) {
@@ -406,19 +543,31 @@ void Fallbacks() {
     ++cases;
   }
 }
-int main() {
+int main(int argc, char** argv) {
   try {
+    Check(argc == 1 || argc == 2, "Expected optional communicator JSON");
+    Check(!XGCommunicatorInit(argc == 2 ? argv[1] : "{}"), "Communicator initialization failed");
+    int rank = XGCommunicatorGetRank(), world = XGCommunicatorGetWorldSize();
     Context gpu;
     gpu.UpdateAllowUnknown(Args{{"device", "mps"}, {"nthread", "2"}});
-    for (std::size_t rows : {0ul, 1ul, 33ul, 257ul, 4097ul})
-      for (std::size_t targets : {1ul, 3ul}) Statistics(gpu, rows, targets);
-    Objectives(gpu);
-    Bindings();
-    Fallbacks();
+    if (world == 1) {
+      for (std::size_t rows : {0ul, 1ul, 33ul, 257ul, 4097ul})
+        for (std::size_t targets : {1ul, 3ul}) Statistics(gpu, rows, targets);
+      Objectives(gpu);
+      Bindings();
+      Fallbacks();
+    }
+    DistributedObjectives(gpu, rank, world);
     auto stats = metal::GetStatistics();
     Check(!stats.vector_live_buffers && !stats.vector_capacity_bytes, "Live vector leak");
+    Check(!XGCommunicatorFinalize(), "Communicator finalization failed");
     std::printf("PASS %zu initialization storage cases / %zu field checks / %zu rejected calls\n",
                 cases, fields, rejected);
+    std::printf(
+        "PASS world%d rank%d: %zu initialization cases / %zu direct "
+        "mean checks / "
+        "%zu expected errors\n",
+        world, rank, distributed_cases, mean_fields, expected_errors);
   } catch (std::exception const& e) {
     std::fprintf(stderr, "FAIL: %s\n", e.what());
     return 1;

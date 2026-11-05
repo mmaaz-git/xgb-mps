@@ -1,6 +1,6 @@
 """Run actual objectives with 1/2/3 local workers, including empty workers.
 
-This deliberately bypasses Learner: distributed MPS training remains disabled.
+This exercises objectives directly; public learners have a separate test matrix.
 """
 import json
 import os

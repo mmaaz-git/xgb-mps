@@ -1,0 +1,126 @@
+Distributed Metal tree learners — Apple M3, 2026-11-04 local
+==========================================================
+Scope: public row-partitioned tree learners, multi-output AUC device collectives,
+mixed optional-weight initialization and tracker-connected one-worker reductions.
+
+Source authority:
+- metric/auc.cu::ScaleOutputs reduces multi-output summaries on the GPU before
+  normalization. Binary/ranking final scalar aggregation is separately host-side.
+- objective/init_estimation.cc::FitInterceptGlmLike and regression_obj.cu
+  expectile/absolute initialization select sample-mean reducers. Mixed explicit
+  and implicit weights require a common denominator type across workers.
+- collective/comm.h::IsDistributed distinguishes an attached tracker from the
+  standalone world=-1 state; an attached tracker can still have world=1.
+- tests/test_distributed/test_with_dask/test_with_dask.py documents upstream's
+  unsupported distributed gblinear scope.
+- python-package/xgboost/core.py::_assign_dmatrix_features skips empty matrices.
+- quantile_obj.cu::InitEstimation averages per-worker quantiles, not a pooled
+  global quantile; an empty worker's NaN can enter automatic initialization.
+
+Implementation:
+- MPS MultiAUC now passes a device view/DeviceSpan to GlobalSum. There is no
+  summary HostSpan upload/readback between GPU generation and normalization.
+- OptionalWeightedSampleMean globally selects weighted/unweighted mode. If any
+  worker has explicit weights, populated workers without weights receive unit
+  weights on the execution device. Empty workers enter the same reductions.
+  FitInterceptGlmLike, expectile and absolute initialization use this helper.
+- Metal Allreduce validates type/width and returns unchanged data for an attached
+  one-worker communicator, avoiding the reduce-scatter final gather's offset 1.
+- The learner-wide distributed MPS rejection is narrowed to gblinear. Public
+  hist/approx/DART tree learners use the previously implemented global sketches,
+  quantizers, roots, integer histograms and integer value-leaf reductions.
+  The separate federated MPS rejection remains.
+
+Reproduced findings:
+- A two-worker mean probe with mixed nonempty weighted/unweighted workers gave
+  3.66388893 on CPU and MPS, versus global weighted mean 2.74525309. Different
+  workers had chosen integer row-count and floating-point weight denominators.
+  After the shared fix both give 2.74525332 (FP32 partial-sum rounding).
+  Logs: results/initialization-weight-probe-v1.log and -v2.log.
+- First public learner run: attached world=1 reached an invalid ring offset.
+  The identity fast path fixes it; the native runner now tests attached and
+  standalone one-worker states separately.
+- Empty/populated workers' serialized models differed only in feature_types.
+  Recursive comparison localized that upstream Python metadata behavior. Tests
+  now assert each worker's expected metadata and compare every other model
+  field. Production Python behavior and numerical tolerances are unchanged.
+- Early peer disconnect traces were consequences of a worker assertion failure,
+  not evidence of an additional transport failure. Cleanup terminates remaining
+  subprocesses on an actual failure.
+
+Focused validation (Metal API Validation enabled in native/worker processes):
+1. AUC storage/collectives: results/auc-device-collective-focused-v1.log, exit=0.
+   Standalone: 172 cases / 392,552 field checks / 5 invalid calls rejected.
+   Each of 10 ranks in worlds 2/3/5: 96 cases / 192 field checks.
+   Total: 1,132 cases / 394,472 fields / 5 rejected calls.
+   GPU collective dispatches are required for multi-output distributed inputs;
+   payload readbacks/uploads and collective staging must stay zero.
+2. Objective initialization: results/initialization-collective-focused-v1.log,
+   exit=0. 512 cases per rank in worlds 1/2/3/5, 5,632 total; 656 independent
+   global-mean checks; 312 expected zero-global-weight errors across those ranks.
+   Fourteen objective families, 1/3 targets, scale_pos_weight Newton selection,
+   absent/present/mixed/zero weights, populated/empty-root/only-root/all-empty
+   layouts. CPU values/rejections agree, all workers' output bits agree, GPU
+   reductions dispatch, and inputs stay resident without staging. The original
+   single-worker storage, stride, alias and fallback tests remain in this group.
+   Quantile empty-worker behavior and source-defined expectile/absolute host
+   finalizers remain explicit parts of these checks.
+3. Public learners: results/distributed-learner-focused-v4.log, exit=0,
+   3 pytest cases in 23.59 seconds. Six subprocesses in worlds 1/2/3 run 382
+   learner cases (37 + 5*69), three rounds each, with 9,600 CPU prediction checks.
+   Objective families include regression/classification, quantile/expectile/
+   absolute, all AFT distributions and rank:ndcg/map/pairwise. Vector and reduced
+   custom gradients, DART, hist/approx, uniform/gradient sampling, optional weights
+   and empty ranks are covered. Matrices include dense, CSR, categorical, native
+   MPS tensors, quantile matrices and both external-cache placements.
+   All learned model fields (apart from separately asserted feature_types),
+   evaluation histories and probe predictions agree across workers. Predictions
+   are finite and JSON reloads reproduce them exactly. External caches clean up.
+   Unsampled numeric square/vector/reduced fixtures compare separate distributed
+   CPU training at 2e-5 absolute/relative tolerance. Quantile learner fixtures set
+   an explicit intercept, preserving source automatic-init behavior in test 2.
+   The expected distributed gblinear rejection is checked on every worker.
+4. The full native collective runner additionally exercises attached world=1,
+   including its broadcast/allgather variants. Combined ordinary workers now
+   pass 6,669 cases / 13,869,736 field checks / 99 invalid calls rejected, plus
+   deliberate peer-disconnection handling.
+
+Full regression:
+  Session: xgb-distributed-learner-full-v1.
+  Script: results/run-distributed-learner-full-v1.sh.
+  Log: results/distributed-learner-full-v1.log.
+  Start: 2026-11-05 04:33:15 UTC.
+  End: 2026-11-05 04:43:06 UTC (9m51s), exit=0.
+  All 100 native groups rebuilt and passed, including the extended collective,
+  AUC and objective-initialization runners.
+  Python: 3,434 passed, 1 expected skip, 639 warnings in 239.60 seconds.
+  Warning blocks normalize to the same 12 messages/locations as the previous
+  full run; no new/removed types (timestamps and source line offsets excluded).
+  Full-run worker logs confirm 382 learner cases / 9,600 CPU prediction checks;
+  saved as results/distributed-learner-full-world{world}-rank{rank}.log, with
+  totals in results/distributed-learner-full-counts.txt.
+  CPU-only configure/build: PASS (10 incremental steps).
+  CPU-only API availability, rejection, unset-output, quantile and ordinary
+  external-cache training/regeneration/cleanup checks: PASS.
+  git diff --check: clean. No implementation/test-logic changes after the run;
+  only documentation and three stale runner docstrings were updated.
+
+Reproduction:
+  export DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib
+  export PYTHONPATH="$PWD/xgboost/python-package"
+  cmake --build build-metal -j4
+  bash scripts/test.sh
+  cmake -S xgboost -B build-cpu
+  cmake --build build-cpu -j4
+  .venv/bin/python scripts/check_cpu_build.py
+
+Limits:
+- All workers share one physical Apple M3; no cross-machine or NVIDIA run.
+- Shared initialization selection affects CPU/CUDA as well as MPS. CPU and
+  Metal execution are tested; CUDA compilation/execution is not available.
+- GPU operation counters and source-derived arithmetic references complement
+  CPU checks; full learner CPU equality is asserted only where algorithms agree.
+- This enables distributed tree paths, not distributed gblinear or federated
+  Metal. Asynchronous streams, remaining CUDA operation/state audits and broader
+  device validation are still unfinished. Full CUDA parity remains an active goal.
+- No benchmark or new performance claim accompanies this checkpoint.

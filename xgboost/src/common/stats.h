@@ -168,6 +168,15 @@ void SampleMean(Context const* ctx, linalg::Matrix<float> const& v, linalg::Vect
  */
 void WeightedSampleMean(Context const* ctx, linalg::Matrix<float> const& v,
                         HostDeviceVector<float> const& w, linalg::Vector<float>* out);
+
+/**
+ * @brief Sample mean with optional per-row weights, defaulting to one.
+ *
+ * Workers agree on weighted/unweighted mode before selecting denominator
+ * collectives. Local weight absence must not select a different scalar type.
+ */
+void OptionalWeightedSampleMean(Context const* ctx, linalg::Matrix<float> const& v,
+                                HostDeviceVector<float> const& w, linalg::Vector<float>* out);
 }  // namespace common
 }  // namespace xgboost
 #endif  // XGBOOST_COMMON_STATS_H_

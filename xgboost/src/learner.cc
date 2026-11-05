@@ -542,7 +542,10 @@ class LearnerConfiguration : public Intercept {
     if (ctx_.IsMPS()) {
       CHECK(tparam_.booster == "gbtree" || tparam_.booster == "dart" || tparam_.booster == "gblinear")
           << "Unsupported booster for device=mps.";
-      CHECK(!collective::IsDistributed()) << "Distributed Metal training is not supported yet.";
+      // Distributed gblinear is unsupported upstream as well. Tree boosters
+      // use the Metal collective backend for their device statistics.
+      CHECK(!collective::IsDistributed() || tparam_.booster != "gblinear")
+          << "Distributed Metal gblinear training is not supported.";
     }
 
     ConsoleLogger::Configure(args);

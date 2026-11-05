@@ -58,7 +58,9 @@ class MetalColl final : public Coll {
     auto width = bitwise ? 1 : ElementBytes(type);
     if (!width || data.size() % width)
       return Fail("Invalid type or byte count for Metal collective reduction.");
-    if (data.empty()) return Success();
+    // A tracker-connected communicator can be distributed with just one rank.
+    // The reduce-scatter ring's final gather uses offset 1, invalid for that case.
+    if (data.empty() || comm.World() == 1) return Success();
     auto world = comm.World(), rank = comm.Rank();
     auto scratch = metal::MakeVectorBuffer();
     auto count = data.size() / width;

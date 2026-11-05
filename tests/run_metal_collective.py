@@ -1,6 +1,6 @@
 """Exercise Metal collective arithmetic/transport with 1/2/3/4 localhost workers.
 
-Distributed training is still guarded pending sketch/histogram/leaf integration.
+Includes both a standalone communicator and a tracker-connected single worker.
 """
 import json
 import os
@@ -16,7 +16,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     binary = root / "results/metal_collective_api_test"
     subprocess.run([str(binary), "{}"], check=True, timeout=180)
-    for world, disconnect in ((2, False), (3, False), (4, False), (2, True)):
+    for world, disconnect in ((1, False), (2, False), (3, False), (4, False), (2, True)):
         tracker = RabitTracker(n_workers=world, host_ip="127.0.0.1", timeout=5 if disconnect else 120)
         tracker.start()
         workers = []

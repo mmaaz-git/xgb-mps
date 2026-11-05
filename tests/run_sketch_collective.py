@@ -1,6 +1,6 @@
 """Ordered Metal variable reductions and distributed sketch source references.
 
-Learner remains guarded until distributed histogram/leaf consumers are ported.
+This tests sketch consumers directly; public learners have a separate test matrix.
 """
 import json
 import os

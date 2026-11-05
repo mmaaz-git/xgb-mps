@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "../xgboost/src/common/metal_auc.h"
+#include "../xgboost/src/common/metal_collective.h"
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/metric/metric_common.h"
 #include "xgboost/c_api.h"
@@ -98,13 +99,17 @@ void Evaluate(Context const& gpu, char const* name, unsigned kind, std::size_t r
   std::size_t summary_bytes = computes && multi ? 3 * targets * sizeof(double) : 0;
   std::size_t input_bytes =
       computes ? 4 * (pred.Size() + info.labels.Size() + info.weights_.Size()) + summary_bytes : 0;
-  auto verify = [&](metal::Statistics const& before) {
+  auto verify = [&](metal::Statistics const& before,
+                    metal::CollectiveStatistics const& collective_before) {
     auto after = metal::GetStatistics();
-    Check(after.vector_readback_bytes - before.vector_readback_bytes ==
-              (world > 1 ? summary_bytes : 0),
-          "Unexpected host mirror (only distributed summaries may stage)");
-    Check(after.vector_upload_bytes - before.vector_upload_bytes == (world > 1 ? summary_bytes : 0),
-          "Unexpected vector upload");
+    Check(after.vector_readback_bytes == before.vector_readback_bytes, "Unexpected host mirror");
+    Check(after.vector_upload_bytes == before.vector_upload_bytes, "Unexpected vector upload");
+    auto collective_after = metal::GetCollectiveStatistics();
+    Check((collective_after.reduce_dispatches > collective_before.reduce_dispatches) ==
+              (world > 1 && computes && multi),
+          "Wrong AUC collective placement");
+    Check(collective_after.staging_bytes == collective_before.staging_bytes,
+          "Resident AUC collective staged its payload");
     Check(after.metric_host_input_bytes == before.metric_host_input_bytes, "Input staging");
     Check(after.metric_host_output_bytes == before.metric_host_output_bytes, "Output staging");
     Check(after.metric_shared_input_bytes - before.metric_shared_input_bytes == input_bytes,
@@ -127,16 +132,18 @@ void Evaluate(Context const& gpu, char const* name, unsigned kind, std::size_t r
   resident();
   for (int repeat = 0; repeat < 2; ++repeat) {
     auto before = metal::GetStatistics();
+    auto collective_before = metal::GetCollectiveStatistics();
     Near(actual.Eval(pred, info), reference);
-    verify(before);
+    verify(before, collective_before);
   }
   if (world == 1 && local_rows) {
     pred.Fill(.375f);  // Actual GPU mutation, then explicit CPU handoff.
     reference = expected.Eval(pred, info);
     resident();
     auto before = metal::GetStatistics();
+    auto collective_before = metal::GetCollectiveStatistics();
     Near(actual.Eval(pred, info), reference);
-    verify(before);
+    verify(before, collective_before);
   }
   ++cases;
 }

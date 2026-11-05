@@ -45,11 +45,7 @@ void FitInterceptGlmLike::InitEstimation(MetaInfo const& info,
   if (this->Task().task == ObjInfo::kRegression) {
     CheckInitInputs(info);
   }
-  if (info.weights_.Empty()) {
-    common::SampleMean(this->ctx_, info.labels, base_score);
-  } else {
-    common::WeightedSampleMean(this->ctx_, info.labels, info.weights_, base_score);
-  }
+  common::OptionalWeightedSampleMean(this->ctx_, info.labels, info.weights_, base_score);
   CHECK_GE(base_score->Size(), 1);
 }
 }  // namespace xgboost::obj

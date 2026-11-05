@@ -122,7 +122,8 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_initialization_state_api.cc \
   -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_initialization_state_api_test
-MTL_DEBUG_LAYER=1 results/metal_initialization_state_api_test
+MTL_DEBUG_LAYER=1 PYTHONPATH="$PWD/xgboost/python-package${PYTHONPATH:+:$PYTHONPATH}" \
+  .venv/bin/python tests/run_initialization_state_collective.py
 echo "Checking objective GPU storage, repeated calls, transforms and guarded bindings"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

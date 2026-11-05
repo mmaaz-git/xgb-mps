@@ -594,11 +594,7 @@ class ExpectileRegression : public FitIntercept {
     base_score->Reshape(n_targets);
 
     linalg::Vector<float> label_mean;
-    if (info.weights_.Empty()) {
-      common::SampleMean(ctx_, info.labels, &label_mean);
-    } else {
-      common::WeightedSampleMean(ctx_, info.labels, info.weights_, &label_mean);
-    }
+    common::OptionalWeightedSampleMean(ctx_, info.labels, info.weights_, &label_mean);
     CHECK_EQ(label_mean.Size(), 1);
 
     auto mean = label_mean.HostView()(0);
@@ -1132,11 +1128,7 @@ class MeanAbsoluteError : public ObjFunction {
     }
 
     linalg::Vector<float> mean;
-    if (info.weights_.Empty()) {
-      common::SampleMean(ctx_, info.labels, &mean);
-    } else {
-      common::WeightedSampleMean(ctx_, info.labels, info.weights_, &mean);
-    }
+    common::OptionalWeightedSampleMean(ctx_, info.labels, info.weights_, &mean);
     CHECK_EQ(mean.Size(), n_targets);
 
     HostDeviceVector<float> predt(info.labels.Size(), 0.0f, device);

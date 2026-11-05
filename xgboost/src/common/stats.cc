@@ -4,9 +4,10 @@
 #include "stats.h"
 
 #include <cstddef>  // std::size_t
+#include <cstdint>  // std::int32_t
 #include <numeric>  // std::accumulate
 
-#include "../collective/aggregator.h"    // for GlobalSum
+#include "../collective/aggregator.h"    // for GlobalMax, GlobalSum
 #include "linalg_op.h"                   // for Matrix
 #include "optional_weight.h"             // OptionalWeights
 #include "threading_utils.h"             // ParallelFor, MemStackAllocator
@@ -158,6 +159,25 @@ void WeightedSampleMean(Context const* ctx, linalg::Matrix<float> const& v,
     auto d_w = w.ConstDeviceSpan();
     auto d_out = out->View(ctx->Device());
     cuda_impl::WeightedSampleMean(ctx, d_v, d_w, d_out);
+  }
+}
+void OptionalWeightedSampleMean(Context const* ctx, linalg::Matrix<float> const& v,
+                                HostDeviceVector<float> const& w, linalg::Vector<float>* out) {
+  auto weighted = collective::GlobalMax(ctx, static_cast<std::int32_t>(!w.Empty()));
+  if (!weighted) {
+    SampleMean(ctx, v, out);
+  } else if (w.Empty() && v.Shape(0) != 0) {
+    // A populated rank without explicit weights still contributes unit weights.
+    // Keep these implicit weights on the same device as the mean calculation.
+    auto device = ctx->Device();
+#if defined(XGBOOST_USE_METAL)
+    if (ctx->IsMPS()) device = DeviceOrd::MPS();
+#endif
+    HostDeviceVector<float> unit_weights(v.Shape(0), 1.0f, device);
+    WeightedSampleMean(ctx, v, unit_weights, out);
+  } else {
+    // Empty ranks participate in the weighted denominator/output reductions too.
+    WeightedSampleMean(ctx, v, w, out);
   }
 }
 }  // namespace xgboost::common

@@ -107,10 +107,10 @@ double MultiAUC(Context const *ctx, HostDeviceVector<float> const &predictions,
                             common::metal::ConstDeviceSpan(info.weights_),
                             type == MultiAUCType::kMultiClass, is_roc, summaries.DeviceSpan());
     if (collective::GlobalCommGroup()->IsDistributed()) {
-      // Compatibility boundary until Metal collective transport is implemented.
-      // CUDA keeps these summaries on device during Allreduce as well.
+      // CUDA ScaleOutputs keeps these summaries on device through Allreduce
+      // and normalization. Explicit MPS views select the Metal collective.
       auto rc = collective::GlobalSum(
-          ctx, linalg::MakeTensorView(DeviceOrd::CPU(), summaries.HostSpan(), n_targets, 3));
+          ctx, linalg::MakeTensorView(DeviceOrd::MPS(), summaries.DeviceSpan(), n_targets, 3));
       collective::SafeColl(rc);
     }
     return common::metal::NormalizeAUC(summaries.ConstDeviceSpan());

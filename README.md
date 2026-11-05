@@ -14,7 +14,34 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **distributed trees now reduce exact integer statistics**. Scalar
+Latest step: **distributed tree training is enabled through the public MPS
+learner**. Local-worker tests cover `hist`, `approx`, DART, scalar/vector/reduced
+outputs, all GPU objective families, missing/categorical/sparse inputs, native
+MPS tensors, quantile matrices and host/disk external-memory caches. Models,
+predictions and evaluation histories agree across workers; unsampled numeric
+fixtures also match CPU training. Empty workers preserve upstream's separate
+feature-type metadata behavior.
+
+Multi-output AUC summaries now reduce directly on Metal, matching CUDA's device
+placement. Initialization tests exposed a shared CPU/Metal bug when some workers
+had weights and others implicitly used unit weights: workers selected different
+denominator types. They now agree on weighted mode before calculating means.
+A tracker-connected single worker also now correctly uses an identity reduction.
+
+Focused validation passes **382 public learner cases across 1/2/3 local workers**,
+**5,632 objective-initialization cases across 1/2/3/5 workers**, and **1,132 AUC
+storage/collective cases**. Unsampled numeric learners pass **9,600 CPU prediction
+comparisons**. Full regression passes **100 native groups**, **3,434 Python tests
+with one expected skip**, and the CPU-only build/API checks.
+[Distributed learner validation](validation/cuda-metal-distributed-learner-m3.txt).
+
+This enables row-partitioned tree training over the existing TCP transport.
+Distributed `gblinear` remains unsupported, as upstream; federated MPS,
+asynchronous streams and remaining CUDA operation/state audits are still open.
+Tests use multiple processes on this one M3, not multiple physical machines.
+This step makes no performance or NVIDIA execution-equivalence claim.
+
+Previous step: **distributed trees now reduce exact integer statistics**. Scalar
 roots follow CUDA's host integer collective; vector roots, histogram caches and
 value-leaf sums use Metal integer reductions. Floating-point views are refreshed
 only after those reductions, preserving small terms when large values cancel.
@@ -32,13 +59,11 @@ Full regression passes **100 native groups**, **3,431 Python tests with one
 expected skip**, and the CPU-only build/API checks.
 [Integer collective validation](validation/cuda-metal-integer-collectives-m3.txt).
 
-**Distributed MPS training remains disabled at the learner entry point.** These
-native integration tests exercise the production tree updaters directly. Other
-objective/metric/booster consumers and full learner integration still need work;
-federated MPS, asynchronous streams and NVIDIA execution validation remain open.
-This step makes no performance claim.
+At that checkpoint, native integration tests exercised the production tree
+updaters directly and the learner entry point remained disabled. The latest step
+above adds objective/metric integration and enables distributed tree learners.
 
-Previous step: **workers now share gradient quantizers, and initialization uses
+Earlier step: **workers now share gradient quantizers, and initialization uses
 GPU collective reductions**. Local positive/negative gradient bounds run on GPU;
 CUDA's host reductions combine those small bounds and row counts to produce common
 per-target scales. Both sampling methods and original value-gradient leaf
@@ -55,7 +80,7 @@ the CPU-only build/API checks.
 [Global quantizer/initialization validation](validation/cuda-metal-global-quantizer-m3.txt).
 
 At that checkpoint, histogram/root/leaf collectives were still open. The latest
-step above adds those reductions; other training consumers remain unfinished.
+steps above add those reductions and public tree-learner integration.
 
 Earlier step: **distributed feature sketches now run on Metal**. Variable-size
 reductions preserve CUDA's binomial-tree merge/prune order. Ordinary matrices and
@@ -74,8 +99,8 @@ expected skip**, and the CPU-only build/API checks.
 [Distributed sketch validation](validation/cuda-metal-distributed-sketch-m3.txt).
 
 At that checkpoint, global quantizers and initialization collectives were still
-open. The later steps above add those and histogram/root/leaf reductions; other
-training consumers remain unfinished.
+open. The later steps above add those, histogram/root/leaf reductions and public
+tree-learner integration.
 
 Earlier step: **Metal has a collective backend for multiple workers**. Numeric
 sum/min/max reductions and bytewise AND/OR/XOR run on GPU; broadcast, allgather
@@ -93,7 +118,7 @@ tests with one expected skip**, and the CPU-only build/API checks.
 
 At that checkpoint, variable-size sketch reduction and training consumers were
 still open. The later steps above add sketches, global quantization and integer
-tree-statistic reductions; other training consumers remain open. Federated MPS
+tree-statistic reductions and public tree-learner integration. Federated MPS
 communication and asynchronous stream support also remain open. This uses host networking, not NCCL/GPU-direct
 transport, and makes no new speedup or NVIDIA execution-equivalence claim.
 
@@ -269,8 +294,9 @@ Full regression passes **3,325 Python tests, one expected skip**, all **89 rebui
 native check groups**, and the CPU-only build/API checks.
 [AUC storage validation](validation/cuda-metal-auc-state-m3.txt).
 
-Distributed AUC retains a documented host-summary collective fallback; these
-metric tests do not enable distributed MPS training. Precision/NDCG/MAP ownership
+At that checkpoint, distributed AUC used a host-summary collective fallback.
+The latest step replaces it with Metal reductions and enables distributed tree
+training. Precision/NDCG/MAP ownership
 was still pending at that checkpoint and is addressed by the latest step above.
 No benchmark or NVIDIA execution comparison was run for the AUC step.
 
@@ -657,7 +683,8 @@ arithmetic**, including subnormal values, hypot/tanh edge cases and weight order
 Residual roots now sum in FP32, while optional weights sum in binary64, matching
 the distinct CUDA reducers. Small scale statistics pass through the same host
 collective used upstream, including on empty workers; scale application and
-row gradients run on GPU. Full distributed MPS training remains disabled.
+row gradients run on GPU. Distributed MPS training was still disabled at that
+checkpoint; the latest step enables tree learners.
 
 New checks pass **2,359,332 source-expression fields**, **1,000,800 math fields**
 and **308 production objective calls / 8,815,888 result checks** across one, two
@@ -914,8 +941,9 @@ unsampled Hessians for cuts and resets sampling per tree, following CUDA's updat
 order. Both sampling methods, histograms and roots share quantized state. Ordinary
 matrices now use CUDA-derived weighted sketches with explicit FP32 scan-order limits.
 
-Explicit tree updater selection, `exact` and distributed training are rejected
-for `mps`. Inaccessible Metal devices produce an
+Explicit tree updater selection and `exact` are rejected for `mps`. Distributed
+tree training is enabled; distributed `gblinear` and federated MPS remain
+unsupported. Inaccessible Metal devices produce an
 error. Other features may use CPU implementations as recorded in the coverage ledger;
 selecting `mps` does not imply that every stage runs on the GPU.
 
@@ -956,12 +984,12 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | SHAP contributions / interactions | GPU eight-point quadrature traversal, repeated-feature paths, scalar/vector leaves, categorical/missing splits, dropout weights and bias/interaction finalization; input conversion and row-level category mapping on GPU; raw packing/transfers remain host; approximate SHAP uses an explicit CPU fallback, as CUDA does not implement it |
 | Training prediction cache | Leaf-value accumulation, including strided multi-target output and sampled rows |
 | Ranking training | GPU query maxima/counts/integer prefixes and immutable cache reuse; stable grouped sorting, NDCG cache/label checks, top-k and CUDA-source Philox mean pairs, raw bounds, independent sign/cost truncation, parallel MAP prefixes, normalization and combined weights on Metal; unbiased bias updates use a deterministic global cost-factor policy. Ranking label/weight validation and NDCG cache arrays now retain Metal storage; gradient and bias payload ownership remains pending |
-| ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; resident inputs and summaries; distributed summary collective still stages through host |
+| ROC-AUC | Binary, multiclass and multilabel; CUDA-source term casts, GPU sort/prefixes/trapezoids, raw curve outputs, aggregation metadata and final normalization; resident inputs and summaries; distributed multi-output summaries reduce on Metal |
 | Grouped ranking ROC-AUC | GPU stable label ordering, merge-based concordant/tied-pair counts, query normalization and aggregation; preserves label ties, short-query exclusions and FP32 squared-weight behavior; resident inputs |
 | Column sampling | CUDA-source Philox weighted draws and Thrust Feistel unweighted shuffle; GPU compaction, stable priority ordering and integer feature sorting; 24 shuffle keys and cache metadata remain host as in CUDA, while feature arrays still stage through host |
 | Grouped ranking PR-AUC | CUDA-source FP32 cast boundaries, original-order positive totals, segmented binary64 prefixes, integral arithmetic and two-row validity; GPU sorting, validation and aggregation; resident inputs |
-| PR-AUC | Binary, multiclass and multilabel; CUDA-source term casts, separate recall/validity totals, source integral and invalid-output rules; GPU aggregation metadata and normalization; resident inputs and summaries; distributed summary collective still stages through host |
-| Metrics | Scalar/multiclass and quantile/expectile FP32 row terms, GPU label checks and complete binary64 GPU sums; survival likelihood/accuracy binary64 terms and sums. These scalar callers and wrappers retain Metal inputs; AUC callers now retain inputs and multi-output summaries; precision/NDCG/MAP inputs, NDCG cache arrays and cached sort indices now also retain Metal storage. Final ratios and collective transport remain host |
+| PR-AUC | Binary, multiclass and multilabel; CUDA-source term casts, separate recall/validity totals, source integral and invalid-output rules; GPU aggregation metadata and normalization; resident inputs and summaries; distributed multi-output summaries reduce on Metal |
+| Metrics | Scalar/multiclass and quantile/expectile FP32 row terms, GPU label checks and complete binary64 GPU sums; survival likelihood/accuracy binary64 terms and sums. These scalar callers and wrappers retain Metal inputs; AUC callers now retain inputs and multi-output summaries; precision/NDCG/MAP inputs, NDCG cache arrays and cached sort indices now also retain Metal storage. Source-defined final scalar ratios/collectives remain host; multi-output AUC summaries reduce on Metal |
 
 AFT gradient evaluation is entirely on GPU, including numerically sensitive
 censored rows. `survival_cpu_corrections` and `survival_cpu_time_ns` remain in the
@@ -1555,7 +1583,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port ordered variable-size GPU reductions and distributed sketch construction.
 - [x] Integrate global quantizer scales, GPU stump initialization and GPU sample-mean collectives.
 - [x] Integrate histogram/root/leaf integer reductions and validate production updaters across workers.
-- [ ] Integrate remaining distributed objective/metric/booster consumers and enable validated learner paths.
+- [x] Integrate distributed objective/metric/tree-booster consumers and enable validated learner paths.
 - [ ] Complete federated communication and asynchronous stream interoperability.
 - [ ] Validate across Apple GPU generations and broader real datasets.
 - [ ] Reach complete CUDA-operation coverage and competitive training performance.

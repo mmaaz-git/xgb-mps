@@ -1,6 +1,6 @@
-"""Run actual AUC metrics with 1/2/3 local workers, including empty workers.
+"""Run actual AUC metrics with 1/2/3/5 local workers, including empty workers.
 
-This deliberately bypasses Learner: distributed MPS training remains disabled.
+This exercises Metric::Eval directly; public learners have a separate test matrix.
 """
 import json
 import os
@@ -15,7 +15,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     binary = root / "results/metal_auc_state_api_test"
     subprocess.run([str(binary), "{}"], check=True, timeout=60)
-    for world in (2, 3):
+    for world in (2, 3, 5):
         tracker = RabitTracker(n_workers=world, host_ip="127.0.0.1", timeout=45)
         tracker.start()
         workers = []
