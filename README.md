@@ -52,39 +52,20 @@ evidence remains unavailable; full parity stays unproven.
 | Validation stage | Current status |
 | --- | --- |
 | Local Metal/CPU acceptance | Full regression passed at `41d4dc2`; details below |
-| CUDA compilation | [Capacity and AUC capture build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995), including the helper fix. The [full AUC/ROC replay build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731) |
+| CUDA compilation | [Capacity and AUC capture build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995), including the helper fix. The [full AUC/ROC replay build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731) |
 | CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
 | Performance | Mixed; the latest full HIGGS run is slower on MPS |
 
 The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) address twelve of the
-seventeen numerical contracts, with saved Metal observations, exact shared inputs
-and explicit numerical limits. This is test coverage, not a completion percentage.
-The latest [linear replay](validation/linear-contract-m3-run.json) preserves 56
-records and 893 actions; its Metal and independent reference checks pass.
+seventeen numerical contracts using shared inputs and saved Metal observations.
+Their AUC/ROC build passed; the [ranking sort/score build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698).
+These compiler checks do not execute CUDA kernels.
 
-Grouped PR now also has a complete local replay of its 319 existing records;
-its CUDA build passed; NVIDIA execution remains pending. [Evidence and domain limits](docs/NVIDIA_COMPARISON.md#grouped-precisionrecall-auc).
-
-The binary/multi-output AUC replay now retains all 528 original records. Its
-Metal export, independent reference checks and complete input round trip pass;
-[CUDA compilation is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731)
-and NVIDIA execution remains pending. [AUC evidence](validation/auc-contract-m3-run.json).
-
-Grouped ROC now also preserves all 278 records, including its 390-query edge
-batch and million-row extensions. Local input/output and packing checks pass;
-the active CUDA build includes both new AUC replays. NVIDIA execution remains pending. [Grouped ROC evidence](validation/grouped-roc-contract-m3-run.json).
-
-The ranking sort/score replay now preserves all 1,031 existing cases, with local
-Metal, independent reference and input round-trip checks passing. CUDA compilation
-is pending; ranking cache and public lifecycle comparisons remain. [Evidence](validation/ranking-metric-m3-run.json).
-
-Remaining work is to validate the new AUC replays on CUDA, complete ranking-metric,
-SHAP and compiler arithmetic comparisons; extend caller coverage, including the full
-linear updater/selector; then execute the comparisons on NVIDIA and resolve the
-differences. Further performance tuning follows correctness. Detailed corpus
-counts, exclusions, failed attempts and corrected builds belong in the
-[comparison guide](docs/NVIDIA_COMPARISON.md) and
-[compiler record](validation/cuda-compile-ci-13.4.txt).
+**Remaining:** run the available comparisons on NVIDIA and resolve observed
+differences; complete outstanding ranking, SHAP, compiler-arithmetic and caller
+coverage, including the full linear updater/selector. The immediate order is in
+[the plan](docs/PLAN.md#immediate-execution-order); further comparison infrastructure
+is deferred until the existing programs produce NVIDIA results.
 
 `tree_method="exact"` is unsupported on MPS. For linear GPU training, use
 `booster="gblinear", updater="coord_descent"`; the default `shotgun` updater

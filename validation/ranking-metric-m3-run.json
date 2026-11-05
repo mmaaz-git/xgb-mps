@@ -102,8 +102,11 @@
     "binary_sha256": "1c7f9ca5167ad803266611b347230ed7206d630112b03f6b391f8931a26cf16e"
   },
   "cuda_compilation": {
-    "status": "pending",
-    "gpu_execution": false
+    "status": "in_progress",
+    "gpu_execution": false,
+    "run_id": 42129587698,
+    "head": "5a624dfd02f2812626e5031610a7237c07e91247",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698"
   },
   "nvidia_execution": false,
   "adaptations": [

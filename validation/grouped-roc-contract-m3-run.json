@@ -1,5 +1,5 @@
 {
-  "status": "Complete grouped ROC Metal corpus and local reference/codec checks passed; CUDA compilation and NVIDIA runtime pending",
+  "status": "Complete Metal corpus and local reference/codec checks passed; CUDA compilation verified; NVIDIA runtime pending",
   "suite": "grouped-roc-v1",
   "recorded_utc": "2026-11-05T23:02:41.773246+00:00",
   "production_source_commit": "41d4dc26cc23bf58357e59f986cbbf7aec0e2864",
@@ -187,11 +187,19 @@
     "results/grouped-roc-codec.cc": "3b5111c3938deebef622c4909bbfaab9c536a150c6d1ec1e1ed8b78bd018c46a"
   },
   "cuda_compile": {
-    "status": "in_progress",
+    "status": "passed-verified",
     "gpu_execution": false,
     "run_id": 42126588731,
     "head": "63770982ca38cba3e8d3816916ffe5ef1eeafb9f",
-    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731"
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731",
+    "verified_input_hashes": 77,
+    "production_steps": 197,
+    "linked_binaries": 8,
+    "finished_utc": "2026-11-05T23:36:29.998667+00:00",
+    "log_sha256": "77458e099af8aacb89006d5fc69d939dfde948a74f34135bd51859a5a1c12121",
+    "build_record_sha256": "1be55c5f7408658c40ef9c332310356f6a121888c846f6baa09c17e6019d2d3f",
+    "library_sha256": "8807f2e68571510c250abef8f080b30e587496f03b9b9b7f353618169f49f450",
+    "verification_record": "results/verified-cuda-42126588731.json"
   },
   "cuda_runtime": {
     "status": "not_run",

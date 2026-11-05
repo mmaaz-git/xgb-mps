@@ -92,7 +92,7 @@ separately without production changes. [CUDA run
 
 The ranking sort/score batch now preserves all 1,031 existing native cases and
 passes local export, independent reference, codec and integrity checks. Its CUDA
-compilation is pending. Remaining ranking coverage includes label/cache-generation,
+compilation is running in run 42129587698. Remaining ranking coverage includes label/cache-generation,
 public metric state/lifetime and plan corpora; this batch does not close P5-N11.
 Schedule additions under the immediate execution order above.
 See the [ranking comparison scope](NVIDIA_COMPARISON.md#ranking-metric-sort-and-score-corpus).
@@ -223,20 +223,20 @@ Its compiler gate passed in run 42100004279; NVIDIA execution remains pending. S
 Runners now address twelve contracts; five still need additional runners, broader
 caller coverage remains, and none has actual NVIDIA execution evidence.
 
-Continue VERIFY-2 in the following bounded batches. Reuse the accepted Metal
-corpora and invoke the corresponding vendored CUDA consumers; publish complete
-inputs and observations with each batch. A runner's completion does not close
-its contract until actual NVIDIA results have been reviewed.
+The table below records outstanding VERIFY-2 requirements, not the immediate
+work queue. Execute the available comparisons on NVIDIA before adding more
+private-function replays. A runner's completion does not close its contract
+until actual NVIDIA results have been reviewed.
 
 | Order | Remaining contract work | Required comparison |
 | --- | --- | --- |
 | 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
 | 2 | P5-N07 and training-reduction-association | Full statistics, linalg, metric, root/stump, current CUDA-derived sampling, integer leaf/cache and linear operation corpora added; complete outstanding compiler/runtime gates. Full linear updater/selector and broader caller comparisons remain separate. |
-| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Complete grouped PR corpus exported and locally checked; CUDA build passed, runtime pending. Binary/multi-output PR/ROC export, CUDA replay and local validation added; new replay compilation pending. Grouped ROC replay also has complete local acceptance; compiler/runtime gates remain. Next: ranking metrics. Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
+| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Complete grouped PR corpus exported and locally checked; CUDA build passed, runtime pending. Binary/multi-output PR/ROC and grouped ROC exports, CUDA replays and local validation pass; compilation passed in run 42126588731, NVIDIA execution remains. Ranking sort/score replay has local acceptance; its compilation is running in run 42129587698. Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
 | Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |
 
-After these batches, reconcile broader caller combinations against the frozen
+After reviewing NVIDIA results, reconcile broader caller combinations against the frozen
 operation ledger, including weighted sampling and the objective/metric paths
 outside each primitive corpus. If NVIDIA hardware becomes available, run the
 ready quantile/training comparison first and process concrete discrepancies.
@@ -284,8 +284,8 @@ The binary/multi-output AUC extension retains all 528 records and 1,014 calls,
 including every original prefix/pathology and wide-output case. Both Metal modes,
 independent input/output checks and the full C++ input round trip pass. Its CUDA
 replay compares captured results with separate original linked-library calls;
-compiler and NVIDIA runtime validation are pending. The 21 report-integrity
-checks retain original bounds and explicit empty/invalid API distinctions.
+compiler validation passed in run 42126588731; NVIDIA execution remains pending.
+The 21 report-integrity checks retain original bounds and explicit empty/invalid API distinctions.
 See the [AUC record](../validation/auc-contract-m3-run.json). P5-N09 still requires
 those gates before changing the comparison-coverage count.
 
@@ -294,9 +294,9 @@ The grouped ROC extension retains all 278 records: the 390-query edge batch,
 Both Metal modes, exact input/packing round trips and 24 report-integrity tests
 pass. CUDA invokes the original linked `RankingAUC`, with explicit zero-pair
 query removal for mixed calls, actual isolated calls for every original query,
-and actual source pair-count guards for million-row inputs. Compiler/runtime
-gates remain; this does not close P5-N10. See the
-[grouped ROC record](../validation/grouped-roc-contract-m3-run.json). Remaining
+and actual source pair-count guards for million-row inputs. NVIDIA execution
+remains after successful compilation in run 42126588731; this does not close
+P5-N10. See the [grouped ROC record](../validation/grouped-roc-contract-m3-run.json). Remaining
 ranking-metric, SHAP and compiler behavior comparisons must follow the immediate
 execution order above; this historical batch list is not an automatic work queue.
 

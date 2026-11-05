@@ -362,3 +362,14 @@ VERIFY-2 corrected AUC source capture and PORT-13 capacity (terminal success):
   Library SHA256: f722452c27ae43bae8114830549b0525fe0b10aa98df7c5f08a30d0a5482fc76
   Artifacts: results/cuda-compile-42123616995; verifier results/verify-cuda-42123616995.py.
   Resolves the helper lookup failure. Predates full AUC/grouped ROC replays; no NVIDIA kernels executed.
+
+Verified full AUC/ROC replay build: run 42126588731
+Head: 63770982ca38cba3e8d3816916ffe5ef1eeafb9f
+URL: https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731
+Finished UTC: 2026-11-05T23:36:29.998667+00:00
+PASS: 77 input hashes, 197 production steps, eight comparison objects and executable links.
+PASS: loader, metric/linear/AUC registration-symbol-source isolation and host RNG alignment.
+Log SHA256: 77458e099af8aacb89006d5fc69d939dfde948a74f34135bd51859a5a1c12121
+Build record SHA256: 1be55c5f7408658c40ef9c332310356f6a121888c846f6baa09c17e6019d2d3f
+Library SHA256: 8807f2e68571510c250abef8f080b30e587496f03b9b9b7f353618169f49f450
+No NVIDIA GPU execution. Ranking metric extension run 42129587698 is separate and in progress.

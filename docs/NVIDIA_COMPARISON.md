@@ -1308,7 +1308,7 @@ do not prove CUDA execution or numerical agreement. The full **528-record** corp
 report checker. The local acceptance record is
 [auc-contract-m3-run.json](../validation/auc-contract-m3-run.json); the complete
 [saved Metal report](../validation/auc-contract-metal-m3.bin.xz) retains exact input
-and observed-output bits. The [combined replay build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731).
+and observed-output bits. The [combined replay build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731).
 The preceding [helper-fix build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995)
 and was verified; it predates this replay. NVIDIA execution remains pending.
 
@@ -1422,7 +1422,7 @@ its packing transformation matches **6,363,747 words** independently selected in
 Python, including weight alignment after removing zero-pair groups. The
 [acceptance record](../validation/grouped-roc-contract-m3-run.json) links the
 [saved Metal observations](../validation/grouped-roc-contract-metal-m3.bin.xz)
-and records source/library hashes. The [combined AUC/grouped ROC build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731);
+and records source/library hashes. The [combined AUC/grouped ROC build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731);
 NVIDIA runtime validation remains pending. This supersedes AUC-only run
 42125079498 before it started. The helper-fix build completed successfully.
 
@@ -1457,7 +1457,7 @@ headers, truncation and wrong identities.
 
 [Run evidence](../validation/ranking-metric-m3-run.json) identifies the production
 library, source hashes, local logs and compressed Metal observations. CUDA
-compilation and NVIDIA execution are pending for this extension. The production
+compilation is running in [run 42129587698](https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698); NVIDIA execution remains pending for this extension. The production
 Metal implementation is unchanged.
 
 CUDA calls the original linked `PreScore`, `NDCGScore`, `MAPScore` and segmented
