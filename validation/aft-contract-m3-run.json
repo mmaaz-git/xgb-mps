@@ -1,5 +1,5 @@
 {
-  "status": "Metal export passed; AFT CUDA consumer compilation and NVIDIA execution pending",
+  "status": "Metal export passed; AFT CUDA compile job in progress; NVIDIA execution absent",
   "scope": "P5-N02 gradients/Hessians and source-likelihood sensitivity classification; no metric or prediction-transform comparison",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
   "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
@@ -157,8 +157,12 @@
   },
   "cuda_build_driver_check": "Mocked compile/link lifecycle passed; both binary hashes and new source inputs recorded, aggregate target and nvCOMP configuration forwarded. No CUDA compilation implied.",
   "cuda_compile": {
-    "status": "pending",
-    "gpu_execution": false
+    "status": "in_progress",
+    "gpu_execution": false,
+    "run_id": 42051624772,
+    "head": "5e1adc9f9944b9397bb37f236557a2fd68a5ecca",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42051624772",
+    "last_observed_utc": "2026-11-05T15:07:23.742869+00:00"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -171,5 +175,6 @@
     "21 domain-guard cases do not assert public objective acceptance of invalid parameters.",
     "Separate likelihood trace is not a capture of the objective private temporary.",
     "No universal mathematical error bound or full CUDA parity claim."
-  ]
+  ],
+  "harness_commit": "5e1adc9f9944b9397bb37f236557a2fd68a5ecca"
 }
