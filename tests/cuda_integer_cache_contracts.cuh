@@ -8,6 +8,13 @@
 namespace cuda_integer_cache_trace {
 namespace hc=integer_cache_contracts;
 using namespace xgboost;
+template <typename Accessor> struct DecodeBins {
+  Accessor accessor;
+  common::Span<std::uint32_t> output;
+  __device__ void operator()(std::size_t row) const {
+    output[row]=accessor.GetBinIndex(row,0);
+  }
+};
 inline std::vector<GradientPair> Pairs(std::vector<float> const& data) {
   std::vector<GradientPair> out;for(std::size_t i=0;i<data.size();i+=2)out.emplace_back(data[i],data[i+1]);return out;
 }
@@ -57,7 +64,7 @@ inline void IntegerCache(char const* input_path,char const* output_path) {
     EllpackPageImpl ellpack{&ctx,gidx,{}};
     dh::device_vector<std::uint32_t> decoded(4);auto bin_output=dh::ToSpan(decoded);
     ellpack.Visit(&ctx,{},[&](auto accessor){
-      dh::LaunchN(4,ctx.CUDACtx()->Stream(),[=] XGBOOST_DEVICE(std::size_t r){bin_output[r]=accessor.GetBinIndex(r,0);});
+      dh::LaunchN(4,ctx.CUDACtx()->Stream(),trace::DecodeBins<decltype(accessor)>{accessor,bin_output});
     });
     observed.bins=Read(decoded);
     tree::FeatureGroups features{ellpack.Cuts(),ellpack.IsDenseCompressed(),tree::DftStHistShmemBytes(ctx.Ordinal())};

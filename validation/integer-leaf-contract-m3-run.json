@@ -244,13 +244,9 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "in_progress",
+    "status": "fix_ready_for_ci",
     "gpu_execution": false,
-    "run_id": 42107942460,
-    "head": "97832fc3a68c6683f91e75825ac82848dcb3c9e1",
-    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42107942460",
-    "declared_input_hashes": 59,
-    "scope": "Both integer leaf and cache consumers; six binaries"
+    "reason": "Joint numerical object failed in the cache accessor adapter; typed device functor correction ready"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -264,5 +260,23 @@
     "Three undefined conversion cases remain exclusions; no successful CUDA rejection observations are fabricated.",
     "Single worker API replay; full updater, histogram cache, linear reductions and broader callers remain separate.",
     "Only Apple M3 GPU execution; host/mock/codec checks are not NVIDIA evidence."
+  ],
+  "previous_cuda_attempts": [
+    {
+      "run_id": 42107942460,
+      "head": "97832fc3a68c6683f91e75825ac82848dcb3c9e1",
+      "status": "failed-object-compilation",
+      "gpu_execution": false,
+      "verified_input_hashes": 59,
+      "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42107942460",
+      "log_sha256": "63eafdf2a9b937b29f118156c0983b247a1d92a40c01456a13ae9d1284362557",
+      "build_record_sha256": "ca3d4d71473872ee25b13c976565bf2c1a149b1231aa971f20d6b537eb1b1a88",
+      "errors": [
+        "NVCC forbids an extended host/device lambda nested in the generic ELLPACK visitor",
+        "Device-only GetBinIndex cannot be called from a host/device lambda"
+      ],
+      "production_build_reached": false,
+      "fix": "Use a typed device-only DecodeBins functor; no arithmetic, histogram or production changes"
+    }
   ]
 }

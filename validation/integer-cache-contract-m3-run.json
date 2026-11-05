@@ -187,7 +187,7 @@
     "tests/metal_integer_cache_api.cc": "7598343cbb1d104277e7d31f4d59f3390be54c6bc6aa46f9d9826d2efff8cfe4",
     "tests/integer_cache_contract_io.h": "345c9634d3cf56888d713d26d347a10c2a9c3585da0b39b7907c56269d964f73",
     "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
-    "tests/cuda_integer_cache_contracts.cuh": "eea5533607bb84145e65a7f085e11e36f989cf4048366833144eabd5ce19885c",
+    "tests/cuda_integer_cache_contracts.cuh": "fb5a6d4d528b8187ed1f3237bba041904135b4ac74584aa8a6cca473c96d2759",
     "tests/cuda_numerical_contracts.cu": "f31db4a66553198a542a99e3b8fabcc9116fdd99ef24f27dde29093a0a6dc2bb",
     "scripts/compare_integer_cache_contracts.py": "34952d8be67fcd2fb14e2439f527db728d774ee645b2ac1a8c8673a4cf0cefb7",
     "tests/test_integer_cache_contract_reports.py": "6887258af9ef033cd4610fe9ae15e0527d3327e06a10f62d55586393d522f536",
@@ -238,13 +238,9 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "in_progress",
+    "status": "fix_ready_for_ci",
     "gpu_execution": false,
-    "run_id": 42107942460,
-    "head": "97832fc3a68c6683f91e75825ac82848dcb3c9e1",
-    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42107942460",
-    "declared_input_hashes": 59,
-    "scope": "Both integer leaf and cache consumers; six binaries"
+    "reason": "Joint numerical object failed in the cache accessor adapter; typed device functor correction ready"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -258,5 +254,23 @@
     "Metal16->257 materialized pairs maps to CUDA16->257 node slots. CUDA reserves capacity, so this corpus does not claim physical allocation relocation.",
     "Prefix/guard checks are backend-specific; Metal guards17.5/-23.25 and CUDA integer guards17/-23 are independent domains.",
     "Single-worker API replay, not full updater/external-memory scheduler or complete training-reduction contract coverage."
+  ],
+  "previous_cuda_attempts": [
+    {
+      "run_id": 42107942460,
+      "head": "97832fc3a68c6683f91e75825ac82848dcb3c9e1",
+      "status": "failed-object-compilation",
+      "gpu_execution": false,
+      "verified_input_hashes": 59,
+      "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42107942460",
+      "log_sha256": "63eafdf2a9b937b29f118156c0983b247a1d92a40c01456a13ae9d1284362557",
+      "build_record_sha256": "ca3d4d71473872ee25b13c976565bf2c1a149b1231aa971f20d6b537eb1b1a88",
+      "errors": [
+        "NVCC forbids an extended host/device lambda nested in the generic ELLPACK visitor",
+        "Device-only GetBinIndex cannot be called from a host/device lambda"
+      ],
+      "production_build_reached": false,
+      "fix": "Use a typed device-only DecodeBins functor; no arithmetic, histogram or production changes"
+    }
   ]
 }

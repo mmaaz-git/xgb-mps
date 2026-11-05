@@ -285,3 +285,15 @@ VERIFY-2 corrected sampling compiler run (terminal success; no NVIDIA execution)
   Library SHA256: 247c7b480e792d66712c6707a6b1beb7eac03af8fb92f7e77fd10bda201e4a1d
   Resolves the initial sampling compilation failure recorded above.
   This run predates integer leaf/cache consumers; no CUDA kernels executed.
+
+VERIFY-2 integer leaf/cache initial compiler run (terminal cache adapter failure):
+  97832fc3a68c6683f91e75825ac82848dcb3c9e1:42107942460
+  https://github.com/mmaaz-git/xgb-mps/actions/runs/42107942460
+  All59 declared input hashes verified against the exact CI revision.
+  Numerical object failed in cache replay: extended lambda nested inside generic
+  ELLPACK visitor; host/device lambda also called device-only GetBinIndex.
+  Production build/final links were not reached. No leaf compile pass is claimed.
+  Fix: typed device-only accessor functor; histogram arithmetic unchanged.
+  Log SHA256: 63eafdf2a9b937b29f118156c0983b247a1d92a40c01456a13ae9d1284362557
+  Build record SHA256: ca3d4d71473872ee25b13c976565bf2c1a149b1231aa971f20d6b537eb1b1a88
+  Corrected compiler verification and NVIDIA execution remain pending.
