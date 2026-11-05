@@ -41,6 +41,12 @@ namespace common = xgboost::common;
 namespace fixture = rng_contracts;
 using namespace xgboost;
 
+// Extended CUDA lambdas cannot capture spans whose element type is local to a
+// function. Keep these observation types at namespace scope.
+struct PhiloxOutput { std::uint64_t word; std::uint32_t weight; };
+struct DistributionOutput { std::uint64_t value, position, next_word; };
+struct PairOutput { std::uint64_t first, second; };
+
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
@@ -72,12 +78,13 @@ struct CountedEngine {
   using result_type = Engine::result_type;
   Engine engine;
   std::uint64_t position;
-  __device__ CountedEngine(std::uint32_t seed, std::uint64_t start) : engine{seed}, position{start} {
+  __host__ __device__ CountedEngine(std::uint32_t seed, std::uint64_t start)
+      : engine{seed}, position{start} {
     engine.discard(start);
   }
   __host__ __device__ static constexpr result_type min() { return Engine::min(); }
   __host__ __device__ static constexpr result_type max() { return Engine::max(); }
-  __device__ result_type operator()() { ++position; return engine(); }
+  __host__ __device__ result_type operator()() { ++position; return engine(); }
 };
 
 void Philox(Context const* ctx, Json* report) {
@@ -86,8 +93,7 @@ void Philox(Context const* ctx, Json* report) {
   Equal(cuda_reference::Philox(20111115, 9999), 3409172418970261260ULL, 9999,
         "Published Philox check");
   dh::device_vector<fixture::PhiloxQuery> inputs(queries);
-  struct Output { std::uint64_t word; std::uint32_t weight; };
-  dh::device_vector<Output> storage(queries.size());
+  dh::device_vector<PhiloxOutput> storage(queries.size());
   auto in = dh::ToSpan(inputs); auto out = dh::ToSpan(storage);
   thrust::for_each_n(ctx->CUDACtx()->CTP(), thrust::make_counting_iterator(std::size_t{0}),
       out.size(), [=] __device__(std::size_t i) {
@@ -110,8 +116,7 @@ void Distribution(Context const* ctx, Json* report) {
   auto queries = fixture::RankingQueries();
   Check(queries.size()/4 == 41200, "Incomplete ranking distribution corpus");
   dh::device_vector<std::uint64_t> inputs(queries);
-  struct Output { std::uint64_t value, position, next_word; };
-  dh::device_vector<Output> storage(queries.size()/4*16);
+  dh::device_vector<DistributionOutput> storage(queries.size()/4*16);
   auto in = dh::ToSpan(inputs); auto out = dh::ToSpan(storage);
   thrust::for_each_n(ctx->CUDACtx()->CTP(), thrust::make_counting_iterator(std::size_t{0}),
       out.size(), [=] __device__(std::size_t i) {
@@ -159,20 +164,24 @@ void Pairs(Context const* ctx, Json* report) {
     auto cache = std::make_shared<ltr::RankingCache>(ctx, info, param);
     auto threads = cache->CUDAThreadsGroupPtr();
     Check(cache->CUDAThreads() == labels.size()*c.count, "Wrong production pair count");
-    obj::cuda_impl::KernelInputs args{};
-    args.d_group_ptr = cache->DataGroupPtr(ctx);
-    args.d_threads_group_ptr = threads;
-    args.predts = predictions.ConstDeviceSpan();
-    args.labels = info.labels.View(ctx->Device());
-    args.seed = c.seed;
+    auto predts = predictions.ConstDeviceSpan();
+    common::Span<std::size_t const> rank, sorted_y;
     // The empty corpus still constructs and checks the real cache's zero-work
     // metadata. No pair kernel is launched when it has no rows.
     if (!labels.empty()) {
-      args.d_sorted_idx = cache->SortedIdx(ctx, args.predts);
-      args.d_y_sorted_idx = obj::cuda_impl::SortY(ctx, info, args.d_sorted_idx, cache);
+      rank = cache->SortedIdx(ctx, predts);
+      sorted_y = obj::cuda_impl::SortY(ctx, info, rank, cache);
     }
-    struct Pair { std::uint64_t first, second; };
-    dh::device_vector<Pair> storage(cache->CUDAThreads());
+    // The pair generator does not consume gradient/bias/rounding fields, but
+    // TensorView has no default constructor. Supply valid explicit empty views.
+    auto empty_const = linalg::MakeVec(ctx->Device(), common::Span<double const>{});
+    auto empty = linalg::MakeVec(ctx->Device(), common::Span<double>{});
+    obj::cuda_impl::KernelInputs args{
+        empty_const, empty_const, empty, empty, cache->DataGroupPtr(ctx), threads, rank,
+        info.labels.View(ctx->Device()), predts,
+        linalg::MakeTensorView(ctx->Device(), common::Span<GradientPair>{}, 0, 1),
+        linalg::MakeVec(ctx->Device(), common::Span<GradientPair const>{}), nullptr, sorted_y, c.seed};
+    dh::device_vector<PairOutput> storage(cache->CUDAThreads());
     auto out = dh::ToSpan(storage);
     if (!out.empty()) {
       thrust::for_each_n(ctx->CUDACtx()->CTP(), thrust::make_counting_iterator(std::size_t{0}),

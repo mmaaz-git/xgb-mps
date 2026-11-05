@@ -1,5 +1,5 @@
 {
-  "status": "Metal column matrix passed; rng-v2 CUDA compiler job in progress; NVIDIA execution absent",
+  "status": "Metal corpus passed; CUDA RNG compiler compatibility fix awaiting validation",
   "suite": "rng-v2",
   "scope": "training-rng-modern streams/unweighted shuffle/ColumnSampler hierarchy, extending unchanged P5-N06 corpus",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -103,7 +103,6 @@
     "tests/metal_column_sampling_api.cc"
   ],
   "tested_patch_sha256": "947de3addb7fd2bcfaadbf8d635e381a4b8fb0537f0298b4b3a6c6a726a866cd",
-  "tested_patch_matches_current_sources": true,
   "shared_fixture_matches_native_snapshot": true,
   "harness_input_sha256": {
     "tests/numerical_contract_fixtures.h": "f0ed8caaacad8934f4047e12ee5e0f97faa9a040f70827bfcbf190ef0fa5adb1",
@@ -113,7 +112,7 @@
     "tests/cuda_comparison/nvcomp_link_check.cc": "7b89041ea6ba74702b98929e1d101c9e322728fdf28ec138870587a185f84287",
     "tests/cuda_aft_contracts.cu": "9b7bc85c13e5a745cb4a27878b5be352a345de7efefa358f96e3b96e9d1fdcd9",
     "tests/aft_contract_io.h": "a4a0d4b69398af652b5f9984f496b5a80e3a63bd6f10d731168937fdb1843ee3",
-    "tests/cuda_rng_contracts.cu": "370a435ae109a8bcad1fd50ae293afccf73724cde15948b5f93268745ceffed4",
+    "tests/cuda_rng_contracts.cu": "2a8d6e7c4a2e369105ab24c6402370f04e87a26b0d12e9adbd0cc52c011523d3",
     "tests/rng_contract_fixtures.h": "76d905562d00c70ef2e71632a5ca5fd79c241f0f08f27aaf3052af87eb8a850b",
     "tests/cuda_ranking_pairs.h": "16aaaf56f3be14a2d253cbd681c830f35df7f52c5290d87b0988ab17de489636",
     "tests/cuda_philox_reference.h": "6bf3ca2a23896947913c6a04a08102c60115a1335638a1141384ad7bd4f66d1e",
@@ -153,12 +152,8 @@
   },
   "build_driver_check": "All 14 build input hashes resolve, including new shared column fixture/oracle. Three-binary lifecycle code unchanged from passing mock in base run record.",
   "cuda_compile": {
-    "status": "in_progress",
-    "gpu_execution": false,
-    "run_id": 42056884684,
-    "head": "3600f985f367d1eac51099147cc448d5af9c56ea",
-    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42056884684",
-    "last_observed_utc": "2026-11-05T15:38:25.131710+00:00"
+    "status": "pending_fix_validation",
+    "gpu_execution": false
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -172,5 +167,100 @@
     "The exact-output assertions produce a completion/failure summary, not an archive of all output arrays.",
     "CUDA native compiler validation of rng-v2 remains pending."
   ],
-  "harness_commit": "3600f985f367d1eac51099147cc448d5af9c56ea"
+  "cuda_compile_history": [
+    {
+      "status": "completed",
+      "gpu_execution": false,
+      "run_id": 42056884684,
+      "head": "3600f985f367d1eac51099147cc448d5af9c56ea",
+      "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42056884684",
+      "last_observed_utc": "2026-11-05T15:38:25.131710+00:00",
+      "conclusion": "failure",
+      "completed_utc": "2026-11-05T15:39:47Z",
+      "phase": "RNG object compilation before production-library build",
+      "error_categories": [
+        "Function-local observation types captured by extended CUDA lambdas",
+        "Device-only counted RNG called by host/device CCCL distribution",
+        "Default initialization of non-default-constructible tensor views"
+      ],
+      "build_record": "results/cuda-compile-42056884684/results/cuda-comparison-build/build.json",
+      "build_record_sha256": "15de9437c771c590b6202cf26e9b54ef1560b731046f9ef231e886a37b73516c",
+      "log_sha256": "0e12225deab3fa8aea2c12c3823e3128368c94dc100e4e849250b400d1d33c0a",
+      "build": {
+        "status": "failed",
+        "gpu_execution": false,
+        "started_utc": "2026-11-05T15:39:21.120752+00:00",
+        "commands": [
+          [
+            "cmake",
+            "-S",
+            "/__w/xgb-mps/xgb-mps/tests/cuda_comparison",
+            "-B",
+            "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+            "-G",
+            "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            "-DXGB_SOURCE_DIR=/__w/xgb-mps/xgb-mps/xgboost",
+            "-DXGB_BINARY_DIR=/__w/xgb-mps/xgb-mps/build-cuda-ci",
+            "-DXGB_LIBRARY=/__w/xgb-mps/xgb-mps/xgboost/lib/libxgboost.so",
+            "-DXGB_USE_NVCOMP=ON",
+            "-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc",
+            "-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/c++",
+            "-DCMAKE_CUDA_ARCHITECTURES=80",
+            "-DCMAKE_CUDA_FLAGS=",
+            "-DCMAKE_CUDA_FLAGS_RELEASE=-O3 -DNDEBUG",
+            "-DCCCL_DIR=/usr/local/cuda/lib64/cmake/cccl",
+            "-Dnvcomp_DIR=/usr/lib/x86_64-linux-gnu/cmake/libnvcomp5-dev-cuda-13/nvcomp"
+          ],
+          [
+            "cmake",
+            "--build",
+            "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+            "--target",
+            "cuda_comparison_objects",
+            "--parallel",
+            "2"
+          ]
+        ],
+        "inputs": {
+          "tests/numerical_contract_fixtures.h": "f0ed8caaacad8934f4047e12ee5e0f97faa9a040f70827bfcbf190ef0fa5adb1",
+          "tests/numerical_contract_report.h": "4ce538f7017b9e9c5776cb96a2f970b0e96a8896822d8a9b461c7af008fb8a40",
+          "tests/cuda_numerical_contracts.cu": "3f51b67661d9a63a46287ef8683345c7efa308f9063af057caef9cf996f3cad4",
+          "tests/cuda_comparison/CMakeLists.txt": "67eb28923709c13901745f4cb44faabf3b3d3ec48b8589c6395cb332712f374a",
+          "tests/cuda_comparison/nvcomp_link_check.cc": "7b89041ea6ba74702b98929e1d101c9e322728fdf28ec138870587a185f84287",
+          "tests/cuda_aft_contracts.cu": "9b7bc85c13e5a745cb4a27878b5be352a345de7efefa358f96e3b96e9d1fdcd9",
+          "tests/aft_contract_io.h": "a4a0d4b69398af652b5f9984f496b5a80e3a63bd6f10d731168937fdb1843ee3",
+          "tests/cuda_rng_contracts.cu": "370a435ae109a8bcad1fd50ae293afccf73724cde15948b5f93268745ceffed4",
+          "tests/rng_contract_fixtures.h": "76d905562d00c70ef2e71632a5ca5fd79c241f0f08f27aaf3052af87eb8a850b",
+          "tests/cuda_ranking_pairs.h": "16aaaf56f3be14a2d253cbd681c830f35df7f52c5290d87b0988ab17de489636",
+          "tests/cuda_philox_reference.h": "6bf3ca2a23896947913c6a04a08102c60115a1335638a1141384ad7bd4f66d1e",
+          "tests/column_rng_contract_fixtures.h": "0c781b45cdf879230ea9d88a029f65466f014557d4557fb990c34af25b9c266f",
+          "tests/cuda_column_reference.h": "a45283a9e0308cec9ee66eeada875c8de631347273598f2eb8df675074f9a81d",
+          "scripts/build_cuda_comparison.py": "79342671b83462cb5621c796f2f41eaa702ef0c87b23c0bd66f08e5ee5e701d0"
+        },
+        "revision": "3600f985f367d1eac51099147cc448d5af9c56ea",
+        "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+        "production_working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "production_cache_sha256": "9f9286e590cc52243cf8bb47bd8158a3e684ad0fbe7835d05551a91581e96da5",
+        "error": "Command '['cmake', '--build', '/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake', '--target', 'cuda_comparison_objects', '--parallel', '2']' returned non-zero exit status 1.",
+        "finished_utc": "2026-11-05T15:39:42.769895+00:00"
+      }
+    }
+  ],
+  "original_harness_commit": "3600f985f367d1eac51099147cc448d5af9c56ea",
+  "tested_patch_matches_3600f98_sources": true,
+  "metal_test_and_fixture_unchanged_after_cuda_fix": true,
+  "cuda_compile_fix": {
+    "source": "tests/cuda_rng_contracts.cu",
+    "sha256": "2a8d6e7c4a2e369105ab24c6402370f04e87a26b0d12e9adbd0cc52c011523d3",
+    "changes": [
+      "Move three observation structs to namespace scope",
+      "Mark counted RNG constructor/operator host/device to match CCCL distribution",
+      "Construct unused bias/gradient/rounding tensor views explicitly; pair inputs and calculations unchanged"
+    ],
+    "local_check": "clang++ -fsyntax-only -std=c++17 -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include results/verify2-rng-empty-views.cc",
+    "local_check_status": "passed; actual XGBoost view constructor/types only, no NVCC or GPU execution",
+    "local_check_source_sha256": "223b5dbb91f4a8f2f9dee8ebee368a2e7dbefc58e72300a9c27d86032a6adcb0"
+  }
 }

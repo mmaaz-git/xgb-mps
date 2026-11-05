@@ -136,3 +136,16 @@ VERIFY-2 AFT and numerical consumers (terminal success, no NVIDIA execution):
   AFT executable SHA256: f205feef277bcf10651ca5a33b9f8606328c895a3ec764a1d29a4746a46012f5
   CUDA library SHA256: 2cb096603bc9531b6db9c88d5eafea379a12fcbc44274165eb714fe7b9c84597
   This run predates RNG consumers and does not validate those new executables.
+
+VERIFY-2 RNG-v2 consumer (terminal compile failure, no production regression result):
+  3600f985f367d1eac51099147cc448d5af9c56ea: 42056884684, failure,
+    completed 2026-11-05T15:39:47Z
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42056884684
+  Early nvCOMP probe passed; AFT and numerical objects compiled. RNG object failed.
+  NVCC rejected function-local captured types, device-only counted-engine calls
+  from host/device CCCL code, and default construction of XGBoost tensor views.
+  Production-library build and final executable linking were not reached.
+  Log SHA256: 0e12225deab3fa8aea2c12c3823e3128368c94dc100e4e849250b400d1d33c0a
+  Build record SHA256: 15de9437c771c590b6202cf26e9b54ef1560b731046f9ef231e886a37b73516c
+  Compatibility fix: namespace-scope outputs, host/device engine methods,
+  explicit empty tensor views. Local view-type syntax check passed; NVCC pending.
