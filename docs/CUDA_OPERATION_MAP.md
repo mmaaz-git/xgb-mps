@@ -20,8 +20,8 @@ The [completion plan](PLAN.md) is the authoritative queue. The frozen
 [caller/numerical audit](CUDA_AUDIT.md) at `382f78c` classifies 174 logical
 operations and 1,078 lexical sites. Sixteen missing/defective rows map to ten
 implementation tasks, including two correctness fixes. NUM-1 has since been
-locally fixed at `2404827` ([evidence](../validation/cuda-num1-m3.txt)); nine tasks
-remain. The frozen audit retains its original findings. PORT-4/5 classification
+locally fixed at `2404827` ([evidence](../validation/cuda-num1-m3.txt)), and
+PORT-9 at `1034657` ([evidence](../validation/cuda-port9-m3.txt)); eight tasks remain. The frozen audit retains its original findings. PORT-4/5 classification
 is complete for that ledger; full parity remains unproven. A partial weight
 implementation remains quarantined locally and is not part of main.
 

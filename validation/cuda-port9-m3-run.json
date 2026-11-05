@@ -1,0 +1,281 @@
+{
+  "status": "passed",
+  "started_utc": "20261105T084137Z",
+  "finished_utc": "2026-11-05T08:42:08.078920+00:00",
+  "revision": "49a2a68b44743e8abade737c56d4fc3a490cd08c",
+  "working_tree": "M tests/metal_training_state_api.cc\n M xgboost/src/common/metal_histogram.metal\n M xgboost/src/common/metal_histogram.mm\n M xgboost/src/common/metal_training.h\n M xgboost/src/tree/common_row_partitioner.h\n M xgboost/src/tree/updater_quantile_hist.cc",
+  "diff_sha256": "8ed962b0a3f2aeb4bc76e6790eac0a61f2270bc1e25e8696b546fbb068fb8155",
+  "manifest_sha256": "5463ec839e83c2cee9038aa27b254db98ce46b18e3b7cdc12898bd2c85877387",
+  "library_sha256": "9965e9152e1309dba278757a7e7b0bb5e080af4063307ad0f08a6e87edf1eadd",
+  "native_groups": [
+    "metal_training_state_api",
+    "metal_memory_api",
+    "metal_gradient_sampling_api",
+    "metal_integer_leaf_api"
+  ],
+  "python_selection": [
+    "tests/test_metal_sampling.py"
+  ],
+  "steps": [
+    {
+      "name": "build-metal",
+      "command": [
+        "bash",
+        "scripts/build.sh"
+      ],
+      "environment": {},
+      "log": "001-build-metal.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 10.078919249819592
+    },
+    {
+      "name": "compile-metal_training_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_training_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_training_state_api_test"
+      ],
+      "environment": {},
+      "log": "002-compile-metal_training_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.3903628750704229
+    },
+    {
+      "name": "metal_training_state_api",
+      "command": [
+        "results/metal_training_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "003-metal_training_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 3.6662042080424726
+    },
+    {
+      "name": "compile-metal_memory_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_memory_api.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_memory_api_test"
+      ],
+      "environment": {},
+      "log": "004-compile-metal_memory_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.021800084039569
+    },
+    {
+      "name": "metal_memory_api",
+      "command": [
+        "results/metal_memory_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "005-metal_memory_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3389457499142736
+    },
+    {
+      "name": "compile-metal_gradient_sampling_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_gradient_sampling_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_gradient_sampling_api_test"
+      ],
+      "environment": {},
+      "log": "006-compile-metal_gradient_sampling_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8608796249609441
+    },
+    {
+      "name": "metal_gradient_sampling_api",
+      "command": [
+        "results/metal_gradient_sampling_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "007-metal_gradient_sampling_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1150900421198457
+    },
+    {
+      "name": "compile-metal_integer_leaf_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_integer_leaf_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_integer_leaf_api_test"
+      ],
+      "environment": {},
+      "log": "008-compile-metal_integer_leaf_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8753243749961257
+    },
+    {
+      "name": "metal_integer_leaf_api",
+      "command": [
+        "results/metal_integer_leaf_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "009-metal_integer_leaf_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9422504168469459
+    },
+    {
+      "name": "linear-reference",
+      "command": [
+        "bash",
+        "tests/build_linear_reference.sh"
+      ],
+      "environment": {},
+      "log": "010-linear-reference.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1646208330057561
+    },
+    {
+      "name": "pytest",
+      "command": [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_metal_sampling.py",
+        "--require-metal"
+      ],
+      "environment": {},
+      "log": "011-pytest.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 9.170582042075694
+    }
+  ],
+  "exit_code": 0,
+  "tested_source_commit": "10346574755dcc312d88a9426df280a1dadaf049",
+  "provenance_note": "Build-first runner captured baseline49a2a68 plus dirty source/test diff. Diff hash was checked unchanged before committing exactly those six files as tested_source_commit. Per-step logs remain in ignored results; aggregate evidence is cuda-port9-m3.txt.",
+  "cpu_check": {
+    "status": "passed",
+    "exit_code": 0,
+    "library": "build-cpu/lib/libxgboost.dylib",
+    "library_sha256": "a3e25e36ca5f1d41c42483fc1d390e8a548204ca2a3564830c5f1a8e5bcdf54b",
+    "commands": [
+      "cmake --build build-cpu -j4",
+      ".venv/bin/python scripts/check_cpu_build.py --metal-library xgboost/lib/libxgboost.dylib",
+      "PYTHONPATH=results/cpu-python .venv/bin/python -c 'import xgboost as x; from xgboost.core import _LIB; print(_LIB._name); assert not x.build_info()[\"USE_METAL\"]'",
+      "PYTHONPATH=results/cpu-python .venv/bin/python -m pytest -q tests/test_metal_updater.py -k cpu -o pythonpath=results/cpu-python"
+    ],
+    "results": "278 diagnostic fields agree; CPU API checks pass; isolated CPU updater9passed/72deselected."
+  }
+}

@@ -34,9 +34,10 @@ quantile precision and vector-row validity bugs, plus GPU state/data-placement
 gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
 **not a completion percentage or proof of parity**. See the
 [findings and evidence](docs/CUDA_AUDIT.md) and [ordered plan](docs/PLAN.md).
-NUM-1 is now fixed at `2404827`: the quantile boundary regressions, three native
-groups and 34 Python tests pass. **Nine implementation tasks remain**;
-[validation record](validation/cuda-num1-m3.txt). Vector-row sampling validity is next.
+Both correctness findings are locally fixed: [NUM-1](validation/cuda-num1-m3.txt)
+at `2404827` and [PORT-9](validation/cuda-port9-m3.txt) at `1034657`. Focused
+native/Python checks pass, as do CPU build/API/updater checks for PORT-9.
+**Eight implementation tasks remain.** Vector GPU weights are next.
 Numerical, scheduling and external-hardware limits remain explicit in the
 [parity ledger](docs/CUDA_PARITY.md).
 

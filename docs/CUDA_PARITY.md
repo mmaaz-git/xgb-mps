@@ -31,7 +31,6 @@ not every branch's behavior.
 | PORT-1 | Vector weight producers, root learning-rate multiplication, model growth and alias snapshots still use host views/copies in baseline main. Quarantined draft is unvalidated and contains an unsafe non-MPS branch. |
 | PORT-2 | Selected vector categorical bitsets return to host candidates before model copying; CUDA retains device category storage. |
 | PORT-3 | Exact vector node/selected-child sums move through host containers; CUDA retains device node/split sums. |
-| PORT-9 | Vector leaf validity incorrectly uses zero Hessians instead of the actual sampler mask. |
 | PORT-6 | Sampled/allowed feature-ID payloads and consumers still use CPU arrays. |
 | PORT-7 | Native quantile row/group weights pass through host expansion/readback. |
 | PORT-8 | Active scalar/vector split evaluators gather GPU monotonic bounds on CPU. |
@@ -41,9 +40,12 @@ not every branch's behavior.
 PORT-4/5 classification is complete for the frozen [audit](CUDA_AUDIT.md):
 174 logical operations, 1,078 assigned lexical sites, 17 numerical contracts.
 Sixteen missing/defective rows mapped to ten tasks at the audit revision. NUM-1
-is now locally fixed at `2404827`, leaving the nine tasks above. Binary64
+is now locally fixed at `2404827`. Binary64
 threshold comparisons and independent boundary/alias regressions pass in three
 native groups and 34 Python tests; [evidence](../validation/cuda-num1-m3.txt).
+PORT-9 is locally fixed at `1034657`: vector leaf finalization replays retained
+sampling state; four native groups, 52 Python tests and CPU build/API/updater
+checks pass ([evidence](../validation/cuda-port9-m3.txt)). Eight tasks remain.
 The frozen audit retains its original findings. This is a finite
 implementation queue, not proof that no unlisted defects remain. Numerical
 acceptance fixtures and NVIDIA comparisons remain separate verification work.

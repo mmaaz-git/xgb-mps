@@ -24,10 +24,11 @@ Track three separate claims:
 
 The audit classified 174 logical operations and all 1,078 listed lexical sites
 across 42 families / 109 CUDA roots at `382f78c`. Sixteen missing/defective rows
-map to **10 implementation tasks** below; NUM-1 is now fixed and nine remain.
+map to **10 implementation tasks** below; NUM-1 and PORT-9 are locally fixed,
+and eight remain.
 These unequal-sized rows are not a
 completion percentage, and this bounded audit cannot prove the absence of
-unlisted defects. **Current: PORT-9, then vector state and the remaining
+unlisted defects. **Next: PORT-1 vector weights, then the remaining vector state and
 GPU-placement tasks.** No new kernels were added during
 classification.
 
@@ -39,8 +40,8 @@ classification.
 | PORT-4 | Classify frozen CUDA caller inventory | Classification complete | All 1,078 listed sites assigned; 174 logical rows have source/Metal/test references and dispositions; findings are separate tasks, not a parity certificate |
 | PORT-5 | Classify numerical-contract ledger | Classification complete; acceptance work remains | Seventeen contracts record authority, comparisons, limits and actions; NUM-1 is locally fixed; required divergence fixtures and external comparisons remain VERIFY-1/2 work |
 | NUM-1 | Correct weighted-quantile threshold precision | Locally complete at `2404827` | Binary64 comparison and independent boundary/alias regressions pass; three native groups and 34 Python tests; [evidence](../validation/cuda-num1-m3.txt). NVIDIA comparison remains VERIFY-2 |
-| PORT-9 | Correct vector row validity after sampling | Current | Preserve actual sampler mask for selected zero-Hessian rows; cover no/uniform/MVS sampling, reduced gradients and empty pages; preserve separate scalar semantics |
-| PORT-1 | GPU vector root/child/model weights | Open; after correctness fixes | Finalize → persistent weights → root scale / model expansion / constraints / prediction-cache leaf gathers stays on Metal; growth preserves queued candidates; non-MPS CPU updater still uses host views |
+| PORT-9 | Correct vector row validity after sampling | Locally complete at `1034657` | Retained sampler state controls positions; 42 new exact none/uniform/MVS cases plus zero-Hessian production updater coverage; four native groups, 52 Python tests and CPU build/API/updater checks pass; [evidence](../validation/cuda-port9-m3.txt) |
+| PORT-1 | GPU vector root/child/model weights | Next | Finalize → persistent weights → root scale / model expansion / constraints / prediction-cache leaf gathers stays on Metal; growth preserves queued candidates; non-MPS CPU updater still uses host views |
 | PORT-2 | GPU selected categorical bitsets | Open; after PORT-1 | Vector category payload stays resident through workspace reuse, candidate queuing and model growth; numeric/one-hot/partition and alias cases pass |
 | PORT-3 | GPU exact vector node/child sums | Open; after PORT-1 | Integer selected-child and node sums stay resident through evaluation/propagation; no floating reconstruction; scalar source-defined publication unchanged |
 | PORT-6 | Resident sampled/allowed feature IDs | Open; after vector state | GPU weighted gather/shuffle/sort, constraint filtering and split-consumer feature IDs; ordinary host launch descriptors remain permitted |

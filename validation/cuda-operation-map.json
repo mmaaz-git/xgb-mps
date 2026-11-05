@@ -958,7 +958,7 @@
         "tests/test_metal_sampling.py"
       ],
       "status": "audited-with-open-tasks",
-      "limits": "Modern Philox target; global scales are source-defined. Reduction association and nonfinite policies are recorded in the detailed ledger. Confirmed audit tasks: PORT-3, PORT-9; see validation/cuda-caller-audit.json for source/acceptance.",
+      "limits": "Modern Philox target; global scales are source-defined. Reduction association and nonfinite policies are recorded in the detailed ledger. Confirmed remaining audit tasks: PORT-3; see validation/cuda-caller-audit.json for source/acceptance. PORT-9 fixed at 1034657; validation/cuda-port9-m3.txt records focused GPU and CPU checks.",
       "audited_operations": [
         "training-quantizer-bounds",
         "training-quantizer-control",
@@ -973,7 +973,9 @@
         "training-partition-sample-flags"
       ],
       "open_tasks": [
-        "PORT-3",
+        "PORT-3"
+      ],
+      "resolved_after_audit": [
         "PORT-9"
       ]
     },
@@ -1102,7 +1104,7 @@
         "tests/metal_compressed_consumers_api.cc"
       ],
       "status": "audited-with-open-tasks",
-      "limits": " Confirmed audit tasks: PORT-2, PORT-9; see validation/cuda-caller-audit.json for source/acceptance.",
+      "limits": " Confirmed remaining audit tasks: PORT-2; see validation/cuda-caller-audit.json for source/acceptance. PORT-9 fixed at 1034657; validation/cuda-port9-m3.txt records focused GPU and CPU checks.",
       "audited_operations": [
         "training-vector-categories",
         "training-partition-init",
@@ -1111,7 +1113,9 @@
         "training-partition-sample-flags"
       ],
       "open_tasks": [
-        "PORT-2",
+        "PORT-2"
+      ],
+      "resolved_after_audit": [
         "PORT-9"
       ]
     },
@@ -1191,7 +1195,7 @@
         "tests/test_metal_distributed_training.py"
       ],
       "status": "audited-with-open-tasks",
-      "limits": "Common updater classes dispatch Metal. Manual names and configuration lifetime are covered. Pipeline completeness still depends on the explicit open implementation tasks from the caller audit. Confirmed audit tasks: PORT-1, PORT-9; see validation/cuda-caller-audit.json for source/acceptance.",
+      "limits": "Common updater classes dispatch Metal. Manual names and configuration lifetime are covered. Pipeline completeness still depends on the explicit open implementation tasks from the caller audit. Confirmed remaining audit tasks: PORT-1; see validation/cuda-caller-audit.json for source/acceptance. PORT-9 fixed at 1034657; validation/cuda-port9-m3.txt records focused GPU and CPU checks.",
       "audited_operations": [
         "training-leaf-cache-scalar",
         "training-scalar-host-expansion",
@@ -1203,7 +1207,9 @@
         "training-approx-hessian"
       ],
       "open_tasks": [
-        "PORT-1",
+        "PORT-1"
+      ],
+      "resolved_after_audit": [
         "PORT-9"
       ]
     },
@@ -1299,6 +1305,12 @@
       "status": "locally-validated",
       "evidence": "validation/cuda-num1-m3.txt",
       "limits": "NVIDIA execution remains VERIFY-2; frozen caller ledger is unchanged."
+    },
+    "PORT-9": {
+      "source_commit": "10346574755dcc312d88a9426df280a1dadaf049",
+      "status": "locally-validated",
+      "evidence": "validation/cuda-port9-m3.txt",
+      "limits": "CPU/Metal focused checks pass; CUDA compile and NVIDIA execution remain separate gates."
     }
   }
 }

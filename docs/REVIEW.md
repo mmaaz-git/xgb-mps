@@ -82,5 +82,5 @@ revision `382f78c`: 174 logical operations and 1,078 classified lexical sites,
 with ten implementation tasks. It found two correctness defects and additional
 GPU-placement gaps. The [updated plan](PLAN.md) puts those correctness fixes
 before vector state work. The user subsequently resumed implementation;
-NUM-1 is locally fixed at `2404827`, and PORT-9 is current. See the plan and
-[validation record](../validation/cuda-num1-m3.txt).
+NUM-1 is locally fixed at `2404827` and PORT-9 at `1034657`. PORT-1 is next;
+see the plan and [latest validation record](../validation/cuda-port9-m3.txt).
