@@ -197,7 +197,7 @@ its contract until actual NVIDIA results have been reviewed.
 | Order | Remaining contract work | Required comparison |
 | --- | --- | --- |
 | 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
-| 2 | P5-N07 and training-reduction-association | Full statistics, linalg, metric, root/stump and current CUDA-derived sampling replays added; complete outstanding compiler/runtime gates. Next add integer leaf/cache/linear corpora under their declared term precision and association bounds. |
+| 2 | P5-N07 and training-reduction-association | Full statistics, linalg, metric, root/stump, current CUDA-derived sampling and integer leaf replays added; complete outstanding compiler/runtime gates. Next add integer cache/linear corpora under their declared term precision and association bounds. |
 | 3 | P5-N09/10/11: PR, ROC and ranking metrics | Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
 | Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |
@@ -216,6 +216,14 @@ the C++ codec and 19 synthetic report checks pass. Eight undefined CUDA conversi
 cases are explicit exclusions, leaving 191 planned CUDA executions; no NVIDIA
 execution is claimed. Its compiler gate remains pending. See the
 [sampling record](../validation/sampling-contract-m3-run.json).
+The integer leaf replay preserves the 250 counted cases plus six previously
+uncounted curvature/range checks. All 256 Metal records pass independent input
+reconstruction, including every page snapshot and all five weight settings;
+three undefined CUDA conversions are exclusions. Fifteen synthetic integrity
+tests and the complete C++ codec pass. Its actual CUDA `LeafGradSum`/`LeafWeight`
+consumer awaits compilation and NVIDIA execution. Metal exposes converted sums;
+its saved integer words are references, not private-buffer observations. See the
+[leaf record](../validation/integer-leaf-contract-m3-run.json).
 
 PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
 Freeze the accepted source and workload parameters; inspect prior outputs before

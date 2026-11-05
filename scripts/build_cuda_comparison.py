@@ -29,6 +29,9 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "tests/linalg_contract_io.h",
           "tests/stump_contract_io.h", "tests/cuda_stump_contracts.cuh", "xgboost/src/tree/fit_stump.cu",
           "tests/sampling_contract_io.h", "tests/cuda_sampling_contracts.cuh",
+          "tests/integer_leaf_contract_io.h", "tests/cuda_integer_leaf_contracts.cuh",
+          "xgboost/src/tree/gpu_hist/leaf_sum.cu", "xgboost/src/tree/gpu_hist/leaf_sum.cuh",
+          "xgboost/src/tree/param.h", "xgboost/src/tree/split_evaluator.h",
           "xgboost/src/tree/gpu_hist/sampler.cu", "xgboost/src/tree/gpu_hist/sampler.cuh",
           "xgboost/src/tree/gpu_hist/quantiser.cu", "xgboost/src/tree/gpu_hist/quantiser.cuh",
           "xgboost/src/tree/updater_gpu_hist.cuh", "xgboost/src/tree/updater_gpu_hist.cu",
@@ -222,6 +225,8 @@ def main():
                 "results/stump-inputs.bin", str(output / "cuda-stump-observations.bin")]), flush=True)
         print("Sampling runtime command:", shlex.join([binaries["numerical"]["path"], "--sampling",
                 "results/sampling-inputs.bin", str(output / "cuda-sampling-observations.bin")]), flush=True)
+        print("Integer leaf runtime command:", shlex.join([binaries["numerical"]["path"], "--integer-leaves",
+                "results/integer-leaf-inputs.bin", str(output / "cuda-integer-leaf-observations.bin")]), flush=True)
     except Exception as error:
         record.update(status="failed", error=str(error))
         raise

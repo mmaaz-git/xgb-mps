@@ -1,0 +1,264 @@
+{
+  "status": "Complete Metal integer leaf corpus and independent input/reference/integrity checks passed; CUDA compilation and NVIDIA execution pending",
+  "suite": "integer-leaf-v1",
+  "recorded_utc": "2026-11-05T20:33:15.222090+00:00",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T202336Z",
+    "revision": "33ca04bd0c8f688650048b96384fbd75f689a8fe",
+    "working_tree": "M tests/metal_integer_leaf_api.cc\n?? tests/integer_leaf_contract_io.h",
+    "diff_sha256": "a16b82af46178ddf2deb6220dd344ec4a74314cc356998377c31b42092c8c499",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/integer_leaf_contract_io.h": "ccce1b88890836189245422e69e3024be077ebc19acaa706bda9c2a72db71f6d"
+    },
+    "native_groups": [
+      "metal_integer_leaf_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.8412939580157399
+      },
+      {
+        "name": "compile-metal_integer_leaf_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_integer_leaf_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_integer_leaf_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_integer_leaf_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.4818655410781503
+      },
+      {
+        "name": "metal_integer_leaf_api",
+        "command": [
+          "results/metal_integer_leaf_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_integer_leaf_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.451556917047128
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T20:23:40.021015+00:00"
+  },
+  "native_source_proof": {
+    "native_patch_matches_summary": true,
+    "diff_sha256": "a16b82af46178ddf2deb6220dd344ec4a74314cc356998377c31b42092c8c499",
+    "source_sha256": {
+      "tests/metal_integer_leaf_api.cc": "acd1914020326f03d4a0fb819cd85023ecaecf6c4ca6e8b10719f61a2d15bb1c",
+      "tests/integer_leaf_contract_io.h": "ccce1b88890836189245422e69e3024be077ebc19acaa706bda9c2a72db71f6d",
+      "tests/cuda_gradient_reference.h": "0391941d3e85ea26919972f03a51c300e86111e02adead836f204986997dd65f",
+      "tests/cuda_philox_reference.h": "6bf3ca2a23896947913c6a04a08102c60115a1335638a1141384ad7bd4f66d1e",
+      "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895"
+    }
+  },
+  "export_run": {
+    "status": "passed",
+    "command": [
+      "results/metal_integer_leaf_api_test",
+      "--report-prefix",
+      "results/verify2-integer-leaf"
+    ],
+    "environment": {
+      "MTL_DEBUG_LAYER": "1"
+    },
+    "log": "results/verify2-integer-leaf.log"
+  },
+  "counts": {
+    "records": 256,
+    "ordinary_cases": 242,
+    "cancellation_cases": 8,
+    "curvature_cases": 1,
+    "range_cases": 5,
+    "original_printed_case_count": 250,
+    "original_source_pairs": 11594018,
+    "original_checked_sum_fields": 20458,
+    "cuda_planned_executions": 253,
+    "metal_rejections_cuda_domain_exclusions": 3,
+    "input_fp32_words_including_original_sampled_backing": 50885004,
+    "actual_converted_sum_fields_per_backend": 20466,
+    "actual_weight_fields_including_guards_per_backend": 19430,
+    "cross_backend_actual_fields": 39896,
+    "cuda_actual_integer_fields": 20466,
+    "metal_reference_only_integer_fields": 20466
+  },
+  "domain_exclusions": [
+    {
+      "case": 253,
+      "reason": "out-of-int64 or nonfinite conversion under original scales",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    },
+    {
+      "case": 254,
+      "reason": "out-of-int64 or nonfinite conversion under original scales",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    },
+    {
+      "case": 255,
+      "reason": "out-of-int64 or nonfinite conversion under original scales",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    }
+  ],
+  "original_checks": {
+    "sums": "Binary64 numerical equality, including all three page snapshots and the paged cancellation intermediate value",
+    "weights": "Exact FP32 bits across all five original parameter/bound settings; output guards retained",
+    "guards": "Full original backing unchanged by quantizer, sampled backing unchanged by accumulation, source overwrite after quantizer and original-scale mutation cases retained",
+    "integer_diagnostics": "Metal fields are independently computed Oracle.sums references only; CUDA fields are actual persistent LeafGradSum buffer values",
+    "independent_reference": "Comparator reconstructs scales from sequential row-order positive/negative bounds; int64 conversion with positive-Hessian floor; modulo integer page accumulation; binary64 conversion and original CalcWeight/FP32 learning-rate order",
+    "additional_snapshots": "Exporter records complete leaf matrices. This adds eight empty-leaf scalar checks at the four paged cancellation intermediate snapshots, beyond the original20458 checked sum fields."
+  },
+  "source_sha256": {
+    "tests/metal_integer_leaf_api.cc": "acd1914020326f03d4a0fb819cd85023ecaecf6c4ca6e8b10719f61a2d15bb1c",
+    "tests/integer_leaf_contract_io.h": "ccce1b88890836189245422e69e3024be077ebc19acaa706bda9c2a72db71f6d",
+    "tests/cuda_gradient_reference.h": "0391941d3e85ea26919972f03a51c300e86111e02adead836f204986997dd65f",
+    "tests/cuda_philox_reference.h": "6bf3ca2a23896947913c6a04a08102c60115a1335638a1141384ad7bd4f66d1e",
+    "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+    "tests/cuda_integer_leaf_contracts.cuh": "8b8413f28aa49d2ee1b2cde3b1c79e75e0df7fe579457c9f07829e557047fe41",
+    "tests/cuda_numerical_contracts.cu": "024067bec7e4d2b2fb586164fcd5efc7c469eb5c58fabb1254ce999554269133",
+    "scripts/compare_integer_leaf_contracts.py": "df53685f4a5ed009068fed3fc36bd0dc4fae3095ca5481f4178a1ea30765068b",
+    "tests/test_integer_leaf_contract_reports.py": "183f5d5a0eced9aebc00815d632cb52f6fe724e8887644fb232acf2311e7d256",
+    "tests/test_cuda_metric_build.py": "63d1dcb4fb2d7db297a43669406d48c390ce508b0cccb2b990bc5f187e38d4dc",
+    "scripts/build_cuda_comparison.py": "03f79f1fc3441e9e17f1df4c256daa323627b56b23005dbe3b9755ef9201f763",
+    ".github/workflows/cuda-compile.yml": "f4d8aecec0d6a19cf7bda994481ae614fd6460bfb461d6916f802621bcb86607",
+    "xgboost/src/tree/gpu_hist/leaf_sum.cu": "243af56648648b35ce122299ff541a8016ed34a46cf5e6b79468774181ad0e13",
+    "xgboost/src/tree/gpu_hist/leaf_sum.cuh": "5e1062890b19b2d2ee04945ff0bda91e0ce7ce6af8014c71daaa622c730bbad7",
+    "xgboost/src/tree/gpu_hist/quantiser.cu": "11e4c878f954d15c1c716823f747776128136a9604266c6339cffa0628b804f1",
+    "xgboost/src/tree/gpu_hist/quantiser.cuh": "c5ce3cf3abd8942028cc6d20279c66068395447fdc31868b82fa74ae4d7a65e4",
+    "xgboost/src/tree/gpu_hist/row_partitioner.cuh": "8f4b917b98bc9e49132a6e286afb66d088cfe69170ef207b76efcb3e6397ea67",
+    "xgboost/src/tree/param.h": "b67fd02a4433b7b82ff8d9230bdff43aa3a8f517f84840f0d99f827655c52ba8",
+    "xgboost/src/tree/split_evaluator.h": "628e08b5ecfe482b7a9781bf00fa1b49fad720fd5ec7c3f2f19335b5c9dc8693"
+  },
+  "log_sha256": {
+    "results/verify2-integer-leaf.log": "22afb2b4e5923c6cd577ca74eb395913d2406bc65c17bb6ffc4e2541d46c081e",
+    "results/verify2-integer-leaf-native/summary.json": "13f42c5fcfa1c69eea5cd4112ab51702594b0140f6b4d631d500b9bf8509bb2c",
+    "results/verify2-integer-leaf-comparator.log": "03a51dbab7fceb6f8640f096ff795bcdc5cf1e606ad1d0109fb55cf69658c208",
+    "results/verify2-integer-leaf-final-checks.json": "0e671e73d194d4da222554d834cd8fd971fe977bdc101ea1207d7f849c15e6c3",
+    "results/verify2-integer-leaf-report-tests.log": "ec9bc9c395754209c09abcd0ee47806137255e5c41860f336ed1f4975ec7bed4",
+    "results/verify2-integer-leaf-codec.log": "24762e2b7d26772eeb108601076ef08390c07c6bdf223db9fe39ba10a7aa285b",
+    "results/verify2-integer-leaf-packaging.log": "e920d8ff72514d180f6af09851704ef3f47cca2586f614d55fac6209b99ffb04"
+  },
+  "artifacts": {
+    "inputs": {
+      "path": "validation/integer-leaf-contract-inputs-m3.bin.xz",
+      "bytes": 43372456,
+      "compression": "xz",
+      "sha256": "a3fd1c1cdf3731c82b0f561aa5da0ad44c6bc14d5caaecc88a56fb97f4e06c28",
+      "raw_bytes": 203548232,
+      "raw_sha256": "7b39a0984e3d7580343ee28a17ea71eb4c8101f860415867295761a7dc8ce510"
+    },
+    "metal": {
+      "path": "validation/integer-leaf-contract-metal-m3.bin.xz",
+      "bytes": 44094236,
+      "compression": "xz",
+      "sha256": "a48555a54e9d3bf8543d4dbc27d3331fdc2b1feb49a4929a7c9ef7e69862c359",
+      "raw_bytes": 204195880,
+      "raw_sha256": "7c648aa098f8d772844d42180b7a11227e53d91c7a24251b8fa22fc362a103e5"
+    }
+  },
+  "full_export_validation": {
+    "status": "passed",
+    "records": 256,
+    "input_fp32_words": 50885004,
+    "actual_converted_sum_fields": 20466,
+    "actual_weight_fields_including_guards": 19430,
+    "metal_integer_reference_fields": 20466,
+    "source_proof": "exact native diff/header/source hashes match successful run",
+    "input_matching": "every backing word bit-exact",
+    "cuda_execution": false
+  },
+  "integrity_tests": {
+    "status": "passed",
+    "count": 15,
+    "log": "results/verify2-integer-leaf-report-tests.log",
+    "gpu_execution": false
+  },
+  "build_driver_tests": {
+    "status": "passed",
+    "count": 9,
+    "inputs_hashed": 49,
+    "binaries": 6,
+    "log": "results/verify2-integer-leaf-report-tests.log",
+    "gpu_execution": false,
+    "scope": "Mocked lifecycle/source/isolation/loader/RNG gate; not compilation"
+  },
+  "codec_check": {
+    "status": "passed",
+    "log": "results/verify2-integer-leaf-codec.log",
+    "complete_input_roundtrip": "byte-exact",
+    "reject_observations_before_output_creation": true,
+    "gpu_execution": false
+  },
+  "cuda_compile": {
+    "status": "not_started",
+    "gpu_execution": false,
+    "reason": "Waiting for corrected sampling run42103889374 before pushing this build-triggering batch; that run predates integer leaves"
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "results/cuda-comparison-build/cmake/cuda_numerical_contracts --integer-leaves results/integer-leaf-inputs.bin results/integer-leaf-cuda.bin"
+  },
+  "limits": [
+    "No NVIDIA kernel execution; this CUDA consumer has not compiled yet.",
+    "Metal LeafSums exposes converted sums/weights, not private integer storage. Its integer report fields are reference-only.",
+    "CUDA calls actual LeafGradSum and LeafWeight, retaining reversed segment-to-slot mapping and persistent pages; converted diagnostic sums use the actual quantizer primitive.",
+    "Thrust3 running-sum branch required; older source branch overwrites pages and cannot represent the full corpus.",
+    "Three undefined conversion cases remain exclusions; no successful CUDA rejection observations are fabricated.",
+    "Single worker API replay; full updater, histogram cache, linear reductions and broader callers remain separate.",
+    "Only Apple M3 GPU execution; host/mock/codec checks are not NVIDIA evidence."
+  ]
+}

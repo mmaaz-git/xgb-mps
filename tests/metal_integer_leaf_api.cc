@@ -16,8 +16,16 @@
 #include "../xgboost/src/common/metal_training.h"
 #include "../xgboost/src/tree/param.h"
 #include "cuda_gradient_reference.h"
+#include "integer_leaf_contract_io.h"
 using namespace xgboost;
 namespace metal = common::metal;
+namespace lc = integer_leaf_contracts;
+std::unique_ptr<lc::Exporter> report;
+std::vector<float> Flatten(std::vector<GradientPair> const& pairs) {
+  std::vector<float> values;values.reserve(2*pairs.size());
+  for(auto p:pairs){values.push_back(p.GetGrad());values.push_back(p.GetHess());}
+  return values;
+}
 std::size_t cases = 0, pairs = 0, fields = 0;
 std::string current;
 void Check(bool ok, char const* message) {
@@ -51,7 +59,7 @@ struct Oracle {
                    cuda_reference::Exponent(positive[1], negative[1], original.Shape(0))};
     }
   }
-  void Add(std::size_t leaf, std::size_t target, GradientPair pair) {
+  void Add(std::size_t leaf, std::size_t target, GradientPair pair, bool count=true) {
     auto scale = scales[target];
     double g = std::ldexp(double(pair.GetGrad()), scale.g),
            h = std::ldexp(double(pair.GetHess()), scale.h);
@@ -62,7 +70,7 @@ struct Oracle {
     auto at = 2 * (leaf * targets + target);
     sums[at] += static_cast<std::uint64_t>(qg);
     sums[at + 1] += static_cast<std::uint64_t>(qh);
-    ++pairs;
+    if(count)++pairs;
   }
   GradientPairPrecise Sum(std::size_t leaf, std::size_t target) const {
     auto at = 2 * (leaf * targets + target);
@@ -76,7 +84,19 @@ struct Oracle {
     Check(values.size() * 2 == sums.size(), "Sum shape changed");
     for (std::size_t i = 0; i < values.size(); ++i) Same(values[i], Sum(i / targets, i % targets));
   }
-  void Weights(metal::LeafSums const& actual) const {
+  void Observe(metal::LeafSums const& actual,lc::Observation* out) const {
+    auto values=actual.Data();
+    for(std::size_t i=0;i<values.size();++i) {
+      auto ref=Sum(i/targets,i%targets);
+      out->sums.push_back(lc::Bits<std::uint64_t>(values[i].GetGrad()));
+      out->sums.push_back(lc::Bits<std::uint64_t>(values[i].GetHess()));
+      out->reference_sums.push_back(lc::Bits<std::uint64_t>(ref.GetGrad()));
+      out->reference_sums.push_back(lc::Bits<std::uint64_t>(ref.GetHess()));
+    }
+    // Reference-only: LeafSums exposes no actual integer buffer.
+    out->integers.insert(out->integers.end(),sums.begin(),sums.end());
+  }
+  void Weights(metal::LeafSums const& actual,lc::Observation* out=nullptr) const {
     for (int kind = 0; kind < 5; ++kind) {
       tree::TrainParam param;
       param.reg_lambda = kind == 0 ? 0.f : 1.25f;
@@ -89,13 +109,19 @@ struct Oracle {
       actual.Weights(
           {param.reg_lambda, param.reg_alpha, param.max_delta_step, param.min_child_weight}, bounds,
           .3f, {output.data() + 1, output.size() - 2});
+      if(out)out->reference_weights.push_back(lc::Bits<std::uint32_t>(-913.f));
       for (std::size_t i = 0; i < output.size() - 2; ++i) {
         float expected = tree::CalcWeight(param, Sum(i / targets, i % targets));
         if (kind == 4) expected = std::min(std::max(expected, .125f), .25f);
         expected *= .3f;
         Check(!std::memcmp(&output[i + 1], &expected, 4), "Integer-derived leaf weight differs");
+        if(out)out->reference_weights.push_back(lc::Bits<std::uint32_t>(expected));
       }
       Check(output.front() == -913 && output.back() == -913, "Weight guards changed");
+      if(out) {
+        out->reference_weights.push_back(lc::Bits<std::uint32_t>(-913.f));
+        for(float value:output)out->weights.push_back(lc::Bits<std::uint32_t>(value));
+      }
     }
   }
 };
@@ -156,6 +182,9 @@ void Run(std::size_t rows, std::size_t targets, unsigned layout, unsigned mode) 
                       cuda_reference::Multiply(view(r, t).GetHess(), factor)};
     }
   auto saved_sampled = sampled;
+  lc::Input input{{unsigned(cases),0,unsigned(rows),unsigned(targets),layout,mode,0,0},{},{}};
+  lc::Observation observed;
+  if(report){input.original=Flatten(saved);input.sampled=Flatten(saved_sampled);}
   std::fill(original.begin(), original.end(), GradientPair{919, 313});
   std::size_t boundaries[]{0, rows / 3, rows * 2 / 3, rows};
   for (unsigned page = 0; page < 3; ++page) {
@@ -185,10 +214,12 @@ void Run(std::size_t rows, std::size_t targets, unsigned layout, unsigned mode) 
     Check(after.gradient_bound_dispatches == previous.gradient_bound_dispatches,
           "Value bounds recomputed after sampling");
     reference.Verify(*output);
+    if(report)reference.Observe(*output,&observed);
   }
   Check(!std::memcmp(sampled.data(), saved_sampled.data(), sampled.size() * sizeof(GradientPair)),
         "Leaf sum modified values/guards");
-  reference.Weights(*output);
+  reference.Weights(*output,report?&observed:nullptr);
+  if(report)report->Add(input,observed);
   ++cases;
   if (cases % 30 == 0 || rows > 1000000) {
     std::printf("Checked %zu cases / %zu pairs / %zu exact fields\n", cases, pairs, fields);
@@ -203,6 +234,9 @@ void Cancellation() {
       float big = std::ldexp(1.f, exponent), small = std::ldexp(1.f, exponent - 54);
       std::vector<GradientPair> input{{big, 0}, {small, 1}, {small, 1}, {-big, 0}};
       auto view = linalg::MakeTensorView(DeviceOrd::CPU(), common::Span{input}, 4, 1);
+      lc::Input exported{{unsigned(cases),1,4,1,0,unsigned(paged),std::uint32_t(exponent),0},{},{}};
+      lc::Observation observed;std::unique_ptr<Oracle> reference;
+      if(report){exported.original=Flatten(input);exported.sampled=exported.original;reference=std::make_unique<Oracle>(view,2);}
       auto output = metal::MakeLeafSums(2, 1, metal::MakeGradientQuantizer(view));
       if (paged) {
         auto indices = metal::MakeDeviceRows();
@@ -210,17 +244,21 @@ void Cancellation() {
         indices->AddLeafGradients(std::vector<metal::LeafSumSegment>{{0, 3, 1, 0}}, view,
                                   output.get());
         Same(output->Data()[1], {double(big), 2});  // Rounded view loses both small terms.
+        if(report){for(unsigned r=0;r<3;++r)reference->Add(1,0,input[r],false);reference->Observe(*output,&observed);}
         indices->Reset(1, 3);
         indices->AddLeafGradients(std::vector<metal::LeafSumSegment>{{0, 1, 1, 0}}, view,
                                   output.get());
+        if(report)reference->Add(1,0,input[3],false);
       } else {
         auto indices = metal::MakeDeviceRows();
         indices->Reset(4, 0);
         indices->AddLeafGradients(std::vector<metal::LeafSumSegment>{{0, 4, 1, 0}}, view,
                                   output.get());
+        if(report)for(auto value:input)reference->Add(1,0,value,false);
       }
       Same(output->Data()[0], {});
       Same(output->Data()[1], {2. * small, 2});
+      if(report){reference->Observe(*output,&observed);report->Add(exported,observed);}
       ++cases;
     }
 }
@@ -228,6 +266,9 @@ void CurvatureAndRange() {
   current = "curvature/original-scale/range";
   std::vector<GradientPair> original{{0, 0x1p65f}, {-1, 0x1p-149f}, {-1, 0x1p-100f}, {0, 0}};
   auto view = linalg::MakeTensorView(DeviceOrd::CPU(), common::Span{original}, 4, 1);
+  lc::Input exported{{250,2,4,1,0,0,0,0},{},{}};lc::Observation observed;
+  std::unique_ptr<Oracle> reference;
+  if(report){exported.original=Flatten(original);reference=std::make_unique<Oracle>(view,1);}
   auto output = metal::MakeLeafSums(1, 1, metal::MakeGradientQuantizer(view));
   original[0] = {};  // Large original Hessian is rejected. Scale must remain 16.
   original[1] *= 1.5f;
@@ -236,9 +277,17 @@ void CurvatureAndRange() {
   rows->Reset(4, 0);
   rows->AddLeafGradients(std::vector<metal::LeafSumSegment>{{0, 4, 0, 0}}, view, output.get());
   Same(output->Data()[0], {-3, 32});
+  if(report) {
+    exported.sampled=Flatten(original);for(auto value:original)reference->Add(0,0,value,false);
+    reference->Observe(*output,&observed);report->Add(exported,observed);
+  }
+  unsigned range_id=251;
   for (float value : {-4.f, std::nextafter(4.f, 0.f), 4.f, INFINITY, NAN}) {
     std::vector<GradientPair> source{{1, 1}};
     auto source_view = linalg::MakeTensorView(DeviceOrd::CPU(), common::Span{source}, 1, 1);
+    lc::Input range_input{{range_id++,3,1,1,0,0,lc::Bits<std::uint32_t>(value),unsigned(!std::isfinite(value)||value>=4)},{},{}};
+    lc::Observation range_observed;std::unique_ptr<Oracle> range_reference;
+    if(report){range_input.original=Flatten(source);range_reference=std::make_unique<Oracle>(source_view,1);}
     auto sums = metal::MakeLeafSums(1, 1, metal::MakeGradientQuantizer(source_view));
     source[0] = {value, 1};
     rows->Reset(1, 0);
@@ -251,11 +300,17 @@ void CurvatureAndRange() {
     }
     Check(failed == (!std::isfinite(value) || value >= 4), "CUDA conversion domain mismatch");
     if (!failed) Same(sums->Data()[0], {value, 1});
+    if(report) {
+      range_input.sampled=Flatten(source);range_observed.status=failed;
+      if(!failed){range_reference->Add(0,0,source[0],false);range_reference->Observe(*sums,&range_observed);}
+      report->Add(range_input,range_observed);
+    }
   }
   std::puts("PASS cancellation, original scales, positive curvature and conversion-domain cases");
 }
-int main() {
+int main(int argc,char** argv) {
   try {
+    report=lc::ReportOption(argc,argv);
     for (std::size_t n : {0, 1, 31, 257, 4097, 65539})
       for (std::size_t t : {1, 3})
         for (unsigned layout = 0; layout < 5; ++layout)
@@ -264,6 +319,7 @@ int main() {
     Run(1000003, 3, 1, 0);
     Cancellation();
     CurvatureAndRange();
+    if(report)report->Finish();
     std::printf("PASS %zu integer leaf cases / %zu source pairs / %zu exact sum fields\n", cases,
                 pairs, fields);
   } catch (std::exception const& e) {

@@ -374,11 +374,13 @@ void Statistics(char const* input_path, char const* output_path) {
 
 #include "cuda_stump_contracts.cuh"
 #include "cuda_sampling_contracts.cuh"
+#include "cuda_integer_leaf_contracts.cuh"
 
 int main(int argc, char** argv) {
   try {
     if (argc == 2 && std::string(argv[1]) == "--metric-registry") { MetricRegistrySignature(); return 0; }
     if (argc == 2 && std::string(argv[1]) == "--sampling-rng") { SamplingRngCheck(); return 0; }
+    if (argc == 4 && std::string(argv[1]) == "--integer-leaves") { IntegerLeaves(argv[2], argv[3]); return 0; }
     if (argc == 4 && std::string(argv[1]) == "--sampling") { Sampling(argv[2], argv[3]); return 0; }
     if (argc == 4 && std::string(argv[1]) == "--stumps") { Stumps(argv[2], argv[3]); return 0; }
     if (argc == 4 && std::string(argv[1]) == "--linalg") { Linalg(argv[2], argv[3]); return 0; }

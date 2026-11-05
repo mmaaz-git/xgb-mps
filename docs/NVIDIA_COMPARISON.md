@@ -12,6 +12,7 @@ rounding boundary corpora. The numerical executable also has a **P5-N07** mode
 for the complete statistics API corpus, a separate linear-algebra mode, and a
 root/stump mode preserving all 405 existing reduction cases, and a sampling
 mode preserving the complete current CUDA-derived sampling corpus.
+The integer leaf mode retains every original page and weight check.
 A sixth executable covers the complete metric-term/reduction corpus, including
 its previously uncounted math, label and empty-input checks.
 The other six numerical contracts and
@@ -1000,3 +1001,70 @@ case identities, backend-specific statuses and observations, a completion marker
 and exact EOF. Input-only files contain no expected outputs. Comparison exits 1
 for malformed records or reference failures and 2 for required review, including
 the eight exclusions even when all common-domain outputs are identical.
+
+## Integer leaf accumulation and weights
+
+The `--integer-leaves` mode retains all of `metal_integer_leaf_api.cc`: 242
+ordinary strided/broadcast cases, eight cancellation cases, one original-scale
+curvature case and five conversion-range cases. The last six are checked by
+the original test but absent from its printed 250-case counter. There are
+**256 records**, with three undefined CUDA conversions explicitly excluded.
+The [record](../validation/integer-leaf-contract-m3-run.json) links the inputs,
+Metal outputs and exact provenance. Both native modes, 15 synthetic report
+tests and the C++ input round trip pass. CUDA compilation/execution are pending.
+
+CUDA builds the actual original `GradientQuantiserGroup`, calls `LeafGradSum`
+for every page into one persistent integer matrix, and obtains all five weight
+settings through `LeafWeight`. Reversed leaf segments retain their original
+slot mapping; output reordering only maps API rows back to canonical slots.
+Bounds and output guards remain present. Curvature/range cases mutate the
+original allocation after creating the quantizer; ordinary cases overwrite
+the original source while retaining its quantizer and separate sampled inputs.
+The harness requires the Thrust 3 accumulation branch: the older branch explicitly
+overwrites pages and cannot represent this full paged corpus.
+
+Metal's `LeafSums` API exposes converted binary64 sums and weights, not its
+private integer buffer. The comparison therefore keeps three distinct things:
+
+- **20,466 converted sum fields** and **19,430 weight fields**, including guards,
+  are actual observations on both backends. Every intermediate page is retained.
+- CUDA's 20,466 integer words are actual `LeafGradSum` buffer observations.
+- Metal's saved integer words are independent CPU-oracle references. They are
+  never counted as Metal GPU observations.
+
+The comparator reconstructs original scales from row-ordered positive/negative
+sums, converts sampled terms with the positive-Hessian floor, accumulates exact
+integer page sums, then derives converted sums and weights directly from input
+bits. Saved references and both backends are checked independently. The
+original numerical-double equality and exact weight bits remain unchanged;
+GPU-to-GPU signed-zero differences still require review. Three out-of-range or
+nonfinite conversion guards remain Metal rejections/CUDA exclusions, never
+fabricated successful CUDA tests. This is a single-worker leaf API replay, not
+a full updater or histogram-cache comparison.
+
+After building on a CUDA host, use fresh paths:
+
+```sh
+python3 scripts/compare_integer_leaf_contracts.py unpack \
+  validation/integer-leaf-contract-inputs-m3.bin.xz results/integer-leaf-inputs.bin
+results/cuda-comparison-build/cmake/cuda_numerical_contracts --integer-leaves \
+  results/integer-leaf-inputs.bin results/integer-leaf-cuda.bin
+python3 scripts/compare_integer_leaf_contracts.py compare \
+  validation/integer-leaf-contract-metal-m3.bin.xz results/integer-leaf-cuda.bin \
+  --output results/integer-leaf-comparison.json
+```
+
+To export fresh Metal observations:
+
+```sh
+bash scripts/test.sh --native metal_integer_leaf_api
+MTL_DEBUG_LAYER=1 results/metal_integer_leaf_api_test --report-prefix results/new-integer-leaf
+python3 scripts/compare_integer_leaf_contracts.py validate-metal results/new-integer-leaf.metal.bin
+```
+
+Preserve runtime `.json` metadata, logs and compiler `build.json`. The `XGBILF1\0`
+format checks fixed case identities, full source/sample backing storage,
+backend-specific statuses, observations/references, `ILFE` plus the count and
+exact EOF. CUDA accepts input-only records. Comparison exits 1 for malformed
+evidence or reference failures and 2 for required review, including the three
+exclusions even when all common-domain outputs agree.
