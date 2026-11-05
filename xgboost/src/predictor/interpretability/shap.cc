@@ -595,8 +595,9 @@ void PredictShap(Context const* ctx, DMatrix* data, HostDeviceVector<float>* out
   CHECK_LE(per_group, std::numeric_limits<std::size_t>::max() / groups);
   auto per_row = per_group * groups;
   CHECK_LE(data->Info().num_row_, std::numeric_limits<std::size_t>::max() / per_row);
-  auto& result = output->HostVector();
-  result.resize(data->Info().num_row_ * per_row);
+  output->SetDevice(DeviceOrd::MPS());
+  output->Resize(data->Info().num_row_ * per_row);
+  auto result = output->DeviceSpan();
   // CUDA also prepares model covers, root means and the quadrature rule on host.
   auto prepared = MakeQuadratureTreeShapModelData(model, tree_end, tree_weights);
   common::metal::ShapModel gpu_model;
@@ -616,7 +617,7 @@ void PredictShap(Context const* ctx, DMatrix* data, HostDeviceVector<float>* out
   std::copy_n(rule.nodes, 8, gpu_model.quadrature_nodes);
   std::copy_n(rule.weights, 8, gpu_model.quadrature_weights);
   auto gpu = common::metal::MakeShap(gpu_model, features, groups, interactions);
-  auto margin = data->Info().base_margin_.HostView();
+  auto margin = std::as_const(data->Info()).base_margin_.View(DeviceOrd::MPS());
   if (margin.Size()) {
     CHECK_EQ(margin.Shape(0), data->Info().num_row_);
     CHECK_EQ(margin.Shape(1), groups);

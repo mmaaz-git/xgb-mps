@@ -88,8 +88,10 @@ void Run(unsigned features, unsigned groups, float scale, bool interactions,
   Check(!rows || after.shap_gpu_time_ns > before.shap_gpu_time_ns, "Missing GPU time");
   Check(after.prediction_device_copy_bytes -
                 before.prediction_device_copy_bytes ==
-            (alias == 2 ? margins.size() * 4 : 0),
-        "Overlapping margins require a GPU snapshot");
+            (alias == 2   ? margins.size() * 4
+             : alias == 1 ? data.size() * 4
+                          : 0),
+        "Overlapping inputs require a GPU snapshot");
   Check(output.front() == -971.f && output.back() == -971.f, "Output guard overwritten");
   Check(data.empty() || !std::memcmp(data.data(), original.data(), data.size() * 4),
         "Input modified");

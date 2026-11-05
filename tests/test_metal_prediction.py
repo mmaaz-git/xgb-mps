@@ -12,6 +12,47 @@ def metal_copy(model):
     result.set_param({"device": "mps", "nthread": 2})
     return result
 
+
+@pytest.mark.parametrize("objective", ["reg:expectileerror", "binary:logistic", "multi:softmax"])
+@pytest.mark.parametrize("margin", [False, True])
+@pytest.mark.parametrize("rounds", [0, 3])
+def test_prediction_cache_device_handoff(metal, objective, margin, rounds):
+    rng = np.random.default_rng(765)
+    x = rng.normal(size=(33, 3)).astype(np.float32)
+    params = dict(objective=objective, base_score=.5, nthread=2, max_depth=2)
+    groups = 1 if objective == "binary:logistic" else 3
+    if objective == "reg:expectileerror":
+        params["expectile_alpha"] = [.1, .5, .9]
+        y = x[:, 0]
+    elif objective == "multi:softmax":
+        params["num_class"] = 3
+        y = np.digitize(x[:, 0], [-.5, .5])
+    else:
+        y = (x[:, 0] > 0).astype(np.float32)
+    base_margin = rng.normal(size=(len(x), groups)).astype(np.float32) if margin else None
+    data = xgb.DMatrix(x, label=y, base_margin=base_margin, nthread=2)
+    cpu = xgb.train(params, data, rounds)
+    expected = cpu.predict(data)
+    expected_margin = cpu.predict(data, output_margin=True)
+    expected_eval = cpu.eval(data)
+    model = metal_copy(cpu)
+    for _ in range(2):
+        model.set_param({"device": "mps"})
+        np.testing.assert_allclose(model.predict(data), expected, rtol=2e-6, atol=2e-6)
+        # The complete cache is reused after this switch; no traversal is needed.
+        model.set_param({"device": "cpu"})
+        before = xgb.metal_info()
+        np.testing.assert_allclose(model.predict(data), expected, rtol=2e-6, atol=2e-6)
+        np.testing.assert_allclose(model.predict(data, output_margin=True), expected_margin,
+                                   rtol=2e-6, atol=2e-6)
+        assert model.eval(data) == expected_eval
+        np.testing.assert_allclose(model.inplace_predict(x, base_margin=base_margin), expected,
+                                   rtol=2e-6, atol=2e-6)
+        after = xgb.metal_info()
+        for key in ("transform_dispatches", "prediction_dispatches", "prediction_init_dispatches"):
+            assert after[key] == before[key]
+
+
 @pytest.mark.parametrize("layout", ["dense", "missing", "sparse", "quantile"])
 @pytest.mark.parametrize("kind", ["regression", "multiclass", "vector", "dart", "forest"])
 def test_gpu_batch_leaf_and_inplace(metal, layout, kind):

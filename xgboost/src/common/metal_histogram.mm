@@ -2299,6 +2299,26 @@ void GatherRows(Span<float const> input, std::size_t rows, std::size_t columns,
 }
 
 namespace {
+BorrowedMemory PredictionInput(Runtime const& rt, void const* data, std::size_t bytes) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, 4);
+  if (!input.buffer) {
+    input = {Upload(rt, data, bytes), 0};
+    prediction_host_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
+BorrowedMemory PredictionSnapshot(Runtime const& rt, id<MTLCommandBuffer> command,
+                                     BorrowedMemory input, std::size_t bytes) {
+  if (!bytes) return input;
+  auto snapshot = Allocate(rt, bytes);
+  auto blit = [command blitCommandEncoder];
+  CHECK(blit);
+  [blit copyFromBuffer:input.buffer sourceOffset:input.offset toBuffer:snapshot
+    destinationOffset:0 size:bytes];
+  [blit endEncoding];
+  prediction_device_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  return {snapshot, 0};
+}
 struct PredictionOutput {
   Span<float> host;
   BorrowedMemory memory;
@@ -8683,15 +8703,18 @@ class MetalPrediction final : public Prediction {
                bool leaf) override {
     auto const* input = dynamic_cast<MetalInputBatch const*>(&data);
     CHECK(input);
-    Run(input->values, data.Rows(), data.Features(), groups, predictions, leaf);
+    Run({input->values, 0}, data.Rows(), data.Features(), groups, predictions, leaf);
   }
   void Predict(Span<float const> data, std::size_t rows, std::uint32_t features,
                std::uint32_t groups, Span<float> predictions, bool leaf) override {
     CHECK_EQ(data.size(), rows * features);
-    Run(Upload(rt_, data.data(), data.size_bytes()), rows, features, groups, predictions, leaf);
+    @autoreleasepool {
+      Run(PredictionInput(rt_, data.data(), data.size_bytes()), rows, features, groups, predictions,
+          leaf, MemoryRangesOverlap(data.data(), data.size_bytes(), predictions.data(), predictions.size_bytes()));
+    }
   }
-  void Run(id<MTLBuffer> input, std::size_t rows, std::uint32_t features, std::uint32_t groups,
-           Span<float> predictions, bool leaf) {
+  void Run(BorrowedMemory input, std::size_t rows, std::uint32_t features, std::uint32_t groups,
+           Span<float> predictions, bool leaf, bool snapshot = false) {
     CHECK_EQ(predictions.size(), rows * groups);
     CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
     if (!rows || !n_trees_) return;
@@ -8699,6 +8722,7 @@ class MetalPrediction final : public Prediction {
       PredictionOutput output{rt_, predictions, true};
       auto command = [queue_ commandBuffer];
       CHECK(command);
+      if (snapshot) input = PredictionSnapshot(rt_, command, input, rows * features * sizeof(float));
       auto encoder = [command computeCommandEncoder];
       CHECK(encoder);
       struct {
@@ -8706,7 +8730,7 @@ class MetalPrediction final : public Prediction {
         std::uint32_t features, groups, trees, padding;
       } p{rows, features, groups, n_trees_, static_cast<std::uint32_t>(leaf)};
       [encoder setComputePipelineState:rt_.prediction_pipeline];
-      [encoder setBuffer:input offset:0 atIndex:0];
+      [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
       [encoder setBuffer:nodes_ offset:0 atIndex:1];
       [encoder setBuffer:trees_ offset:0 atIndex:2];
       [encoder setBuffer:categories_ offset:0 atIndex:3];
@@ -8804,15 +8828,18 @@ class MetalShap final : public Shap {
     auto const* input = dynamic_cast<MetalInputBatch const*>(&data);
     CHECK(input);
     CHECK_EQ(data.Features(), params_.features);
-    Run(input->values, data.Rows(), base_margin, output);
+    Run({input->values, 0}, data.Rows(), base_margin, output);
   }
   void Predict(Span<float const> data, std::size_t rows, Span<float const> base_margin,
                Span<float> output) override {
     CHECK_EQ(data.size(), rows * params_.features);
-    Run(Upload(rt_, data.data(), data.size_bytes()), rows, base_margin, output);
+    @autoreleasepool {
+      Run(PredictionInput(rt_, data.data(), data.size_bytes()), rows, base_margin, output,
+          MemoryRangesOverlap(data.data(), data.size_bytes(), output.data(), output.size_bytes()));
+    }
   }
-  void Run(id<MTLBuffer> input, std::size_t rows, Span<float const> base_margin,
-           Span<float> output) {
+  void Run(BorrowedMemory input, std::size_t rows, Span<float const> base_margin,
+           Span<float> output, bool snapshot = false) {
     CHECK_LE(rows, batch_rows_);
     CHECK_EQ(output.size_bytes(), rows * row_output_);
     CHECK(base_margin.empty() || base_margin.size() == rows * params_.groups);
@@ -8821,33 +8848,24 @@ class MetalShap final : public Shap {
       PredictionOutput result{rt_, output, false};
       BorrowedMemory bases{bases_, 0};
       if (!base_margin.empty()) {
-        bases = TryBorrowMemory(rt_.device, base_margin.data(), base_margin.size_bytes(), 4);
-        if (!bases.buffer) {
-          bases = {Upload(rt_, base_margin.data(), base_margin.size_bytes()), 0};
-          prediction_host_input_bytes.fetch_add(base_margin.size_bytes(), std::memory_order_relaxed);
-        }
+        bases = PredictionInput(rt_, base_margin.data(), base_margin.size_bytes());
       }
       auto frames = Allocate(rt_, rows * row_stack_);
       auto temporary =
           Allocate(rt_, rows * params_.groups * (std::size_t(params_.features) + 1) * 4);
       auto command = [rt_.queue commandBuffer];
       CHECK(command);
+      if (snapshot) input = PredictionSnapshot(rt_, command, input, rows * params_.features * sizeof(float));
       if (MemoryRangesOverlap(base_margin.data(), base_margin.size_bytes(), output.data(),
                               output.size_bytes())) {
-        auto snapshot = Allocate(rt_, base_margin.size_bytes());
-        auto blit = [command blitCommandEncoder];
-        [blit copyFromBuffer:bases.buffer sourceOffset:bases.offset toBuffer:snapshot
-          destinationOffset:0 size:base_margin.size_bytes()];
-        [blit endEncoding];
-        bases = {snapshot, 0};
-        prediction_device_copy_bytes.fetch_add(base_margin.size_bytes(), std::memory_order_relaxed);
+        bases = PredictionSnapshot(rt_, command, bases, base_margin.size_bytes());
       }
       auto e = [command computeCommandEncoder];
       CHECK(e);
       auto p = params_;
       p.margin = !base_margin.empty();
       [e setComputePipelineState:rt_.shap_pipeline];
-      [e setBuffer:input offset:0 atIndex:0];
+      [e setBuffer:input.buffer offset:input.offset atIndex:0];
       [e setBuffer:nodes_ offset:0 atIndex:1];
       [e setBuffer:trees_ offset:0 atIndex:2];
       [e setBuffer:categories_ offset:0 atIndex:3];
@@ -8888,19 +8906,23 @@ void AddLeafValues(Span<std::int32_t const> ids, Span<float const> weights, std:
     CHECK(queue);
     auto command = [queue commandBuffer];
     CHECK(command);
+    auto input = PredictionInput(rt, ids.data(), ids.size_bytes());
+    auto leaves = PredictionInput(rt, weights.data(), weights.size_bytes());
+    PredictionOutput out{rt, output, true};
+    if (MemoryRangesOverlap(ids.data(), ids.size_bytes(), output.data(), output.size_bytes()))
+      input = PredictionSnapshot(rt, command, input, ids.size_bytes());
+    if (MemoryRangesOverlap(weights.data(), weights.size_bytes(), output.data(), output.size_bytes()))
+      leaves = PredictionSnapshot(rt, command, leaves, weights.size_bytes());
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
-    auto input = Upload(rt, ids.data(), ids.size_bytes());
-    auto leaves = Upload(rt, weights.data(), weights.size_bytes());
-    auto out = Upload(rt, output.data(), output.size_bytes());
     struct {
       std::uint64_t rows, stride;
       std::uint32_t targets, padding;
     } p{ids.size(), stride, targets, 0};
     [encoder setComputePipelineState:rt.leaf_pipeline];
-    [encoder setBuffer:input offset:0 atIndex:0];
-    [encoder setBuffer:leaves offset:0 atIndex:1];
-    [encoder setBuffer:out offset:0 atIndex:2];
+    [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
+    [encoder setBuffer:leaves.buffer offset:leaves.offset atIndex:1];
+    [encoder setBuffer:out.memory.buffer offset:out.memory.offset atIndex:2];
     [encoder setBytes:&p length:sizeof(p) atIndex:3];
     [encoder dispatchThreads:MTLSizeMake(ids.size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -8908,7 +8930,7 @@ void AddLeafValues(Span<std::int32_t const> ids, Span<float const> weights, std:
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-    std::memcpy(output.data(), out.contents, output.size_bytes());
+    out.Publish(output.size());
     leaf_update_dispatches.fetch_add(1, std::memory_order_relaxed);
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     if (elapsed > 0)

@@ -14,7 +14,31 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **resident LambdaRank gradients and bias state**. Pairwise, NDCG and
+Latest step: **resident prediction caches and outputs**. Tree prediction
+initialization, batch/inplace traversal, leaf outputs, leaf-ID cache updates and
+SHAP now retain Metal arrays. Learner prediction/evaluation copies also stay on
+GPU. Scalar fills and vector broadcasts reuse the existing kernels; model base
+scores retain both read mirrors for concurrent prediction. Guarded input bindings
+and GPU snapshots preserve offset, read-only and aliased native calls.
+
+Focused validation passes **123 native cases / 19,058,906 checks / four expected
+rejections**, including actual predictor/learner calls, native Metal inputs,
+cache ranges/resets, scalar/vector leaves, weighted trees, GPU-written margins,
+CPU handoffs and 65,537-row chunks. **75 focused Python tests pass**, including
+12 new cache/device-switch cases. Shared base margins and complete cached results
+now preserve CPU placement on handoff, including expectile transforms. Full
+regression passes **3,337 Python tests, one expected skip**, plus the CPU-only
+build/API checks. All **92 native check groups** passed; the changed predictor
+checks were rebuilt and passed again after the handoff correction. No prediction
+arithmetic or cache-version rules changed.
+[Prediction storage validation](validation/cuda-metal-prediction-state-m3.txt).
+
+The public result API still requests a host mirror before Python creates a
+`MetalOutput`. Training gradient/updater state, persistent dictionaries, remaining
+CUDA audits and GPU collective transport also remain open. No benchmark or NVIDIA
+execution comparison was run for this step.
+
+The preceding step added **resident LambdaRank gradients and bias state**. Pairwise, NDCG and
 MAP objectives now consume Metal predictions, labels and query weights, publish
 gradients on GPU, and retain unbiased-learning arrays through bias updates.
 Saving configuration explicitly reads the small bias arrays. Initialization and

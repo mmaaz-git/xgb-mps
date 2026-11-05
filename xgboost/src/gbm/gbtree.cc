@@ -245,13 +245,16 @@ void GBTree::DoBoost(DMatrix* p_fmat, GradientContainer* in_gpair, PredictionCac
            "model.";
   }
 
-  predt->predictions.SetDevice(ctx_->Device());
+  auto prediction_device = ctx_->IsMPS() ? DeviceOrd::MPS() : ctx_->Device();
+  predt->predictions.SetDevice(prediction_device);
   auto const& predictor = this->GetPredictor(false, &predt->predictions, p_fmat);
   if (predt->predictions.Size() == 0 && p_fmat->Info().num_row_ != 0) {
     CHECK_EQ(predt->version, 0);
     predictor->InitOutPredictions(p_fmat->Info(), &predt->predictions, model_);
   }
-  auto out = linalg::MakeTensorView(ctx_, &predt->predictions, p_fmat->Info().num_row_,
+  auto prediction_values =
+      prediction_device.IsCPU() ? predt->predictions.HostSpan() : predt->predictions.DeviceSpan();
+  auto out = linalg::MakeTensorView(prediction_device, prediction_values, p_fmat->Info().num_row_,
                                     model_.learner_model_param->OutputLength());
   CHECK_NE(n_groups, 0);
 
@@ -674,6 +677,14 @@ void GBTree::Slice(bst_layer_t begin, bst_layer_t end, bst_layer_t step, Gradien
 void GBTree::PredictBatchImpl(DMatrix* p_fmat, PredictionCacheEntry* out_preds, bool is_training,
                               bst_layer_t layer_begin, bst_layer_t layer_end,
                               std::vector<float> const* tree_weights_override) const {
+  // Device changes can reuse a complete cache without invoking the predictor.
+  // Preserve the selected device even when neither initialization nor traversal runs.
+  if (ctx_->IsMPS()) {
+    out_preds->predictions.SetDevice(DeviceOrd::MPS());
+    out_preds->predictions.DevicePointer();
+  } else if (out_preds->predictions.Device().IsMPS()) {
+    out_preds->predictions.SetDevice(ctx_->Device());
+  }
   // Unweighted prediction can reuse a cached prefix of the model output by tracking how many
   // boosting iterations have already been accumulated in `out_preds->version`.
   //

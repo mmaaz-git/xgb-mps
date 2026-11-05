@@ -1,0 +1,74 @@
+Prediction/cache/SHAP storage validation — Apple M3, 2026-11-04
+===========================================================
+Authority: predictor/gpu_predictor.cu, predictor/predictor.cu, shared predictor
+initialization, GBTree cache rules and learner lifecycle.
+Scope: prediction initialization, batch/inplace/leaf outputs, base margins,
+leaf-ID updates, SHAP outputs/margins, learner cache/output copies and guarded
+raw feature/leaf-input bindings. No arithmetic shader or cache-version changes.
+
+Native tests/metal_prediction_state_api.cc with MTL_DEBUG_LAYER=1:
+  PASS 123 cases / 19058906 checks / 4 expected rejections.
+  48 predictor cases: 0/1/33/65537 rows, scalar/multiclass/vector-leaf models,
+    unweighted/weighted trees, absent/present base margins, CPU comparisons.
+    First/repeated initialization, incremental tree ranges, batch/leaf outputs,
+    host/native-private-buffer inplace inputs, SHAP/interaction outputs,
+    GPU-written base margins and CPU/MPS handoffs.
+  16 leaf-cache cases: empty through 65537 rows, 1/3 targets, contiguous/padded
+    target slices and sampled-out negated positions; CPU-reference values.
+  8 initialization cases: scalar/vector bases with 1/3 output groups, empty
+    and 33-row matrices, zero-tree output/reset, four malformed-margin rejects.
+  3 learner cases: scalar/vector regression and logistic, CPU-trained same model;
+    prefix increment/repeat/backwards reset/nonzero-start/full-range behavior,
+    transformed/raw results and repeated evaluation without host prediction copies.
+    Complete raw caches retain the selected device across CPU/MPS switches.
+  24 direct leaf bindings: offset/readonly IDs and weights, aliased input/output,
+    unaligned output fallbacks, strided target gaps, exact writes/guards.
+  24 direct traversal bindings: raw/leaf output, 1/33/65537 rows, offsets,
+    readonly inputs, aliases, unaligned output; byte-exact publication/guards.
+  Resident calls require no vector readback/import or prediction payload staging;
+    output device/access states checked. Repeated output allocation checked.
+    Alias GPU-copy and fallback byte counts checked. Vector live/capacity zero.
+  Existing SHAP alias test now counts feature snapshots as well as margin
+    snapshots; both preserve original reads. Numerical expectations unchanged.
+  Focused v1 passed 91 initial cases /18134810checks. Expanded v2 passed
+    123 cases /19053694checks. Final v4 includes CPU placement/handoff checks.
+  Logs: results/build-prediction-state-v1.log, prediction-state-focused-v1.log,
+    prediction-state-focused-v2.log, prediction-state-focused-v4.log.
+
+Full v1: 2026-11-05T00:07:12Z to 00:15:10Z, exited 1 in Python regression.
+  All 92 rebuilt native groups and source linear reference updater passed.
+  Python: 3319 passed, 6 failed, 1 skipped, 622 warnings, 197.16 seconds.
+  Three failures exposed CPU expectile inheriting MPS storage through a shared
+    base margin. CPU prediction now copies host margin values and cached results
+    preserve the selected device even when initialization/traversal are skipped.
+  Three failures were stale absolute-error vector-broadcast dispatch counts;
+    broadcasts now also initialize fresh training/prediction caches on GPU.
+  CPU-only stages were not reached in v1.
+Focused correction: 2026-11-05T00:18:20Z to 00:18:30Z, exit 0.
+  Final Metal build and native v4 passed; 75 focused Python tests passed,
+    3 warnings, 2.22 seconds. Includes 12 new cache/device-switch cases covering
+    expectile/logistic/softmax, zero/three rounds, margins/no margins, raw output,
+    evaluation and inplace prediction. Existing transform boundary tests pass.
+  Numerical expectations/tolerances unchanged. Initial intermediate counter fix
+    missed the fresh cache created by train().reset(); final assertions count
+    that broadcast explicitly. Logs retain both intermediate/final results.
+  Logs: results/build-prediction-state-fix-v2.log,
+    prediction-state-fix-driver-v2.log, test-prediction-state-fix-v2.log.
+
+Final full Python regression / CPU-only build: PASS, exit 0.
+  2026-11-05T00:18:46Z to 00:22:07Z, 3 minutes 21 seconds.
+  Python: 3337 passed, 1 expected skip, 622 warnings, 194.16 seconds.
+  CPU-only: seven build steps passed; device/native input/output/quantile/cache
+    API checks passed. No production/test edits followed the final build/focus.
+  Driver: results/run-prediction-state-final-v2.sh
+  Logs: results/prediction-state-final-driver-v2.log,
+    test-prediction-state-final-v2.log, configure-cpu-prediction-state-v2.log,
+    build-cpu-prediction-state-v2.log, check-cpu-prediction-state-v2.log.
+  The 92 native groups were rebuilt in full v1; the changed predictor/learner
+    paths were rebuilt and tested again in focused v4. Unchanged native groups
+    were not redundantly rebuilt for the final Python/CPU validation.
+Public CAPI prediction pointers still materialize a host mirror; this step does
+not establish end-to-end native output residency. Model preparation, training
+gradient/updater state, dictionaries and distributed transport remain separate.
+No benchmark, NVIDIA comparison or other Apple hardware execution.
+Full CUDA parity remains incomplete.

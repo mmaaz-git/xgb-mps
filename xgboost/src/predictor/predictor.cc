@@ -17,6 +17,11 @@
 #include "xgboost/linalg.h"              // for Tensor, TensorView
 #include "xgboost/logging.h"             // for CHECK_EQ, CHECK_NE, LOG
 
+#if defined(XGBOOST_USE_METAL)
+#include "../common/metal_ops.h"
+#include "../common/metal_vector.h"
+#endif
+
 namespace dmlc {
 DMLC_REGISTRY_ENABLE(::xgboost::PredictorReg);
 }  // namespace dmlc
@@ -57,8 +62,9 @@ void Predictor::InitOutPredictions(const MetaInfo& info, HostDeviceVector<float>
                                    gbm::GBTreeModel const& model) const {
   CHECK_NE(model.learner_model_param->num_output_group, 0);
 
-  if (!ctx_->Device().IsCPU()) {
-    out_preds->SetDevice(ctx_->Device());
+  auto device = ctx_->IsMPS() ? DeviceOrd::MPS() : ctx_->Device();
+  if (!device.IsCPU() || out_preds->Device().IsMPS()) {
+    out_preds->SetDevice(device);
   }
 
   // Cannot rely on the Resize to fill as it might skip if the size is already correct.
@@ -69,6 +75,15 @@ void Predictor::InitOutPredictions(const MetaInfo& info, HostDeviceVector<float>
   if (!base_margin->Empty()) {
     ValidateBaseMarginShape(info.base_margin_, info.num_row_,
                             model.learner_model_param->OutputLength());
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) common::metal::ConstDeviceSpan(*base_margin);
+    if (!ctx_->IsMPS() && base_margin->Device().IsMPS()) {
+      // Copy preserves the source device. A CPU consumer of shared metadata
+      // must instead copy its host values without inheriting Metal placement.
+      out_preds->Copy(base_margin->ConstHostVector());
+      return;
+    }
+#endif
     out_preds->Copy(*base_margin);
     return;
   }
@@ -76,9 +91,20 @@ void Predictor::InitOutPredictions(const MetaInfo& info, HostDeviceVector<float>
   auto base_score = model.learner_model_param->BaseScore(this->ctx_->Device());
   if (base_score.Size() == 1) {
     // Fill a scalar
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) out_preds->DevicePointer();
+#endif
     out_preds->Fill(model.learner_model_param->BaseScore(DeviceOrd::CPU())(0));
     return;
   }
+
+#if defined(XGBOOST_USE_METAL)
+  if (ctx_->IsMPS()) {
+    common::metal::BroadcastTargets(model.learner_model_param->BaseScore(device).Values(),
+                                    out_preds->DeviceSpan());
+    return;
+  }
+#endif
 
   // Handle multi-output models where base_score is a vector.
   auto predt = linalg::MakeTensorView(this->ctx_, out_preds, info.num_row_,

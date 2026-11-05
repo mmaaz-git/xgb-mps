@@ -33,17 +33,24 @@ def test_initialization(metal, objective, targets, mode):
     assert xgb.metal_info()[counter] == before[counter]
     gpu = xgb.train(params | {"device": "mps"}, data, 1)
     after = xgb.metal_info()
-    assert after[counter] == before[counter] + 1
+    # Multi-target absolute error also broadcasts the final vector intercept
+    # into its prediction cache. That broadcast now uses this same GPU kernel.
+    cache_broadcast = int(objective == "reg:absoluteerror" and targets > 1)
+    assert after[counter] == before[counter] + 1 + cache_broadcast
     assert after["initialization_gpu_time_ns"] > before["initialization_gpu_time_ns"]
     def base(model):
         return json.loads(json.loads(model.save_config())["learner"]["learner_model_param"]["base_score"])
     np.testing.assert_allclose(base(gpu), base(cpu), rtol=2e-6, atol=2e-7)
     np.testing.assert_allclose(gpu.predict(data), cpu.predict(data), rtol=2e-5, atol=2e-5)
+    # train() resets its caches before returning, so the first prediction also
+    # broadcasts a vector intercept into a fresh cache.
+    before_resume = xgb.metal_info()[counter]
+    assert before_resume == after[counter] + cache_broadcast
     # Continued training and loaded models retain the estimated intercept.
     saved = gpu.save_raw()
     resumed = xgb.train(params | {"device": "mps", "eta": .3}, data, 2, xgb_model=saved)
     reference = xgb.train(params | {"device": "cpu", "eta": .3}, data, 2, xgb_model=cpu)
-    assert xgb.metal_info()[counter] == after[counter]
+    assert xgb.metal_info()[counter] == before_resume + cache_broadcast
     np.testing.assert_allclose(resumed.predict(data), reference.predict(data), rtol=2e-5, atol=2e-5)
 
 

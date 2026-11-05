@@ -46,6 +46,7 @@
 
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_predictor.h"
+#include "../common/metal_vector.h"
 #endif
 
 namespace xgboost::predictor {
@@ -514,16 +515,19 @@ void PredictBatchByBlockKernel(DataView const &batch, HostModel const &model,
 
 class CPUPredictor : public Predictor {
  protected:
-  void PredictDMatrix(DMatrix *p_fmat, std::vector<float> *out_preds, gbm::GBTreeModel const &model,
-                      bst_tree_t tree_begin, bst_tree_t tree_end,
+  void PredictDMatrix(DMatrix *p_fmat, HostDeviceVector<float> *out_preds,
+                      gbm::GBTreeModel const &model, bst_tree_t tree_begin, bst_tree_t tree_end,
                       common::OptionalWeights tree_weights) const {
     auto const n_threads = this->ctx_->Threads();
 
     // Create a writable view on the output prediction vector.
     bst_idx_t n_groups = model.learner_model_param->OutputLength();
     bst_idx_t n_samples = p_fmat->Info().num_row_;
-    CHECK_EQ(out_preds->size(), n_samples * n_groups);
-    auto out_predt = linalg::MakeTensorView(ctx_, *out_preds, n_samples, n_groups);
+    CHECK_EQ(out_preds->Size(), n_samples * n_groups);
+    auto device = ctx_->IsMPS() ? DeviceOrd::MPS() : ctx_->Device();
+    if (ctx_->IsMPS()) out_preds->SetDevice(device);
+    auto values = ctx_->IsMPS() ? out_preds->DeviceSpan() : out_preds->HostSpan();
+    auto out_predt = linalg::MakeTensorView(device, values, n_samples, n_groups);
     bool any_missing = !(p_fmat->IsDense());
     auto const h_model =
         HostModel{DeviceOrd::CPU(), model, false, tree_begin, tree_end, CopyViews{}};
@@ -566,7 +570,7 @@ class CPUPredictor : public Predictor {
                                            : common::OptionalWeights{common::Span<float const>{
                                                  tree_weights->data() + tree_begin,
                                                  static_cast<std::size_t>(tree_end - tree_begin)}};
-    this->PredictDMatrix(dmat, &out_preds->HostVector(), model, tree_begin, tree_end, weights);
+    this->PredictDMatrix(dmat, out_preds, model, tree_begin, tree_end, weights);
   }
 
   [[nodiscard]] bool InplacePredict(std::shared_ptr<DMatrix> p_m, gbm::GBTreeModel const &model,
@@ -579,7 +583,9 @@ class CPUPredictor : public Predictor {
     }
 
     this->InitOutPredictions(p_m->Info(), &(out_preds->predictions), model);
-    auto &predictions = out_preds->predictions.HostVector();
+    auto device = ctx_->IsMPS() ? DeviceOrd::MPS() : ctx_->Device();
+    auto predictions =
+        ctx_->IsMPS() ? out_preds->predictions.DeviceSpan() : out_preds->predictions.HostSpan();
     bool any_missing = true;
 
     auto const n_threads = this->ctx_->Threads();
@@ -617,13 +623,13 @@ class CPUPredictor : public Predictor {
           return common::metal::PrepareInput(input, missing, begin, rows, features, mapping);
         }
       } view{*input, missing, map};
-      auto output = linalg::MakeTensorView(ctx_, predictions, input->NumRows(), n_groups);
+      auto output = linalg::MakeTensorView(device, predictions, input->NumRows(), n_groups);
       MetalPredictBatch(view, metal_prediction.get(), h_model, output);
       return true;
     }
 #endif
     auto kernel = [&](auto &&view) {
-      auto out_predt = linalg::MakeTensorView(ctx_, predictions, view.Size(), n_groups);
+      auto out_predt = linalg::MakeTensorView(device, predictions, view.Size(), n_groups);
 #if defined(XGBOOST_USE_METAL)
       if (metal_prediction) {
         MetalPredictBatch(view, metal_prediction.get(), h_model, out_predt);
@@ -668,18 +674,18 @@ class CPUPredictor : public Predictor {
     // number of valid trees
     ntree_limit = GetTreeLimit(model.trees, ntree_limit);
     const MetaInfo &info = p_fmat->Info();
-    std::vector<float> &preds = out_preds->HostVector();
-    preds.resize(info.num_row_ * ntree_limit);
-
     auto n_features = model.learner_model_param->num_feature;
     ThreadTmp<1> feat_vecs{n_threads};
 
     auto const h_model = HostModel{DeviceOrd::CPU(), model, false, 0, ntree_limit, CopyViews{}};
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
+      out_preds->SetDevice(DeviceOrd::MPS());
+      out_preds->Resize(info.num_row_ * ntree_limit);
+      auto output = linalg::MakeTensorView(DeviceOrd::MPS(), out_preds->DeviceSpan(), info.num_row_,
+                                           ntree_limit);
       if (ntree_limit == 0) return;
       auto prediction = MakeMetalPrediction(h_model, common::OptionalWeights{1.0f});
-      auto output = linalg::MakeTensorView(ctx_, preds, info.num_row_, ntree_limit);
       LaunchPredict(ctx_, p_fmat, model, [&](auto&& policy) {
         policy.ForEachBatch([&](auto&& batch) {
           MetalPredictBatch(batch, prediction.get(), h_model, output, true);
@@ -688,6 +694,8 @@ class CPUPredictor : public Predictor {
       return;
     }
 #endif
+    std::vector<float> &preds = out_preds->HostVector();
+    preds.resize(info.num_row_ * ntree_limit);
     LaunchPredict(this->ctx_, p_fmat, model, [&](auto &&policy) {
       policy.ForEachBatch([&](auto &&batch) {
         common::ParallelFor1d<1>(batch.Size(), n_threads, [&](auto &&block) {
@@ -714,15 +722,15 @@ class CPUPredictor : public Predictor {
                           common::Span<RegTree const *> trees,
                           linalg::MatrixView<float> out_preds) const override {
     CHECK_EQ(leaf_ids.size(), trees.size());
-    CHECK(out_preds.Device().IsCPU());
+    CHECK(out_preds.Device().IsCPU() || (ctx_->IsMPS() && out_preds.Device().IsMPS()));
 
     for (std::size_t tree_idx = 0; tree_idx < trees.size(); ++tree_idx) {
       auto const *p_tree = trees[tree_idx];
       CHECK(p_tree);
-      auto const h_leaf_ids = leaf_ids[tree_idx].ConstHostSpan();
-      CHECK_EQ(h_leaf_ids.size(), out_preds.Shape(0));
+      CHECK_EQ(leaf_ids[tree_idx].Size(), out_preds.Shape(0));
 #if defined(XGBOOST_USE_METAL)
       if (ctx_->IsMPS()) {
+        auto ids = common::metal::ConstDeviceSpan(leaf_ids[tree_idx]);
         auto targets = out_preds.Shape(1);
         std::vector<float> leaves(static_cast<std::size_t>(p_tree->Size()) * targets, 0.0f);
         if (p_tree->IsMultiTarget()) {
@@ -739,16 +747,16 @@ class CPUPredictor : public Predictor {
           for (bst_node_t n = 0; n < view.Size(); ++n)
             if (!view.IsDeleted(n) && view.IsLeaf(n)) leaves[n] = view.LeafValue(n);
         }
-        if (!h_leaf_ids.empty()) {
+        if (!ids.empty()) {
           CHECK_EQ(out_preds.Stride(1), 1);
-          auto size = (h_leaf_ids.size() - 1) * out_preds.Stride(0) + targets;
-          common::metal::AddLeafValues(h_leaf_ids, leaves, targets, out_preds.Stride(0),
+          auto size = (ids.size() - 1) * out_preds.Stride(0) + targets;
+          common::metal::AddLeafValues(ids, leaves, targets, out_preds.Stride(0),
                                        {&out_preds(0, 0), size});
         }
         continue;
       }
 #endif
-
+      auto const h_leaf_ids = leaf_ids[tree_idx].ConstHostSpan();
       if (!p_tree->IsMultiTarget()) {
         CHECK_EQ(out_preds.Shape(1), 1);
         auto const tree = p_tree->HostScView();

@@ -257,8 +257,9 @@ LearnerModelParam::LearnerModelParam(Context const* ctx, LearnerModelParamLegacy
   std::swap(base_score_, base_score);
   // Make sure read access everywhere for thread-safe prediction.
   std::as_const(base_score_).HostView();
-  if (!ctx->IsCPU()) {
-    std::as_const(base_score_).View(ctx->Device());
+  auto device = ctx->IsMPS() ? DeviceOrd::MPS() : ctx->Device();
+  if (!device.IsCPU()) {
+    std::as_const(base_score_).View(device);
   }
   CHECK(std::as_const(base_score_).Data()->HostCanRead());
 }
@@ -1185,7 +1186,8 @@ class LearnerImpl : public LearnerIO {
       this->ValidateDMatrix(m.get(), false);
       this->PredictRaw(m.get(), predt.get(), false, 0, 0);
 
-      auto& out = output_predictions_.Cache(m, ctx_.Device())->predictions;
+      auto device = ctx_.IsMPS() ? DeviceOrd::MPS() : ctx_.Device();
+      auto& out = output_predictions_.Cache(m, device)->predictions;
       out.Resize(predt->predictions.Size());
       out.Copy(predt->predictions);
 
@@ -1226,7 +1228,7 @@ class LearnerImpl : public LearnerIO {
       auto predt = prediction_container_.Cache(data, ctx_.Device());
       this->PredictRaw(data.get(), predt.get(), training, layer_begin, layer_end);
       // Copy the prediction cache to output prediction. out_preds comes from C API
-      out_preds->SetDevice(ctx_.Device());
+      out_preds->SetDevice(ctx_.IsMPS() ? DeviceOrd::MPS() : ctx_.Device());
       out_preds->Resize(predt->predictions.Size());
       out_preds->Copy(predt->predictions);
       if (!output_margin) {
