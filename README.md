@@ -51,7 +51,8 @@ repeated unbiased-objective suites, plus the separate primitive rounding boundar
 corpus. Linear-algebra replay preserves all 258 existing cases plus two empty
 operations; three Metal-only guard cases are explicitly outside CUDA's domain.
 Metal observations are published with exact input bits and unchanged numerical
-tolerances; the newest extensions still need CUDA compiler validation.
+tolerances. Ranking primitive and statistics replays passed CUDA compilation;
+the new linalg extension still needs its compiler gate.
 Production pipeline comparisons also cover eight
 fixtures and full-size HIGGS quantile construction. Six contracts still lack
 dedicated runners, broader caller coverage remains, and **none of these runners

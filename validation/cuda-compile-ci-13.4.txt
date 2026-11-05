@@ -201,3 +201,17 @@ VERIFY-2 public ranking objective extension (terminal success, no NVIDIA executi
   Ranking executable SHA256: c1b8f16076fc996e315c3a416f17e19007c85be5f444cb628b670c12fcb012ca
   CUDA library SHA256: 44d0e7796ec178f270230831cabbacd0300c69c296e025117f9934cec5ce0d04
   This run predates primitive rounding and statistics extensions; it does not validate them.
+
+VERIFY-2 primitive ranking and statistics extensions (terminal success, no NVIDIA execution):
+  7f441643411a08d4bf5188916af8cac4ff0baf0a: 42079045498, success,
+    completed 2026-11-05T18:21:24Z
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42079045498
+  Early nvCOMP probe, all five harness objects, 197 production steps and five links passed.
+  All 22 input hashes verified against the exact CI revision.
+  Artifact cuda-compile-evidence; local root results/cuda-compile-42079045498
+  Log SHA256: 6a27d37c89f8f0d73d8be1e1caf6342374fe187777e49167b3b54f308072297d
+  Build record SHA256: 637b593622148687014d2e8f34570e70bcc0bcc0d7d99b8d3e81647ab975bd7c
+  Numerical executable SHA256: 0b63c56399370050e0b1c6aca79686d1b8d1a626e13ad1191261930ed1568191
+  Ranking executable SHA256: bfe5d69c1ba181996a5d47fbaa3745af5cb24ddde3a718b6f616f7a9e4197b9b
+  CUDA library SHA256: 9278f8587a1826b89f3366089192e21236f27c926aae453110c5b62ad412b3f7
+  This run predates the linalg extension and does not validate it.

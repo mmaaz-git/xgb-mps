@@ -1,5 +1,5 @@
 {
-  "status": "Complete Metal primitive corpus and integrity checks passed; CUDA primitive compile in progress; NVIDIA execution absent",
+  "status": "Complete Metal corpus and integrity checks passed; CUDA compilation/linking passed; NVIDIA execution absent",
   "suite": "ranking-primitive-v1",
   "scope": "All existing metal_ranking_rounding inputs and six result fields; adds two separate delta diagnostics per case for P5-N04/05.",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -222,7 +222,7 @@
     "log_sha256": "1119911309a85346dd6a04f52b9b72fee6a5276c25531dcda92c24158cb670bb"
   },
   "cuda_compile": {
-    "status": "in_progress",
+    "status": "passed-compile-link",
     "gpu_execution": false,
     "prior_public_objective_run": 42073244457,
     "prior_run_includes_primitives": false,
@@ -230,7 +230,160 @@
     "job_id": 127426912860,
     "head": "7f441643411a08d4bf5188916af8cac4ff0baf0a",
     "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42079045498",
-    "last_observed_utc": "2026-11-05T17:55:04.416931+00:00"
+    "completed_utc": "2026-11-05T18:21:24Z",
+    "artifact": "cuda-compile-evidence",
+    "log": "results/cuda-compile-42079045498/results/cuda-compile-ci.log",
+    "log_sha256": "6a27d37c89f8f0d73d8be1e1caf6342374fe187777e49167b3b54f308072297d",
+    "build_record_path": "results/cuda-compile-42079045498/results/cuda-comparison-build/build.json",
+    "build_record_sha256": "637b593622148687014d2e8f34570e70bcc0bcc0d7d99b8d3e81647ab975bd7c",
+    "build_record": {
+      "status": "passed-compile-link",
+      "gpu_execution": false,
+      "started_utc": "2026-11-05T17:55:20.162276+00:00",
+      "commands": [
+        [
+          "cmake",
+          "-S",
+          "/__w/xgb-mps/xgb-mps/tests/cuda_comparison",
+          "-B",
+          "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+          "-G",
+          "Ninja",
+          "-DCMAKE_BUILD_TYPE=Release",
+          "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+          "-DXGB_SOURCE_DIR=/__w/xgb-mps/xgb-mps/xgboost",
+          "-DXGB_BINARY_DIR=/__w/xgb-mps/xgb-mps/build-cuda-ci",
+          "-DXGB_LIBRARY=/__w/xgb-mps/xgb-mps/xgboost/lib/libxgboost.so",
+          "-DXGB_USE_NVCOMP=ON",
+          "-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc",
+          "-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/c++",
+          "-DCMAKE_CUDA_ARCHITECTURES=80",
+          "-DCMAKE_CUDA_FLAGS=",
+          "-DCMAKE_CUDA_FLAGS_RELEASE=-O3 -DNDEBUG",
+          "-DCCCL_DIR=/usr/local/cuda/lib64/cmake/cccl",
+          "-Dnvcomp_DIR=/usr/lib/x86_64-linux-gnu/cmake/libnvcomp5-dev-cuda-13/nvcomp"
+        ],
+        [
+          "cmake",
+          "--build",
+          "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+          "--target",
+          "cuda_comparison_objects",
+          "--parallel",
+          "2"
+        ],
+        [
+          "cmake",
+          "--build",
+          "/__w/xgb-mps/xgb-mps/build-cuda-ci",
+          "--parallel",
+          "2"
+        ],
+        [
+          "cmake",
+          "--build",
+          "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+          "--parallel",
+          "2"
+        ]
+      ],
+      "inputs": {
+        "tests/numerical_contract_fixtures.h": "f0ed8caaacad8934f4047e12ee5e0f97faa9a040f70827bfcbf190ef0fa5adb1",
+        "tests/numerical_contract_report.h": "4ce538f7017b9e9c5776cb96a2f970b0e96a8896822d8a9b461c7af008fb8a40",
+        "tests/cuda_numerical_contracts.cu": "1bc06ce3251223d20bf77e928c3d819d94d62d9d5eb5e743206c32ae061e20c7",
+        "tests/cuda_comparison/CMakeLists.txt": "91ca294ab18dc51b073fc9ad83e46fea3c8ceea6da28a9bc155af04a1997ec76",
+        "tests/cuda_comparison/nvcomp_link_check.cc": "7b89041ea6ba74702b98929e1d101c9e322728fdf28ec138870587a185f84287",
+        "tests/cuda_aft_contracts.cu": "9b7bc85c13e5a745cb4a27878b5be352a345de7efefa358f96e3b96e9d1fdcd9",
+        "tests/aft_contract_io.h": "a4a0d4b69398af652b5f9984f496b5a80e3a63bd6f10d731168937fdb1843ee3",
+        "tests/cuda_rng_contracts.cu": "2a8d6e7c4a2e369105ab24c6402370f04e87a26b0d12e9adbd0cc52c011523d3",
+        "tests/rng_contract_fixtures.h": "76d905562d00c70ef2e71632a5ca5fd79c241f0f08f27aaf3052af87eb8a850b",
+        "tests/cuda_ranking_pairs.h": "16aaaf56f3be14a2d253cbd681c830f35df7f52c5290d87b0988ab17de489636",
+        "tests/cuda_philox_reference.h": "6bf3ca2a23896947913c6a04a08102c60115a1335638a1141384ad7bd4f66d1e",
+        "tests/column_rng_contract_fixtures.h": "0c781b45cdf879230ea9d88a029f65466f014557d4557fb990c34af25b9c266f",
+        "tests/cuda_column_reference.h": "a45283a9e0308cec9ee66eeada875c8de631347273598f2eb8df675074f9a81d",
+        "tests/math_contract_io.h": "b401192c9f51b17539b5454d5b18391d72d87e661ad9a236f5c229294e0e8a0e",
+        "tests/cuda_math_contracts.cu": "4db824de844918f5d7733e12ccf848ac13985f0e751c23d5648760908d534b31",
+        "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+        "tests/cuda_ranking_contracts.cu": "1a841c4467383e0bfc20576e8d3aed0a70af87d0d78f0249b364bc9b141675b8",
+        "tests/ranking_objective_io.h": "d3776f5ea05d018086b746b6c8d1be51df85e24022793c061e59153594e5f0a5",
+        "tests/ranking_objective_report.h": "44a035fa3e78f46f0c2c50eb77e7b9c3f6f1dd98ad417d36b9b6b8dd6c21ce6e",
+        "tests/ranking_primitive_io.h": "f6c6d3d43d131ecafd230c9472025b61e40abe7d42b313004c1246bc546343b6",
+        "tests/stats_contract_io.h": "be43660382a0df1808a5f6ff31bf4e5bc89420d90af15e1c9b4e252e4b4450b1",
+        "scripts/build_cuda_comparison.py": "e73183b2a539379a0708817a13c27d9ffa9047190966eef0fe6f1c1d6e78db06"
+      },
+      "revision": "7f441643411a08d4bf5188916af8cac4ff0baf0a",
+      "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+      "production_working_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "production_cache_sha256": "9f9286e590cc52243cf8bb47bd8158a3e684ad0fbe7835d05551a91581e96da5",
+      "compile_commands": [
+        {
+          "directory": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+          "command": "/usr/bin/c++ -isystem /usr/include/libnvcomp5-dev-cuda-13 -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -o CMakeFiles/cuda_nvcomp_link_check.dir/nvcomp_link_check.cc.o -c /__w/xgb-mps/xgb-mps/tests/cuda_comparison/nvcomp_link_check.cc",
+          "file": "/__w/xgb-mps/xgb-mps/tests/cuda_comparison/nvcomp_link_check.cc",
+          "output": "CMakeFiles/cuda_nvcomp_link_check.dir/nvcomp_link_check.cc.o"
+        },
+        {
+          "directory": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+          "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -ccbin=/usr/bin/c++ -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DTHRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CUDA -DTHRUST_HOST_SYSTEM=THRUST_HOST_SYSTEM_CPP -DXGBOOST_USE_CUDA=1 -I/__w/xgb-mps/xgb-mps/xgboost/include -I/__w/xgb-mps/xgb-mps/xgboost/dmlc-core/include -I/__w/xgb-mps/xgb-mps/build-cuda-ci/dmlc-core/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_80,code=[compute_80,sm_80]\" --expt-extended-lambda --expt-relaxed-constexpr --default-stream=per-thread -Xfatbin=-compress-all -Xcompiler=-fopenmp -x cu -c /__w/xgb-mps/xgb-mps/tests/cuda_numerical_contracts.cu -o CMakeFiles/cuda_numerical_objects.dir/__w/xgb-mps/xgb-mps/tests/cuda_numerical_contracts.cu.o",
+          "file": "/__w/xgb-mps/xgb-mps/tests/cuda_numerical_contracts.cu",
+          "output": "CMakeFiles/cuda_numerical_objects.dir/__w/xgb-mps/xgb-mps/tests/cuda_numerical_contracts.cu.o"
+        },
+        {
+          "directory": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+          "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -ccbin=/usr/bin/c++ -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DTHRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CUDA -DTHRUST_HOST_SYSTEM=THRUST_HOST_SYSTEM_CPP -DXGBOOST_USE_CUDA=1 -I/__w/xgb-mps/xgb-mps/xgboost/include -I/__w/xgb-mps/xgb-mps/xgboost/dmlc-core/include -I/__w/xgb-mps/xgb-mps/build-cuda-ci/dmlc-core/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_80,code=[compute_80,sm_80]\" --expt-extended-lambda --expt-relaxed-constexpr --default-stream=per-thread -Xfatbin=-compress-all -Xcompiler=-fopenmp -x cu -c /__w/xgb-mps/xgb-mps/tests/cuda_aft_contracts.cu -o CMakeFiles/cuda_aft_objects.dir/__w/xgb-mps/xgb-mps/tests/cuda_aft_contracts.cu.o",
+          "file": "/__w/xgb-mps/xgb-mps/tests/cuda_aft_contracts.cu",
+          "output": "CMakeFiles/cuda_aft_objects.dir/__w/xgb-mps/xgb-mps/tests/cuda_aft_contracts.cu.o"
+        },
+        {
+          "directory": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+          "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -ccbin=/usr/bin/c++ -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DTHRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CUDA -DTHRUST_HOST_SYSTEM=THRUST_HOST_SYSTEM_CPP -DXGBOOST_USE_CUDA=1 -I/__w/xgb-mps/xgb-mps/xgboost/include -I/__w/xgb-mps/xgb-mps/xgboost/dmlc-core/include -I/__w/xgb-mps/xgb-mps/build-cuda-ci/dmlc-core/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_80,code=[compute_80,sm_80]\" --expt-extended-lambda --expt-relaxed-constexpr --default-stream=per-thread -Xfatbin=-compress-all -Xcompiler=-fopenmp -x cu -c /__w/xgb-mps/xgb-mps/tests/cuda_rng_contracts.cu -o CMakeFiles/cuda_rng_objects.dir/__w/xgb-mps/xgb-mps/tests/cuda_rng_contracts.cu.o",
+          "file": "/__w/xgb-mps/xgb-mps/tests/cuda_rng_contracts.cu",
+          "output": "CMakeFiles/cuda_rng_objects.dir/__w/xgb-mps/xgb-mps/tests/cuda_rng_contracts.cu.o"
+        },
+        {
+          "directory": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+          "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -ccbin=/usr/bin/c++ -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DTHRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CUDA -DTHRUST_HOST_SYSTEM=THRUST_HOST_SYSTEM_CPP -DXGBOOST_USE_CUDA=1 -I/__w/xgb-mps/xgb-mps/xgboost/include -I/__w/xgb-mps/xgb-mps/xgboost/dmlc-core/include -I/__w/xgb-mps/xgb-mps/build-cuda-ci/dmlc-core/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_80,code=[compute_80,sm_80]\" --expt-extended-lambda --expt-relaxed-constexpr --default-stream=per-thread -Xfatbin=-compress-all -Xcompiler=-fopenmp -x cu -c /__w/xgb-mps/xgb-mps/tests/cuda_math_contracts.cu -o CMakeFiles/cuda_math_objects.dir/__w/xgb-mps/xgb-mps/tests/cuda_math_contracts.cu.o",
+          "file": "/__w/xgb-mps/xgb-mps/tests/cuda_math_contracts.cu",
+          "output": "CMakeFiles/cuda_math_objects.dir/__w/xgb-mps/xgb-mps/tests/cuda_math_contracts.cu.o"
+        },
+        {
+          "directory": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake",
+          "command": "/usr/local/cuda/bin/nvcc -forward-unknown-to-host-compiler -ccbin=/usr/bin/c++ -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DTHRUST_DEVICE_SYSTEM=THRUST_DEVICE_SYSTEM_CUDA -DTHRUST_HOST_SYSTEM=THRUST_HOST_SYSTEM_CPP -DXGBOOST_USE_CUDA=1 -I/__w/xgb-mps/xgb-mps/xgboost/include -I/__w/xgb-mps/xgb-mps/xgboost/dmlc-core/include -I/__w/xgb-mps/xgb-mps/build-cuda-ci/dmlc-core/include -isystem /usr/local/cuda/targets/x86_64-linux/include -O3 -DNDEBUG -std=c++17 \"--generate-code=arch=compute_80,code=[compute_80,sm_80]\" --expt-extended-lambda --expt-relaxed-constexpr --default-stream=per-thread -Xfatbin=-compress-all -Xcompiler=-fopenmp -x cu -c /__w/xgb-mps/xgb-mps/tests/cuda_ranking_contracts.cu -o CMakeFiles/cuda_ranking_objects.dir/__w/xgb-mps/xgb-mps/tests/cuda_ranking_contracts.cu.o",
+          "file": "/__w/xgb-mps/xgb-mps/tests/cuda_ranking_contracts.cu",
+          "output": "CMakeFiles/cuda_ranking_objects.dir/__w/xgb-mps/xgb-mps/tests/cuda_ranking_contracts.cu.o"
+        }
+      ],
+      "object_finished_utc": "2026-11-05T17:56:33.384605+00:00",
+      "link_started_utc": "2026-11-05T17:56:33.426804+00:00",
+      "library": "/__w/xgb-mps/xgb-mps/xgboost/lib/libxgboost.so.3.4.2",
+      "library_sha256": "9278f8587a1826b89f3366089192e21236f27c926aae453110c5b62ad412b3f7",
+      "binary": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_numerical_contracts",
+      "binary_sha256": "0b63c56399370050e0b1c6aca79686d1b8d1a626e13ad1191261930ed1568191",
+      "binaries": {
+        "numerical": {
+          "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_numerical_contracts",
+          "sha256": "0b63c56399370050e0b1c6aca79686d1b8d1a626e13ad1191261930ed1568191"
+        },
+        "aft": {
+          "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_aft_contracts",
+          "sha256": "0d16ef9df8408e287c91d49d3d3f61fd0bc63afe3587087bdf1cfe44ac4878bf"
+        },
+        "rng": {
+          "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_rng_contracts",
+          "sha256": "9eecfecac8ff88e7e946ebd801b18789f6e9c20e374d359e2686d0f647a89603"
+        },
+        "math": {
+          "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_math_contracts",
+          "sha256": "65520e5ca2926e91279ba9ed4877f4ecb3d11f305995f6824fc478ecef8bfd45"
+        },
+        "ranking": {
+          "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_ranking_contracts",
+          "sha256": "bfe5d69c1ba181996a5d47fbaa3745af5cb24ddde3a718b6f616f7a9e4197b9b"
+        }
+      },
+      "finished_utc": "2026-11-05T18:21:20.541028+00:00"
+    },
+    "scope": "Early nvCOMP CXX probe, all five CUDA harness objects, all 197 production steps and five final links; all 22 input hashes match the run revision. Includes primitive rounding and statistics modes, not the later linalg extension. No NVIDIA execution."
   },
   "cuda_runtime": {
     "status": "not_run",

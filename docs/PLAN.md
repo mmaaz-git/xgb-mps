@@ -150,7 +150,7 @@ The separate ranking primitive corpus is also exported in full: **162,851 cases 
 finite arithmetic from the nonfinite `frexp` exponent policy. The Metal test
 retains all original exact checks and asymmetric terms; 17 synthetic integrity
 tests pass. CUDA invokes the vendored rounding/truncation functions directly.
-Its compiler/runtime validation remains pending; see the
+Its CUDA compile/link passed in run 42079045498; runtime validation remains. See the
 [primitive record](../validation/ranking-primitive-m3-run.json).
 The P5-N07 statistics replay retains all 56 mean/median cases, 63 reduction
 cases and three additional precision/scalar witnesses: 122 cases with 515
@@ -158,8 +158,9 @@ observed fields. Both Metal modes and 17 synthetic integrity tests pass. CUDA
 uses actual public APIs, with no reference values in its inputs. Each GPU is
 checked independently against recorded CPU references and the original
 operation-specific bounds; identical wrong GPU outputs cannot pass. See the
-[statistics record](../validation/stats-contract-m3-run.json). Compiler/runtime
-validation and the separate metric and training-reduction corpora remain.
+[statistics record](../validation/stats-contract-m3-run.json). CUDA compile/link
+passed in [run 42079045498](https://github.com/mmaaz-git/xgb-mps/actions/runs/42079045498);
+runtime validation and the separate metric and training-reduction corpora remain.
 The linalg extension now exports the complete 258-case corpus and two empty
 operations. Both Metal modes, all exported reference checks and 16 report-integrity
 tests pass. CUDA replays actual source consumers, explicitly gathers histogram

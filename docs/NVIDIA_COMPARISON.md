@@ -548,7 +548,9 @@ The full Metal test and 17 synthetic report tests pass. The C++ input round trip
 is byte-identical. New Metal diagnostics match independent host expressions
 apart from 405 FP32 and 96 binary64 NaN payload/sign differences. Their nonfinite
 counts are 19,602 and 25,959 respectively. These host checks are not NVIDIA
-execution; CUDA compilation of this mode and runtime comparisons remain pending.
+execution. CUDA compilation/linking passed in
+[run 42079045498](https://github.com/mmaaz-git/xgb-mps/actions/runs/42079045498);
+runtime comparisons remain pending.
 
 ```sh
 bash scripts/test.sh --native metal_ranking_rounding
@@ -611,8 +613,9 @@ a universal error guarantee for every CUB architecture or reduction tree.
 
 Both original Metal execution and export mode pass, as do 17 synthetic integrity
 tests. All 515 exported Metal fields satisfy the comparator. C++ input round
-trip and host API type checks pass; CUDA compiler/runtime validation remains
-pending. This statistics replay does not cover the separate linalg, metric or
+trip and host API type checks pass. CUDA compile/link passed in
+[run 42079045498](https://github.com/mmaaz-git/xgb-mps/actions/runs/42079045498);
+runtime validation remains pending. This statistics replay does not cover the separate linalg, metric or
 training-reduction corpora.
 
 ```sh
