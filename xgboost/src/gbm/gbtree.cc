@@ -44,6 +44,25 @@ namespace xgboost::gbm {
 DMLC_REGISTRY_FILE_TAG(gbtree);
 
 namespace {
+// The common hist/approx updaters contain the Metal implementations and share
+// their configuration schema with the corresponding CUDA updaters.
+std::string MapGPUUpdaterWithoutCUDA(std::string const& name) {
+  if (name == "grow_gpu_hist") return "grow_quantile_histmaker";
+  if (name == "grow_gpu_approx") return "grow_histmaker";
+  return name;
+}
+
+std::string MapGPUUpdaterSequenceWithoutCUDA(std::string const& sequence) {
+  std::string result;
+  bool first = true;
+  for (auto const& name : common::Split(sequence, ',')) {
+    if (!first) result += ',';
+    first = false;
+    result += MapGPUUpdaterWithoutCUDA(name);
+  }
+  return result;
+}
+
 /** @brief Map the `tree_method` parameter to the `updater` parameter. */
 std::string MapTreeMethodToUpdaters(Context const* ctx, TreeMethod tree_method) {
   if (ctx->IsMPS()) {
@@ -126,11 +145,12 @@ void GBTree::Configure(Args const& cfg) {
   sycl_predictor_->Configure(cfg);
 #endif  // defined(XGBOOST_USE_SYCL)
 
-  // `updater` parameter was manually specified
+  // Preserve a manual sequence restored by LoadConfig (reset, pickle or slice).
+  // It need not be present in cfg again after loading the saved configuration.
   specified_updater_ =
+      specified_updater_ ||
       std::any_of(cfg.cbegin(), cfg.cend(), [](auto const& arg) { return arg.first == "updater"; });
   if (specified_updater_) {
-    CHECK(!ctx_->IsMPS()) << "Explicit updater selection is not supported with device=mps.";
     error::WarnManualUpdater();
   }
   LOG(DEBUG) << "Using tree method: " << static_cast<int>(tparam_.tree_method);
@@ -140,6 +160,9 @@ void GBTree::Configure(Args const& cfg) {
   }
 
   auto up_names = common::Split(tparam_.updater_seq, ',');
+  if (ctx_->IsMPS()) {
+    for (auto& name : up_names) name = MapGPUUpdaterWithoutCUDA(name);
+  }
   if (!UpdatersMatched(up_names, updaters_)) {
     updaters_.clear();
     for (auto const& name : up_names) {
@@ -432,6 +455,11 @@ void GBTree::LoadConfig(Json const& in) {
   // e.g. updating a model, then saving and loading it would result in an empty model
   tparam_.process_type = TreeProcessType::kDefault;
   std::int32_t const n_gpus = curt::AllVisibleGPUs();
+  if (n_gpus == 0) {
+    // Keep the saved manual sequence consistent with the executable updaters.
+    // The target context is loaded after this method by Learner::LoadConfig.
+    tparam_.updater_seq = MapGPUUpdaterSequenceWithoutCUDA(tparam_.updater_seq);
+  }
 
   std::vector<Json> updater_seq;
   if (IsA<Object>(config["updater"])) {
@@ -453,9 +481,12 @@ void GBTree::LoadConfig(Json const& in) {
 
   for (auto const& config : updater_seq) {
     auto name = get<String>(config["name"]);
-    if (n_gpus == 0 && name == "grow_gpu_hist") {
-      name = "grow_quantile_histmaker";
-      LOG(WARNING) << "Changing updater from `grow_gpu_hist` to `grow_quantile_histmaker`.";
+    if (n_gpus == 0) {
+      auto portable_name = MapGPUUpdaterWithoutCUDA(name);
+      if (portable_name != name) {
+        LOG(WARNING) << "Changing updater from `" << name << "` to `" << portable_name << "`.";
+        name = std::move(portable_name);
+      }
     }
     updaters_.emplace_back(TreeUpdater::Create(name, ctx_, &model_.learner_model_param->task));
     updaters_.back()->LoadConfig(config);

@@ -4446,3 +4446,64 @@ and exited zero. The optional federated learner regression passes 520 cases /
 its CPU-only build/API checks also pass (1m15s, exit zero). No implementation or
 test changes followed these final runs. See the
 [validation record](../validation/cuda-metal-native-default-m3.txt).
+
+
+## Explicit tree updater selection and configuration lifetime
+
+CUDA authority is `gbm/gbtree.cc::GBTree::Configure`: an explicit `updater` warns,
+then instantiates the requested sequence instead of selecting by `tree_method`.
+`tree/updater_gpu_hist.cu` registers `grow_gpu_hist` and `grow_gpu_approx`, and both
+serialize the same `hist_train_param` schema as their common counterparts. The
+Metal implementations already live in `grow_quantile_histmaker` and
+`grow_histmaker`; the obsolete blanket MPS manual-selection rejection is removed.
+The GPU spellings resolve to those implementations when the execution context is
+MPS. Other updater names and sequence order are preserved. This adds no CPU
+substitute for a GPU grow operation.
+
+`prune` and `refresh` are host implementations upstream, even with CUDA. Their
+existing code remains in use for explicit MPS sequences and `process_type="update"`.
+The source-defined errors for unknown names, using a modifying updater to create
+a tree, or using a grow updater to modify existing trees remain in force.
+The usual automatic `tree_method="exact"` MPS rejection remains; explicit valid
+updaters can override that parameter, as CUDA's manual-selection warning promises.
+
+The first tests exposed a shared lifecycle defect: `LoadConfig` restores
+`specified_updater`, but the next `Configure` discarded it if the original argument
+was absent from the new parameter list. `xgb.train()` calls `reset()` after training,
+which performs a model/config roundtrip; the returned model therefore lost its
+manual sequence, and an ignored `tree_method="exact"` could make MPS serialization
+fail. `Configure` now preserves the loaded flag. The explicit flag in a subsequent
+loaded config can still select automatic behavior. This change also applies to
+CPU/CUDA builds; local tests cover CPU and Metal, not NVIDIA execution.
+
+Loading without NVIDIA previously remapped only the saved hist updater descriptor.
+It now remaps both hist and approx descriptors and their saved manual sequences,
+using the compatible common configurations. This is necessary because the learner
+loads its target context after booster config loading. Fresh CPU and MPS learners
+can load the same CUDA-shaped config, while preserving its tuning parameters.
+The tests synthesize these schemas from the CUDA source; they are not artifacts
+captured from a running NVIDIA GPU.
+
+Coverage includes both names, scalar/vector/categorical growth, unsampled and
+gradient-based sampled growth, DART, explicit overrides, grow/prune/refresh sequences,
+existing-tree updates,
+modern updater arrays and legacy updater dictionaries, CPU/MPS transitions and
+model/config roundtrips.
+Dispatch counters require real GPU histograms for MPS growth. Same-backend manual
+and automatic growth compare model bytes exactly; CPU prediction and shared
+refresh/prune comparisons retain their existing numerical thresholds.
+
+Final validation passes 100 native groups and 3,554 Python tests with one expected
+skip (673 warnings, 242.51s), followed by the CPU-only build and API checks. Nine
+applicable configuration tests also pass against an isolated CPU-only library
+whose build information reports `USE_METAL=false` (72 GPU cases deselected,
+11 warnings, 0.17s). The standard run exited zero after 9m49s, from 2026-11-05
+05:39:24 to 05:49:13 UTC. The optional federated learner matrix passes 520 cases /
+13,056 CPU prediction checks across worlds 1/2/3 and mutual TLS world 2, plus its
+CPU-only build/API checks (51s, exit zero). New warnings concern explicit updater
+selection, CUDA-name remapping, legacy serialization/DART, and unused histogram
+cache parameters in deliberate prune/refresh error cases. No production or test
+changes followed these final runs. See the
+[validation record](../validation/cuda-metal-manual-updater-m3.txt).
+No benchmark or NVIDIA execution was added; complete CUDA operation coverage
+remains an open audit.

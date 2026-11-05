@@ -80,7 +80,7 @@ def test_no_gpu_means_error_not_silent_cpu_fallback():
 
 @pytest.mark.parametrize("extra", [
     {"tree_method": "exact"},
-    {"updater": "grow_quantile_histmaker"}, {"device": "mps:1"},
+    {"device": "mps:1"},
 ])
 def test_unsupported_configuration_is_rejected(extra):
     x, y, _ = dataset()

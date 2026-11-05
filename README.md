@@ -14,7 +14,28 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **native Metal inplace prediction returns GPU output by default**,
+Latest step: **explicit tree updater selection works with MPS**. Common hist and
+approx updater names use their existing Metal implementations; `grow_gpu_hist`
+and `grow_gpu_approx` resolve to those same paths on MPS. Refresh/prune sequences
+keep their upstream CPU execution. Manual selection overrides `tree_method`,
+while invalid creation/update sequences still reject.
+
+Manual updater configuration now survives the reset performed by `xgb.train()`,
+as well as pickle, model slicing and copying. Saved CUDA hist and approx configs
+can resolve to the common CPU/Metal implementations on a machine without CUDA;
+the saved sequence is kept consistent with the instantiated updaters. This
+includes a shared configuration-lifecycle fix, tested on CPU and MPS paths.
+
+Validation passes **100 native groups**, **3,554 Python tests with one expected
+skip**, standard CPU-only build/API checks, and **nine additional configuration
+tests using the CPU-only library**. Optional federated learners pass **520 cases /
+13,056 CPU prediction checks**, including mutual TLS, plus their CPU-only build.
+No benchmark or NVIDIA execution was added.
+[Manual updater validation](validation/cuda-metal-manual-updater-m3.txt).
+The remaining operation audit is still open; the next step is to reconcile every
+CUDA operation with its Metal implementation and validation evidence.
+
+Previous step: **native Metal inplace prediction returns GPU output by default**,
 matching CUDA input placement. PyTorch/MLX tensors and `MetalData`/`MetalColumnar`
 inputs return an owned `MetalOutput`, including when prediction uses a CPU model.
 Use `output_device="cpu"` or `.numpy()` for a NumPy copy. Host inputs and ordinary
@@ -27,7 +48,7 @@ skip**, and standard CPU-only build/API checks. The native result test covers
 13,056 CPU prediction checks**, including mutual TLS, plus the CPU-only federated
 build. No benchmark or NVIDIA execution was added.
 [Native output validation](validation/cuda-metal-native-default-m3.txt).
-Manual updater selection and the remaining operation audit are still open.
+Manual updater selection is addressed above; the broader operation audit remains open.
 
 Previous step: **federated MPS training is implemented behind
 `PLUGIN_FEDERATED=ON`**. Metal payloads use the existing gRPC server, sharing its
@@ -986,8 +1007,10 @@ unsampled Hessians for cuts and resets sampling per tree, following CUDA's updat
 order. Both sampling methods, histograms and roots share quantized state. Ordinary
 matrices now use CUDA-derived weighted sketches with explicit FP32 scan-order limits.
 
-Explicit tree updater selection and `exact` are rejected for `mps`. Distributed
-tree training is enabled over TCP and, with the optional plugin, federated gRPC.
+Explicit hist/approx updater names, including `grow_gpu_hist`/`grow_gpu_approx`,
+are supported on MPS. Refresh/prune retain their upstream host execution.
+Automatic `tree_method="exact"` remains unsupported on MPS; a valid explicitly
+selected updater takes precedence over `tree_method`. Distributed tree training is enabled over TCP and, with the optional plugin, federated gRPC.
 Distributed `gblinear` remains unsupported. Inaccessible Metal devices produce an
 error. Other features may use CPU implementations as recorded in the coverage ledger;
 selecting `mps` does not imply that every stage runs on the GPU.
@@ -1613,7 +1636,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Add native Metal feature/metadata/gradient tensors and columnar masks/dictionaries.
 - [x] Add owned GPU prediction outputs and PyTorch/MLX DLPack consumers.
 - [x] Match native inplace output placement/defaults to CUDA while preserving sklearn NumPy results.
-- [ ] Audit and remove the legacy blanket rejection of manual tree updater selection on MPS.
+- [x] Support manual tree updater selection and preserve sequences across reset, reload and slicing.
 - [x] Add generic Metal vector storage and internal metadata slice/copy/stack/equality operations.
 - [x] Keep nonranking objective inputs/gradients/transforms in Metal vector storage.
 - [x] Keep initialization/statistics/stump payloads on Metal through their GPU stages.
