@@ -37,7 +37,10 @@ gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
 Both correctness findings are locally fixed: [NUM-1](validation/cuda-num1-m3.txt)
 at `2404827` and [PORT-9](validation/cuda-port9-m3.txt) at `1034657`. Focused
 native/Python checks pass, as do CPU build/API/updater checks for PORT-9.
-**Eight implementation tasks remain.** Vector GPU weights are next.
+[PORT-1](validation/cuda-port1-m3.txt) is locally complete at `c78cb43`: vector
+weights stay on Metal through root scaling, model growth, bounds updates and
+prediction-cache gathers. **Seven implementation tasks remain.** Selected
+categorical bitsets are next; exact vector gradient sums follow.
 Numerical, scheduling and external-hardware limits remain explicit in the
 [parity ledger](docs/CUDA_PARITY.md).
 
@@ -100,12 +103,13 @@ check GPU execution. PyTorch and MLX are additional dependencies for their
 native-tensor tests. Optional federated tests require `brew install grpc protobuf`
 and run with `bash scripts/test_federated.sh` in separate build directories.
 
-The latest recorded full regression covers implementation commit `dd44829`:
-**100 native groups and 3,554 Python tests passed, with one expected skip**;
-CPU-only build/API checks also passed. Optional federated learner checks passed
-on local workers on the same M3. See the
-[record with configuration and limitations](validation/cuda-metal-native-csr-storage-m3.txt).
-These results apply to that revision, not automatically to subsequent edits.
+Latest local validation for PORT-1: **100 native groups passed**, followed by a
+small empty-input validation fix and a fresh predictor-group pass; **3,595 Python
+tests passed with one expected skip**, plus CPU build/API/schema and nine updater
+checks. The first Python attempt exposed a test-runner import-path bug, which is
+fixed. The [record](validation/cuda-port1-m3.txt) preserves the separate runs and
+source hashes. Optional federated checks were last run at `dd44829`, as recorded
+[here](validation/cuda-metal-native-csr-storage-m3.txt).
 
 The [CUDA CI workflow](.github/workflows/cuda-compile.yml) separately checks that
 shared-code changes still compile with NVIDIA dependencies. Successful compilation

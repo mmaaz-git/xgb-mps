@@ -1,0 +1,104 @@
+PORT-1 resident vector weights, 2026-11-05
+Source: c78cb430be4e0ce3e4bcd91f55e371514c7317a2
+Test-runner fix: d0734ef. Machine-readable provenance: cuda-port1-m3-run.json.
+Hardware: Apple M3, 10 GPU cores, 16 GB shared memory. Python 3.13.5;
+PyTorch 2.15.0 MPS and MLX GPU both available for the full Python run.
+
+Authority: vendored CUDA multi_evaluate_splits.cu retains node-indexed
+Base/Left/Right weights; updater_gpu_hist.cuh scales the root on device;
+multi_target_tree_model.cu copies/scales model weights on device;
+gpu_predictor.cu::PredictFromLeafIds consumes compact MultiTargetTreeView weights
+and the node-to-leaf mapping on device. CPU is the oracle where algorithms agree.
+
+Implementation:
+- FinalizeSplitNodes can retain weight results only in the GPU workspace.
+  SplitWeightStorage gathers them into node-indexed GPU storage, preserves old
+  nodes across growth, and lets delayed candidates reacquire views by node ID.
+- Root copying/scaling, model expansion and alias snapshots stay on Metal.
+  Bounds updates snapshot resident weight inputs by GPU copy. Shared CopyBatch
+  supports category buffers too, but selected-category producers and partition
+  consumers still need PORT-2.
+- Vector prediction-cache updates bind compact model leaf weights plus the
+  node mapping. Negative sample positions are decoded on GPU. No CPU per-node
+  vector-weight gathering remains in this consumer.
+- The common CPU updater requests host weight views outside its MPS branch,
+  including when manually selected with a CUDA context. CUDA compilation alone
+  cannot prove pointer-placement correctness; this branch was reviewed explicitly.
+- SetLeaves, topology and serialization retain source-defined host publication.
+  Exact gradient sums, selected categories and downstream bound gathers remain
+  separate PORT-3, PORT-2 and PORT-8 tasks.
+- Five counters append to the common Statistics schema. The previous 276-field
+  prefix is unchanged; all 281 initializer positions match. CPU/Metal C API
+  schemas match at 283 fields, with CPU counters zero.
+
+Focused validation (results/port1-focused-v3, tmux xgb-port1-focused-v3):
+  bash scripts/test.sh --native metal_model_state_api metal_split_categories \
+    metal_prediction_state_api metal_bound_state_api \
+    --python tests/test_metal_model_state.py tests/test_metal_split_finalize.py
+  PASS four freshly compiled native groups and 43 Python tests.
+
+New/direct acceptance evidence:
+- Persistent weights: four workspace-reuse/growth chains, 1,992 exact fields;
+  reordered source/node IDs, overwrite, delayed nodes, growth beyond node256,
+  invalid destinations/targets and empty finalization. GPU copy/scale consumers
+  run before CPU comparisons; no weight readback, model host copy or HDV transfer.
+- Model storage: 85 copy cases, 80 scale cases/1,053,248 products, 32 growing
+  trees; host/resident sources, overlapping GPU copies, category aliases across
+  model growth, exact copied bits, root inputs and eta0/.3/1/tiny. GPU authority
+  and transfer counters are checked before serialization/CPU inspection.
+- Bounds: 24 cases/76 updates/3,847,176 exact values. The integration version
+  supplies resident vector weights and checks no host mirror or payload transfer
+  before CPU comparisons, including bound-storage growth.
+- Prediction: 199 cases/21,813,660 checks/20 rejected calls in the final run.
+  Compact GPU binding byte counts distinguish the new production consumer from
+  host per-node gathers; targets1/2/3/17, empty/nonempty, padding, negative IDs,
+  resident/read-only/unaligned inputs and ID/weight/mapping aliases are covered.
+- Python model/finalizer checks cover root-only trees, eta0/.3/1, numeric/OHE/
+  partition inputs, depthwise/lossguide growth, constraints and serialized-model
+  continuation, with source-derived weight fixtures and relevant CPU comparisons.
+  Full native/Python training tests additionally cover forests and reduced targets.
+
+Integration and failures, retained rather than relabelled:
+1. results/port1-integration, tmux xgb-port1-integration:
+     bash scripts/test.sh --full --log-dir results/port1-integration
+   All 100 native groups PASSED. Python distributed subprocesses failed to import
+   xgboost: pytest.ini changes only parent sys.path; run_tests.py did not export
+   PYTHONPATH. Worker logs and a live native stack sample identified tracker
+   cleanup after those failures. The Python stage was explicitly terminated
+   (exit -15); this command is NOT a passing full-suite run.
+2. Runner fix d0734ef passes the absolute vendored package path to pytest and its
+   subprocesses, preserving an existing PYTHONPATH suffix. Subsequent distributed
+   sketch and learner tests completed with one, two and three workers.
+3. Review found the new empty leaf-cache return bypassed target-shape validation.
+   A native test reproduced the runtime failure in results/port1-empty-red-v2.
+   The final guard validates tree targets before returning; CPU rejects the same
+   malformed shape. This is the only production change after the 100-group run.
+4. results/port1-final, tmux xgb-port1-final:
+     bash scripts/test.sh --native metal_prediction_state_api --python \
+       --log-dir results/port1-final
+   Fresh build and predictor native PASSED; full Python: 3,595 PASSED, one expected
+   no-GPU-only skip, 670 warnings, 262.37s. Both interop producers were available.
+   The other 99 native groups were not repeated for the empty-input guard.
+
+Early test-development failures were also corrected: an initially absent binding
+counter, ambiguous empty-span construction, and a CPU arithmetic oracle requiring
+NaN payload bits. NaN arithmetic has no payload contract; tests require NaN
+classification and keep exact finite-result, copy, padding and guard checks.
+No numerical tolerance was widened to obtain these passes.
+
+CPU-only validation (results/port1-cpu.log, tmux xgb-port1-cpu, exit0):
+  cmake --build build-cpu -j4
+  .venv/bin/python scripts/check_cpu_build.py --metal-library xgboost/lib/libxgboost.dylib
+  PYTHONPATH=results/cpu-python .venv/bin/python -m pytest -q \
+    tests/test_metal_updater.py -k cpu -o pythonpath=results/cpu-python
+  PASS isolated USE_METAL=false build/API/schema283 and nine updater cases;
+  72 deselected, 11 warnings. Built before the final MPS-only shape guard.
+
+Source diff and final library hashes were checked against the passing runner
+record immediately before committing. The JSON retains the distinct pre-guard
+and final run hashes, commands, statuses and selections.
+CUDA compilation passed on previous commit e0d0f5a (run41997183298); the new
+source needs its own CI run. No NVIDIA runtime, new benchmark, other Apple device
+or optional federated configuration run is claimed here. This closes PORT-1
+locally, leaving seven implementation tasks plus integration/numerical/external
+verification and performance work. It does not establish full CUDA parity.

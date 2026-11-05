@@ -28,7 +28,6 @@ not every branch's behavior.
 
 | Plan ID | Remaining CUDA behavior or evidence |
 | --- | --- |
-| PORT-1 | Vector weight producers, root learning-rate multiplication, model growth and alias snapshots still use host views/copies in baseline main. Quarantined draft is unvalidated and contains an unsafe non-MPS branch. |
 | PORT-2 | Selected vector categorical bitsets return to host candidates before model copying; CUDA retains device category storage. |
 | PORT-3 | Exact vector node/selected-child sums move through host containers; CUDA retains device node/split sums. |
 | PORT-6 | Sampled/allowed feature-ID payloads and consumers still use CPU arrays. |
@@ -45,7 +44,10 @@ threshold comparisons and independent boundary/alias regressions pass in three
 native groups and 34 Python tests; [evidence](../validation/cuda-num1-m3.txt).
 PORT-9 is locally fixed at `1034657`: vector leaf finalization replays retained
 sampling state; four native groups, 52 Python tests and CPU build/API/updater
-checks pass ([evidence](../validation/cuda-port9-m3.txt)). Eight tasks remain.
+checks pass ([evidence](../validation/cuda-port9-m3.txt)). PORT-1 is locally fixed
+at `c78cb43`: persistent GPU weights, root/model scaling, alias snapshots, bound
+inputs and compact prediction-cache gathers are validated
+([evidence](../validation/cuda-port1-m3.txt)). Seven implementation tasks remain.
 The frozen audit retains its original findings. This is a finite
 implementation queue, not proof that no unlisted defects remain. Numerical
 acceptance fixtures and NVIDIA comparisons remain separate verification work.
@@ -81,14 +83,22 @@ reproduced defects, confirmed gaps and architecture risks.
 
 ## Evidence boundary
 
+Latest PORT-1 checks: 100 native groups passed before a final empty-input shape
+guard; the predictor group and all 3,595 Python tests passed afterward, with one
+expected skip. CPU build/API/schema and nine updater tests passed. The runner's
+subprocess import-path failure and correction are retained in the
+[record](../validation/cuda-port1-m3.txt); these are separate runs, not a relabelled
+successful full command. Optional federated checks were not repeated.
+
 Last full regression before review: implementation `dd44829`, recorded at
 `2eaad4d`; **100 native groups, 3,554 Python passes, one expected skip**, CPU-only
 build/API checks and optional federated learners.
 [Configuration and results](../validation/cuda-metal-native-csr-storage-m3.txt).
 Cleanup has separate [validation evidence](../validation/repo-review-2026-11-05.txt).
 
-CUDA compile CI also passed at audit baseline `382f78c`
-([run 41987882440](https://github.com/mmaaz-git/xgb-mps/actions/runs/41987882440)). It compiles/links on
+CUDA compile CI passed at `e0d0f5a`, before PORT-1
+([run 41997183298](https://github.com/mmaaz-git/xgb-mps/actions/runs/41997183298)).
+The PORT-1 source needs its own CI result. CI compiles/links on
 a CPU runner. **No NVIDIA runtime comparison has been performed.** Other Apple
 hardware is also untested. [Historical benchmarks](PUBLISHED_BENCHMARKS.md)
 predate subsequent correctness changes and are not current-HEAD measurements.

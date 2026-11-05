@@ -10,7 +10,7 @@
     "xgboost/src/common/metal_histogram.mm",
     "xgboost/src/common/metal_histogram.metal"
   ],
-  "latest_local_regression": "validation/cuda-metal-native-csr-storage-m3.txt",
+  "latest_local_regression": "validation/cuda-port1-m3.txt",
   "groups": [
     {
       "id": "native-api",
@@ -819,8 +819,8 @@
         "tests/metal_prediction_result_api.cc",
         "tests/test_metal_prediction.py"
       ],
-      "status": "audited-with-open-tasks",
-      "limits": " Confirmed audit tasks: PORT-1; see validation/cuda-caller-audit.json for source/acceptance.",
+      "status": "mapped",
+      "limits": "PORT-1 locally fixed at c78cb43: compact GPU leaf weights and node mapping feed vector leaf-cache gathers. Source-defined host model publication remains. See validation/cuda-port1-m3.txt; NVIDIA execution remains unverified.",
       "audited_operations": [
         "training-dart-weighted",
         "training-prediction-init",
@@ -831,7 +831,8 @@
         "training-leaf-cache-scalar",
         "training-leaf-cache-vector"
       ],
-      "open_tasks": [
+      "open_tasks": [],
+      "resolved_after_audit": [
         "PORT-1"
       ]
     },
@@ -1064,7 +1065,7 @@
         "tests/test_metal_split_finalize.py"
       ],
       "status": "audited-with-open-tasks",
-      "limits": "Confirmed host payloads: root/child weights, selected vector category bitsets, and exact node/child sums. CUDA retains device node_weights_, split_cats_, node_sums_ and split_sums_. Root eta also runs on CPU. See PORT-1/2/3 in docs/PLAN.md; the local quarantined weight draft does not close these gaps. Confirmed audit tasks: PORT-1, PORT-10, PORT-2, PORT-3, PORT-6, PORT-8; see validation/cuda-caller-audit.json for source/acceptance.",
+      "limits": "PORT-1 locally fixed at c78cb43: finalized vector weights persist by node ID and root scaling stays on Metal. Selected vector category bitsets and exact node/child sums still use host containers (PORT-2/3); feature IDs, thresholds and downstream bound gathers remain PORT-6/10/8. See validation/cuda-port1-m3.txt and the frozen caller audit.",
       "audited_operations": [
         "training-allowed-feature-storage",
         "training-bounds-consumers",
@@ -1080,12 +1081,14 @@
         "training-debug-print"
       ],
       "open_tasks": [
-        "PORT-1",
         "PORT-10",
         "PORT-2",
         "PORT-3",
         "PORT-6",
         "PORT-8"
+      ],
+      "resolved_after_audit": [
+        "PORT-1"
       ]
     },
     {
@@ -1160,7 +1163,7 @@
         "tests/test_metal_model_state.py"
       ],
       "status": "audited-with-open-tasks",
-      "limits": "CONFIRMED GAP: MPS CopyBatch/ApplyLearningRate use HostSpan/ConstHostSpan and host alias snapshots. CUDA selects DeviceSpan and device-to-device copies. SetRoot tests only IsCUDA. GPU arithmetic tests do not establish persistent Metal model storage. The root updater caller also multiplies eta on CPU, and root/child weight gathering uses host vectors; port the producing pipeline together with the final containers. Confirmed audit tasks: PORT-1, PORT-2; see validation/cuda-caller-audit.json for source/acceptance.",
+      "limits": "PORT-1 locally fixed at c78cb43: SetRoot, CopyBatch and ApplyLearningRate consume resident weights, preserve growth and snapshot overlapping device inputs on GPU. Host topology/SetLeaves/serialization follow CUDA. Selected-category producers/partition consumers remain PORT-2, despite resident shared model-copy support. See validation/cuda-port1-m3.txt.",
       "audited_operations": [
         "training-leaf-cache-vector",
         "training-vector-weight-persistence",
@@ -1172,8 +1175,10 @@
         "training-leaf-publish"
       ],
       "open_tasks": [
-        "PORT-1",
         "PORT-2"
+      ],
+      "resolved_after_audit": [
+        "PORT-1"
       ]
     },
     {
@@ -1194,8 +1199,8 @@
         "tests/test_metal_updater.py",
         "tests/test_metal_distributed_training.py"
       ],
-      "status": "audited-with-open-tasks",
-      "limits": "Common updater classes dispatch Metal. Manual names and configuration lifetime are covered. Pipeline completeness still depends on the explicit open implementation tasks from the caller audit. Confirmed remaining audit tasks: PORT-1; see validation/cuda-caller-audit.json for source/acceptance. PORT-9 fixed at 1034657; validation/cuda-port9-m3.txt records focused GPU and CPU checks.",
+      "status": "mapped",
+      "limits": "Common updater classes dispatch Metal. PORT-1 root scaling/weight consumers locally fixed at c78cb43; non-MPS CPU updater uses host views. PORT-9 fixed at 1034657. Pipeline completeness still depends on the remaining caller-audit tasks; see validation/cuda-port1-m3.txt.",
       "audited_operations": [
         "training-leaf-cache-scalar",
         "training-scalar-host-expansion",
@@ -1206,11 +1211,10 @@
         "training-updater-manual",
         "training-approx-hessian"
       ],
-      "open_tasks": [
-        "PORT-1"
-      ],
+      "open_tasks": [],
       "resolved_after_audit": [
-        "PORT-9"
+        "PORT-9",
+        "PORT-1"
       ]
     },
     {

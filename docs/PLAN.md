@@ -24,12 +24,12 @@ Track three separate claims:
 
 The audit classified 174 logical operations and all 1,078 listed lexical sites
 across 42 families / 109 CUDA roots at `382f78c`. Sixteen missing/defective rows
-map to **10 implementation tasks** below; NUM-1 and PORT-9 are locally fixed,
-and eight remain.
+map to **10 implementation tasks** below; NUM-1, PORT-9 and PORT-1 are locally fixed,
+and seven remain.
 These unequal-sized rows are not a
 completion percentage, and this bounded audit cannot prove the absence of
-unlisted defects. **Next: PORT-1 vector weights, then the remaining vector state and
-GPU-placement tasks.** No new kernels were added during
+unlisted defects. **Next: PORT-2 selected vector categorical bitsets, then PORT-3 exact vector
+gradient sums and the remaining GPU-placement tasks.** No new kernels were added during
 classification.
 
 ## Ordered work queue
@@ -41,8 +41,8 @@ classification.
 | PORT-5 | Classify numerical-contract ledger | Classification complete; acceptance work remains | Seventeen contracts record authority, comparisons, limits and actions; NUM-1 is locally fixed; required divergence fixtures and external comparisons remain VERIFY-1/2 work |
 | NUM-1 | Correct weighted-quantile threshold precision | Locally complete at `2404827` | Binary64 comparison and independent boundary/alias regressions pass; three native groups and 34 Python tests; [evidence](../validation/cuda-num1-m3.txt). NVIDIA comparison remains VERIFY-2 |
 | PORT-9 | Correct vector row validity after sampling | Locally complete at `1034657` | Retained sampler state controls positions; 42 new exact none/uniform/MVS cases plus zero-Hessian production updater coverage; four native groups, 52 Python tests and CPU build/API/updater checks pass; [evidence](../validation/cuda-port9-m3.txt) |
-| PORT-1 | GPU vector root/child/model weights | Next | Finalize → persistent weights → root scale / model expansion / constraints / prediction-cache leaf gathers stays on Metal; growth preserves queued candidates; non-MPS CPU updater still uses host views |
-| PORT-2 | GPU selected categorical bitsets | Open; after PORT-1 | Vector category payload stays resident through workspace reuse, candidate queuing and model growth; numeric/one-hot/partition and alias cases pass |
+| PORT-1 | GPU vector root/child/model weights | Locally complete at `c78cb43`; new CUDA CI pending | Resident producer/storage/consumer chain, growth/aliases and non-MPS host views checked; 100 native groups plus final predictor check, 3,595 Python passes and CPU checks; [evidence](../validation/cuda-port1-m3.txt) |
+| PORT-2 | GPU selected categorical bitsets | Next | Vector category payload stays resident through workspace reuse, candidate queuing and model growth; numeric/one-hot/partition and alias cases pass |
 | PORT-3 | GPU exact vector node/child sums | Open; after PORT-1 | Integer selected-child and node sums stay resident through evaluation/propagation; no floating reconstruction; scalar source-defined publication unchanged |
 | PORT-6 | Resident sampled/allowed feature IDs | Open; after vector state | GPU weighted gather/shuffle/sort, constraint filtering and split-consumer feature IDs; ordinary host launch descriptors remain permitted |
 | PORT-7 | Resident native quantile weights | Open; after PORT-6 | Keep row/group weights and GPU expansion resident through native adapter sketch construction; weighted/grouped/repeated-batch fixtures |
@@ -56,24 +56,27 @@ classification.
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
 while hardware is unavailable. Cross-Apple-hardware claims also require actual runs.
 
-## PORT-1 is a bounded change
+## Next bounded change: PORT-2
 
-The interrupted implementation is preserved **locally**, unmerged, on
-`wip/vector-weight-storage-review` at `ca00777`. Review it as a draft; do not
-cherry-pick it wholesale.
+Keep selected vector category bits resident from GPU category assembly through
+queued candidates, model expansion and row partitioning. PORT-1 supplies resident
+model copying and GPU alias snapshots; it does not close category producers or
+partition consumers.
 
-- Fix the reviewed unsafe CUDA-context branch first: only MPS requests a Metal
-  weight view; the common CPU updater's other branch uses a host view. CUDA
-  compilation cannot detect a CPU dereference of device memory.
-- Cover root-only trees, depthwise/lossguide growth, monotonic constraints,
-  categorical inputs, forest/reduced-target callers, saved-model continuation,
-  workspace reuse, aliases and delayed candidates after growth.
-- Run GPU consumers **before** CPU comparisons. Assert storage authority and
-  payload-copy/readback counters; dispatch counts alone are insufficient.
-- Compare fixed CUDA-source weight fixtures and CPU cases where algorithms agree.
-  Do not widen tolerances without changing and documenting the numerical contract.
-- Finish with focused native/Python checks and CPU-build evidence, then stop.
-  PORT-2 and PORT-3 remain open after this task lands.
+- Trace all growing-tree views: constructing a host category view can cause a
+  readback before the immediate consumer is reached. Preserve source-defined
+  host topology without copying category payloads to CPU.
+- Persist selected bits by node ID so workspace reuse and delayed candidates do
+  not invalidate them. Cover growth and overlapping model sources.
+- Retain numeric, one-hot and partition cases, both grow policies and external
+  pages. Scalar category publication follows CUDA's host contract.
+- Run GPU consumers before CPU comparisons; check ownership and transfer counters.
+  Finish with focused producer/model/partition tests, public training checks and
+  relevant CPU/shared-source compilation. Exact vector sums remain PORT-3.
+
+PORT-1 was selectively integrated from the old local draft after correcting its
+non-MPS branch and adding prediction-cache coverage. Its [validation record](../validation/cuda-port1-m3.txt)
+records failures, fixes and exact run boundaries; the old draft is not a second plan.
 
 ## PORT-4 audit boundary
 
