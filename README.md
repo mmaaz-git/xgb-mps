@@ -51,7 +51,7 @@ unproven.
 | Validation stage | Current status |
 | --- | --- |
 | Local Metal/CPU acceptance | Full regression passed at `41d4dc2`; details below |
-| CUDA compilation | [Grouped PR/AUC build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770). The [capacity fix and AUC capture build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288) |
+| CUDA compilation | [Grouped PR/AUC build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770). The [next build failed in the new AUC test helper](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288); its name-lookup fix passes local regression checks, with CUDA confirmation pending |
 | CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
 | Performance | Mixed; the latest full HIGGS run is slower on MPS |
 
@@ -136,17 +136,21 @@ tests passed, with two expected skips** for Linux-only loader behavior and the
 no-GPU negative check. PyTorch and MLX GPU interop tests ran. The
 [record](validation/output-capacity-full-m3-run.json) identifies the exact source,
 library and logs. Subsequent AUC observation preparation has 22 separate passing
-source/helper and mocked build-driver checks; its CUDA compilation is pending.
+source/helper and mocked build-driver checks. Its first CUDA compilation failed
+on an ambiguous test-helper call; the corrected helper passes a regression that
+reproduces the collision, and CUDA confirmation remains pending.
 
 The CPU-only build/API/schema and nine updater checks, plus 14 optional federated
 transport/sketch/learner groups, previously passed at `68c800e`. Those separate
 gates were not rerun for the capacity fix. Federated workers used the same M3,
 including TLS tests. [Historical acceptance evidence](docs/LOCAL_ACCEPTANCE.md).
 
-The [CUDA CI workflow](.github/workflows/cuda-compile.yml) separately checks that
-shared-code changes still compile with NVIDIA dependencies. Successful compilation
-is documented in the [compiler record](validation/cuda-compile-ci-13.4.txt);
-it does **not** run CUDA kernels or validate MPS behavior.
+The [CUDA CI workflow](.github/workflows/cuda-compile.yml) uses NVIDIA's compiler
+on a Linux runner to build shared production code and the CUDA comparison programs.
+It also checks host-side loading and registration. The runner has **no NVIDIA
+GPU**: it cannot execute CUDA kernels or establish CUDA/MPS equivalence. Recent
+failures have been in new comparison-code integration; failed and corrected runs
+are retained in the [compiler record](validation/cuda-compile-ci-13.4.txt).
 New pushes preserve the active build and keep the newest revision pending,
 using [GitHub's concurrency queue](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 

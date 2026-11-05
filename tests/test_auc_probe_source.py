@@ -93,6 +93,10 @@ inline cudaError_t cudaMemcpy(void* dst, void const* src, std::size_t bytes, cud
 #include <limits>
 #include <utility>
 #include "auc_capture.cuh"
+// Match the CUDA replay translation unit: this helper is declared after the
+// capture header. cudaError_t is global, so unqualified dependent calls can
+// discover this function through argument-dependent lookup at instantiation.
+void Cuda(cudaError_t) { throw std::runtime_error("Wrong CUDA error helper"); }
 using xgboost::common::Span;
 int main() {
   using Pair = std::pair<double, double>;

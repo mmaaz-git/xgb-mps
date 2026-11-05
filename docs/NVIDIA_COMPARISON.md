@@ -1298,8 +1298,13 @@ retains the generated source and edit record, checks metric registry identity,
 and rejects exported metric definitions from the copy.
 
 Eight source/capture-helper checks and fourteen mocked build-driver checks pass
-locally. [CUDA compilation of this preparation is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288); these host checks do
-not prove CUDA execution or numerical agreement. The full 528-record Metal AUC
+locally. [The first CUDA compilation failed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288)
+because an unqualified `Cuda(cudaMemcpy(...))` call found both the capture helper
+and the consumer's global helper through argument-dependent lookup. Explicit
+qualification fixes the ambiguity. The host-copy check now includes that global
+helper: it fails to compile with the old header and passes with the correction.
+All 22 checks pass; corrected CUDA compilation remains pending. These host checks
+do not prove CUDA execution or numerical agreement. The full 528-record Metal AUC
 corpus still needs its exporter, CUDA replay and comparison checks. Replay must
 also compare the instrumented results with calls to the original linked library.
 This preparation does not increase the count of completed comparison contracts.

@@ -37,10 +37,14 @@ template <typename T>
 std::vector<std::remove_const_t<T>> Read(xgboost::common::Span<T> input) {
   // Some original AUC launches use the default stream. Device synchronization
   // observes all original producers, rather than assuming they share a stream.
-  Cuda(cudaDeviceSynchronize());
+  ::auc_capture::Cuda(cudaDeviceSynchronize());
   std::vector<std::remove_const_t<T>> output(input.size());
-  if (!output.empty())
-    Cuda(cudaMemcpy(output.data(), input.data(), input.size_bytes(), cudaMemcpyDeviceToHost));
+  if (!output.empty()) {
+    // Qualify the dependent call: cudaError_t's global namespace can contain
+    // another Cuda helper in the consumer translation unit.
+    ::auc_capture::Cuda(
+        cudaMemcpy(output.data(), input.data(), input.size_bytes(), cudaMemcpyDeviceToHost));
+  }
   return output;
 }
 template <typename Pair>

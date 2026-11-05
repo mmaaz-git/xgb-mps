@@ -335,3 +335,17 @@ VERIFY-2 grouped PR and PORT-12 AUC capacity (terminal success):
   library_sha256: 3cf2b94af820751be5f1a7ba9fafac768936fafdae0e124c3da670b2e39616a6
   Artifacts: results/cuda-compile-42117995770; verified by results/verify-cuda-42117995770.py.
   Predates PORT-13 and the isolated AUC source-capture preparation.
+
+VERIFY-2 AUC source-capture preparation (terminal object-compile failure):
+  ed8e433c9add6e3e73b6a9426bca45a9f581bd1e:42122113288, completed 2026-11-05T22:37:22.717029+00:00
+  https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288
+  All 73 declared source/input hashes verified against the exact CI revision.
+  AUC object failed: unqualified Cuda(cudaMemcpy(...)) in the capture template
+  found both auc_capture::Cuda and the consumer's global Cuda through ADL.
+  Production compilation and executable links were not reached; no GPU execution.
+  Fix: explicitly qualify the capture helper calls. A host-copy regression with
+  the conflicting global helper fails on the old header and passes the correction.
+  All 22 source/helper and mocked driver checks pass locally; CUDA confirmation pending.
+  Log SHA256: b48629704950660dfc515aeb8e7cd4673992e118dad2d31cd49fb3abb8f7f520
+  Build record SHA256: 1d7eb0c173866ad11750f85a62091ba21fcfa1586601e40d34d6a37022ea3dd8
+  Artifacts: results/cuda-compile-42122113288.
