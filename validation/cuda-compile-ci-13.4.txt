@@ -148,4 +148,18 @@ VERIFY-2 RNG-v2 consumer (terminal compile failure, no production regression res
   Log SHA256: 0e12225deab3fa8aea2c12c3823e3128368c94dc100e4e849250b400d1d33c0a
   Build record SHA256: 15de9437c771c590b6202cf26e9b54ef1560b731046f9ef231e886a37b73516c
   Compatibility fix: namespace-scope outputs, host/device engine methods,
-  explicit empty tensor views. Local view-type syntax check passed; NVCC pending.
+  explicit empty tensor views. Local view-type syntax check passed; corrected
+  NVCC validation is recorded below.
+
+VERIFY-2 corrected RNG-v2 consumer (terminal success, no NVIDIA execution):
+  4ed216b9addac7e481c4aa7ba0c0de5f0e8d6661: 42058206746, success,
+    completed 2026-11-05T16:11:42Z
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42058206746
+  Early nvCOMP probe passed; numerical, AFT and RNG objects all compiled.
+  All 197 production build steps and all three final executable links passed.
+  Artifact cuda-compile-evidence; local root results/cuda-compile-42058206746
+  Log SHA256: cecc385c800d5ba8de06352736640894b92c1b6bb9e28aeda0313193828b07bc
+  Build record SHA256: 12f524a67352afc5e3ad6bc13834e8459cec6975b5e91962cfa0d574aba8ab3c
+  RNG executable SHA256: b3a5a1f58322a76ead4df624a85e5bb7543130feb28b8ddaf364c9f3510acabc
+  CUDA library SHA256: 305f371982968a87545121d17fca71c27fcbc4bfa3202f6ccc845880d4924089
+  This run predates the primitive-math consumer and does not validate it.
