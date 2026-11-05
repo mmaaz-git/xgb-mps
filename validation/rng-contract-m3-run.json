@@ -1,5 +1,5 @@
 {
-  "status": "Metal exact corpus passed; new CUDA RNG consumer not yet compiled or executed",
+  "status": "Historical rng-v1 Metal exact corpus passed; current compiler/runtime status tracked in rng-v2 extension record",
   "scope": "Complete existing P5-N06 distribution/raw-pair corpus; training Philox/RandomWeight primitive coverage is partial for the separate training-rng-modern contract",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
   "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",

@@ -1,5 +1,5 @@
 {
-  "status": "Metal column matrix passed; extended CUDA RNG consumer not yet compiled or executed",
+  "status": "Metal column matrix passed; rng-v2 CUDA compiler job in progress; NVIDIA execution absent",
   "suite": "rng-v2",
   "scope": "training-rng-modern streams/unweighted shuffle/ColumnSampler hierarchy, extending unchanged P5-N06 corpus",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -153,8 +153,12 @@
   },
   "build_driver_check": "All 14 build input hashes resolve, including new shared column fixture/oracle. Three-binary lifecycle code unchanged from passing mock in base run record.",
   "cuda_compile": {
-    "status": "not_run",
-    "gpu_execution": false
+    "status": "in_progress",
+    "gpu_execution": false,
+    "run_id": 42056884684,
+    "head": "3600f985f367d1eac51099147cc448d5af9c56ea",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42056884684",
+    "last_observed_utc": "2026-11-05T15:38:25.131710+00:00"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -167,5 +171,6 @@
     "The separate Thrust shuffle engine is retained; it is not replaced with modern Philox.",
     "The exact-output assertions produce a completion/failure summary, not an archive of all output arrays.",
     "CUDA native compiler validation of rng-v2 remains pending."
-  ]
+  ],
+  "harness_commit": "3600f985f367d1eac51099147cc448d5af9c56ea"
 }
