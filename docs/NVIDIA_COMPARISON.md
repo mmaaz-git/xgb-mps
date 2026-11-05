@@ -1442,3 +1442,68 @@ python3 scripts/compare_grouped_roc_contracts.py compare \
 Use fresh output names. Comparison exits 1 for malformed data or reference
 failure and 2 for results requiring review. No NVIDIA run or full parity is
 claimed; ranking metrics and broader public metric callers remain separate work.
+
+
+## Ranking metric sort and score corpus
+
+The `--metrics` extension of `cuda_ranking_contracts` preserves all **1,031**
+records from `metal_ranking_api.cc`: 15 exact edge/order cases, 120 stable grouped
+sorts and 896 precision, exponential/linear NDCG and MAP score cases. Normal and
+report modes pass on Metal with validation enabled. The independent checker
+verifies **63,257,573 input words** and **7,521,914 output fields**. All 23 report
+integrity tests and 14 mocked build-driver checks pass. The C++ input reader and
+writer reproduce the full input file byte for byte and reject observation
+headers, truncation and wrong identities.
+
+[Run evidence](../validation/ranking-metric-m3-run.json) identifies the production
+library, source hashes, local logs and compressed Metal observations. CUDA
+compilation and NVIDIA execution are pending for this extension. The production
+Metal implementation is unchanged.
+
+CUDA calls the original linked `PreScore`, `NDCGScore`, `MAPScore` and segmented
+sort. The observed order, per-query reducer output and MAP inclusive prefix come
+from the actual producer's cache buffers; they are not serial reference values.
+The comparison checks each backend independently against stable CPU sorting and
+the original source formulas, then checks CUDA's consumers using their own
+observed producers. The original exact edge checks and `2e-12 * max(1, abs(ref))`
+score tolerance remain. The same bound is additionally imposed on CUDA's exposed
+reducer/prefix diagnostics; it is not a general error-bound proof for arbitrary
+inputs. A successful comparison still exits 2 for review.
+
+The raw APIs have explicit differences:
+
+- **Zero top-k:** 227 records must observe CUDA's actual parameter rejection.
+  The replay then sets the owned cache's top-k input to zero and calls the
+  unchanged score consumer. This exercises its raw arithmetic branches; it does
+  not claim the public CUDA API accepts zero. Full-list `UINT32_MAX` inputs use
+  mean mode to obtain an untruncated `TopK()`, avoiding the default-value sentinel.
+- **NDCG inverse-IDCG:** these raw fixtures supply the inverse array. The replay
+  supplies the same array to the actual CUDA cache, including NaN and nonpositive
+  witnesses. Native CUDA cache generation is separate comparison work.
+- **Custom discounts:** exact edge 11 retains its original Metal `{1, .1}` call.
+  CUDA computes discounts internally, so an additional actual Metal call with
+  standard discounts provides the comparable observation. No CUDA result is
+  invented for the custom-discount call.
+- **Zero-group NDCG:** 64 records require the actual CUDA cache-construction guard
+  and contain no CUDA score. Metal's original zero-group result remains recorded.
+- **Strides:** all original strided/guard storage is retained in the report and
+  regenerated independently. CUDA predictions/labels are packed contiguously;
+  their nonmutation is checked after execution.
+
+To replay on an NVIDIA host after building the harness:
+
+```sh
+python3 scripts/compare_ranking_metrics.py unpack \
+  validation/ranking-metric-metal-m3.bin.xz --output results/ranking-metric.inputs.bin
+results/cuda-comparison-build/cmake/cuda_ranking_contracts --metrics \
+  results/ranking-metric.inputs.bin results/ranking-metric.cuda.bin
+python3 scripts/compare_ranking_metrics.py compare \
+  validation/ranking-metric-metal-m3.bin.xz results/ranking-metric.cuda.bin \
+  --output results/ranking-metric-comparison.json
+```
+
+Use a new output path for each run. Retain the CUDA metadata sidecar, runtime log
+and matching build record. The remaining ranking label/cache-generation,
+public-metric state/lifetime and plan corpora are **not** covered by this batch;
+P5-N11 remains open. SHAP, compiler arithmetic, broader caller comparisons and
+actual NVIDIA execution also remain.

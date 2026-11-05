@@ -68,6 +68,12 @@ separately without production changes. [CUDA run
 42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238) at
 `bf1ebea` passed all 197 compile/link steps on the same production tree.
 
+The ranking sort/score batch now preserves all 1,031 existing native cases and
+passes local export, independent reference, codec and integrity checks. Its CUDA
+compilation is pending. Next ranking work is the full label/cache-generation,
+public metric state/lifetime and plan corpora; this batch does not close P5-N11.
+See the [ranking comparison scope](NVIDIA_COMPARISON.md#ranking-metric-sort-and-score-corpus).
+
 VERIFY-2 needs an actual NVIDIA runner. The [native harness](NVIDIA_COMPARISON.md)
 connects P5-N01/08/13/14 inputs to vendored quantile/sketch consumers and records
 full output bits; its 39 Metal witnesses and twelve report-integrity tests pass.

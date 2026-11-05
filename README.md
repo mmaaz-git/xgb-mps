@@ -73,6 +73,10 @@ Grouped ROC now also preserves all 278 records, including its 390-query edge
 batch and million-row extensions. Local input/output and packing checks pass;
 the active CUDA build includes both new AUC replays. NVIDIA execution remains pending. [Grouped ROC evidence](validation/grouped-roc-contract-m3-run.json).
 
+The ranking sort/score replay now preserves all 1,031 existing cases, with local
+Metal, independent reference and input round-trip checks passing. CUDA compilation
+is pending; ranking cache and public lifecycle comparisons remain. [Evidence](validation/ranking-metric-m3-run.json).
+
 Remaining work is to validate the new AUC replays on CUDA, complete ranking-metric,
 SHAP and compiler arithmetic comparisons; extend caller coverage, including the full
 linear updater/selector; then execute the comparisons on NVIDIA and resolve the

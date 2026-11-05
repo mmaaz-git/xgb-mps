@@ -25,7 +25,10 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "tests/math_contract_io.h", "tests/cuda_math_contracts.cu",
           "tests/ranking_rounding_io.h", "tests/cuda_ranking_contracts.cu",
           "tests/ranking_objective_io.h", "tests/ranking_objective_report.h",
-          "tests/ranking_primitive_io.h",
+          "tests/ranking_primitive_io.h", "tests/ranking_metric_io.h", "tests/cuda_ranking_metric_replay.cuh",
+          "xgboost/src/metric/rank_metric.cu", "xgboost/src/metric/rank_metric.h",
+          "xgboost/src/common/ranking_utils.cu", "xgboost/src/common/ranking_utils.cuh",
+          "xgboost/src/common/ranking_utils.h", "xgboost/src/common/algorithm.cuh",
           "tests/stats_contract_io.h",
           "tests/linalg_contract_io.h",
           "tests/stump_contract_io.h", "tests/cuda_stump_contracts.cuh", "xgboost/src/tree/fit_stump.cu",
@@ -269,6 +272,8 @@ def main():
                                                     str(output / "cuda-ranking-observations.bin")]), flush=True)
         print("Ranking objective command:", shlex.join([binaries["ranking"]["path"], "--objectives",
                 "results/ranking-objective-inputs.bin", str(output / "cuda-ranking-objective-observations.bin")]), flush=True)
+        print("Ranking metric command:", shlex.join([binaries["ranking"]["path"], "--metrics",
+                "results/ranking-metric.inputs.bin", str(output / "cuda-ranking-metric-observations.bin")]), flush=True)
         print("Ranking primitive command:", shlex.join([binaries["ranking"]["path"], "--primitives",
                 "results/ranking-primitive-inputs.bin", str(output / "cuda-ranking-primitive-observations.bin")]), flush=True)
         print("Statistics runtime command:", shlex.join([binaries["numerical"]["path"], "--statistics",

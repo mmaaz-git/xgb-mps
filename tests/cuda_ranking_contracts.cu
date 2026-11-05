@@ -240,8 +240,11 @@ void RunPrimitives(char const* input_path, char const* output_path) {
               queries.size(), queries.size()*8);
 }
 
+#include "cuda_ranking_metric_replay.cuh"
+
 int main(int argc, char** argv) {
   try {
+    if (argc == 4 && std::string(argv[1]) == "--metrics") return ranking_metric_replay::Run(argv[2], argv[3]);
     if (argc == 4 && std::string(argv[1]) == "--objectives") {
       RunObjectives(argv[2], argv[3]); return 0;
     }

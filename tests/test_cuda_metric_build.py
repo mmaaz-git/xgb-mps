@@ -86,7 +86,10 @@ def test_eight_binaries_complete_hashes_and_host_only_isolation_gate(build):
     assert not any("--metric-registry" in c for c in state["calls"])
     record=run("link")
     assert record["status"]=="passed-compile-link" and not record["gpu_execution"]
-    assert len(record["binaries"])==8 and len(record["inputs"])==77
+    assert len(record["binaries"])==8 and len(record["inputs"])==85
+    assert {"tests/ranking_metric_io.h", "tests/cuda_ranking_metric_replay.cuh",
+            "xgboost/src/metric/rank_metric.cu", "xgboost/src/common/ranking_utils.cu",
+            "xgboost/src/common/algorithm.cuh"} <= record["inputs"].keys()
     assert {'tests/grouped_pr_contract_io.h','tests/cuda_auc_contracts.cu',
             'tests/auc_contract_io.h','tests/cuda_auc_replay.cuh',
             'tests/grouped_roc_contract_io.h','tests/cuda_grouped_roc_replay.cuh',

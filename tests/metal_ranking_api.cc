@@ -11,13 +11,14 @@
 
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/metal_ranking.h"
+#include "ranking_metric_io.h"
 
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
 // Source oracle: metric/rank_metric.cu. Small, exactly reducible fixtures isolate
 // operation order and branch rules; they do not assume a particular CUB tree.
-void CheckCudaRules() {
+void CheckCudaRules(ranking_metric::Exporter* report) {
   using namespace xgboost;
   using common::metal::RankingMetricKind;
   size_t checked = 0;
@@ -37,6 +38,21 @@ void CheckCudaRules() {
     double sum_weight = weights.empty() ? groups.size() - 1 : 0;
     for (float w : weights) sum_weight += w;
     Check(result.weight == sum_weight, "CUDA metric weight denominator changed");
+    if (report) {
+      auto spec = report->NextSpec();
+      ranking_metric::Observation out;
+      out.original = out.common = {result.score, result.weight};
+      if (spec.id == 11) {
+        // CUDA computes this formula internally, and has no custom-discount argument.
+        // Keep the original exact-order fixture above and record a second actual call.
+        auto standard = discounts;
+        for (size_t i = 0; i < standard.size(); ++i) standard[i] = 1 / std::log2(double(i) + 2);
+        auto common = common::metal::RankingScore(kind, score_view, label_view, groups, weights,
+                                                  topk, minus, false, standard, inverse);
+        out.common = {common.score, common.weight};
+      }
+      report->Add({spec, groups, scores, labels, weights, discounts, inverse}, out);
+    }
     ++checked;
   };
   run(RankingMetricKind::kPrecision, {}, {0, 0, 0}, {2, 3}, 10, false, {}, {}, 0,
@@ -75,7 +91,7 @@ void CheckCudaRules() {
   std::printf("PASS %zu exact CUDA-source ranking edge/order cases\n", checked);
   std::fflush(stdout);
 }
-void CheckScores() {
+void CheckScores(ranking_metric::Exporter* report) {
   using namespace xgboost;
   using common::metal::RankingMetricKind;
   std::mt19937 rng(7182);
@@ -187,6 +203,11 @@ void CheckScores() {
             };
             close(result.score, expected_score);
             close(result.weight, expected_weight);
+            if (report) {
+              ranking_metric::Observation out;
+              out.original = out.common = {result.score, result.weight};
+              report->Add({report->NextSpec(), groups, pred, label, weight, discounts, inverse}, out);
+            }
             ++cases;
             checked += n;
           }
@@ -201,9 +222,10 @@ void CheckScores() {
       cases, checked, max_difference);
 }
 
-int main() {
+int main(int argc, char** argv) {
   try {
-    CheckCudaRules();
+    auto report = ranking_metric::ReportOption(argc, argv);
+    CheckCudaRules(report.get());
     using namespace xgboost;
     std::vector<std::vector<bst_group_t>> cases{{},
                                                 {0, 0, 0},
@@ -272,6 +294,11 @@ int main() {
               }
             throw std::runtime_error("Grouped sort differs from stable CPU order");
           }
+          if (report) {
+            ranking_metric::Observation out;
+            out.order.assign(actual.begin(), actual.end());
+            report->Add({report->NextSpec(), groups, data, {}, {}, {}, {}}, out);
+          }
           checked += n;
           ++count;
           if (n) (large ? radix : small)++;
@@ -282,7 +309,8 @@ int main() {
     }
     std::printf("PASS %zu grouped sort cases / %zu rows; %zu local-query and %zu radix launches\n",
                 count, checked, small, radix);
-    CheckScores();
+    CheckScores(report.get());
+    if (report) report->Finish();
   } catch (std::exception const& e) {
     std::fprintf(stderr, "%s\n", e.what());
     return 1;

@@ -1,0 +1,129 @@
+{
+  "status": "passed-local-export-reference-codec; CUDA compilation and NVIDIA execution pending",
+  "scope": "Complete unchanged metal_ranking_api corpus: 15 exact edge/order cases, 120 grouped sorts, 896 precision/NDCG/MAP scores. Ranking cache/label and public lifecycle corpora remain separate.",
+  "baseline_revision": "ad5db7209075c007791c696050ed4776486ed27e",
+  "production_tree": "145fdffbc52f59354bed55b96d184d9e50c23ff4",
+  "production_revision": "41d4dc26cc23bf58357e59f986cbbf7aec0e2864",
+  "source_files": {
+    "tests/metal_ranking_api.cc": "e87c44e84333848682edd024b1b08df2f00f1e8c02fd4f04eb56707e1bdb90c3",
+    "tests/ranking_metric_io.h": "e657a84476783519a825c3156afdd3348bef9efd562c658145fe2d3848ebb325",
+    "tests/cuda_ranking_metric_replay.cuh": "f9e779a1eb597901b827b1405da335edadcb8971d33c47a06a897d68a4f43ad6",
+    "tests/cuda_ranking_contracts.cu": "8e600d2c15a5acadcf667533a961f557aaa465a3d0ead0072a1df9303bade4b4",
+    "scripts/compare_ranking_metrics.py": "9fdc509c32e343c23830918cad518afa33ad6dc65eb217b4a0f55c4314c7b585",
+    "tests/test_ranking_metric_reports.py": "582281660e60a0b616051b45426c1f0882d4cdab407d21c1ebdd891281562fcf",
+    "tests/test_cuda_metric_build.py": "4c46649fb8fceb083acd4ddf73b857d9809a6ea0d58dfa74bd3056b6e7a7733c",
+    "scripts/build_cuda_comparison.py": "2387b666ca845e26c642c02cc21867c01c480770afd715438a20a989c583ae3d",
+    ".github/workflows/cuda-compile.yml": "c1cbd85948c729e6ceba615899196b2f1e0b4ff5ae142b3caaaa3fdf1111fd7f",
+    "xgboost/src/metric/rank_metric.cu": "40103b873d39b9b4160f35640991c8b6ed780cbc4855a56c5e13cd9a37fa97ea",
+    "xgboost/src/metric/rank_metric.h": "f5b5593b4ebe12fdcc453195656d62cd6402920e61146b151b298e43e7850396",
+    "xgboost/src/common/ranking_utils.cu": "43949b23ab14d175575cd843cfef9aeb4b9a62a54e55edae0e7d150e382d1ba2",
+    "xgboost/src/common/ranking_utils.h": "9eaecc7eb8552caa7f98a5352c95017627cd34594970e95f76c32e653d2954a3",
+    "xgboost/src/common/algorithm.cuh": "c4027dca2d4e74f4aa37147e3210424ef9936ada3a4ce0da6ad6cd1755b1f2b6"
+  },
+  "library": {
+    "path": "xgboost/lib/libxgboost.dylib",
+    "bytes": 10124624,
+    "sha256": "71517892c338586cb0da4e4fcad3ae18b1335a1b0f424e5ad982837b8abb48ca"
+  },
+  "inputs": {
+    "path": "results/ranking-metric.inputs.bin",
+    "bytes": 290974524,
+    "sha256": "f2cb7e6ff3d196828c1c6ab130b5340a31a5b33765fc286d9642f59f409cf9ee"
+  },
+  "raw_metal": {
+    "path": "results/ranking-metric.metal.bin",
+    "bytes": 351153960,
+    "sha256": "a906900bffc7937c0223bf6e0b046cd286db9c8b49b05e10d37522fbacf4d748"
+  },
+  "artifact": {
+    "path": "validation/ranking-metric-metal-m3.bin.xz",
+    "bytes": 18716400,
+    "sha256": "e2f98c280fb0332294f1438e02189a627f6e91760a2f56ab1e404e664989d9f7"
+  },
+  "native_summary": {
+    "path": "results/ranking-metric-native-2/summary.json",
+    "bytes": 2697,
+    "sha256": "436220e79cde0636965426214abf056d5692c49f8d615fbd16d92e7e2080eb2e"
+  },
+  "native_export_log": {
+    "path": "results/ranking-metric-export-2.log",
+    "bytes": 4435,
+    "sha256": "388600ed68b47cb4c996fb9140ac99a5b92169c5c924118b8a15c28bcce0752f"
+  },
+  "reference": {
+    "status": "passed-reference",
+    "cases": 1031,
+    "input_words": 63257573,
+    "output_fields": 7521914,
+    "guarded_records": 0,
+    "failures": [],
+    "sha256": "a906900bffc7937c0223bf6e0b046cd286db9c8b49b05e10d37522fbacf4d748"
+  },
+  "reference_log": {
+    "path": "results/ranking-metric.validation.log",
+    "bytes": 1068,
+    "sha256": "ceb5706fbee4b8a0701187b03643e1f42e48369ef3c5b5ecb554dd732195cb05"
+  },
+  "integrity_tests": {
+    "report_tests": 23,
+    "mocked_driver_tests": 14,
+    "log": {
+      "path": "results/ranking-metric-helper-tests-3.log",
+      "bytes": 99,
+      "sha256": "e9a7ac1490c23a2011c964b8d4275d1aef86cac0c68d65cba84afe9c621c596f"
+    }
+  },
+  "codec": {
+    "cases": 1031,
+    "input_words": 63257573,
+    "roundtrip": {
+      "path": "results/ranking-metric-roundtrip.bin",
+      "bytes": 290974524,
+      "sha256": "f2cb7e6ff3d196828c1c6ab130b5340a31a5b33765fc286d9642f59f409cf9ee"
+    },
+    "negative": [
+      {
+        "name": "observation-header",
+        "exit_code": 1,
+        "stderr": "Requires complete input-only ranking metric corpus"
+      },
+      {
+        "name": "truncated-input",
+        "exit_code": 1,
+        "stderr": "ios_base::clear: unspecified iostream_category error"
+      },
+      {
+        "name": "wrong-id",
+        "exit_code": 1,
+        "stderr": "Wrong ranking metric identity/order"
+      }
+    ],
+    "source_sha256": "95c72bcf3db0e1064b1ae87da2e29c17881893b2fb409b7024c2915f14c9f1e0",
+    "binary_sha256": "1c7f9ca5167ad803266611b347230ed7206d630112b03f6b391f8931a26cf16e"
+  },
+  "cuda_compilation": {
+    "status": "pending",
+    "gpu_execution": false
+  },
+  "nvidia_execution": false,
+  "adaptations": [
+    "227 topk0 parameter rejections expected; raw-score calls use explicit cache-state input after that guard.",
+    "64 zero-group NDCG cases require the actual CUDA cache guard; no CUDA score is fabricated.",
+    "NDCG inverse-IDCG arrays are supplied input state. Full native CUDA cache generation comparisons remain separate.",
+    "Exact custom-discount edge11 retained on Metal. A separate actual standard-discount Metal call is compared against CUDA internal discounts.",
+    "Strided input rows are packed for CUDA contiguous predictions/labels; original backing words retained and independently regenerated.",
+    "Full-list UINT32_MAX uses valid mean-mode TopK, avoiding the default NumPair sentinel; host parameter adapter verified."
+  ],
+  "tolerance": "Original exact edge/order assertions retained; original 2e-12*max(1,abs(reference)) score budget. Comparator always requires review after successful two-backend checks.",
+  "earlier_local_attempts": [
+    "Initial exporter compile failed due to an accidentally duplicated sort-export block; removed before accepted run.",
+    "Integrity test mutation fixtures initially read-only; corrected fixture storage. Build-driver manifest expectation updated from 77 to 85 inputs."
+  ],
+  "host_parameter_adapter": {
+    "status": "passed",
+    "gpu_execution": false,
+    "log": "results/ranking-metric-param.log",
+    "log_sha256": "9692c9a756a971627c911b250ad7c35476c5e3e961c3494bf427dede3d707fab",
+    "source_sha256": "2b2b048537856f02b40c2753c8e4d795c490dddf2ef9d35d14a3f6ba561fd77d"
+  }
+}
