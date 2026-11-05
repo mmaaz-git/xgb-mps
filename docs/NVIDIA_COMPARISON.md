@@ -1308,8 +1308,9 @@ do not prove CUDA execution or numerical agreement. The full **528-record** corp
 report checker. The local acceptance record is
 [auc-contract-m3-run.json](../validation/auc-contract-m3-run.json); the complete
 [saved Metal report](../validation/auc-contract-metal-m3.bin.xz) retains exact input
-and observed-output bits. The new replay still needs CUDA compilation and NVIDIA
-execution; the active helper-fix build predates this replay.
+and observed-output bits. The [new replay build is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42125079498)
+behind the [active helper-fix build](https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995).
+Both need terminal verification, and NVIDIA execution remains pending.
 
 The corpus retains four binary edge cases, 22 normalization cases, eight metadata
 cases, one malformed shape, six wide cases, 486 ordinary/pathological cases with

@@ -179,18 +179,21 @@
     "results/package-auc-comparison.py": "32bd1a51c25bd71c0430947e5d4cd248151c69c6324b52b047a4f77dfb242828"
   },
   "cuda_compile": {
-    "status": "not_run_for_new_replay",
+    "status": "pending",
     "foundation_run": 42123616995,
     "foundation_head": "5f9f1f7c6b8fe49ef87c1a2c41c65b06d8744ecc",
     "foundation_status": "in_progress",
-    "gpu_execution": false
+    "gpu_execution": false,
+    "run_id": 42125079498,
+    "head": "2f0a7e72c7ee2f74028af1dd030322968f2ac9a5",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42125079498"
   },
   "cuda_runtime": {
     "status": "not_run",
     "command": "cuda_auc_contracts --auc input-only.bin new-cuda.bin"
   },
   "limits": [
-    "No actual NVIDIA execution. Current active compiler run covers source-capture preparation, not this new replay.",
+    "No actual NVIDIA execution. The source-capture helper-fix compiler run is active; the complete AUC replay build is queued behind it.",
     "Source capture adds synchronization and copies. Its results must equal separate linked-library calls; this is not performance instrumentation.",
     "CUDA receives contiguous packed inputs; original strided Metal backing arrays and guard bits remain in the corpus.",
     "Empty binary ROC is an observed source guard; malformed two-value Metal normalization is one explicit CUDA API-shape exclusion.",
