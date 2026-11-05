@@ -177,6 +177,13 @@ Eight undefined casts remain Metal-only guards under NUM-OP-36. The CUDA source
 policies/reducers are compiled without production registration or symbol changes;
 their compiler and host isolation gates are pending. See the
 [metric record](../validation/metric-contract-m3-run.json).
+The root/stump extension preserves the complete 405-case corpus, including all
+11,964,810 gradient pairs, strided storage and guards. Normal and validation-layer
+Metal runs, independent reference checks, nine report-integrity tests and the C++
+input round trip pass. CUDA calls the actual stump implementation and separately
+replays its reduction to expose diagnostic sums; those are not private API sums.
+Its compiler/runtime gates remain pending. See the
+[stump record](../validation/stump-contract-m3-run.json).
 Runners now address eleven contracts; six still lack dedicated runners, broader
 caller coverage remains, and none has actual NVIDIA execution evidence.
 
@@ -188,7 +195,7 @@ its contract until actual NVIDIA results have been reviewed.
 | Order | Remaining contract work | Required comparison |
 | --- | --- | --- |
 | 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
-| 2 | P5-N07 and training-reduction-association | Full statistics, linalg and metric replays added; complete outstanding compiler/runtime gates. Add training-reduction corpora under their declared term precision and association bounds. |
+| 2 | P5-N07 and training-reduction-association | Full statistics, linalg, metric and root/stump replays added; complete outstanding compiler/runtime gates. Next add current CUDA-derived sampling and integer leaf/cache/linear corpora under their declared term precision and association bounds. |
 | 3 | P5-N09/10/11: PR, ROC and ranking metrics | Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
 | Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |
@@ -197,6 +204,10 @@ After these batches, reconcile broader caller combinations against the frozen
 operation ledger, including weighted sampling and the objective/metric paths
 outside each primitive corpus. If NVIDIA hardware becomes available, run the
 ready quantile/training comparison first and process concrete discrepancies.
+The older 498-case `metal_gradient_sampling_api` corpus exercises a legacy
+CPU-derived API that production no longer uses. Retain its regression coverage;
+use `metal_cuda_gradient_api` and the production gradient-state tests for the
+CUDA sampling replay, rather than treating the two algorithms as interchangeable.
 
 PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
 Freeze the accepted source and workload parameters; inspect prior outputs before

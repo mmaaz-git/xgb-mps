@@ -63,7 +63,7 @@ def test_six_binaries_complete_hashes_and_host_only_isolation_gate(build):
     assert not any("--metric-registry" in c for c in state["calls"])
     record=run("link")
     assert record["status"]=="passed-compile-link" and not record["gpu_execution"]
-    assert len(record["binaries"])==6 and len(record["inputs"])==31
+    assert len(record["binaries"])==6 and len(record["inputs"])==34
     assert {"tests/cuda_metric_source.h","tests/cuda_metric_contracts.cu","tests/metric_contract_io.h",
             "tests/metric_registry_probe.h","tests/cuda_metric_reference.h",
             "xgboost/src/metric/elementwise_metric.cu","xgboost/src/metric/multiclass_metric.cu",

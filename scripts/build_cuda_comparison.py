@@ -26,6 +26,7 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "tests/ranking_primitive_io.h",
           "tests/stats_contract_io.h",
           "tests/linalg_contract_io.h",
+          "tests/stump_contract_io.h", "tests/cuda_stump_contracts.cuh", "xgboost/src/tree/fit_stump.cu",
           "tests/metric_contract_io.h", "tests/cuda_metric_source.h",
           "tests/cuda_metric_contracts.cu", "tests/metric_registry_probe.h",
           "tests/cuda_metric_reference.h",
@@ -200,6 +201,8 @@ def main():
                 "results/linalg-inputs.bin", str(output / "cuda-linalg-observations.bin")]), flush=True)
         print("Metric runtime command:", shlex.join([binaries["metric"]["path"], "results/metric-inputs.bin",
                 str(output / "cuda-metric-observations.bin")]), flush=True)
+        print("Stump runtime command:", shlex.join([binaries["numerical"]["path"], "--stumps",
+                "results/stump-inputs.bin", str(output / "cuda-stump-observations.bin")]), flush=True)
     except Exception as error:
         record.update(status="failed", error=str(error))
         raise

@@ -54,7 +54,12 @@ Metal observations are published with exact input bits and unchanged numerical
 tolerances. Ranking primitive, statistics and linalg replays passed CUDA
 compilation. The new metric runner preserves all 375 records, including math,
 label and empty-input checks; eight undefined label casts remain Metal-only
-guards. Its CUDA compiler gate is pending.
+guards. Its CUDA compiler gate is running in
+[run 42092645863](https://github.com/mmaaz-git/xgb-mps/actions/runs/42092645863).
+The root/stump extension preserves all 405 existing cases and 11,964,810 gradient
+pairs; its Metal export and independent reference checks pass. Its CUDA consumer
+records production stump weights separately from diagnostic sums; compilation
+and NVIDIA execution remain pending.
 Production pipeline comparisons also cover eight
 fixtures and full-size HIGGS quantile construction. Six contracts still lack
 dedicated runners, broader caller coverage remains, and **none of these runners

@@ -9,7 +9,8 @@ unweighted column sampling. A fourth exports the existing **P5-N03** primitive
 math corpus. A fifth adds **P5-N04/05** observations from the full existing
 ranking-rounding, ranking-gradient, repeated unbiased-objective and primitive
 rounding boundary corpora. The numerical executable also has a **P5-N07** mode
-for the complete statistics API corpus and a separate linear-algebra mode.
+for the complete statistics API corpus, a separate linear-algebra mode, and a
+root/stump mode preserving all 405 existing reduction cases.
 A sixth executable covers the complete metric-term/reduction corpus, including
 its previously uncounted math, label and empty-input checks.
 The other six numerical contracts and
@@ -848,3 +849,66 @@ raw and gzip files. Comparison exits 1 for malformed reports or failed checks,
 and 2 for numerical/domain review, including exclusions when common-domain
 results agree. Every differing output field is counted; JSON gives up to 32
 examples per case/field while the binary reports retain every value.
+
+## Root sums and stump weights
+
+The `--stumps` mode retains the complete `metal_reduction.mm` corpus:
+**405 cases / 11,964,810 gradient pairs**, with 1–65,537 rows, 1/3/7 targets,
+contiguous/transposed/padded layouts, integers, subnormals, fractional values,
+wide exponents, and zero/negative Hessians. All 31,910,480 backing input words,
+including padding, are serialized exactly. The original generator, case order,
+sum bounds, final-weight checks and unchanged-input checks remain intact.
+
+CUDA invokes the actual `tree::cuda_impl::FitStump` on each original strided
+view. The production API exposes only weights. A **separate source trace**
+repeats its `GradientPairPrecise` transform, Thrust `reduce_by_key`, `GlobalSum`
+and `CalcUnregularizedWeight` sequence to record sums and diagnostic weights.
+These are not captures of the production call's private sums. Both executions
+use CUDA; neither receives reference outputs. This suite runs on one worker,
+so it does not establish distributed collective equivalence.
+
+The comparator independently reconstructs the original Neumaier references
+and sequential magnitudes from input terms, verifies the saved Metal references,
+and checks each GPU's sums. Modes 0/1/4 retain exact numerical sum equality;
+modes 2/3 retain `8e-14 * sum_abs`. Each diagnostic weight must equal the exact
+FP32 bits of binary64 `-gradient / max(hessian, double(1e-6f))` using that
+execution's own sums. For actual CUDA API weights, whose sums are private,
+the comparator propagates those same original sum intervals through the weight
+formula and FP32 rounding, with no extra tolerance. Exact modes retain bitwise
+weight checks. All API/trace and GPU-to-GPU bit differences remain review items,
+even when both observations satisfy their independent reference checks.
+
+Normal and Metal-validation export runs pass. All **4,455 Metal output fields**
+validate independently; nine synthetic integrity tests and six mocked build-driver
+tests pass. The C++ reader reproduces the full input file byte for byte and
+rejects observation files as input. CUDA compilation and NVIDIA execution are
+pending; see the [run record](../validation/stump-contract-m3-run.json). This
+extends P5-N07 coverage without completing another numerical contract.
+
+```sh
+python3 scripts/compare_stump_contracts.py unpack \
+  validation/stump-contract-inputs-m3.bin.xz results/stump-inputs.bin
+results/cuda-comparison-build/cmake/cuda_numerical_contracts --stumps \
+  results/stump-inputs.bin results/stump-cuda.bin
+python3 scripts/compare_stump_contracts.py compare \
+  validation/stump-contract-metal-m3.bin.xz results/stump-cuda.bin \
+  --output results/stump-comparison.json
+```
+
+To export a fresh Metal report:
+
+```sh
+bash scripts/test.sh --native metal_reduction
+MTL_DEBUG_LAYER=1 results/metal_reduction_test \
+  xgboost/src/common/metal_histogram.metal --report-prefix results/new-stump
+python3 scripts/compare_stump_contracts.py validate-metal results/new-stump.metal.bin
+```
+
+Use new paths and preserve runtime metadata/logs plus `build.json`. The
+little-endian `XGBSTP1\0` format requires every fixed identity, full backing
+storage, backend-specific observations, `STPE` plus the count, and exact EOF.
+Only Metal reports contain references. Raw/gzip/XZ inputs are accepted.
+Comparison exits 1 for malformed evidence or reference failures, 2 for bit
+differences requiring review, and 0 for observed identity in this corpus.
+It counts all 5,940 cross-backend fields, including CUDA API weights, plus
+1,485 API/trace weight comparisons; binary reports retain every value.

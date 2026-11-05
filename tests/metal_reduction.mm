@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "stump_contract_io.h"
 
 struct Pair {
   float g, h;
@@ -47,7 +48,7 @@ float FromBits(uint32_t bits) {
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
-      Require(argc == 2, "Pass production Metal source");
+      auto report = stump_contracts::ReportOption(argc, argv);
       auto device = MTLCreateSystemDefaultDevice();
       Require(device != nil, "No Metal GPU");
       std::ifstream file(argv[1]);
@@ -154,12 +155,26 @@ int main(int argc, char** argv) {
               }
               Require(std::memcmp(in.contents, input.data(), input.size() * sizeof(Pair)) == 0,
                       "Input or padding modified by reduction");
+              if (report) {
+                std::vector<float> storage;
+                for (auto value : input) { storage.push_back(value.g); storage.push_back(value.h); }
+                stump_contracts::Observation observed;
+                for (uint32_t t = 0; t < targets; ++t) {
+                  observed.sums.insert(observed.sums.end(), {sums[t].g, sums[t].h});
+                  observed.weights.push_back(actual_weight[t]);
+                  observed.references.insert(observed.references.end(),
+                      {expected_g[t].Value(), expected_g[t].magnitude,
+                       expected_h[t].Value(), expected_h[t].magnitude});
+                }
+                report->Add(rows, targets, layout, mode, std::move(storage), observed);
+              }
               pairs += rows * targets;
               ++cases;
             }
           }
         printf("Checked root/stump reductions for %llu rows\n", (unsigned long long)rows);
       }
+      if (report) report->Finish();
       printf("PASS %zu gradient/stump cases / %zu gradient pairs on %s\n", cases, pairs,
              device.name.UTF8String);
       return 0;
