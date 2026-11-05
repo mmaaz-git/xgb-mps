@@ -8,8 +8,11 @@
 #include <limits>
 #include <memory>
 #include <utility>
+#include <vector>
 
+#include "../common/metal_collective.h"
 #include "../common/metal_vector.h"
+#include "allgather.h"
 #include "broadcast.h"
 #include "comm_group.h"
 #include "topo.h"
@@ -28,6 +31,59 @@ struct AllreduceVScratch {
   }
 };
 
+// Counterpart of gpu_detail::AllreduceVHostFallback: gather every payload, then
+// merge peers in ascending rank order on rank zero. Federated communicators do
+// not have peer channels. This order deliberately differs from the NCCL tree.
+// Shared Metal memory lets the RPC backend serialize GPU payloads directly;
+// all payload snapshots and reduction callbacks remain GPU operations.
+template <typename Fn>
+Result AllreduceVFederated(Context const* ctx, CommGroup const& group, Payload* data,
+                           AllreduceVScratch* scratch, Fn&& redop) {
+  auto bytes = [](common::metal::VectorBuffer const& buffer) {
+    return common::Span<std::int8_t>{static_cast<std::int8_t*>(buffer.Data()), buffer.SizeBytes()};
+  };
+  if ((*data)->SizeBytes() > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
+    return Fail("Federated Metal AllreduceV payload size overflow.");
+  std::vector<std::int64_t> offsets;
+  HostDeviceVector<std::int8_t> gathered;
+  auto input = bytes(**data);
+  auto rc = AllgatherV(ctx, group, linalg::MakeTensorView(DeviceOrd::MPS(), input, input.size()),
+                       &offsets, &gathered);
+  if (!rc.OK()) return Fail("Federated Metal AllreduceV allgather failed.", std::move(rc));
+
+  constexpr std::int32_t kRoot = 0;
+  if (group.Rank() == kRoot) {
+    auto all = gathered.ConstDeviceSpan();
+    auto copy = [&](std::int32_t peer, common::metal::VectorBuffer* out) {
+      auto segment = all.subspan(offsets[peer], offsets[peer + 1] - offsets[peer]);
+      out->Resize(segment.size());
+      common::metal::CollectiveCopy(segment, bytes(*out));
+    };
+    copy(kRoot, data->get());
+    for (std::int32_t peer = 1; peer < group.World(); ++peer) {
+      copy(peer, scratch->payload.get());
+      redop(**data, *scratch->payload, scratch->next.get());
+      std::swap(*data, scratch->next);
+    }
+  }
+
+  if ((*data)->SizeBytes() > static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
+    return Fail("Federated Metal AllreduceV result size overflow.");
+  std::int64_t size = group.Rank() == kRoot ? static_cast<std::int64_t>((*data)->SizeBytes()) : 0;
+  rc = Broadcast(ctx, group, linalg::MakeVec(&size, 1), kRoot);
+  if (!rc.OK()) return Fail("Federated Metal AllreduceV size broadcast failed.", std::move(rc));
+  if (size < 0) return Fail("Invalid federated Metal AllreduceV result size.");
+  if (group.Rank() != kRoot) (*data)->Resize(static_cast<std::size_t>(size));
+  if (size) {
+    auto result = bytes(**data);
+    rc = Broadcast(ctx, group, linalg::MakeTensorView(DeviceOrd::MPS(), result, result.size()),
+                   kRoot);
+    if (!rc.OK())
+      return Fail("Federated Metal AllreduceV payload broadcast failed.", std::move(rc));
+  }
+  return Success();
+}
+
 // Byte payload counterpart of gpu_impl::AllreduceV in allreduce_v.cuh. The
 // callback must finish its GPU work before returning, resize/write `out`, and
 // leave the input owners alive. TCP accesses the owned shared allocations
@@ -39,8 +95,11 @@ Result AllreduceV(Context const* ctx, CommGroup const& group, Payload* data,
   CHECK(data && *data && scratch && scratch->payload && scratch->next);
   CHECK(data->get() != scratch->payload.get() && data->get() != scratch->next.get());
   if (!group.IsDistributed()) return Success();
-  auto backend = group.Backend(DeviceOrd::MPS());
   auto const& comm = group.Ctx(ctx, DeviceOrd::MPS());
+  if (comm.IsFederated()) {
+    return AllreduceVFederated(ctx, group, data, scratch, std::forward<Fn>(redop));
+  }
+  auto backend = group.Backend(DeviceOrd::MPS());
   auto bytes = [](common::metal::VectorBuffer const& buffer) {
     return common::Span<std::int8_t>{static_cast<std::int8_t*>(buffer.Data()), buffer.SizeBytes()};
   };

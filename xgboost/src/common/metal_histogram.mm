@@ -10532,7 +10532,9 @@ class MetalCudaSketch final : public CudaSketch {
     }
   }
   void AllReduce(Context const* ctx) override {
-    if (!collective::GlobalCommGroup()->IsDistributed()) return;
+    auto const& group = *collective::GlobalCommGroup();
+    // CUDA SketchContainer returns immediately even for an attached world=1.
+    if (!group.IsDistributed() || group.World() == 1) return;
     CHECK(ctx);
     // quantile.cu::SketchContainer::AllReduce intentionally exchanges these
     // control scalars on the host. Summary arithmetic and payload copies stay GPU.

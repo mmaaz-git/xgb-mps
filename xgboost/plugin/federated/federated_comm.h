@@ -3,15 +3,13 @@
  */
 #pragma once
 
-#include <federated.grpc.pb.h>
-#include <federated.pb.h>
-
 #include <chrono>   // for seconds
 #include <cstdint>  // for int32_t
 #include <memory>   // for shared_ptr
 #include <string>   // for string
 
-#include "../../src/collective/comm.h"    // for HostComm
+#include "../../src/collective/comm.h"  // for HostComm
+#include "federated_grpc.h"
 #include "xgboost/json.h"
 
 namespace xgboost::collective {

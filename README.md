@@ -14,7 +14,28 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **distributed tree training is enabled through the public MPS
+Latest step: **federated MPS training is implemented behind
+`PLUGIN_FEDERATED=ON`**. Metal payloads use the existing gRPC server, sharing its
+request sequence with CPU control messages. Fixed reductions run on the server,
+as in CUDA; variable sketch payloads merge on GPU at rank zero in CUDA's ascending
+peer order. Shared Metal allocations avoid extra host-vector mirrors.
+
+Focused checks cover **3,153 transport cases**, **2,769 ordered-reduction/sketch
+cases**, and **520 public learner cases** with **13,056 CPU prediction checks**.
+They use 1/2/3/5 local workers and mutual TLS, with scalar/vector/reduced trees,
+objectives, metrics, sampling, DART, native inputs and external-memory caches.
+The CPU-only federated build also passes its API checks. Final optional regression
+passes, as does the standard suite: **100 native groups**, **3,434 Python tests
+with one expected skip**, and CPU-only build/API checks.
+[Federated validation](validation/cuda-metal-federated-m3.txt).
+
+The macOS build now handles newer gRPC logging headers, and public tracker cleanup
+actually stops the server. CPU comparisons use pooled unsampled numeric fixtures:
+upstream CPU federated sketching still requests unsupported peer connections.
+All workers run on this one M3. Asynchronous interoperability and the remaining
+CUDA operation/state audits are still open; no benchmark or NVIDIA run was added.
+
+Previous step: **distributed tree training is enabled through the public MPS
 learner**. Local-worker tests cover `hist`, `approx`, DART, scalar/vector/reduced
 outputs, all GPU objective families, missing/categorical/sparse inputs, native
 MPS tensors, quantile matrices and host/disk external-memory caches. Models,
@@ -36,12 +57,13 @@ with one expected skip**, and the CPU-only build/API checks.
 [Distributed learner validation](validation/cuda-metal-distributed-learner-m3.txt).
 
 This enables row-partitioned tree training over the existing TCP transport.
-Distributed `gblinear` remains unsupported, as upstream; federated MPS,
-asynchronous streams and remaining CUDA operation/state audits are still open.
+Distributed `gblinear` remains unsupported, as upstream. Federated MPS was still
+open at that checkpoint and is added above; asynchronous streams and remaining
+CUDA operation/state audits are still open.
 Tests use multiple processes on this one M3, not multiple physical machines.
 This step makes no performance or NVIDIA execution-equivalence claim.
 
-Previous step: **distributed trees now reduce exact integer statistics**. Scalar
+Earlier step: **distributed trees now reduce exact integer statistics**. Scalar
 roots follow CUDA's host integer collective; vector roots, histogram caches and
 value-leaf sums use Metal integer reductions. Floating-point views are refreshed
 only after those reductions, preserving small terms when large values cancel.
@@ -118,8 +140,8 @@ tests with one expected skip**, and the CPU-only build/API checks.
 
 At that checkpoint, variable-size sketch reduction and training consumers were
 still open. The later steps above add sketches, global quantization and integer
-tree-statistic reductions and public tree-learner integration. Federated MPS
-communication and asynchronous stream support also remain open. This uses host networking, not NCCL/GPU-direct
+tree-statistic reductions, public tree learners and federated MPS communication.
+Asynchronous stream support remains open. This uses host networking, not NCCL/GPU-direct
 transport, and makes no new speedup or NVIDIA execution-equivalence claim.
 
 Earlier step: **SHAP arithmetic follows CUDA's recurrence and operation order**.
@@ -794,6 +816,12 @@ Requires macOS, Xcode command-line tools, CMake, Ninja, Python, and OpenMP
 independent Snappy library (`brew install snappy`, or set `SNAPPY_ROOT`). It is a
 test dependency only; the production Metal library does not link it.
 
+Federated builds additionally require `brew install grpc protobuf` and
+`-DPLUGIN_FEDERATED=ON` in the CMake configuration. `bash scripts/test_federated.sh`
+builds and tests this option in `build-metal-federated`, using an isolated Python
+package under `results/federated-python` so the ordinary build is preserved. It
+tests plain RPC and mutual TLS; temporary test certificates are removed afterward.
+
 ```sh
 uv venv .venv
 uv pip install --python .venv/bin/python numpy scipy pytest scikit-learn pandas
@@ -942,8 +970,8 @@ order. Both sampling methods, histograms and roots share quantized state. Ordina
 matrices now use CUDA-derived weighted sketches with explicit FP32 scan-order limits.
 
 Explicit tree updater selection and `exact` are rejected for `mps`. Distributed
-tree training is enabled; distributed `gblinear` and federated MPS remain
-unsupported. Inaccessible Metal devices produce an
+tree training is enabled over TCP and, with the optional plugin, federated gRPC.
+Distributed `gblinear` remains unsupported. Inaccessible Metal devices produce an
 error. Other features may use CPU implementations as recorded in the coverage ledger;
 selecting `mps` does not imply that every stage runs on the GPU.
 
@@ -1584,7 +1612,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Integrate global quantizer scales, GPU stump initialization and GPU sample-mean collectives.
 - [x] Integrate histogram/root/leaf integer reductions and validate production updaters across workers.
 - [x] Integrate distributed objective/metric/tree-booster consumers and enable validated learner paths.
-- [ ] Complete federated communication and asynchronous stream interoperability.
+- [x] Port federated fixed collectives and ordered GPU sketch fallback; validate learners and mutual TLS.
+- [ ] Complete asynchronous stream interoperability.
 - [ ] Validate across Apple GPU generations and broader real datasets.
 - [ ] Reach complete CUDA-operation coverage and competitive training performance.
 

@@ -3,8 +3,6 @@
  */
 #include "federated_comm.h"
 
-#include <grpcpp/grpcpp.h>
-
 #include <cstdint>  // for int32_t
 #include <cstdlib>  // for getenv
 #include <limits>   // for numeric_limits
@@ -13,7 +11,8 @@
 #include "../../src/common/common.h"      // for Split
 #include "../../src/common/io.h"          // for ReadAll
 #include "../../src/common/json_utils.h"  // for OptionalArg
-#include "xgboost/json.h"                 // for Json
+#include "federated_grpc.h"
+#include "xgboost/json.h"  // for Json
 #include "xgboost/logging.h"
 
 namespace xgboost::collective {
@@ -32,7 +31,9 @@ void FederatedComm::Init(std::string const& host, std::int32_t port, std::int32_
   CHECK_LT(rank, world) << "Invalid worker rank.";
 
   auto certs = {server_cert, client_cert, client_cert};
-  auto is_empty = [](auto const& s) { return s.empty(); };
+  auto is_empty = [](auto const& s) {
+    return s.empty();
+  };
   bool valid = std::all_of(certs.begin(), certs.end(), is_empty) ||
                std::none_of(certs.begin(), certs.end(), is_empty);
   CHECK(valid) << "Invalid arguments for certificates.";

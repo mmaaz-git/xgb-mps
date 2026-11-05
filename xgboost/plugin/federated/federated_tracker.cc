@@ -3,9 +3,6 @@
  */
 #include "federated_tracker.h"
 
-#include <grpcpp/security/server_credentials.h>  // for InsecureServerCredentials, ...
-#include <grpcpp/server_builder.h>               // for ServerBuilder
-
 #include <cstdint>    // for int32_t
 #include <exception>  // for exception
 #include <future>     // for future, async
@@ -14,6 +11,7 @@
 
 #include "../../src/common/io.h"          // for ReadAll
 #include "../../src/common/json_utils.h"  // for RequiredArg
+#include "federated_grpc.h"
 
 namespace xgboost::collective {
 namespace federated {

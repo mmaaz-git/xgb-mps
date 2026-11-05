@@ -31,7 +31,6 @@ namespace xgboost::collective {
     return gpu_coll_;
   }
   if (device.IsMPS()) {
-    CHECK(!comm_->IsFederated()) << "Federated Metal collectives are not implemented.";
     if (!metal_coll_) {
       metal_coll_.reset(backend_->MakeMPSVar());
     }

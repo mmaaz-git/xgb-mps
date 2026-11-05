@@ -75,7 +75,30 @@ def scenarios():
             yield family, "dmatrix", layout, "mixed", "none", "gbtree", "hist"
 
 
+def pooled_numeric_fixture(family, storage, layout, weighting, world):
+    """Independent CPU reference inputs for finite-bin, unsampled federated cases."""
+    xs, ys, ws = [], [], []
+    for rank in range(world):
+        rows = 97 + rank * 11
+        if layout == "empty_root" and rank == 0 or layout == "only_root" and rank != 0:
+            rows = 0
+        x = features(rows)
+        y = np.where(x[:, 0] < 4, 0., 4.).astype(np.float32) + .25 * x[:, 1]
+        if family in ("vector", "reduced"):
+            y = np.column_stack([y, 1. - .5 * y, .25 * y + .5 * x[:, 2]])
+        w = (.25 + np.arange(rows) % 5 / 4).astype(np.float32)
+        if weighting == "mixed" and rank == 0:
+            w = np.ones(rows, dtype=np.float32)
+        xs.append(x)
+        ys.append(y)
+        ws.append(w)
+    x = np.concatenate(xs)
+    return (sp.csr_matrix(x) if storage == "sparse" else x), np.concatenate(ys), np.concatenate(ws)
+
+
 def worker(config, directory):
+    federated = config.get("dmlc_communicator") == "federated"
+    pending_cpu = []
     with collective.CommunicatorContext(**config):
         rank, world = collective.get_rank(), collective.get_world_size()
         probe_x = features(64)
@@ -205,13 +228,21 @@ def worker(config, directory):
             # Exhaustive finite numeric bins and unsampled tree fixtures provide
             # a meaningful CPU comparison; CUDA sampler streams remain separate.
             if sampler == "none" and booster == "gbtree" and storage != "categorical" and family in ("square", "vector", "reduced"):
-                cpu_source = sp.csr_matrix(x) if storage == "sparse" else x
-                cpu_data = xgb.DMatrix(cpu_source, label=y, weight=weights, feature_types=types,
-                                       nthread=2, enable_categorical=True)
-                cpu = xgb.train(params | {"device": "cpu"}, cpu_data, 3, obj=objective)
-                np.testing.assert_allclose(pred, cpu.predict(probe), atol=2e-5, rtol=2e-5, err_msg=context)
-                cpu_checks += pred.size
-                del cpu, cpu_data
+                if federated:
+                    # Upstream CPU HostSketchContainer calls peer channels that
+                    # FederatedComm rejects. Compare pooled CPU training after
+                    # leaving the communicator. These numeric bins are exhaustive
+                    # and sampling is off, so this remains a matching algorithm.
+                    pending_cpu.append((params, family, storage, layout, weighting, types,
+                                        pred.copy(), objective, context))
+                else:
+                    cpu_source = sp.csr_matrix(x) if storage == "sparse" else x
+                    cpu_data = xgb.DMatrix(cpu_source, label=y, weight=weights, feature_types=types,
+                                           nthread=2, enable_categorical=True)
+                    cpu = xgb.train(params | {"device": "cpu"}, cpu_data, 3, obj=objective)
+                    np.testing.assert_allclose(pred, cpu.predict(probe), atol=2e-5, rtol=2e-5, err_msg=context)
+                    cpu_checks += pred.size
+                    del cpu, cpu_data
             reloaded = xgb.Booster(model_file=bytearray(raw))
             reloaded.set_param(dict(device="mps", nthread=2))
             np.testing.assert_array_equal(reloaded.predict(probe), pred, err_msg=context)
@@ -221,10 +252,19 @@ def worker(config, directory):
                 assert not list(Path(directory).glob(Path(prefix).name + "*")), context
             checked += 1
             print(f"PASS {context}: {checked} cases / {cpu_checks} CPU prediction checks", flush=True)
-        print(f"PASS world{world} rank{rank}: {checked} learner cases / {cpu_checks} CPU prediction checks", flush=True)
         data = xgb.DMatrix(features(8), label=np.arange(8, dtype=np.float32), nthread=2)
         with pytest.raises(xgb.core.XGBoostError, match="Distributed Metal gblinear"):
             xgb.train(dict(device="mps", booster="gblinear", nthread=2), data, 1)
+    for params, family, storage, layout, weighting, types, pred, objective, context in pending_cpu:
+        x, y, weights = pooled_numeric_fixture(family, storage, layout, weighting, world)
+        cpu_data = xgb.DMatrix(x, label=y, weight=weights, feature_types=types, nthread=2)
+        probe_source = sp.csr_matrix(probe_x) if storage == "sparse" else probe_x
+        probe = xgb.DMatrix(probe_source, feature_types=types, nthread=2)
+        cpu = xgb.train(params | {"device": "cpu"}, cpu_data, 3, obj=objective)
+        np.testing.assert_allclose(pred, cpu.predict(probe), atol=2e-5, rtol=2e-5, err_msg=context)
+        cpu_checks += pred.size
+        print(f"PASS pooled CPU reference: {context}", flush=True)
+    print(f"PASS world{world} rank{rank}: {checked} learner cases / {cpu_checks} CPU prediction checks", flush=True)
 
 
 @pytest.mark.parametrize("world", [1, 2, 3])

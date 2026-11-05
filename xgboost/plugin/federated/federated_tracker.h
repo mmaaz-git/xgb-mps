@@ -2,16 +2,15 @@
  * Copyright 2022-2023, XGBoost contributors
  */
 #pragma once
-#include <federated.grpc.pb.h>  // for Server
-
 #include <future>  // for future
 #include <memory>  // for unique_ptr
 #include <string>  // for string
 
 #include "../../src/collective/in_memory_handler.h"
 #include "../../src/collective/tracker.h"  // for Tracker
-#include "xgboost/collective/result.h"     // for Result
-#include "xgboost/json.h"                  // for Json
+#include "federated_grpc.h"
+#include "xgboost/collective/result.h"  // for Result
+#include "xgboost/json.h"               // for Json
 
 namespace xgboost::collective {
 namespace federated {
@@ -59,5 +58,6 @@ class FederatedTracker : public collective::Tracker {
 
   [[nodiscard]] Json WorkerArgs() const override;
   [[nodiscard]] Result Shutdown();
+  [[nodiscard]] Result Stop() override { return this->Shutdown(); }
 };
 }  // namespace xgboost::collective

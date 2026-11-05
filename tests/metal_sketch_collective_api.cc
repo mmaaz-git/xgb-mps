@@ -23,6 +23,7 @@ namespace metal = common::metal;
 namespace coll = collective;
 namespace ref = cuda_sketch_reference;
 std::size_t cases = 0, fields = 0;
+bool federated = false;
 std::string current;
 void Check(bool ok, char const* why) {
   if (!ok) throw std::runtime_error(current + ": " + why);
@@ -61,10 +62,19 @@ T Tree(std::vector<T> const& inputs, std::size_t begin, std::size_t count, Fn me
   return merge(Tree(inputs, begin, split, merge),
                Tree(inputs, begin + split, count - split, merge));
 }
+template <typename T, typename Fn>
+T Ordered(std::vector<T> const& inputs, Fn merge) {
+  if (!federated) return Tree(inputs, 0, inputs.size(), merge);
+  // CUDA's federated fallback folds on rank zero in ascending peer order.
+  T result = inputs.front();
+  for (std::size_t peer = 1; peer < inputs.size(); ++peer) result = merge(result, inputs[peer]);
+  return result;
+}
 common::Span<std::int8_t> Bytes(metal::VectorBuffer const& v) {
   return {static_cast<std::int8_t*>(v.Data()), v.SizeBytes()};
 }
 void Variable(Context const& ctx, int rank, int world) {
+  std::size_t order_witnesses = 0;
   coll::metal_impl::AllreduceVScratch scratch;
   scratch.Reserve(65536);
   auto data = metal::MakeVectorBuffer();
@@ -91,7 +101,8 @@ void Variable(Context const& ctx, int rank, int world) {
           out.insert(out.end(), b.begin(), b.begin() + right);
           return out;
         };
-        auto expected = Tree(inputs, 0, world, merge);
+        auto expected = Ordered(inputs, merge);
+        if (federated && expected != Tree(inputs, 0, world, merge)) ++order_witnesses;
         auto before = metal::GetCollectiveStatistics();
         auto state = metal::GetStatistics();
         coll::SafeColl(coll::metal_impl::AllreduceV(
@@ -123,6 +134,7 @@ void Variable(Context const& ctx, int rank, int world) {
         fields += actual.size();
         ++cases;
       }
+  if (federated && world > 3) Check(order_witnesses > 0, "Missing fold/tree order witnesses");
 }
 struct Input {
   std::vector<float> weights, dense;
@@ -181,7 +193,7 @@ ref::Sketch Distributed(std::vector<ref::Sketch> inputs, int world) {
           ref::Unique(ref::Prune(sketch->columns[f], budget, sketch->categorical[f], true));
   };
   for (auto& input : inputs) prune(&input);
-  return Tree(inputs, 0, world, [&](auto a, auto const& b) {
+  return Ordered(inputs, [&](auto a, auto const& b) {
     for (std::size_t f = 0; f < a.columns.size(); ++f)
       a.columns[f] = ref::Merge(a.columns[f], b.columns[f]);
     prune(&a);
@@ -276,6 +288,7 @@ int main(int argc, char** argv) {
     int rank = XGCommunicatorGetRank(), world = XGCommunicatorGetWorldSize();
     Context ctx;
     ctx.UpdateAllowUnknown(Args{{"device", "mps"}, {"nthread", "2"}});
+    federated = coll::GlobalCommGroup()->Ctx(&ctx, DeviceOrd::MPS()).IsFederated();
     if (argc == 3) {
       Check(world == 2, "Disconnect test needs 2 workers");
       Disconnect(ctx, rank, std::string(argv[2]) == "--disconnect-root");

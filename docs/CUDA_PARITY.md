@@ -111,7 +111,7 @@ must be reported rather than hidden by widening test tolerances.
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
-| Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/allreduce_v.cuh`, `collective/aggregator.cuh` | Metal numeric/bytewise fixed reductions, broadcast and fixed/variable allgather over shared buffers and host TCP; 1/2/3/4-worker tests. Ordered variable-size reduction and sketch consumers are implemented (1/2/3/5-worker tests); global quantizers use source-defined host bounds/row controls, and stump/weighted-unweighted sample means use GPU output reductions. Scalar roots use host integer reductions; vector roots, histograms and value-leaf sums use Metal integer reductions. Production updater integration is tested with 1/2/3/5 workers. Public row-partitioned hist/approx/DART learners are enabled and tested across 1/2/3 workers, including objectives, metrics, empty workers and external memory. Mixed optional weights use a globally consistent initialization mode. Federated Metal remains unsupported |
+| Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/allreduce_v.cuh`, `collective/aggregator.cuh` | Metal numeric/bytewise fixed reductions, broadcast and fixed/variable allgather over shared buffers and host TCP; 1/2/3/4-worker tests. Ordered variable-size reduction and sketch consumers are implemented (1/2/3/5-worker tests); global quantizers use source-defined host bounds/row controls, and stump/weighted-unweighted sample means use GPU output reductions. Scalar roots use host integer reductions; vector roots, histograms and value-leaf sums use Metal integer reductions. Production updater integration is tested with 1/2/3/5 workers. Public row-partitioned hist/approx/DART learners are enabled and tested across 1/2/3 workers, including objectives, metrics, empty workers and external memory. Mixed optional weights use a globally consistent initialization mode. Optional federated Metal fixed collectives use the CUDA-defined RPC/server boundary; variable sketches use ascending GPU folds on rank zero, with public learner and mutual-TLS tests |
 | CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack tensors and native columnar tables feed ordinary/quantile constructors, iterators and inplace prediction/CPU fallback through owned GPU snapshots. Metadata imports use GPU conversion/validation/grouping; custom gradients use GPU typed pair packing. Explicit `output_device="mps"` returns owned GPU predictions, including leaves and SHAP, with legacy/versioned DLPack exports to PyTorch/MLX. Public prediction result pointers retain synchronized shared Metal storage; native output snapshots avoid intermediate host mirrors, while NumPy copies explicitly. Known runtimes synchronize; generic producers/consumers must finish writes. Portable stream handshakes and end-to-end device ownership remain open. NVIDIA-specific interfaces cannot consume Metal memory |
 | CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Owned shared Metal vector allocations with CUDA-derived access states, GPU fills/copies/growth and lazy host mirrors; native float metadata uses them. Reused queues/histograms/workspaces and guarded host views remain. The execution context still defaults generic state to host storage; remaining consumers, persistent end-to-end ownership and asynchronous scheduling are unfinished |
 
@@ -153,14 +153,13 @@ have explicit Metal storage paths. Source-defined host model construction,
 serialization and SHAP compression remain on CPU. The detailed records below
 show which consumers and edge cases have actually been exercised.
 
-The remaining work includes a complete CUDA operation/arithmetic audit and GPU
-collective integration. SHAP leaf weighting, basis recurrence, edge/pair expressions and eight-point
+The remaining work includes a complete CUDA operation/arithmetic audit and
+asynchronous interoperability. SHAP leaf weighting, basis recurrence, edge/pair expressions and eight-point
 reduction association now follow the CUDA source, as recorded below; NVIDIA
 compiler behavior and cross-tree atomic scheduling remain unverified. Fixed Metal
 collectives, variable-size sketch reduction, global quantization and integer
-histogram/root/leaf consumers are integrated. Other objective/metric/booster
-consumers and full learner integration remain unfinished. Federated MPS collectives
-and asynchronous streams remain open. CUDA/NVIDIA execution comparison and testing on other Apple hardware remain
+histogram/root/leaf consumers are integrated, as are objective/metric/tree learners
+and the optional federated backend. CUDA/NVIDIA execution comparison and testing on other Apple hardware remain
 separate validation requirements; local passing tests cannot establish them.
 
 Further performance work includes reducing synchronization and improving external
@@ -4213,8 +4212,8 @@ scales and integer histogram/root/leaf reductions still needed integration. Late
 steps add these and enable tree learners. CUDA intentionally aggregates
 quantizer bounds and row counts on the host (`gpu_hist/quantiser.cu`); that control
 work does not require a GPU collective to match the source. The latest learner
-step also removes AUC's host-summary fallback. Federated transport, cross-machine
-testing and NVIDIA execution validation remain open. No performance claim accompanies
+steps also remove AUC's host-summary fallback and add federated transport.
+Cross-machine testing and NVIDIA execution validation remain open. No performance claim accompanies
 this change. See the [validation record](../validation/cuda-metal-collectives-m3.txt).
 
 
@@ -4270,8 +4269,8 @@ Full regression passes 100 native groups, 3,431 Python tests (one expected skip)
 and the CPU-only build/API checks. See the
 [validation record](../validation/cuda-metal-integer-collectives-m3.txt). That
 checkpoint retained the learner-wide distributed guard; the following step adds
-objective/metric and full learner/external-memory integration. Federated transport
-remains unfinished. These localhost tests do not establish
+objective/metric and full learner/external-memory integration. The latest step
+adds federated transport. These localhost tests do not establish
 cross-machine, NVIDIA or performance equivalence.
 
 ## Distributed tree learners and objective/metric integration
@@ -4279,7 +4278,8 @@ cross-machine, NVIDIA or performance equivalence.
 Public `device="mps"` tree training now uses the completed collective paths.
 `hist`, `approx` and DART are enabled for row-partitioned workers. Distributed
 `gblinear` remains explicitly rejected, matching the upstream supported scope;
-federated Metal still has a separate unsupported guard. Communication uses the
+federated Metal was still separately guarded at that checkpoint and is added
+below. Communication uses the
 existing TCP transport over CPU-addressable shared Metal allocations.
 
 Multi-output ROC/PR-AUC now uses an explicit MPS summary view for `GlobalSum`,
@@ -4332,6 +4332,72 @@ passes 100 native groups, 3,434 Python tests (one expected skip), and the CPU-on
 build/API checks. The run completed 2026-11-05 04:33:15–04:43:06 UTC (9m51s),
 exit 0. No implementation changes followed it. See the
 [validation record](../validation/cuda-metal-distributed-learner-m3.txt).
-These tests share one physical Apple M3. Cross-machine transport, federated MPS,
+These tests share one physical Apple M3. Cross-machine validation,
 asynchronous interoperability, remaining operation/state audits and NVIDIA
 execution validation remain open. No benchmark was run for this checkpoint.
+
+## Federated Metal collectives and learners
+
+With `PLUGIN_FEDERATED=ON`, explicit MPS payloads select `MetalFederatedColl`.
+It retains the existing `FederatedColl` owner, sharing its request sequence with
+CPU control messages. Unlike the peer-to-peer Metal backend, it delegates fixed
+reductions to the gRPC server. This matches `CUDAFederatedColl`: CUDA stages to
+host buffers and calls the same server. Apple shared allocations can be serialized
+and filled directly; no `HostDeviceVector::HostSpan` mirror is needed. GPU producers
+complete before entry, the caller retains storage, and RPC completion precedes
+subsequent GPU consumption. This remains synchronous.
+
+The adapter implements allreduce, broadcast, allgather and variable allgather,
+with size/root/type checks before sending requests. Federated server arithmetic
+supports FP32/FP64 and signed/unsigned 8/32/64-bit integers; bitwise operators
+require integer types. Unlike NCCL, its server does not implement FP16, 16-bit
+integers or floating-point bitwise reductions. Those calls are rejected locally
+without consuming a request sequence number.
+
+Variable-size GPU reduction follows `gpu_detail::AllreduceVHostFallback` in
+`collective/allreduce.h`: allgather payloads, merge peers 1 through world-1 on
+rank zero's GPU, then broadcast the resulting size and payload. It must not use
+the NCCL/binomial grouping because bounded sketch merging is non-associative.
+Metal gathers into owned shared allocations and uses GPU copies, callbacks and
+merge/prune kernels. Independent scalar references select the appropriate fold
+and include witnesses that differ from the tree grouping. A connected one-worker
+sketch now returns immediately, matching CUDA `SketchContainer::AllReduce`.
+
+Build integration omits the GNU-only exclude-libs linker flag on Apple. A scoped
+header preserves XGBoost's logging/check macros around newer gRPC/Protobuf headers;
+otherwise Abseil's `LOG` replaces `LOG(CONSOLE)` and compilation fails. The public
+tracker's `Stop` now calls federated `Shutdown`: previously `XGTrackerFree` called
+the inherited no-op and waited forever on a running gRPC server. Normal test
+servers now stop cleanly. A separate server process allows failed tests to clean
+up even when upstream's handler awaits a missing worker.
+
+Focused validation, including mutual TLS:
+
+- 3,153 transport cases / 265,689,893 field checks / 142 invalid calls rejected.
+  Eight server-supported numeric types, all supported operators, zero/uneven and
+  multi-megabyte payloads, every broadcast root, both allgather-v selector values,
+  unaligned views/guards, CPU/MPS request interleaving and GPU consumers after RPC
+  writes. Checks require no vector mirrors or extra staging; fixed reductions
+  correctly dispatch no local GPU arithmetic.
+- 2,769 variable-reduction/sketch cases / 1,753,051 fields. Scalar references
+  validate callback order, empty/variable/growing/shrinking payloads and actual
+  numeric/categorical/weighted sketches, including ordinary-matrix consumers.
+- 520 public learner cases / 13,056 CPU prediction comparisons. The existing
+  hist/approx/DART objective/data/sampling/empty-worker matrix runs over real
+  federated RPCs, with model/history/prediction equality and exact JSON reloads.
+  Upstream CPU `HostSketchContainer` still requests forbidden peer channels in
+  federated mode. CPU reference training therefore runs on pooled data after the
+  communicator is finalized, only for unsampled exhaustive numeric-bin fixtures,
+  at the unchanged 2e-5 absolute/relative tolerance. Production CPU sketching is
+  unchanged; GPU sketch references independently check the federated fold.
+
+Transport/sketch tests use worlds 1/2/3/5 plus a two-worker mutual-TLS run;
+learners use worlds 1/2/3 plus two-worker TLS. The optional CPU-only federated
+build also passes API checks. Final optional regression passes (1m27s); standard
+regression passes 100 native groups, 3,434 Python tests with one expected skip,
+and CPU-only build/API checks (10m06s). Both started 2026-11-05 04:59:48 UTC and
+exited zero. No implementation changes followed these runs. See the
+[validation record](../validation/cuda-metal-federated-m3.txt).
+All processes share one Apple M3. Cross-machine/NVIDIA execution, asynchronous
+interoperability and remaining CUDA operation/state audits are still open.
+No performance claim accompanies this checkpoint.

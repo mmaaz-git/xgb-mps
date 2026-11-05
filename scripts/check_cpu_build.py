@@ -1,10 +1,16 @@
 """Verify the optional Metal API and clear failure in a non-Metal build."""
+import argparse
 import ctypes
 import json
 import tempfile
 from pathlib import Path
 
-path = Path(__file__).resolve().parents[1] / "build-cpu/lib/libxgboost.dylib"
+parser = argparse.ArgumentParser()
+parser.add_argument("--library", type=Path,
+                    default=Path(__file__).resolve().parents[1] / "build-cpu/lib/libxgboost.dylib")
+parser.add_argument("--require-federated", action="store_true")
+args = parser.parse_args()
+path = args.library.resolve()
 lib = ctypes.CDLL(str(path))
 lib.XGBGetLastError.restype = ctypes.c_char_p
 
@@ -15,7 +21,10 @@ def check(status):
 
 out = ctypes.c_char_p()
 check(lib.XGBuildInfo(ctypes.byref(out)))
-assert json.loads(out.value)["USE_METAL"] is False
+build = json.loads(out.value)
+assert build["USE_METAL"] is False
+if args.require_federated:
+    assert build["USE_FEDERATED"] is True
 check(lib.XGBMetalInfo(ctypes.byref(out)))
 info = json.loads(out.value)
 assert info["built"] is False and info["available"] is False

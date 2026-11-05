@@ -3,14 +3,12 @@
  */
 #include "federated_coll.h"
 
-#include <federated.grpc.pb.h>
-#include <federated.pb.h>
-
 #include <algorithm>  // for copy_n
 
 #include "../../src/collective/allgather.h"
-#include "../../src/common/common.h"    // for AssertGPUSupport
-#include "federated_comm.h"             // for FederatedComm
+#include "../../src/common/common.h"  // for AssertGPUSupport
+#include "federated_comm.h"           // for FederatedComm
+#include "federated_grpc.h"
 #include "xgboost/collective/result.h"  // for Result
 
 namespace xgboost::collective {

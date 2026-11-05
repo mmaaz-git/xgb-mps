@@ -12,6 +12,9 @@ class FederatedColl : public Coll {
 
  public:
   Coll *MakeCUDAVar() override;
+#if defined(XGBOOST_USE_METAL)
+  Coll *MakeMPSVar() override;
+#endif
 
   [[nodiscard]] Result Allreduce(Context const *ctx, Comm const &, common::Span<std::int8_t> data,
                                  ArrayInterfaceHandler::Type type, Op op) override;

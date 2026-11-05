@@ -42,6 +42,12 @@ target_sources(
 if(USE_CUDA)
   target_sources(objxgboost PRIVATE federated_comm.cu federated_coll.cu)
 endif()
+if(USE_METAL)
+  target_sources(objxgboost PRIVATE federated_coll_metal.cc)
+endif()
 
-target_link_libraries(objxgboost PRIVATE federated_client "-Wl,--exclude-libs,ALL")
+target_link_libraries(objxgboost PRIVATE federated_client)
+if(NOT APPLE)
+  target_link_libraries(objxgboost PRIVATE "-Wl,--exclude-libs,ALL")
+endif()
 target_compile_definitions(objxgboost PUBLIC -DXGBOOST_USE_FEDERATED=1)

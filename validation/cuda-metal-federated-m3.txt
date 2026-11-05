@@ -1,0 +1,152 @@
+Federated Metal collectives and learners — Apple M3, 2026-11-04 local
+==================================================================
+Scope: all four CUDA federated collective adapters, the variable GPU reduction
+fallback and production sketch/learner consumers, including mutual TLS.
+Optional feature flag: PLUGIN_FEDERATED=ON, with USE_METAL=ON for Apple GPU work.
+
+Source authority:
+- plugin/federated/federated_coll.cu: CUDA stages GPU data to host vectors, calls
+  the existing FederatedColl RPC methods, then copies received data to CUDA.
+  Fixed reductions execute on the server, not in local CUDA kernels.
+- collective/in_memory_handler.cc::AllreduceFunctor: actual server dtype/operator
+  contract, distinct from NCCL's FP16 and floating-bytewise support.
+- collective/allreduce.h::gpu_detail::AllreduceVHostFallback: gather payloads,
+  rank zero folds peers in ascending order on GPU, then broadcasts the result.
+  This is different from NCCL's binomial grouping for non-associative sketches.
+- common/quantile.cu::SketchContainer::AllReduce returns immediately for world=1,
+  including a tracker-connected single worker.
+- c_api/coll_c_api.cc::XGTrackerFree calls Tracker::Stop before waiting. The
+  federated tracker had Shutdown but inherited the base no-op Stop.
+
+Implementation:
+- MetalFederatedColl holds the same FederatedColl owner as CPU control messages,
+  preserving one request sequence. RPC serialization/receipt accesses shared
+  Metal allocations directly; there is no HostDeviceVector host mirror. Callers
+  retain owners, producers complete before entry, and RPC completion precedes
+  subsequent GPU consumers. This is a synchronous path.
+- Allreduce, broadcast, allgather and variable allgather validate local shape,
+  root, dtype and operation contracts. Supported arithmetic types are FP32/FP64
+  and signed/unsigned 8/32/64-bit integers. Bitwise operations require integers.
+  The server does not implement FP16, 16-bit integers or floating-point bitwise
+  reductions; the Metal adapter rejects them before consuming a sequence number.
+- Federated AllreduceV gathers owned Metal buffers, GPU-copies each peer segment,
+  folds peers 1..world-1 at rank zero, then broadcasts size/payload. All sketch
+  merge/prune arithmetic stays on GPU. The TCP/NCCL-style branch is unchanged.
+- Metal sketch reduction now skips an attached world=1, matching CUDA.
+- The former MPS federated guard is removed after both fixed and variable paths
+  were implemented. Existing row-partitioned hist/approx/DART learners use them.
+- Apple builds omit GNU --exclude-libs,ALL. A scoped gRPC header preserves
+  XGBoost logging/check macros around modern Abseil-generated includes.
+- FederatedTracker::Stop now invokes Shutdown, so public tracker cleanup stops
+  the server instead of waiting on a running gRPC service indefinitely.
+- scripts/test_federated.sh builds separately in build-metal-federated and uses
+  results/federated-python, leaving the ordinary library/package path intact.
+  It also runs two-worker mutual TLS with temporary, locally generated test
+  certificates. Keys/certificates are removed after the run.
+
+Development findings and fixes:
+- First federated compilation failed because new gRPC/Protobuf includes replaced
+  XGBoost LOG with Abseil LOG, which does not accept CONSOLE. Header macro scoping
+  fixed the build; both CPU-only and Metal optional builds now compile.
+- First native fixture compilation had a Value helper ambiguous with XGBoost's
+  JSON Value class. Renamed the test helper; no production arithmetic change.
+- Transport world=1 passed, but server cleanup hit the test's ten-second stop
+  deadline. Source inspection identified the missing Stop override; fixed it.
+  A separate test-server process gives bounded cleanup on worker failures.
+- The first two-worker learner run trained and validated its Metal model, then
+  failed in the CPU reference: HostSketchContainer requests peer channels that
+  FederatedComm explicitly forbids. This upstream CPU path is unchanged. For
+  unsampled exhaustive numeric bins, reference training now uses pooled inputs
+  after communicator finalization. The original 2e-5 absolute/relative tolerance
+  is unchanged. The GPU sketch has a separate CUDA-derived federated-fold oracle.
+- Expected feature_types differences on empty workers remain separately asserted
+  as in the preceding learner checkpoint; every other serialized model field is
+  compared. Quantile learner fixtures retain their explicit intercept, with
+  automatic initialization behavior covered by the existing native tests.
+
+Final optional regression:
+  Script: results/run-federated-full-v1.sh.
+  Session: xgb-federated-full-v1.
+  Log: results/federated-full-v1.log.
+  Start: 2026-11-05 04:59:48 UTC; end: 05:01:15 UTC (1m27s), exit=0.
+  Command: bash scripts/test_federated.sh, then CPU-only federated incremental
+  build and scripts/check_cpu_build.py --library <CPU-federated library>
+  --require-federated.
+  Actual local gRPC server/client processes with Metal API Validation enabled.
+
+Transport totals: 3,153 cases / 265,689,893 fields / 142 rejected invalid calls.
+  Worlds 1/2/3/5, plus world2 mutual TLS: 13 worker executions.
+  Eight server-supported numeric types, sum/min/max and integer AND/OR/XOR;
+  empty/small/uneven/large payloads including >4MiB messages; all broadcast roots;
+  both variable-gather selectors; unaligned views and unchanged guards.
+  Each numeric RPC is followed by a GPU consumer and an interleaved CPU RPC,
+  compared with an independent exact finite-value/integer reference. Checks
+  require zero vector mirrors/uploads and staging; no local reduction dispatch
+  is expected for source-defined server arithmetic. Invalid calls do not consume
+  request sequence numbers. Tracked Metal buffers return to zero at worker exit.
+
+Variable reduction/sketch totals: 2,769 cases / 1,753,051 fields.
+  Same 13 worker executions. Variable callbacks grow, shrink or empty payloads;
+  independent fold references include witnesses that differ from tree grouping.
+  Numeric/categorical/weighted sketches, empty workers, extreme/subnormal weights,
+  multiple windows and ordinary DMatrix consumers use the production path.
+  All GPU payload copies/merge order and source-derived summary fields match;
+  resident payload mirrors/staging remain zero. The same native test still uses
+  the binomial oracle for ordinary TCP communicators.
+
+Public learner totals: 520 cases / 13,056 CPU prediction comparisons.
+  Worlds 1/2/3 plus world2 mutual TLS: 8 worker executions, three rounds per case.
+  Regression/classification/quantile/expectile/absolute, all AFT distributions,
+  rank:ndcg/map/pairwise, full/reduced vector trees, hist/approx/DART, all samplers,
+  optional weights and empty-worker layouts. Dense/CSR/categorical/native-MPS
+  data, quantile matrices and both external-memory cache placements are covered.
+  All learned model state, predictions and histories agree across workers;
+  predictions are finite, JSON reloads reproduce them exactly, caches clean up,
+  and GPU root/histogram/leaf counters confirm the actual Metal training path.
+  Pooled CPU comparisons apply only to matching unsampled numeric algorithms.
+
+CPU-only federated configuration/build/API checks: PASS.
+  Initial build: results/federated-cpu-v1.log, 130 build steps, exit=0.
+  Final optional run repeats incremental build/API checks with USE_FEDERATED=true
+  and USE_METAL=false. Device/native input/output/quantile APIs reject MPS clearly;
+  ordinary CPU external-cache training/regeneration/cleanup passes.
+
+Standard regression:
+  Session: xgb-federated-standard-full-v1.
+  Log: results/federated-standard-full-v1.log.
+  Start: 2026-11-05 04:59:48 UTC.
+  End: 2026-11-05 05:09:54 UTC (10m06s), exit=0.
+  All 100 native groups rebuilt and passed.
+  Python: 3,434 passed, 1 expected skip, 639 warnings in 238.19 seconds.
+  Same 12 normalized warning blocks as the preceding learner full run, with no
+  added/removed messages (timestamps and source line offsets excluded).
+  Standard CPU-only configure/build: PASS (3 incremental steps), API checks PASS.
+  git diff --check: clean. No implementation/test-logic changes followed either
+  final run; only documentation/validation records were finalized.
+
+Reproduction:
+  brew install grpc protobuf
+  bash scripts/test_federated.sh
+  # Focus a stage or worker count without changing the source:
+  bash scripts/test_federated.sh --stage sketch --worlds 3 5
+  bash scripts/test_federated.sh --secure --worlds 2
+  # Standard non-federated regression remains:
+  cmake --build build-metal -j4
+  bash scripts/test.sh
+  cmake -S xgboost -B build-cpu
+  cmake --build build-cpu -j4
+  DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib .venv/bin/python scripts/check_cpu_build.py
+
+Limits:
+- Tests share one physical Apple M3. No cross-machine or NVIDIA execution.
+- This ports the CUDA-defined federated paths; it does not add distributed
+  gblinear, which remains unsupported upstream.
+- GPU operations complete synchronously. Portable stream handshakes and other
+  operation/state audits remain unfinished; full CUDA parity is still active.
+- Shared logging/header and tracker changes affect CUDA builds too. Their CPU
+  and Metal builds are validated; NVIDIA compilation/execution is not available.
+- Federated CPU sketching's peer-channel failure remains upstream behavior. A
+  disconnected/missing worker can still leave the upstream server handler waiting;
+  test-process isolation is cleanup, not a new production fault-tolerance claim.
+- gRPC/Protobuf versions tested: 1.85.1 / 36.2 (Homebrew arm64 bottles).
+- No benchmark or new performance claim accompanies this checkpoint.
