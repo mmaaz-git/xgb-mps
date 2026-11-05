@@ -1,0 +1,95 @@
+PORT-2 resident selected vector categories, 2026-11-05
+Source: 6a606e101914e7433f2d6ca036c6ebc9c3cb8fa1
+Machine-readable commands, selections and hashes: cuda-port2-m3-run.json.
+Hardware: Apple M3, 10 GPU cores, 16 GB shared memory; macOS26.6.2/Python3.13.5.
+PyTorch MPS and MLX GPU were available; their full-suite tests did not skip.
+
+Authority: CUDA multi_evaluate_splits.cuh/.cu keeps selected split_cats_ indexed
+by node ID so delayed candidates survive workspace reuse. Selected numeric nodes
+clear their bitsets. Model copies and row partitioning consume device categories.
+Host topology, category descriptors and source-defined finalizers remain host work.
+
+Implementation:
+- BuildSplitCategories supports a null host destination. The existing GPU builder
+  produces the bits; SplitCategoryStorage blits selected outputs into persistent
+  node-indexed GPU storage. No new arithmetic or category-selection kernel.
+  Numeric winners clear their storage; accepted candidates keep node IDs instead
+  of copying cat_bits onto the CPU. InitRoot resets per-tree ownership.
+- ApplyTreeSplit passes resident selected bits into the GPU model-copy path added
+  by PORT-1. Queued candidates reacquire views after storage growth.
+- A tree-view constructor separates host topology/statistics/category descriptors
+  from category bit-word placement. All six growing-vector-updater view call sites
+  use resident words on MPS, preserving CPU views for the common non-MPS updater.
+  Histogram and leaf-position consumers read topology, not device category words.
+- CommonRowPartitioner binds the complete model category buffer with node offsets,
+  eliminating its CPU gather. DeviceRows binds GPU inputs directly, including
+  nonzero offsets, and preserves guarded host fallback for scalar/source-host use.
+- Source-defined host finalization remains: ordinary SetLeaves reads vector weights;
+  reduced CUDA refitting itself calls GetNumLeaves (updater_gpu_hist.cuh:360), which
+  uses a host tree view. This finalizer is not a growing-tree category transfer.
+- Four statistics append to the prior 281-field prefix; 285 initializer positions
+  match. CPU/Metal C API schemas agree at 287 fields; disabled CPU counters are zero.
+
+Focused checks:
+  bash scripts/test.sh --native metal_split_categories metal_model_state_api \
+    metal_compressed_consumers_api metal_training_state_api \
+    --python tests/test_metal_split_categories.py tests/test_metal_model_state.py \
+      tests/test_metal_split_finalize.py --log-dir results/port2-focused
+  PASS four fresh native groups +67 Python tests.
+
+  bash scripts/test.sh --native metal_training_state_api \
+    --python tests/test_metal_split_categories.py tests/test_metal_leaf_fitting.py \
+      tests/test_metal_disk_ellpack.py tests/test_metal_sampling.py \
+      tests/test_metal_model_state.py --log-dir results/port2-callers-v2
+  PASS native training group +274 Python tests, two warnings.
+
+Direct acceptance evidence, all included in the final full run:
+- Four category-storage chains cover reordered source/node IDs, numeric/OHE/
+  partition results, overwrite, empty/invalid requests, width/duplicate checks,
+  workspace reuse and growth beyond node256. GPU model-copy consumers precede
+  CPU bit comparisons; category readback, HDV transfers and model host copies stay zero.
+- Model tests cover 32 growing trees with host/resident inputs and category aliases.
+  The new training view is constructed before subsequent alias growth and before
+  CPU inspection; category pointers remain resident and no transfer is introduced.
+- Compressed consumers: 310 cases, 72,274,858 exact fields, 620 histograms,
+  4,340 partitions and 930 input chunks. Resident category inputs use a nonzero
+  buffer offset; direct bindings and no host copy/readback/upload are checked
+  before comparing stable row partitions. Existing host-input cases remain.
+- Eight new production-updater cases use targets3/17, OHE/partition and both grow
+  policies. Whole-update HDV readback is exactly nodes*targets*sizeof(float), the
+  final base-weight publication; any category readback during growth fails this
+  assertion. GPU storage/partition counters and position authority are checked
+  before the first CPU category inspection and independent model walk.
+  Training group total: 246 cases/397,154 checks.
+- Public tests check zero vector-category readback/staging, high and sparse IDs,
+  missing values, numeric winners with constant/empty categorical columns,
+  continuation and external categorical pages. Other full-suite guards cover
+  constraints, forests and reduced-gradient callers.
+
+Final integration (tmux xgb-port2-integration, terminal exit0):
+  bash scripts/test.sh --full --log-dir results/port2-integration
+  All 203 stages PASSED: rebuilt library, 100 freshly compiled native groups,
+  independent linear reference, full Python suite.
+  Python: 3,597 PASSED, one expected no-GPU-only skip, 670 warnings, 262.13s.
+  Distributed sketch and learners include one/two/three local workers. This run
+  uses the fixed subprocess PYTHONPATH from d0734ef.
+
+CPU-only checks (tmux xgb-port2-cpu, results/port2-cpu.log, terminal exit0):
+  cmake --build build-cpu -j4
+  .venv/bin/python scripts/check_cpu_build.py --metal-library xgboost/lib/libxgboost.dylib
+  PYTHONPATH=results/cpu-python .venv/bin/python -m pytest -q \
+    tests/test_metal_updater.py -k cpu -o pythonpath=results/cpu-python
+  PASS isolated USE_METAL=false API/schema287 and nine updater cases;
+  72 deselected, 11 warnings.
+
+One test-development failure: the new native fixture initially passed the updater-
+specific max_cached_hist_node to strict TrainParam::Init. InitAllowUnknown corrected
+the fixture while Configure still receives that parameter. No production change
+or numerical-tolerance widening was needed; the corrected fixture and full suite pass.
+
+The final tested source diff and library hashes were checked immediately before
+committing; JSON retains exact commands and provenance. CUDA compile CI passed
+for prior PORT-1 head383b448 (run42001642073); PORT-2 needs its own CI result.
+No NVIDIA execution, new benchmark, other Apple hardware or optional federated
+configuration run is claimed. PORT-2 is locally complete; six implementation
+tasks remain, followed by outstanding verification and performance work.

@@ -1,0 +1,4910 @@
+{
+  "status": "passed",
+  "started_utc": "20261105T093436Z",
+  "revision": "383b448c6c093b26a4438d85d009662b753e995e",
+  "working_tree": "M tests/metal_compressed_consumers_api.cc\n M tests/metal_model_state_api.cc\n M tests/metal_split_categories.mm\n M tests/metal_training_state_api.cc\n M tests/test_metal_split_categories.py\n M xgboost/src/c_api/c_api.cc\n M xgboost/src/common/metal_histogram.mm\n M xgboost/src/common/metal_split.h\n M xgboost/src/common/metal_statistics.h\n M xgboost/src/tree/common_row_partitioner.h\n M xgboost/src/tree/hist/evaluate_splits.h\n M xgboost/src/tree/tree_view.cc\n M xgboost/src/tree/tree_view.h\n M xgboost/src/tree/updater_quantile_hist.cc",
+  "diff_sha256": "b238ec3cc5a3db44489603ae5feabd0e3709c77284fd460e26747959cf2c0163",
+  "manifest_sha256": "5463ec839e83c2cee9038aa27b254db98ce46b18e3b7cdc12898bd2c85877387",
+  "untracked_sha256": {},
+  "native_groups": [
+    "metal_integer_collective_api",
+    "metal_global_quantizer_api",
+    "metal_collective_api",
+    "metal_sketch_collective_api",
+    "metal_prediction_model_api",
+    "metal_category_state_api",
+    "metal_training_state_api",
+    "metal_prediction_result_api",
+    "metal_prediction_state_api",
+    "metal_ranking_gradient_state_api",
+    "metal_ranking_metric_state_api",
+    "metal_auc_state_api",
+    "metal_metric_state_api",
+    "metal_initialization_state_api",
+    "metal_objective_state_api",
+    "metal_vector_api",
+    "metal_output_api",
+    "metal_tensor_api",
+    "metal_metadata_api",
+    "metal_gradient_import_api",
+    "metal_tensor_csr_api",
+    "metal_columnar_api",
+    "metal_ranking_rng",
+    "metal_ranking_rounding",
+    "metal_memory",
+    "metal_kernel",
+    "metal_bounds",
+    "metal_binning",
+    "metal_objective",
+    "metal_partition",
+    "metal_fp32_div",
+    "metal_fp64",
+    "metal_transcendental",
+    "metal_split_bounds",
+    "metal_cuda_split",
+    "metal_cuda_multi_split",
+    "metal_split",
+    "metal_storage",
+    "metal_reduction",
+    "metal_mean",
+    "metal_quantile",
+    "metal_snappy_api",
+    "metal_objective_api",
+    "metal_adaptive_source",
+    "metal_adaptive_api",
+    "metal_adapter_api",
+    "metal_ellpack_api",
+    "metal_ellpack_adapter_api",
+    "metal_compressed_consumers_api",
+    "metal_extmem_api",
+    "metal_inmemory_ellpack_api",
+    "metal_ellpack_csr_api",
+    "metal_ordinary_ellpack_api",
+    "metal_ellpack_io_api",
+    "metal_input_api",
+    "metal_category_api",
+    "metal_multiclass_api",
+    "metal_stats_api",
+    "metal_split_finalize",
+    "metal_initialization_api",
+    "metal_label_validation",
+    "metal_base_score_api",
+    "metal_auc_api",
+    "metal_ranking_roc_api",
+    "metal_ranking_pr_api",
+    "metal_ranking_api",
+    "metal_ranking_cache_api",
+    "metal_ranking_math",
+    "metal_ranking_rounding_api",
+    "metal_ranking_plan_api",
+    "metal_ranking_pairs_api",
+    "metal_ranking_gradient_api",
+    "metal_ranking_unbiased_api",
+    "metal_memory_api",
+    "metal_linalg_api",
+    "metal_metric_api",
+    "metal_aft_source",
+    "metal_survival_api",
+    "metal_adaptive",
+    "metal_sampling",
+    "metal_gradient_sampling_api",
+    "metal_column_log",
+    "metal_column_sampling_api",
+    "metal_sketch_api",
+    "metal_sketch_ingest_api",
+    "metal_cuda_sketch_api",
+    "metal_shap_api",
+    "metal_leaf_fitting_api",
+    "metal_linear_api",
+    "metal_gradient_state_api",
+    "metal_integer_cache_api",
+    "metal_cuda_rng",
+    "metal_quantized_state_api",
+    "metal_cuda_gradient",
+    "metal_cuda_gradient_api",
+    "metal_integer_leaf_api",
+    "metal_model_state_api",
+    "metal_split_categories",
+    "metal_interaction_api",
+    "metal_bound_state_api"
+  ],
+  "python_selection": [
+    "tests"
+  ],
+  "steps": [
+    {
+      "name": "build-metal",
+      "command": [
+        "bash",
+        "scripts/build.sh"
+      ],
+      "environment": {},
+      "log": "001-build-metal.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.4905078341253102
+    },
+    {
+      "name": "compile-metal_integer_collective_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_integer_collective_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_integer_collective_api_test"
+      ],
+      "environment": {},
+      "log": "002-compile-metal_integer_collective_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.868175083072856
+    },
+    {
+      "name": "metal_integer_collective_api",
+      "command": [
+        ".venv/bin/python",
+        "tests/run_integer_collective.py"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1",
+        "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+      },
+      "log": "003-metal_integer_collective_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 11.870443290797994
+    },
+    {
+      "name": "compile-metal_global_quantizer_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_global_quantizer_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_global_quantizer_api_test"
+      ],
+      "environment": {},
+      "log": "004-compile-metal_global_quantizer_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1059514579828829
+    },
+    {
+      "name": "metal_global_quantizer_api",
+      "command": [
+        ".venv/bin/python",
+        "tests/run_global_quantizer.py"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1",
+        "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+      },
+      "log": "005-metal_global_quantizer_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 5.177803958998993
+    },
+    {
+      "name": "compile-metal_collective_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_collective_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_collective_api_test"
+      ],
+      "environment": {},
+      "log": "006-compile-metal_collective_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.678889124887064
+    },
+    {
+      "name": "metal_collective_api",
+      "command": [
+        ".venv/bin/python",
+        "tests/run_metal_collective.py"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1",
+        "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+      },
+      "log": "007-metal_collective_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 23.540481959003955
+    },
+    {
+      "name": "compile-metal_sketch_collective_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_sketch_collective_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_sketch_collective_api_test"
+      ],
+      "environment": {},
+      "log": "008-compile-metal_sketch_collective_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.7675916668958962
+    },
+    {
+      "name": "metal_sketch_collective_api",
+      "command": [
+        ".venv/bin/python",
+        "tests/run_sketch_collective.py"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1",
+        "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+      },
+      "log": "009-metal_sketch_collective_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 15.59411258297041
+    },
+    {
+      "name": "compile-metal_prediction_model_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-pthread",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_prediction_model_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_prediction_model_api_test"
+      ],
+      "environment": {},
+      "log": "010-compile-metal_prediction_model_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.317437290912494
+    },
+    {
+      "name": "metal_prediction_model_api",
+      "command": [
+        "results/metal_prediction_model_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "011-metal_prediction_model_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7788925829809159
+    },
+    {
+      "name": "compile-metal_category_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-pthread",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_category_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_category_state_api_test"
+      ],
+      "environment": {},
+      "log": "012-compile-metal_category_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.9551321249455214
+    },
+    {
+      "name": "metal_category_state_api",
+      "command": [
+        "results/metal_category_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "013-metal_category_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.59367062500678
+    },
+    {
+      "name": "compile-metal_training_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_training_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_training_state_api_test"
+      ],
+      "environment": {},
+      "log": "014-compile-metal_training_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.447926624910906
+    },
+    {
+      "name": "metal_training_state_api",
+      "command": [
+        "results/metal_training_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "015-metal_training_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 3.0846712079364806
+    },
+    {
+      "name": "compile-metal_prediction_result_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_prediction_result_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_prediction_result_api_test"
+      ],
+      "environment": {},
+      "log": "016-compile-metal_prediction_result_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.2568180409725755
+    },
+    {
+      "name": "metal_prediction_result_api",
+      "command": [
+        "results/metal_prediction_result_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "017-metal_prediction_result_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.035022667143494
+    },
+    {
+      "name": "compile-metal_prediction_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_prediction_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_prediction_state_api_test"
+      ],
+      "environment": {},
+      "log": "018-compile-metal_prediction_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.6349390000104904
+    },
+    {
+      "name": "metal_prediction_state_api",
+      "command": [
+        "results/metal_prediction_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "019-metal_prediction_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.221873166039586
+    },
+    {
+      "name": "compile-metal_ranking_gradient_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_gradient_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_gradient_state_api_test"
+      ],
+      "environment": {},
+      "log": "020-compile-metal_ranking_gradient_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.3596706669777632
+    },
+    {
+      "name": "metal_ranking_gradient_state_api",
+      "command": [
+        "results/metal_ranking_gradient_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "021-metal_ranking_gradient_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 3.542502334108576
+    },
+    {
+      "name": "compile-metal_ranking_metric_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_metric_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_metric_state_api_test"
+      ],
+      "environment": {},
+      "log": "022-compile-metal_ranking_metric_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.2998812498990446
+    },
+    {
+      "name": "metal_ranking_metric_state_api",
+      "command": [
+        "results/metal_ranking_metric_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "023-metal_ranking_metric_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.180452915839851
+    },
+    {
+      "name": "compile-metal_auc_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_auc_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_auc_state_api_test"
+      ],
+      "environment": {},
+      "log": "024-compile-metal_auc_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9954491660464555
+    },
+    {
+      "name": "metal_auc_state_api",
+      "command": [
+        ".venv/bin/python",
+        "tests/run_auc_state_collective.py"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1",
+        "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+      },
+      "log": "025-metal_auc_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 4.019733499968424
+    },
+    {
+      "name": "compile-metal_metric_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_metric_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_metric_state_api_test"
+      ],
+      "environment": {},
+      "log": "026-compile-metal_metric_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9261088750790805
+    },
+    {
+      "name": "metal_metric_state_api",
+      "command": [
+        "results/metal_metric_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "027-metal_metric_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.3746811251621693
+    },
+    {
+      "name": "compile-metal_initialization_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_initialization_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_initialization_state_api_test"
+      ],
+      "environment": {},
+      "log": "028-compile-metal_initialization_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.2243214999325573
+    },
+    {
+      "name": "metal_initialization_state_api",
+      "command": [
+        ".venv/bin/python",
+        "tests/run_initialization_state_collective.py"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1",
+        "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+      },
+      "log": "029-metal_initialization_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 8.190120166167617
+    },
+    {
+      "name": "compile-metal_objective_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_objective_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_objective_state_api_test"
+      ],
+      "environment": {},
+      "log": "030-compile-metal_objective_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.963648958131671
+    },
+    {
+      "name": "metal_objective_state_api",
+      "command": [
+        "results/metal_objective_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "031-metal_objective_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.215580458054319
+    },
+    {
+      "name": "compile-metal_vector_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_vector_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_vector_api_test"
+      ],
+      "environment": {},
+      "log": "032-compile-metal_vector_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1166331658605486
+    },
+    {
+      "name": "metal_vector_api",
+      "command": [
+        "results/metal_vector_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "033-metal_vector_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5765129160135984
+    },
+    {
+      "name": "compile-metal_output_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_output_api.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_output_api_test"
+      ],
+      "environment": {},
+      "log": "034-compile-metal_output_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0648042908869684
+    },
+    {
+      "name": "metal_output_api",
+      "command": [
+        "results/metal_output_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "035-metal_output_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.2952198327984661
+    },
+    {
+      "name": "compile-metal_tensor_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_tensor_api.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_tensor_api_test"
+      ],
+      "environment": {},
+      "log": "036-compile-metal_tensor_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.221595749957487
+    },
+    {
+      "name": "metal_tensor_api",
+      "command": [
+        "results/metal_tensor_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "037-metal_tensor_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.429388124961406
+    },
+    {
+      "name": "compile-metal_metadata_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_metadata_api.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_metadata_api_test"
+      ],
+      "environment": {},
+      "log": "038-compile-metal_metadata_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1690197500865906
+    },
+    {
+      "name": "metal_metadata_api",
+      "command": [
+        "results/metal_metadata_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "039-metal_metadata_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5792626249603927
+    },
+    {
+      "name": "compile-metal_gradient_import_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_gradient_import_api.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_gradient_import_api_test"
+      ],
+      "environment": {},
+      "log": "040-compile-metal_gradient_import_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1916674580425024
+    },
+    {
+      "name": "metal_gradient_import_api",
+      "command": [
+        "results/metal_gradient_import_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "041-metal_gradient_import_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7111565410159528
+    },
+    {
+      "name": "compile-metal_tensor_csr_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_tensor_csr_api.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_tensor_csr_api_test"
+      ],
+      "environment": {},
+      "log": "042-compile-metal_tensor_csr_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.532380708027631
+    },
+    {
+      "name": "metal_tensor_csr_api",
+      "command": [
+        "results/metal_tensor_csr_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "043-metal_tensor_csr_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.2502061671111733
+    },
+    {
+      "name": "compile-metal_columnar_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_columnar_api.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_columnar_api_test"
+      ],
+      "environment": {},
+      "log": "044-compile-metal_columnar_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.2915355840232223
+    },
+    {
+      "name": "metal_columnar_api",
+      "command": [
+        "results/metal_columnar_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "045-metal_columnar_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.46017333306372166
+    },
+    {
+      "name": "compile-metal_ranking_rng",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-fobjc-arc",
+        "tests/metal_ranking_rng.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_ranking_rng_test"
+      ],
+      "environment": {},
+      "log": "046-compile-metal_ranking_rng.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.615032791858539
+    },
+    {
+      "name": "metal_ranking_rng",
+      "command": [
+        "results/metal_ranking_rng_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "047-metal_ranking_rng.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.34985408396460116
+    },
+    {
+      "name": "compile-metal_ranking_rounding",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_ranking_rounding.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_ranking_rounding_test"
+      ],
+      "environment": {},
+      "log": "048-compile-metal_ranking_rounding.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5620475839823484
+    },
+    {
+      "name": "metal_ranking_rounding",
+      "command": [
+        "results/metal_ranking_rounding_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "049-metal_ranking_rounding.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5220576249994338
+    },
+    {
+      "name": "compile-metal_memory",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-fobjc-arc",
+        "tests/metal_memory.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_memory_test"
+      ],
+      "environment": {},
+      "log": "050-compile-metal_memory.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.4530716659501195
+    },
+    {
+      "name": "metal_memory",
+      "command": [
+        "results/metal_memory_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "051-metal_memory.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3301098751835525
+    },
+    {
+      "name": "compile-metal_kernel",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-fobjc-arc",
+        "tests/metal_kernel.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_kernel_test"
+      ],
+      "environment": {},
+      "log": "052-compile-metal_kernel.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.624298834009096
+    },
+    {
+      "name": "metal_kernel",
+      "command": [
+        "results/metal_kernel_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "053-metal_kernel.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 7.142270958982408
+    },
+    {
+      "name": "compile-metal_bounds",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-fobjc-arc",
+        "tests/metal_bounds.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_bounds_test"
+      ],
+      "environment": {},
+      "log": "054-compile-metal_bounds.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5525868341792375
+    },
+    {
+      "name": "metal_bounds",
+      "command": [
+        "results/metal_bounds_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "055-metal_bounds.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.4255141660105437
+    },
+    {
+      "name": "compile-metal_binning",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-fobjc-arc",
+        "tests/metal_binning.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_binning_test"
+      ],
+      "environment": {},
+      "log": "056-compile-metal_binning.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5364010001067072
+    },
+    {
+      "name": "metal_binning",
+      "command": [
+        "results/metal_binning_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "057-metal_binning.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.22556220786646
+    },
+    {
+      "name": "compile-metal_objective",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-fobjc-arc",
+        "tests/metal_objective.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_objective_test"
+      ],
+      "environment": {},
+      "log": "058-compile-metal_objective.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.49095983314327896
+    },
+    {
+      "name": "metal_objective",
+      "command": [
+        "results/metal_objective_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "059-metal_objective.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3000777498818934
+    },
+    {
+      "name": "compile-metal_partition",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-fobjc-arc",
+        "tests/metal_partition.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_partition_test"
+      ],
+      "environment": {},
+      "log": "060-compile-metal_partition.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5618030000478029
+    },
+    {
+      "name": "metal_partition",
+      "command": [
+        "results/metal_partition_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "061-metal_partition.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 7.086011209059507
+    },
+    {
+      "name": "compile-metal_fp32_div",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_fp32_div.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_fp32_div_test"
+      ],
+      "environment": {},
+      "log": "062-compile-metal_fp32_div.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6322661659214646
+    },
+    {
+      "name": "metal_fp32_div",
+      "command": [
+        "results/metal_fp32_div_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "063-metal_fp32_div.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3980765419546515
+    },
+    {
+      "name": "compile-metal_fp64",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-fobjc-arc",
+        "tests/metal_fp64.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_fp64_test"
+      ],
+      "environment": {},
+      "log": "064-compile-metal_fp64.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5180172920227051
+    },
+    {
+      "name": "metal_fp64",
+      "command": [
+        "results/metal_fp64_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "065-metal_fp64.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.4193902090191841
+    },
+    {
+      "name": "compile-metal_transcendental",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_transcendental.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_transcendental_test"
+      ],
+      "environment": {},
+      "log": "066-compile-metal_transcendental.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5449088329914957
+    },
+    {
+      "name": "metal_transcendental",
+      "command": [
+        "results/metal_transcendental_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "067-metal_transcendental.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3959403329063207
+    },
+    {
+      "name": "compile-metal_split_bounds",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_split_bounds.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_split_bounds_test"
+      ],
+      "environment": {},
+      "log": "068-compile-metal_split_bounds.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9267918749246746
+    },
+    {
+      "name": "metal_split_bounds",
+      "command": [
+        "results/metal_split_bounds_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "069-metal_split_bounds.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.46387000009417534
+    },
+    {
+      "name": "compile-metal_cuda_split",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_cuda_split.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_cuda_split_test"
+      ],
+      "environment": {},
+      "log": "070-compile-metal_cuda_split.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6975173752289265
+    },
+    {
+      "name": "metal_cuda_split",
+      "command": [
+        "results/metal_cuda_split_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "071-metal_cuda_split.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.596819916041568
+    },
+    {
+      "name": "compile-metal_cuda_multi_split",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_cuda_multi_split.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_cuda_multi_split_test"
+      ],
+      "environment": {},
+      "log": "072-compile-metal_cuda_multi_split.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8391228748951107
+    },
+    {
+      "name": "metal_cuda_multi_split",
+      "command": [
+        "results/metal_cuda_multi_split_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "073-metal_cuda_multi_split.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8602758329361677
+    },
+    {
+      "name": "compile-metal_split",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_split.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_split_test"
+      ],
+      "environment": {},
+      "log": "074-compile-metal_split.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6410562908276916
+    },
+    {
+      "name": "metal_split",
+      "command": [
+        "results/metal_split_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "075-metal_split.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.2135493331588805
+    },
+    {
+      "name": "compile-metal_storage",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_storage.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_storage_test"
+      ],
+      "environment": {},
+      "log": "076-compile-metal_storage.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5379223339259624
+    },
+    {
+      "name": "metal_storage",
+      "command": [
+        "results/metal_storage_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "077-metal_storage.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0151583331171423
+    },
+    {
+      "name": "compile-metal_reduction",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_reduction.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_reduction_test"
+      ],
+      "environment": {},
+      "log": "078-compile-metal_reduction.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.48645891691558063
+    },
+    {
+      "name": "metal_reduction",
+      "command": [
+        "results/metal_reduction_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "079-metal_reduction.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0781084999907762
+    },
+    {
+      "name": "compile-metal_mean",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_mean.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_mean_test"
+      ],
+      "environment": {},
+      "log": "080-compile-metal_mean.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5032487080898136
+    },
+    {
+      "name": "metal_mean",
+      "command": [
+        "results/metal_mean_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "081-metal_mean.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 2.2702329580206424
+    },
+    {
+      "name": "compile-metal_quantile",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_quantile.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_quantile_test"
+      ],
+      "environment": {},
+      "log": "082-compile-metal_quantile.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7222359168808907
+    },
+    {
+      "name": "metal_quantile",
+      "command": [
+        "results/metal_quantile_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "083-metal_quantile.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.037719207815826
+    },
+    {
+      "name": "compile-metal_snappy_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "-I",
+        "/opt/homebrew/opt/snappy/include",
+        "tests/metal_snappy_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-L",
+        "/opt/homebrew/opt/snappy/lib",
+        "-lsnappy",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_snappy_api_test"
+      ],
+      "environment": {},
+      "log": "084-compile-metal_snappy_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8897250830195844
+    },
+    {
+      "name": "metal_snappy_api",
+      "command": [
+        "results/metal_snappy_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "085-metal_snappy_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 2.49872662499547
+    },
+    {
+      "name": "compile-metal_objective_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_objective_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_objective_api_test"
+      ],
+      "environment": {},
+      "log": "086-compile-metal_objective_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7485600409563631
+    },
+    {
+      "name": "metal_objective_api",
+      "command": [
+        "results/metal_objective_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "087-metal_objective_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0254481660667807
+    },
+    {
+      "name": "compile-metal_adaptive_source",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_adaptive_source.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_adaptive_source_test"
+      ],
+      "environment": {},
+      "log": "088-compile-metal_adaptive_source.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6023409168701619
+    },
+    {
+      "name": "metal_adaptive_source",
+      "command": [
+        "results/metal_adaptive_source_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "089-metal_adaptive_source.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6731765829026699
+    },
+    {
+      "name": "compile-metal_adaptive_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_adaptive_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_adaptive_api_test"
+      ],
+      "environment": {},
+      "log": "090-compile-metal_adaptive_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8743812090251595
+    },
+    {
+      "name": "metal_adaptive_api",
+      "command": [
+        ".venv/bin/python",
+        "tests/run_adaptive_collective.py"
+      ],
+      "environment": {
+        "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package",
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "091-metal_adaptive_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 16.13217245787382
+    },
+    {
+      "name": "compile-metal_adapter_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_adapter_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_adapter_api_test"
+      ],
+      "environment": {},
+      "log": "092-compile-metal_adapter_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.593165917089209
+    },
+    {
+      "name": "metal_adapter_api",
+      "command": [
+        "results/metal_adapter_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "093-metal_adapter_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 6.308198832906783
+    },
+    {
+      "name": "compile-metal_ellpack_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ellpack_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ellpack_api_test"
+      ],
+      "environment": {},
+      "log": "094-compile-metal_ellpack_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.2112782092299312
+    },
+    {
+      "name": "metal_ellpack_api",
+      "command": [
+        "results/metal_ellpack_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "095-metal_ellpack_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 3.473506540991366
+    },
+    {
+      "name": "compile-metal_ellpack_adapter_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ellpack_adapter_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ellpack_adapter_api_test"
+      ],
+      "environment": {},
+      "log": "096-compile-metal_ellpack_adapter_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.5423677088692784
+    },
+    {
+      "name": "metal_ellpack_adapter_api",
+      "command": [
+        "results/metal_ellpack_adapter_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "097-metal_ellpack_adapter_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.9180495420005172
+    },
+    {
+      "name": "compile-metal_compressed_consumers_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_compressed_consumers_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_compressed_consumers_api_test"
+      ],
+      "environment": {},
+      "log": "098-compile-metal_compressed_consumers_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.014463665895164
+    },
+    {
+      "name": "metal_compressed_consumers_api",
+      "command": [
+        "results/metal_compressed_consumers_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "099-metal_compressed_consumers_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 4.203079708851874
+    },
+    {
+      "name": "compile-metal_extmem_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_extmem_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_extmem_api_test"
+      ],
+      "environment": {},
+      "log": "100-compile-metal_extmem_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.4890392501838505
+    },
+    {
+      "name": "metal_extmem_api",
+      "command": [
+        "results/metal_extmem_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "101-metal_extmem_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 11.417536416091025
+    },
+    {
+      "name": "compile-metal_inmemory_ellpack_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_inmemory_ellpack_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_inmemory_ellpack_api_test"
+      ],
+      "environment": {},
+      "log": "102-compile-metal_inmemory_ellpack_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.47648312500678
+    },
+    {
+      "name": "metal_inmemory_ellpack_api",
+      "command": [
+        "results/metal_inmemory_ellpack_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "103-metal_inmemory_ellpack_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.4760252919513732
+    },
+    {
+      "name": "compile-metal_ellpack_csr_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ellpack_csr_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ellpack_csr_api_test"
+      ],
+      "environment": {},
+      "log": "104-compile-metal_ellpack_csr_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.3729597500059754
+    },
+    {
+      "name": "metal_ellpack_csr_api",
+      "command": [
+        "results/metal_ellpack_csr_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "105-metal_ellpack_csr_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7954829160589725
+    },
+    {
+      "name": "compile-metal_ordinary_ellpack_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ordinary_ellpack_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ordinary_ellpack_api_test"
+      ],
+      "environment": {},
+      "log": "106-compile-metal_ordinary_ellpack_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1628090830054134
+    },
+    {
+      "name": "metal_ordinary_ellpack_api",
+      "command": [
+        "results/metal_ordinary_ellpack_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "107-metal_ordinary_ellpack_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8914767079986632
+    },
+    {
+      "name": "compile-metal_ellpack_io_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ellpack_io_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ellpack_io_api_test"
+      ],
+      "environment": {},
+      "log": "108-compile-metal_ellpack_io_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.2810928339604288
+    },
+    {
+      "name": "metal_ellpack_io_api",
+      "command": [
+        "results/metal_ellpack_io_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "109-metal_ellpack_io_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9299237919040024
+    },
+    {
+      "name": "compile-metal_input_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_input_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_input_api_test"
+      ],
+      "environment": {},
+      "log": "110-compile-metal_input_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.5930661668535322
+    },
+    {
+      "name": "metal_input_api",
+      "command": [
+        "results/metal_input_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "111-metal_input_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3714095421601087
+    },
+    {
+      "name": "compile-metal_category_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_category_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_category_api_test"
+      ],
+      "environment": {},
+      "log": "112-compile-metal_category_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 2.6198815000243485
+    },
+    {
+      "name": "metal_category_api",
+      "command": [
+        "results/metal_category_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "113-metal_category_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0011327089741826
+    },
+    {
+      "name": "compile-metal_multiclass_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_multiclass_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_multiclass_api_test"
+      ],
+      "environment": {},
+      "log": "114-compile-metal_multiclass_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7445079579483718
+    },
+    {
+      "name": "metal_multiclass_api",
+      "command": [
+        "results/metal_multiclass_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "115-metal_multiclass_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 5.3747245841659606
+    },
+    {
+      "name": "compile-metal_stats_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_stats_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_stats_api_test"
+      ],
+      "environment": {},
+      "log": "116-compile-metal_stats_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7635011670645326
+    },
+    {
+      "name": "metal_stats_api",
+      "command": [
+        "results/metal_stats_api_test"
+      ],
+      "environment": {},
+      "log": "117-metal_stats_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.49093829095363617
+    },
+    {
+      "name": "compile-metal_split_finalize",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_split_finalize.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_split_finalize_test"
+      ],
+      "environment": {},
+      "log": "118-compile-metal_split_finalize.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.2869662079028785
+    },
+    {
+      "name": "metal_split_finalize",
+      "command": [
+        "results/metal_split_finalize_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "119-metal_split_finalize.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3993901249486953
+    },
+    {
+      "name": "compile-metal_initialization_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_initialization_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_initialization_api_test"
+      ],
+      "environment": {},
+      "log": "120-compile-metal_initialization_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.683238459052518
+    },
+    {
+      "name": "metal_initialization_api",
+      "command": [
+        "results/metal_initialization_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "121-metal_initialization_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6710689170286059
+    },
+    {
+      "name": "compile-metal_label_validation",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_label_validation.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Foundation",
+        "-framework",
+        "Metal",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_label_validation_test"
+      ],
+      "environment": {},
+      "log": "122-compile-metal_label_validation.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9634302081540227
+    },
+    {
+      "name": "metal_label_validation",
+      "command": [
+        "results/metal_label_validation_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "123-metal_label_validation.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.3808592909481376
+    },
+    {
+      "name": "compile-metal_base_score_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_base_score_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_base_score_api_test"
+      ],
+      "environment": {},
+      "log": "124-compile-metal_base_score_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.847122874809429
+    },
+    {
+      "name": "metal_base_score_api",
+      "command": [
+        "results/metal_base_score_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "125-metal_base_score_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3863190000411123
+    },
+    {
+      "name": "compile-metal_auc_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_auc_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_auc_api_test"
+      ],
+      "environment": {},
+      "log": "126-compile-metal_auc_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0057682080660015
+    },
+    {
+      "name": "metal_auc_api",
+      "command": [
+        "results/metal_auc_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "127-metal_auc_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 2.1540851660538465
+    },
+    {
+      "name": "compile-metal_ranking_roc_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_roc_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_roc_api_test"
+      ],
+      "environment": {},
+      "log": "128-compile-metal_ranking_roc_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8502800001297146
+    },
+    {
+      "name": "metal_ranking_roc_api",
+      "command": [
+        "results/metal_ranking_roc_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "129-metal_ranking_roc_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8917920421808958
+    },
+    {
+      "name": "compile-metal_ranking_pr_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_pr_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_pr_api_test"
+      ],
+      "environment": {},
+      "log": "130-compile-metal_ranking_pr_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9275723749306053
+    },
+    {
+      "name": "metal_ranking_pr_api",
+      "command": [
+        "results/metal_ranking_pr_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "131-metal_ranking_pr_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 2.815286875003949
+    },
+    {
+      "name": "compile-metal_ranking_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_api_test"
+      ],
+      "environment": {},
+      "log": "132-compile-metal_ranking_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0232863328419626
+    },
+    {
+      "name": "metal_ranking_api",
+      "command": [
+        "results/metal_ranking_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "133-metal_ranking_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.7465256249997765
+    },
+    {
+      "name": "compile-metal_ranking_cache_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_cache_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_cache_api_test"
+      ],
+      "environment": {},
+      "log": "134-compile-metal_ranking_cache_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8384064168203622
+    },
+    {
+      "name": "metal_ranking_cache_api",
+      "command": [
+        "results/metal_ranking_cache_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "135-metal_ranking_cache_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7683100840076804
+    },
+    {
+      "name": "compile-metal_ranking_math",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_ranking_math.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_ranking_math_test"
+      ],
+      "environment": {},
+      "log": "136-compile-metal_ranking_math.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5916635419707745
+    },
+    {
+      "name": "metal_ranking_math",
+      "command": [
+        "results/metal_ranking_math_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "137-metal_ranking_math.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6001769590657204
+    },
+    {
+      "name": "compile-metal_ranking_rounding_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_rounding_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_rounding_api_test"
+      ],
+      "environment": {},
+      "log": "138-compile-metal_ranking_rounding_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0997671249788254
+    },
+    {
+      "name": "metal_ranking_rounding_api",
+      "command": [
+        "results/metal_ranking_rounding_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "139-metal_ranking_rounding_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 8.010299290996045
+    },
+    {
+      "name": "compile-metal_ranking_plan_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_plan_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_plan_api_test"
+      ],
+      "environment": {},
+      "log": "140-compile-metal_ranking_plan_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0478131249547005
+    },
+    {
+      "name": "metal_ranking_plan_api",
+      "command": [
+        "results/metal_ranking_plan_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "141-metal_ranking_plan_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6033896249718964
+    },
+    {
+      "name": "compile-metal_ranking_pairs_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_pairs_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_pairs_api_test"
+      ],
+      "environment": {},
+      "log": "142-compile-metal_ranking_pairs_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8195962919853628
+    },
+    {
+      "name": "metal_ranking_pairs_api",
+      "command": [
+        "results/metal_ranking_pairs_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "143-metal_ranking_pairs_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 2.0154288748744875
+    },
+    {
+      "name": "compile-metal_ranking_gradient_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_gradient_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_gradient_api_test"
+      ],
+      "environment": {},
+      "log": "144-compile-metal_ranking_gradient_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1833907088730484
+    },
+    {
+      "name": "metal_ranking_gradient_api",
+      "command": [
+        "results/metal_ranking_gradient_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "145-metal_ranking_gradient_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 9.390622875187546
+    },
+    {
+      "name": "compile-metal_ranking_unbiased_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_ranking_unbiased_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_ranking_unbiased_api_test"
+      ],
+      "environment": {},
+      "log": "146-compile-metal_ranking_unbiased_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.4456625829916447
+    },
+    {
+      "name": "metal_ranking_unbiased_api",
+      "command": [
+        "results/metal_ranking_unbiased_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "147-metal_ranking_unbiased_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 8.419256458990276
+    },
+    {
+      "name": "compile-metal_memory_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_memory_api.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_memory_api_test"
+      ],
+      "environment": {},
+      "log": "148-compile-metal_memory_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1507297498174012
+    },
+    {
+      "name": "metal_memory_api",
+      "command": [
+        "results/metal_memory_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "149-metal_memory_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3244372920598835
+    },
+    {
+      "name": "compile-metal_linalg_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_linalg_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_linalg_api_test"
+      ],
+      "environment": {},
+      "log": "150-compile-metal_linalg_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9956354580353945
+    },
+    {
+      "name": "metal_linalg_api",
+      "command": [
+        "results/metal_linalg_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "151-metal_linalg_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6727461249101907
+    },
+    {
+      "name": "compile-metal_metric_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_metric_api.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_metric_api_test"
+      ],
+      "environment": {},
+      "log": "152-compile-metal_metric_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0517348749563098
+    },
+    {
+      "name": "metal_metric_api",
+      "command": [
+        "results/metal_metric_api_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "153-metal_metric_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.8125526669900864
+    },
+    {
+      "name": "compile-metal_aft_source",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_aft_source.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_aft_source_test"
+      ],
+      "environment": {},
+      "log": "154-compile-metal_aft_source.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.201732625020668
+    },
+    {
+      "name": "metal_aft_source",
+      "command": [
+        "results/metal_aft_source_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "155-metal_aft_source.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0969383330084383
+    },
+    {
+      "name": "compile-metal_survival_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_survival_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_survival_api_test"
+      ],
+      "environment": {},
+      "log": "156-compile-metal_survival_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7775046669412404
+    },
+    {
+      "name": "metal_survival_api",
+      "command": [
+        "results/metal_survival_api_test"
+      ],
+      "environment": {},
+      "log": "157-metal_survival_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5606331250164658
+    },
+    {
+      "name": "compile-metal_adaptive",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_adaptive.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_adaptive_test"
+      ],
+      "environment": {},
+      "log": "158-compile-metal_adaptive.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5094631251413375
+    },
+    {
+      "name": "metal_adaptive",
+      "command": [
+        "results/metal_adaptive_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "159-metal_adaptive.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.4885975830256939
+    },
+    {
+      "name": "compile-metal_sampling",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-fobjc-arc",
+        "tests/metal_sampling.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_sampling_test"
+      ],
+      "environment": {},
+      "log": "160-compile-metal_sampling.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5015376249793917
+    },
+    {
+      "name": "metal_sampling",
+      "command": [
+        "results/metal_sampling_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "161-metal_sampling.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8954746660310775
+    },
+    {
+      "name": "compile-metal_gradient_sampling_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_gradient_sampling_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_gradient_sampling_api_test"
+      ],
+      "environment": {},
+      "log": "162-compile-metal_gradient_sampling_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8548172500450164
+    },
+    {
+      "name": "metal_gradient_sampling_api",
+      "command": [
+        "results/metal_gradient_sampling_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "163-metal_gradient_sampling_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0880082920193672
+    },
+    {
+      "name": "compile-metal_column_log",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_column_log.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_column_log_test"
+      ],
+      "environment": {},
+      "log": "164-compile-metal_column_log.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5715569159947336
+    },
+    {
+      "name": "metal_column_log",
+      "command": [
+        "results/metal_column_log_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "165-metal_column_log.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.4467300418764353
+    },
+    {
+      "name": "compile-metal_column_sampling_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_column_sampling_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_column_sampling_api_test"
+      ],
+      "environment": {},
+      "log": "166-compile-metal_column_sampling_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9857857921160758
+    },
+    {
+      "name": "metal_column_sampling_api",
+      "command": [
+        "results/metal_column_sampling_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "167-metal_column_sampling_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.2218730829190463
+    },
+    {
+      "name": "compile-metal_sketch_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_sketch_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_sketch_api_test"
+      ],
+      "environment": {},
+      "log": "168-compile-metal_sketch_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1048700839746743
+    },
+    {
+      "name": "metal_sketch_api",
+      "command": [
+        "results/metal_sketch_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "169-metal_sketch_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1542277089320123
+    },
+    {
+      "name": "compile-metal_sketch_ingest_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_sketch_ingest_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_sketch_ingest_api_test"
+      ],
+      "environment": {},
+      "log": "170-compile-metal_sketch_ingest_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.394630708033219
+    },
+    {
+      "name": "metal_sketch_ingest_api",
+      "command": [
+        "results/metal_sketch_ingest_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "171-metal_sketch_ingest_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 18.762628332944587
+    },
+    {
+      "name": "compile-metal_cuda_sketch_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_cuda_sketch_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_cuda_sketch_api_test"
+      ],
+      "environment": {},
+      "log": "172-compile-metal_cuda_sketch_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1866351668722928
+    },
+    {
+      "name": "metal_cuda_sketch_api",
+      "command": [
+        "results/metal_cuda_sketch_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "173-metal_cuda_sketch_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.4315347911324352
+    },
+    {
+      "name": "compile-metal_shap_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_shap_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_shap_api_test"
+      ],
+      "environment": {},
+      "log": "174-compile-metal_shap_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7572742910124362
+    },
+    {
+      "name": "metal_shap_api",
+      "command": [
+        "results/metal_shap_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "175-metal_shap_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.4346904999110848
+    },
+    {
+      "name": "compile-metal_leaf_fitting_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_leaf_fitting_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_leaf_fitting_api_test"
+      ],
+      "environment": {},
+      "log": "176-compile-metal_leaf_fitting_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8020198328886181
+    },
+    {
+      "name": "metal_leaf_fitting_api",
+      "command": [
+        "results/metal_leaf_fitting_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "177-metal_leaf_fitting_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.7592213328462094
+    },
+    {
+      "name": "compile-metal_linear_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_linear_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_linear_api_test"
+      ],
+      "environment": {},
+      "log": "178-compile-metal_linear_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8160020830109715
+    },
+    {
+      "name": "metal_linear_api",
+      "command": [
+        "results/metal_linear_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "179-metal_linear_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.140374916838482
+    },
+    {
+      "name": "compile-metal_gradient_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_gradient_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_gradient_state_api_test"
+      ],
+      "environment": {},
+      "log": "180-compile-metal_gradient_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7189981660339981
+    },
+    {
+      "name": "metal_gradient_state_api",
+      "command": [
+        "results/metal_gradient_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "181-metal_gradient_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6928728751372546
+    },
+    {
+      "name": "compile-metal_integer_cache_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_integer_cache_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_integer_cache_api_test"
+      ],
+      "environment": {},
+      "log": "182-compile-metal_integer_cache_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9068071250803769
+    },
+    {
+      "name": "metal_integer_cache_api",
+      "command": [
+        "results/metal_integer_cache_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "183-metal_integer_cache_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5662157079204917
+    },
+    {
+      "name": "compile-metal_cuda_rng",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_cuda_rng.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_cuda_rng_test"
+      ],
+      "environment": {},
+      "log": "184-compile-metal_cuda_rng.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.6195197079796344
+    },
+    {
+      "name": "metal_cuda_rng",
+      "command": [
+        "results/metal_cuda_rng_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "185-metal_cuda_rng.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.39874049997888505
+    },
+    {
+      "name": "compile-metal_quantized_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_quantized_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_quantized_state_api_test"
+      ],
+      "environment": {},
+      "log": "186-compile-metal_quantized_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9914327079895884
+    },
+    {
+      "name": "metal_quantized_state_api",
+      "command": [
+        "results/metal_quantized_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "187-metal_quantized_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7195333749987185
+    },
+    {
+      "name": "compile-metal_cuda_gradient",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_cuda_gradient.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_cuda_gradient_test"
+      ],
+      "environment": {},
+      "log": "188-compile-metal_cuda_gradient.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7025993748102337
+    },
+    {
+      "name": "metal_cuda_gradient",
+      "command": [
+        "results/metal_cuda_gradient_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "189-metal_cuda_gradient.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3993231251370162
+    },
+    {
+      "name": "compile-metal_cuda_gradient_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_cuda_gradient_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_cuda_gradient_api_test"
+      ],
+      "environment": {},
+      "log": "190-compile-metal_cuda_gradient_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9194806250743568
+    },
+    {
+      "name": "metal_cuda_gradient_api",
+      "command": [
+        "results/metal_cuda_gradient_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "191-metal_cuda_gradient_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.7867195829749107
+    },
+    {
+      "name": "compile-metal_integer_leaf_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_integer_leaf_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_integer_leaf_api_test"
+      ],
+      "environment": {},
+      "log": "192-compile-metal_integer_leaf_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8677180840168148
+    },
+    {
+      "name": "metal_integer_leaf_api",
+      "command": [
+        "results/metal_integer_leaf_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "193-metal_integer_leaf_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9332395419478416
+    },
+    {
+      "name": "compile-metal_model_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_model_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_model_state_api_test"
+      ],
+      "environment": {},
+      "log": "194-compile-metal_model_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.0320852079894394
+    },
+    {
+      "name": "metal_model_state_api",
+      "command": [
+        "results/metal_model_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "195-metal_model_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5546222080010921
+    },
+    {
+      "name": "compile-metal_split_categories",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_split_categories.mm",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_split_categories_test"
+      ],
+      "environment": {},
+      "log": "196-compile-metal_split_categories.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.7063084170222282
+    },
+    {
+      "name": "metal_split_categories",
+      "command": [
+        "results/metal_split_categories_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "197-metal_split_categories.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.4652409579139203
+    },
+    {
+      "name": "compile-metal_interaction_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_interaction_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_interaction_api_test"
+      ],
+      "environment": {},
+      "log": "198-compile-metal_interaction_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.9039520418737084
+    },
+    {
+      "name": "metal_interaction_api",
+      "command": [
+        "results/metal_interaction_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "199-metal_interaction_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5423624580726027
+    },
+    {
+      "name": "compile-metal_bound_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_bound_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_bound_state_api_test"
+      ],
+      "environment": {},
+      "log": "200-compile-metal_bound_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8687230830546468
+    },
+    {
+      "name": "metal_bound_state_api",
+      "command": [
+        "results/metal_bound_state_api_test"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1"
+      },
+      "log": "201-metal_bound_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.3969532079063356
+    },
+    {
+      "name": "linear-reference",
+      "command": [
+        "bash",
+        "tests/build_linear_reference.sh"
+      ],
+      "environment": {},
+      "log": "202-linear-reference.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1918227078858763
+    },
+    {
+      "name": "pytest",
+      "command": [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests",
+        "--require-metal"
+      ],
+      "environment": {
+        "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+      },
+      "log": "203-pytest.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 263.7679887081031
+    }
+  ],
+  "library_sha256": "589c12bdb35f045a3c5296a9cfdee6bac6bb380b5c8e5e5a3385ca3710694137",
+  "exit_code": 0,
+  "finished_utc": "2026-11-05T09:45:00.212698+00:00",
+  "source_commit": "6a606e101914e7433f2d6ca036c6ebc9c3cb8fa1",
+  "hardware": "Apple M3, 10 GPU cores, 16 GB shared memory; macOS 26.6.2",
+  "python_result": {
+    "passed": 3597,
+    "skipped": 1,
+    "warnings": 670,
+    "seconds": 262.13,
+    "skip": "No-GPU-only check on a host with accessible Metal; separate CPU build checks passed."
+  },
+  "focused_checks": [
+    {
+      "status": "passed",
+      "revision": "383b448c6c093b26a4438d85d009662b753e995e",
+      "diff_sha256": "3932f8f6d4d40ef7b832cd450283132a653cf9ab2fdc0685f2a84111b3494cf8",
+      "library_sha256": "589c12bdb35f045a3c5296a9cfdee6bac6bb380b5c8e5e5a3385ca3710694137",
+      "native_groups": [
+        "metal_training_state_api",
+        "metal_compressed_consumers_api",
+        "metal_model_state_api",
+        "metal_split_categories"
+      ],
+      "python_selection": [
+        "tests/test_metal_split_categories.py",
+        "tests/test_metal_model_state.py",
+        "tests/test_metal_split_finalize.py"
+      ],
+      "python_passed": 67,
+      "local_record": "results/port2-focused/summary.json"
+    },
+    {
+      "status": "passed",
+      "revision": "383b448c6c093b26a4438d85d009662b753e995e",
+      "diff_sha256": "b238ec3cc5a3db44489603ae5feabd0e3709c77284fd460e26747959cf2c0163",
+      "library_sha256": "589c12bdb35f045a3c5296a9cfdee6bac6bb380b5c8e5e5a3385ca3710694137",
+      "native_groups": [
+        "metal_training_state_api"
+      ],
+      "python_selection": [
+        "tests/test_metal_split_categories.py",
+        "tests/test_metal_leaf_fitting.py",
+        "tests/test_metal_disk_ellpack.py",
+        "tests/test_metal_sampling.py",
+        "tests/test_metal_model_state.py"
+      ],
+      "python_passed": 274,
+      "local_record": "results/port2-callers-v2/summary.json"
+    }
+  ],
+  "corrected_test_failure": "results/port2-callers: new native fixture passed updater-only max_cached_hist_node to TrainParam::Init. Changed fixture to InitAllowUnknown; updater Configure still receives the parameter. No production or numerical-tolerance change.",
+  "cpu_validation": {
+    "status": "passed",
+    "schema_fields": 287,
+    "updater_passed": 9,
+    "updater_deselected": 72,
+    "warnings": 11,
+    "library_sha256": "a2ec7d8300fe0ecd436cadb4262efdbae2733edfba41ccadd88ef1ea112bb9f2",
+    "local_log": "results/port2-cpu.log"
+  },
+  "cuda_compile_at_publication": {
+    "revision": "383b448",
+    "run": 42001642073,
+    "status": "passed",
+    "scope": "Previous PORT-1 source; new PORT-2 source needs its own CI run."
+  },
+  "limitations": [
+    "No NVIDIA runtime comparison",
+    "No new benchmark",
+    "No other Apple hardware",
+    "Optional federated configuration not rerun"
+  ]
+}

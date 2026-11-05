@@ -34,13 +34,13 @@ quantile precision and vector-row validity bugs, plus GPU state/data-placement
 gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
 **not a completion percentage or proof of parity**. See the
 [findings and evidence](docs/CUDA_AUDIT.md) and [ordered plan](docs/PLAN.md).
-Both correctness findings are locally fixed: [NUM-1](validation/cuda-num1-m3.txt)
-at `2404827` and [PORT-9](validation/cuda-port9-m3.txt) at `1034657`. Focused
-native/Python checks pass, as do CPU build/API/updater checks for PORT-9.
-[PORT-1](validation/cuda-port1-m3.txt) is locally complete at `c78cb43`: vector
-weights stay on Metal through root scaling, model growth, bounds updates and
-prediction-cache gathers. **Seven implementation tasks remain.** Selected
-categorical bitsets are next; exact vector gradient sums follow.
+Four tasks are locally complete: [quantile precision](validation/cuda-num1-m3.txt),
+[vector sampling validity](validation/cuda-port9-m3.txt),
+[resident vector weights](validation/cuda-port1-m3.txt), and
+[resident categorical state](validation/cuda-port2-m3.txt).
+The latest change (`6a606e1`) keeps selected vector category bits on Metal through
+queued candidates, model growth and row partitioning. **Six implementation tasks
+remain.** Exact vector gradient sums are next.
 Numerical, scheduling and external-hardware limits remain explicit in the
 [parity ledger](docs/CUDA_PARITY.md).
 
@@ -103,12 +103,11 @@ check GPU execution. PyTorch and MLX are additional dependencies for their
 native-tensor tests. Optional federated tests require `brew install grpc protobuf`
 and run with `bash scripts/test_federated.sh` in separate build directories.
 
-Latest local validation for PORT-1: **100 native groups passed**, followed by a
-small empty-input validation fix and a fresh predictor-group pass; **3,595 Python
-tests passed with one expected skip**, plus CPU build/API/schema and nine updater
-checks. The first Python attempt exposed a test-runner import-path bug, which is
-fixed. The [record](validation/cuda-port1-m3.txt) preserves the separate runs and
-source hashes. Optional federated checks were last run at `dd44829`, as recorded
+Latest full regression covers `6a606e1`: **100 native groups and 3,597 Python
+tests passed, with one expected skip**, plus CPU build/API/schema and nine updater
+checks. PyTorch and MLX GPU interop tests ran. The
+[record](validation/cuda-port2-m3.txt) includes commands, source hashes and limits.
+Optional federated checks were last run at `dd44829`, as recorded
 [here](validation/cuda-metal-native-csr-storage-m3.txt).
 
 The [CUDA CI workflow](.github/workflows/cuda-compile.yml) separately checks that
