@@ -7213,6 +7213,14 @@ struct CudaSketchParams {
   ulong size, columns, budget, begin, base_row;
   uint weighted, mode;
 };
+kernel void xgb_cs_has_categories(device const uchar* types [[buffer(0)]],
+                                   device atomic_uint* result [[buffer(1)]],
+                                   uint i [[thread_position_in_grid]],
+                                   uint lane [[thread_index_in_simdgroup]]) {
+  // Only SIMD groups containing a category contend on the flag word.
+  bool categorical = simd_any(types[i] == 1);
+  if (lane == 0 && categorical) atomic_fetch_or_explicit(result, 1u, memory_order_relaxed);
+}
 inline ulong xgb_cs_column(device const ulong* ptr, ulong columns, ulong i) {
   ulong lo = 0, hi = columns + 1;
   while (lo < hi) {

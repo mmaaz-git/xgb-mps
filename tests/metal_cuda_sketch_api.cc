@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "xgboost/host_device_vector.h"
 #include "../xgboost/src/common/metal_cuda_sketch.h"
 #include "../xgboost/src/common/metal_histogram.h"
 #include "cuda_sketch_reference.h"
@@ -129,8 +130,107 @@ void OneRowDuplicateFeatures() {
     input_entries += entries.size();
   }
 }
+void Initialization() {
+  std::size_t initialized = 0;
+  for (unsigned columns : {0u, 1u, 31u, 32u, 33u, 255u, 256u, 257u, 513u}) {
+    for (unsigned mode = 0; mode < 4; ++mode) for (bool native : {false, true}) {
+      current = "initialize columns=" + std::to_string(columns) + " mode=" +
+                std::to_string(mode) + " native=" + std::to_string(native);
+      // Implicit numeric, explicit numeric, all categorical, and a single
+      // category in the last lane (including SIMD/threadgroup boundaries).
+      std::vector<FeatureType> types(columns, FeatureType::kNumerical);
+      if (mode == 2) std::fill(types.begin(), types.end(), FeatureType::kCategorical);
+      if (mode == 3 && columns) types.back() = FeatureType::kCategorical;
+      std::vector<bool> categorical;
+      for (auto t : types) categorical.push_back(t == FeatureType::kCategorical);
+      ref::Sketch oracle(columns, 3, categorical);
+      std::unique_ptr<metal::CudaSketch> gpu;
+      auto create = [&](common::Span<FeatureType const> input) {
+        auto before = metal::GetStatistics();
+        gpu = metal::MakeCudaSketch(columns, 3, input, {});
+        auto after = metal::GetStatistics();
+        Check(after.cuda_sketch_dispatches == before.cuda_sketch_dispatches + 1,
+              "GPU constructor initialization missing");
+        Check(after.cuda_sketch_batches == before.cuda_sketch_batches,
+              "Initialization counted as an input batch");
+        if (native) {
+          Check(after.feature_host_input_bytes == before.feature_host_input_bytes,
+                "Native type snapshot copied through host staging");
+          Check(after.feature_shared_input_bytes - before.feature_shared_input_bytes == input.size(),
+                "Native type snapshot did not bind the supplied byte range");
+        }
+      };
+      {
+        std::vector<FeatureType> padded(3, FeatureType::kCategorical);
+        padded.insert(padded.end(), types.begin(), types.end());
+        padded.insert(padded.end(), 3, FeatureType::kCategorical);
+        auto saved = padded;
+        auto replacement = mode == 2 || mode == 3 ? FeatureType::kNumerical
+                                                : FeatureType::kCategorical;
+        if (native) {
+          HostDeviceVector<FeatureType> source(padded, DeviceOrd::MPS());
+          create(mode ? source.ConstDeviceSpan().subspan(3, columns)
+                      : common::Span<FeatureType const>{});
+          Check(!source.HostCanRead(), "Constructor requested a native type host mirror");
+          Check(source.ConstHostVector() == saved, "Constructor changed type input/guards");
+          source.Fill(replacement);
+        } else {
+          create(mode ? common::Span<FeatureType const>{padded}.subspan(3, columns)
+                      : common::Span<FeatureType const>{});
+          Check(padded == saved, "Constructor changed host type input/guards");
+          std::fill(padded.begin(), padded.end(), replacement);
+        }
+      }  // Original type allocations are mutated and destroyed before any push.
+      Verify(gpu->Read(), oracle);  // Every initial pointer, including zero columns, is zero.
+      gpu->Push({}, {}, 0, 0, 0);
+      if (columns) {
+        std::vector<bst_idx_t> empty_rows(4, 0);
+        gpu->Push({}, empty_rows, 0, 0, 3);
+        oracle.Push({}, 3, false);
+        Verify(gpu->Read(), oracle);
+        for (unsigned batch = 0; batch < 2; ++batch) {
+          std::vector<::xgboost::Entry> entries;
+          std::vector<ref::Raw> raw;
+          std::vector<bst_idx_t> rows{0};
+          for (unsigned row = 0; row < 9 + batch; ++row) {
+            for (unsigned f = 0; f < columns; ++f) {
+              if (f == 1) continue;  // Preserve an empty column through both batches.
+              float value = float((row + 2 * batch + f) % 3);
+              entries.emplace_back(f, value);
+              raw.push_back({f, value, 1.f});
+            }
+            rows.push_back(entries.size());
+          }
+          gpu->Push(entries, rows, 0, 0, rows.size() - 1);
+          oracle.Push(raw, rows.size() - 1, false);
+          Verify(gpu->Read(), oracle);
+          ++pushes;
+          input_entries += entries.size();
+        }
+      }
+      ++initialized;
+      ++cases;
+    }
+    std::printf("PASS %zu constructor/snapshot cases through %u columns\n", initialized, columns);
+    std::fflush(stdout);
+  }
+  auto before = metal::GetStatistics();
+  auto reject = [&](unsigned columns, int bins, common::Span<FeatureType const> types) {
+    bool rejected = false;
+    try { metal::MakeCudaSketch(columns, bins, types, {}); }
+    catch (std::exception const&) { rejected = true; }
+    Check(rejected, "Invalid sketch constructor accepted");
+  };
+  std::vector<FeatureType> types(2, FeatureType::kNumerical);
+  reject(1, 1, {});
+  reject(1, 2, types);
+  reject(UINT32_MAX, 2, {});
+  Check(metal::GetStatistics().cuda_sketch_dispatches == before.cuda_sketch_dispatches,
+        "Invalid constructor initialized GPU state");
+}
 int main() {
   try {
+    Initialization();
     OneRowDuplicateFeatures();
     for (unsigned mode = 0; mode < 8; ++mode) {
       for (std::size_t n : {0u, 1u, 17u, 257u, 8193u}) {

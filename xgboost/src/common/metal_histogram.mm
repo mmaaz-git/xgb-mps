@@ -288,7 +288,7 @@ class Runtime {
       ranking_bias_sum_pipeline, ranking_bias_finish_pipeline, ranking_bias_update_pipeline,
       ranking_bias_min_pipeline, ranking_cost_rounding_pipeline;
   id<MTLComputePipelineState> aft_gradient_pipeline, aft_metric_pipeline, aft_transform_pipeline;
-  id<MTLComputePipelineState> cs_sort_keys_pipeline;
+  id<MTLComputePipelineState> cs_has_categories_pipeline, cs_sort_keys_pipeline;
   id<MTLComputePipelineState> cs_bounds_pipeline;
   id<MTLComputePipelineState> cs_gather_pipeline;
   id<MTLComputePipelineState> cs_prefix_pipeline;
@@ -479,6 +479,7 @@ class Runtime {
       adaptive_pipeline = make_pipeline(@"xgb_adaptive_objective");
       quantile_metric_pipeline = make_pipeline(@"xgb_quantile_metric");
       uniform_sampling_pipeline = make_pipeline(@"xgb_uniform_sample");
+      cs_has_categories_pipeline = make_pipeline(@"xgb_cs_has_categories");
       cs_sort_keys_pipeline = make_pipeline(@"xgb_cs_sort_keys");
       cs_bounds_pipeline = make_pipeline(@"xgb_cs_bounds");
       cs_gather_pipeline = make_pipeline(@"xgb_cs_gather");
@@ -4297,8 +4298,9 @@ id<MTLBuffer> EncodePrefixSum(Runtime& rt, id<MTLCommandBuffer> command, id<MTLB
   }
   return output;
 }
-BorrowedMemory BindFeatureInput(Runtime const& rt, void const* data, std::size_t bytes) {
-  auto input = TryBorrowMemory(rt.device, data, bytes, 4);
+BorrowedMemory BindFeatureInput(Runtime const& rt, void const* data, std::size_t bytes,
+                               std::size_t alignment = 4) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, alignment);
   if (input.buffer) {
     feature_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
   } else {
@@ -11332,17 +11334,36 @@ class MetalCudaSketch final : public CudaSketch {
       : rt_{GetRuntime()},
         columns_{columns},
         max_bin_{max_bin},
-        weight_count_{weights.size()},
-        has_cat_{std::find(types.begin(), types.end(), FeatureType::kCategorical) != types.end()} {
+        weight_count_{weights.size()} {
     CHECK_GE(max_bin, 2);
     CHECK_LT(columns, std::numeric_limits<std::uint32_t>::max());
     CHECK(types.empty() || types.size() == columns);
-    std::vector<FeatureType> numerical(types.empty() ? columns : 0, FeatureType::kNumerical);
-    types_ = types.empty() ? Upload(rt_, numerical.data(), numerical.size())
-                           : Upload(rt_, types.data(), types.size_bytes());
+    static_assert(sizeof(FeatureType) == 1 && static_cast<int>(FeatureType::kNumerical) == 0 &&
+                  static_cast<int>(FeatureType::kCategorical) == 1);
+    types_ = Allocate(rt_, columns);
     this->SetWeights(weights);
-    std::vector<std::uint64_t> ptr(std::size_t{columns} + 1, 0);
-    resident_ = {Allocate(rt_, 0), Upload(rt_, ptr.data(), ptr.size() * sizeof(std::uint64_t)), 0};
+    auto ptr_bytes = (std::size_t{columns} + 1) * sizeof(std::uint64_t);
+    resident_ = {Allocate(rt_, 0), Allocate(rt_, ptr_bytes), 0};
+    auto categorical = Allocate(rt_, sizeof(std::uint32_t));
+    auto source = BindFeatureInput(rt_, types.data(), types.size_bytes(), 1);
+    auto command = [rt_.queue commandBuffer];
+    CHECK(command);
+    auto blit = [command blitCommandEncoder];
+    CHECK(blit);
+    // CUDA initializes device pointer arrays and keeps an owned feature-type
+    // snapshot. Its categorical any_of returns only a host scheduling flag.
+    [blit fillBuffer:resident_.ptr range:NSMakeRange(0, ptr_bytes) value:0];
+    [blit fillBuffer:categorical range:NSMakeRange(0, sizeof(std::uint32_t)) value:0];
+    if (!types.empty()) {
+      [blit copyFromBuffer:source.buffer sourceOffset:source.offset toBuffer:types_
+        destinationOffset:0 size:types.size_bytes()];
+    } else if (columns) {
+      [blit fillBuffer:types_ range:NSMakeRange(0, columns) value:0];
+    }
+    [blit endEncoding];
+    CSDispatch(command, rt_.cs_has_categories_pipeline, types.size(), {types_, categorical});
+    CSComplete(command);
+    has_cat_ = *static_cast<std::uint32_t const*>(categorical.contents) != 0;
   }
   void SetWeights(Span<float const> weights) override {
     weight_count_ = weights.size();

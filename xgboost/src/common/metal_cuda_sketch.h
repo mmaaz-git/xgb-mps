@@ -14,6 +14,8 @@ namespace xgboost::common::metal {
 // CUDA's SketchContainer algorithm, separate from HostSketchContainer's level queue.
 // Input windows are CSR entries. Summaries and column pointers remain on Metal
 // between pushes; Read is used only for final cuts and native diagnostics.
+// Construction snapshots feature types, clears initial pointers and determines
+// categorical presence on GPU. Only the scheduling flag is published to the host.
 struct CudaSketchSummary {
   std::vector<std::uint64_t> ptr;
   std::vector<WQSummary<>::Entry> entries;
