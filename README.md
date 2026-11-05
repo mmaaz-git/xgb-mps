@@ -45,7 +45,7 @@ remains unproven.
 | Validation stage | Current status |
 | --- | --- |
 | Local Metal/CPU acceptance | Passed for the audited implementation; details below |
-| CUDA compilation | [Latest completed run passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42108648407), including leaf/cache comparisons; the new linear comparison program awaits compilation |
+| CUDA compilation | [Latest completed run passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42108648407), including leaf/cache comparisons; the [linear build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537) |
 | CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
 | Performance | Mixed; the latest full HIGGS run is slower on MPS |
 
@@ -55,7 +55,10 @@ and explicit numerical limits. This is test coverage, not a completion percentag
 The latest [linear replay](validation/linear-contract-m3-run.json) preserves 56
 records and 893 actions; its Metal and independent reference checks pass.
 
-Remaining work is to add dedicated comparisons for PR/ROC/ranking metrics, SHAP
+Grouped PR now also has a complete local replay of its 319 existing records;
+its CUDA build and execution remain pending. [Evidence and domain limits](docs/NVIDIA_COMPARISON.md#grouped-precisionrecall-auc).
+
+Remaining work is to complete comparisons for PR/ROC/ranking metrics, SHAP
 and compiler arithmetic behavior; extend caller coverage, including the full
 linear updater/selector; then execute the comparisons on NVIDIA and resolve the
 differences. Further performance tuning follows correctness. Detailed corpus

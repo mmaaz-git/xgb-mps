@@ -16,7 +16,7 @@ def build(tmp_path,monkeypatch):
     spec=importlib.util.spec_from_file_location("cuda_driver",ROOT/"scripts/build_cuda_comparison.py")
     driver=importlib.util.module_from_spec(spec); spec.loader.exec_module(driver)
     targets=re.search(r"foreach\(contract ([^)]+)\)",(ROOT/"tests/cuda_comparison/CMakeLists.txt").read_text()).group(1).split()
-    assert targets==["numerical","aft","rng","math","ranking","metric","linear"]
+    assert targets==["numerical","aft","rng","math","ranking","metric","linear","auc"]
     for name in driver.INPUTS:
         p=tmp_path/name; p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes((ROOT/name).read_bytes())
     (tmp_path/"xgboost").mkdir(exist_ok=True)
@@ -72,13 +72,17 @@ def build(tmp_path,monkeypatch):
     return run,state,tmp_path,output,driver
 
 
-def test_seven_binaries_complete_hashes_and_host_only_isolation_gate(build):
+def test_eight_binaries_complete_hashes_and_host_only_isolation_gate(build):
     run,state,root,output,driver=build
     record=run("compile"); assert record["status"]=="passed-object-compile"
     assert not any("--metric-registry" in c for c in state["calls"])
     record=run("link")
     assert record["status"]=="passed-compile-link" and not record["gpu_execution"]
-    assert len(record["binaries"])==7 and len(record["inputs"])==67
+    assert len(record["binaries"])==8 and len(record["inputs"])==71
+    assert {'tests/grouped_pr_contract_io.h','tests/cuda_auc_contracts.cu',
+            'xgboost/src/metric/auc.cu','xgboost/src/metric/auc.h'} <= set(record['inputs'])
+    auc=(root/'tests/cuda_auc_contracts.cu').read_text()
+    assert 'metric::cuda_impl::RankingPRAUC(' in auc and 'metric/auc.cu"' not in auc
     assert {'tests/linear_contract_io.h','tests/cuda_linear_contracts.cu','tests/cuda_linear_source.h',
             'tests/linear_registry_probe.h','xgboost/src/linear/updater_gpu_coordinate.cu',
             'xgboost/src/linear/coordinate_common.h','xgboost/src/linear/param.h',

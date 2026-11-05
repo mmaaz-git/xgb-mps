@@ -35,6 +35,8 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "tests/cuda_linear_source.h", "tests/linear_registry_probe.h",
           "xgboost/src/linear/updater_gpu_coordinate.cu", "xgboost/src/linear/coordinate_common.h",
           "xgboost/src/linear/param.h", "xgboost/include/xgboost/linear_updater.h",
+          "tests/grouped_pr_contract_io.h", "tests/cuda_auc_contracts.cu",
+          "xgboost/src/metric/auc.cu", "xgboost/src/metric/auc.h",
           "xgboost/src/tree/gpu_hist/histogram.cu", "xgboost/src/tree/gpu_hist/histogram.cuh",
           "xgboost/src/tree/gpu_hist/feature_groups.cu", "xgboost/src/tree/gpu_hist/feature_groups.cuh",
           "xgboost/src/data/ellpack_page.cu", "xgboost/src/data/ellpack_page.cuh",
@@ -163,7 +165,7 @@ def main():
         binary = output / "cmake/cuda_numerical_contracts"
         binaries = {name: {"path": str(output / f"cmake/cuda_{name}_contracts"),
                            "sha256": sha(output / f"cmake/cuda_{name}_contracts")}
-                    for name in ("numerical", "aft", "rng", "math", "ranking", "metric", "linear")}
+                    for name in ("numerical", "aft", "rng", "math", "ranking", "metric", "linear", "auc")}
         # Host-only checks, runnable on compiler CI without NVIDIA hardware.
         # Verify both the real registry and dynamic symbol boundary: the metric
         # probe must neither register alternate factories nor interpose bodies.
@@ -257,6 +259,8 @@ def main():
                 "results/integer-cache-inputs.bin", str(output / "cuda-integer-cache-observations.bin")]), flush=True)
         print("Linear runtime command:", shlex.join([binaries["linear"]["path"],
                 "results/linear-inputs.bin", str(output / "cuda-linear-observations.bin")]), flush=True)
+        print("Grouped PR runtime command:", shlex.join([binaries["auc"]["path"], "--grouped-pr",
+                "results/grouped-pr-inputs.bin", str(output / "cuda-grouped-pr-observations.bin")]), flush=True)
     except Exception as error:
         record.update(status="failed", error=str(error))
         raise

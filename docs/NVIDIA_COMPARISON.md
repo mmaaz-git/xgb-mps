@@ -1206,3 +1206,77 @@ C++ input round trip pass. CUDA compilation/execution and full updater/selector
 comparisons remain pending. Primitive association bounds are not universal CUB
 architecture guarantees; preserve concrete failures for review alongside the
 separate compiler/contraction contract.
+
+## Grouped precision–recall AUC
+
+`cuda_auc_contracts --grouped-pr` retains the entire existing
+`metal_ranking_pr_api.cc` corpus: **319 records**, comprising 297 main cases,
+sixteen edge cases and six invalid-label rejections. The main cases cover
+14,198,354 rows and 4,660 original query outputs. Zero/singleton queries, three
+storage strides, tied signed zeros, subnormal scores/weights, soft and NaN labels,
+negative/nonfinite weights, overflowing products, and million-row queries remain.
+Original dispatch, input/guard, CPU/source/integral and tiny-value relative checks
+are unchanged. The [record](../validation/grouped-pr-contract-m3-run.json) contains
+source hashes and local evidence.
+
+The original Metal calls are saved exactly. A separate common replay packs the
+same logical values and removes empty queries, then observes the combined result
+and individual one-query calls. CUDA invokes the **linked production
+`metric::cuda_impl::RankingPRAUC`**, without copying its formulas, including its
+source into a test translation unit, or replacing registrations. Its six rejection
+records require the actual invalid-label error, not an arbitrary exception.
+
+Compaction is an explicit domain adaptation: in `auc.cu`, grouped PR can read
+`fptp[LastOf(empty_group)]`, and `reduce_by_key` stores totals without slots for
+absent groups. A leading empty query can underflow the index; internal empty
+queries can misalign the total assigned to later queries. This is source analysis,
+not an observed NVIDIA result. There are 301 adapted records, including six
+rejection cases. CUDA does not execute those original empty-query layouts, so
+their source behavior is not established by this replay. Zero-row inputs reach
+the source's early return. Negative/nonfinite weights remain direct implementation
+tests; normal public metadata validation rejects them.
+
+Isolated-query results are actual separate calls on each backend, **not captured
+per-query internals of the combined CUDA call**. Metal additionally retains all
+original per-query outputs and all four padded output guards. The reports expose
+20,336 Metal fields; 8,014 planned common fields come from 313 combined calls and
+3,694 isolated-query calls. The independent checker reconstructs all 153,869,127
+original FP32 input words, including every strided gap, using the original seeded
+MT19937 algorithm. It checks FP32 source term casts, binary64 serial reference
+integration, exact counts/rejections and the original `2e-12 + 2e-12*abs(expected)`
+tolerance. The tied cast fixtures retain exact comparisons; tiny tied curves
+retain the separate relative check. This reference is not a CUB association model
+or a universal NVCC/libdevice error bound.
+
+One complete compressed report is stored, avoiding a duplicate copy of its large
+input payload. `unpack` extracts input-only records with a separately recorded
+hash; the CUDA reader rejects observation files. Use new output paths:
+
+```sh
+python3 scripts/compare_grouped_pr_contracts.py unpack \
+  validation/grouped-pr-contract-metal-m3.bin.xz results/grouped-pr-inputs.bin
+results/cuda-comparison-build/cmake/cuda_auc_contracts --grouped-pr \
+  results/grouped-pr-inputs.bin results/grouped-pr-cuda.bin
+python3 scripts/compare_grouped_pr_contracts.py compare \
+  validation/grouped-pr-contract-metal-m3.bin.xz results/grouped-pr-cuda.bin \
+  --output results/grouped-pr-comparison.json
+```
+
+Original Metal execution and the full export pass. Independent references,
+23 report-integrity tests, eleven mocked build-driver tests and the complete C++
+input round trip pass. CUDA compilation and actual NVIDIA execution remain
+pending. Comparison exits 1 for malformed input or reference failure and 2 for
+review, even if all common outputs match, because the domain adaptation remains.
+All output bit differences, including zero signs and NaN payloads, are reported.
+
+To export again, allow approximately 1.2 GB for the two raw files:
+
+```sh
+bash scripts/test.sh --native metal_ranking_pr_api
+MTL_DEBUG_LAYER=1 results/metal_ranking_pr_api_test --report-prefix results/new-grouped-pr
+python3 scripts/compare_grouped_pr_contracts.py validate-metal results/new-grouped-pr.metal.bin
+```
+
+This covers grouped PR only. Binary/multi-output AUC, their pathological prefix
+diagnostics, grouped ROC, public metric caller combinations and the remaining
+ranking metrics are separate work; P5-N09/10/11 are not closed by this batch.

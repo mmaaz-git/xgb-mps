@@ -48,7 +48,7 @@ classification.
 | PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA compile passed at `bf1ebea` | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
 | PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA compile passed at `bf1ebea` | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
 | VERIFY-1 | Integration at a fixed revision | Locally complete; NVIDIA execution remains separate | [Acceptance report](LOCAL_ACCEPTANCE.md) maps all 17 contracts and 16 original gap rows; full Metal/CPU/federated evidence at `68c800e`, focused numerical fixtures at `0c66454`; CUDA compile passed at `bf1ebea` |
-| VERIFY-2 | NVIDIA execution comparison | Runners addressing twelve contracts and production sketch/training/prediction added; Metal evidence published, external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; five contracts lack dedicated runners and broader caller coverage remains; publish differences, not just compiler success |
+| VERIFY-2 | NVIDIA execution comparison | Runners addressing twelve contracts and production sketch/training/prediction added; grouped PR replay also added; external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; five contracts still need additional runners and broader caller coverage remains; publish differences, not just compiler success |
 | PERF-1 | Profile/optimize a frozen benchmark matrix | Full HIGGS repeated at `68c800e`; ordinary strict equivalence failed, common-cut 100-round diagnostic passes | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
 
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
@@ -186,7 +186,7 @@ input round trip pass. CUDA calls the actual stump implementation and separately
 replays its reduction to expose diagnostic sums; those are not private API sums.
 Its compiler gate passed in run 42100004279; NVIDIA execution remains pending. See the
 [stump record](../validation/stump-contract-m3-run.json).
-Runners now address twelve contracts; five still lack dedicated runners, broader
+Runners now address twelve contracts; five still need additional runners, broader
 caller coverage remains, and none has actual NVIDIA execution evidence.
 
 Continue VERIFY-2 in the following bounded batches. Reuse the accepted Metal
@@ -198,7 +198,7 @@ its contract until actual NVIDIA results have been reviewed.
 | --- | --- | --- |
 | 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
 | 2 | P5-N07 and training-reduction-association | Full statistics, linalg, metric, root/stump, current CUDA-derived sampling, integer leaf/cache and linear operation corpora added; complete outstanding compiler/runtime gates. Full linear updater/selector and broader caller comparisons remain separate. |
-| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
+| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Complete grouped PR corpus exported and locally checked; CUDA build/runtime pending. Next: binary/multi-output PR/ROC, grouped ROC, then ranking metrics. Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
 | Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |
 
@@ -235,6 +235,16 @@ state; the 123 duplicate-column residual writes and three unsafe guards are
 excluded from CUDA execution. This addresses the reduction contract but does
 not close it or replace full updater/selector comparisons. See the
 [linear record](../validation/linear-contract-m3-run.json).
+
+The grouped PR replay preserves all 297 main cases (14,198,354 rows), sixteen
+edge cases and six label rejections. Independent input reconstruction and source
+checks pass, as do the full C++ codec and 23 report-integrity tests. CUDA calls
+the linked production `RankingPRAUC` directly. Empty-query compaction and
+isolated-query calls are explicitly distinct from the original Metal layout
+and its per-query diagnostics. No NVIDIA comparison or compiler pass is claimed
+for this new consumer. Binary/multi-output PR prefix/pathology coverage remains
+necessary before counting P5-N09 as addressed by the comparison tools. See the
+[grouped PR record](../validation/grouped-pr-contract-m3-run.json).
 
 PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
 Freeze the accepted source and workload parameters; inspect prior outputs before

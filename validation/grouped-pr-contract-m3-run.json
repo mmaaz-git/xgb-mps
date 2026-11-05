@@ -1,0 +1,221 @@
+{
+  "status": "Complete grouped PR Metal corpus and local checks passed; CUDA compiler/runtime pending",
+  "suite": "grouped-pr-v1",
+  "recorded_utc": "2026-11-05T21:47:49.926863+00:00",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T213705Z",
+    "revision": "3943d6a03069af187db714dc6cbfec81d2a3cda8",
+    "working_tree": "M tests/metal_ranking_pr_api.cc\n?? tests/grouped_pr_contract_io.h",
+    "diff_sha256": "49937b1dd261ed11798086c7027afde411a2b9d8461828f9413a07ddb51434e5",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/grouped_pr_contract_io.h": "ce346009ca7897c25345653a96d1186796e3089ffcbf5e5bbd375d686101d58c"
+    },
+    "native_groups": [
+      "metal_ranking_pr_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.7489337918814272
+      },
+      {
+        "name": "compile-metal_ranking_pr_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_ranking_pr_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_ranking_pr_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_ranking_pr_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.5129909170791507
+      },
+      {
+        "name": "metal_ranking_pr_api",
+        "command": [
+          "results/metal_ranking_pr_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_ranking_pr_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 3.632463375106454
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T21:37:11.729380+00:00"
+  },
+  "native_source_proof": {
+    "native_diff_sha256": "49937b1dd261ed11798086c7027afde411a2b9d8461828f9413a07ddb51434e5",
+    "native_source_sha256": "5ac80a9eb2e1452ef811012e74318078673ae9a95b7738adaf89107a19aaf59c",
+    "header_sha256": "ce346009ca7897c25345653a96d1186796e3089ffcbf5e5bbd375d686101d58c",
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90"
+  },
+  "export": {
+    "command": [
+      "results/metal_ranking_pr_api_test",
+      "--report-prefix",
+      "results/verify2-grouped-pr"
+    ],
+    "environment": {
+      "MTL_DEBUG_LAYER": "1"
+    },
+    "status": "passed",
+    "main_cases": 297,
+    "rows": 14198354,
+    "original_query_outputs": 4660,
+    "edge_cases": 16,
+    "label_rejections": 6,
+    "max_original_source_or_integral_absolute_difference": 7.88258347e-15
+  },
+  "independent_reference": {
+    "cases": 319,
+    "input_words": 153869127,
+    "checked_fields": 20336,
+    "isolated_queries": 3694,
+    "empty_group_adaptations": 301,
+    "reference_failures": []
+  },
+  "artifacts": {
+    "status": "passed",
+    "source_proof": "results/verify2-grouped-pr-native-source.json",
+    "artifact": {
+      "path": "validation/grouped-pr-contract-metal-m3.bin.xz",
+      "bytes": 23827208,
+      "sha256": "012216771fc32c417e42d39aa777a46a3fddb151d54754d5b8f313649798b4ee",
+      "raw_bytes": 615669480,
+      "raw_sha256": "e9d84650682b1b9a1a78d80c03282fbe4af2e623be7e7a41b0d68170460a71d8"
+    },
+    "input_only": {
+      "raw_bytes": 615505516,
+      "raw_sha256": "a7cad16a78b9ed7c0f078abbe1cb2984263cd337767ba76aa81ce98bd07f9deb",
+      "derivation": "compare_grouped_pr_contracts.py unpack extracts exact inputs from the saved Metal report"
+    },
+    "codec": {
+      "status": "passed",
+      "cases": 319,
+      "roundtrip_sha256": "a7cad16a78b9ed7c0f078abbe1cb2984263cd337767ba76aa81ce98bd07f9deb",
+      "observations_rejected": true
+    },
+    "limits": "No CUDA compiler or runtime execution. Store one complete report; input-only payload is reproducibly extracted, not duplicated in git."
+  },
+  "exact_input_extraction": {
+    "status": "passed",
+    "bytes": 615505516,
+    "sha256": "a7cad16a78b9ed7c0f078abbe1cb2984263cd337767ba76aa81ce98bd07f9deb"
+  },
+  "planned_common_observed_fields": 8014,
+  "combined_calls": 313,
+  "isolated_query_calls": 3694,
+  "original_layout_adaptations": {
+    "records": 301,
+    "normal": 295,
+    "label_rejections": 6,
+    "reason": "Remove empty queries explicitly. Source can underflow LastOf on leading empties; reduce_by_key packs totals without absent group slots.",
+    "scope": "Original Metal layout preserved; compacted aggregate and independent isolated-query calls are the common CUDA domain. Original empty-query CUDA behavior is not executed or established."
+  },
+  "report_integrity_tests": {
+    "status": "passed",
+    "count": 23,
+    "gpu_execution": false
+  },
+  "mocked_build_tests": {
+    "status": "passed",
+    "count": 11,
+    "source_inputs": 71,
+    "binaries": 8,
+    "gpu_execution": false
+  },
+  "source_sha256": {
+    "tests/metal_ranking_pr_api.cc": "5ac80a9eb2e1452ef811012e74318078673ae9a95b7738adaf89107a19aaf59c",
+    "tests/grouped_pr_contract_io.h": "ce346009ca7897c25345653a96d1186796e3089ffcbf5e5bbd375d686101d58c",
+    "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+    "tests/cuda_auc_contracts.cu": "093da5d0dc3ba5f3beb24e64a9ac5920a39c5e073ff2f06fffba84108445bb41",
+    "scripts/compare_grouped_pr_contracts.py": "68548bacb37bae365e402af2b26f03126e6e51be410ca8388ea16b2c341a647a",
+    "tests/test_grouped_pr_contract_reports.py": "17da2388385ce1fa9f50123fb6ef10e6b66dac1bdfca369a3b3c540f71db135d",
+    "scripts/build_cuda_comparison.py": "27675690204fe0b3564494b7003c2036a374e5501c1d600f51a10469a3db9509",
+    "tests/cuda_comparison/CMakeLists.txt": "b2893d457dfb3a1b442f78a2551e59a59e0ff2d0636a27b8b36b54ad667e4466",
+    "tests/test_cuda_metric_build.py": "10c708dd72fb0a440da1573ea81afe04794d4b6ac7a18f453ce8658348edaad7",
+    ".github/workflows/cuda-compile.yml": "c7662232509da7e1e375f2d1db6798f6524dadeaf082def80f79d4b91f4879b4",
+    "xgboost/src/metric/auc.cu": "760e940b441b75ad9d03b52ad552a4398ce65bf6415feaca54530bdd7724ea60",
+    "xgboost/src/metric/auc.h": "67c134d25be16233b99d32b67b545394c3dd32118959820e58536b6fa4727240"
+  },
+  "log_sha256": {
+    "results/verify2-grouped-pr.log": "706c872c17af60b5d2bb2d18eb0bbe22b40cd35c0dafbae2084104d5ef30f488",
+    "results/verify2-grouped-pr-native/summary.json": "4da474db17cb905b94ea133771c415983235eecd75509e11fff89b5cd06eacc1",
+    "results/verify2-grouped-pr-native-source.json": "c220810f1f7b2121c835a8a877dc8d7e05e79c33ba9360160390323409171b69",
+    "results/verify2-grouped-pr-reference-final.log": "9828cedd215564201e20181691e5938d276bc763f578a6b4362ae01d387fedb6",
+    "results/verify2-grouped-pr-tests.log": "448864a0d6327d85074ccf0d46637a8fc3d699fbd98bc5eb339bf504fadf60fc",
+    "results/verify2-grouped-pr-build-final.log": "42790f1f4cee88a8b8ad8e0d2cc06fa49ed803c84fc349d16722dc1aa029fe77",
+    "results/verify2-grouped-pr-packaging.log": "bfae9ce857af1a43ea46d42c01d91918a26e4518a67c2a5c918b20c462d777fd",
+    "results/check-package-grouped-pr.py": "b185c72b4670a01c6c7e50592b3d0b4def26fe98f562a1b0a28461ee09427a59",
+    "results/verify2-grouped-pr-io.cc": "c43215c67a7875a0c937e5de1f09f2fa90a6023c47844bf71e6f97374534b53c"
+  },
+  "cuda_compile": {
+    "status": "not_started",
+    "gpu_execution": false,
+    "reason": "Linear run42113854537 is separate and predates the AUC consumer"
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "cuda_auc_contracts --grouped-pr input-only.bin new-cuda.bin"
+  },
+  "limits": [
+    "No NVIDIA execution or compiler validation of this new consumer yet.",
+    "Actual linked cuda_impl::RankingPRAUC; no source-body rewrite, private adapter, or alternate registry.",
+    "Isolated-query results are actual separate calls, not per-query internals captured from the combined CUDA call.",
+    "Reference retains source FP32 terms, serial binary64 integration, exact counts/cast fixtures and original 2e-12 absolute+relative budget; tiny curves retain the separate relative check.",
+    "Serial reference association and sampled tolerance are not universal CUB/NVCC/libdevice guarantees.",
+    "Negative/nonfinite weights exercise the direct implementation; normal public metadata validation rejects them.",
+    "Only Apple M3 evidence. Binary/multi-output PR and ROC, their prefix/pathology diagnostics, grouped ROC and public caller coverage remain necessary.",
+    "P5-N09/10/11 are not closed and the twelve-addressed-contract count is unchanged."
+  ]
+}

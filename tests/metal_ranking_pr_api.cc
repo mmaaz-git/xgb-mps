@@ -17,6 +17,7 @@
 #include "../xgboost/src/common/optional_weight.h"
 #include "../xgboost/src/metric/auc.h"
 #include "xgboost/context.h"
+#include "grouped_pr_contract_io.h"
 
 namespace xgboost::metric {
 std::tuple<double, double, double> BinaryPRAUC(Context const*, common::Span<float const>,
@@ -28,6 +29,37 @@ using common::Span;
 std::string current;
 size_t cases = 0, checked_rows = 0, checked_groups = 0;
 double maximum_difference = 0;
+std::unique_ptr<grouped_pr::Exporter> report;
+void Record(std::vector<float> const& p, std::vector<float> const& y,
+            std::vector<bst_group_t> const& groups, std::vector<float> const& weights,
+            common::metal::RankingAUCSums actual,
+            std::vector<common::metal::RankingAUCSums> const& individual = {}, bool rejected=false) {
+  if (!report) return;
+  grouped_pr::Input in{report->NextSpec(), groups, p, y, weights};
+  grouped_pr::Observation observed;
+  observed.rejected = rejected;
+  if (!rejected) {
+    observed.original = {actual.area, actual.valid_groups};
+    for (auto pair : individual) {
+      observed.guards.push_back(pair.area); observed.guards.push_back(pair.valid_groups);
+    }
+    auto compact = grouped_pr::Compact(in);
+    auto combined = common::metal::RankingPRAUC(linalg::MakeVec(compact.predictions),
+        linalg::MakeVec(compact.labels), compact.ptr, compact.weights);
+    observed.common = {combined.area, combined.valid_groups};
+    for (std::size_t g=0; g+1<compact.ptr.size(); ++g) {
+      auto begin=compact.ptr[g], end=compact.ptr[g+1];
+      std::vector<float> gp(compact.predictions.begin()+begin,compact.predictions.begin()+end);
+      std::vector<float> gy(compact.labels.begin()+begin,compact.labels.begin()+end);
+      std::vector<float> gw;
+      if (!compact.weights.empty()) gw.push_back(compact.weights[g]);
+      auto single=common::metal::RankingPRAUC(linalg::MakeVec(gp),linalg::MakeVec(gy),
+                                             std::vector<bst_group_t>{0,end-begin},gw);
+      observed.isolated.push_back(single.area); observed.isolated.push_back(single.valid_groups);
+    }
+  }
+  report->Add(in,observed);
+}
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
@@ -77,6 +109,7 @@ void CudaEdgeRules() {
                                             groups, {});
   Check(result.valid_groups == 0 && result.area == 0,
         "CUDA grouped PR excludes one-row queries, including fractional labels");
+  Record(predictions, labels, groups, {}, result);
   size_t checked = 1;
   // All tied predictions need one interval: no log/reduction-tree ambiguity.
   for (float label : {.25f, .1f, std::nextafter(1.f, 0.f), 1e-30f}) {
@@ -90,6 +123,7 @@ void CudaEdgeRules() {
                                            groups, weights);
       Check(result.valid_groups == expected.valid_groups && result.area == expected.area,
             "CUDA grouped PR must round every FP term once after binary64 arithmetic");
+      Record(predictions, labels, groups, weights, result);
       ++checked;
     }
   }
@@ -105,6 +139,7 @@ void CudaEdgeRules() {
                                          groups, weights);
     Check(result.valid_groups == expected.valid_groups, "CUDA grouped PR FP*TP validity");
     Close(result.area, expected.area);
+    Record(predictions, labels, groups, weights, result);
     ++checked;
   }
   std::printf("PASS %zu CUDA grouped PR edge/cast cases\n", checked);
@@ -257,6 +292,7 @@ void Case(std::vector<uint32_t> const& lengths, int layout, int mode) {
   }
   Close(actual.area, sum);
   Close(actual.valid_groups, valid);
+  Record(p_storage, y_storage, groups, weights, actual, individual);
   ++cases;
   checked_rows += rows;
   if (cases % 24 == 0 || rows > 500000) {
@@ -281,12 +317,14 @@ void InvalidLabels() {
       rejected = true;
     }
     Check(rejected, "GPU failed to reject invalid PR label");
+    Record(predictions, labels, groups, {}, {}, {}, rejected);
   }
   std::puts("PASS six GPU label-validation errors, including negative subnormal");
 }
 
-int main() {
+int main(int argc, char** argv) {
   try {
+    report = grouped_pr::ReportOption(argc, argv);
     CudaEdgeRules();
     for (uint32_t n : {0u, 1u, 31u, 255u, 256u, 257u, 4097u, 65537u})
       for (int layout = 0; layout < 3; ++layout)
@@ -298,6 +336,7 @@ int main() {
     Case({}, 0, 0);
     Case({0, 0, 0}, 0, 0);
     InvalidLabels();
+    if (report) report->Finish();
     std::printf(
         "PASS %zu production grouped PR cases / %zu rows / %zu query results; max "
         "CUDA-source/integral "
