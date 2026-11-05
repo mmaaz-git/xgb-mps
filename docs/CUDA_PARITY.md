@@ -89,8 +89,8 @@ must be reported rather than hidden by widening test tolerances.
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. Predictions, labels, query weights, gradients, NDCG caches and unbiased-learning arrays now retain explicit Metal storage through objective calls. Top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates execute on GPU. Source bias initialization/reload rules are preserved; serialization explicitly reads the small bias arrays |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms, now with explicit Metal input/output storage; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Means, medians/quantiles and stump wrappers now consume Metal spans and publish strided outputs/empty fills on GPU. Other state work still requires porting/audit |
-| Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu`, `predictor/predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application. Initialization, base margins, prediction caches and outputs now retain Metal storage, including learner copies; scalar fills/vector broadcasts reuse existing kernels. Host-input packing remains on CPU; native dense/columnar snapshots use GPU copies; public result APIs retain existing Metal arrays without an extra host mirror; native outputs snapshot them on GPU and NumPy explicitly copies |
-| Prediction cache from leaf IDs | `predictor/gpu_predictor.cu` | Metal IDs and output arrays, guarded input bindings and alias snapshots; supports strided target slices and negated sampling positions. GBTree retains Metal prediction storage through cache updates; updater gradient/position producers still need migration |
+| Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu`, `predictor/predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application. Initialization, base margins, prediction caches and outputs now retain Metal storage, including learner copies; scalar fills/vector broadcasts reuse existing kernels. Tree node/category/leaf arrays now use persistent device mirrors; per-call traversal packing runs on Metal from those arrays, while per-tree metadata stays on host. Host-input packing remains on CPU; native dense/columnar snapshots use GPU copies; public result APIs retain existing Metal arrays without an extra host mirror; native outputs snapshot them on GPU and NumPy explicitly copies |
+| Prediction cache from leaf IDs | `predictor/gpu_predictor.cu` | Metal IDs and output arrays, guarded input bindings and alias snapshots; supports strided target slices and negated sampling positions. GBTree retains Metal prediction storage through cache updates; hist/approx gradient and leaf-position producers now retain Metal arrays |
 | SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA. Outputs/base margins now retain Metal storage; raw feature inputs bind guarded shared memory with GPU alias snapshots. Input decoding/category mapping runs on GPU; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
 | RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
 | Multiclass error and logloss | `metric/multiclass_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
@@ -140,24 +140,25 @@ Performance work must reduce the full training/prediction time. Apple GPU and
 NVIDIA GPU speedups cannot be assumed equal; publish hardware, workload, CPU thread
 count, repeated measurements, and accuracy alongside any speedup claim.
 
-## Next major training work
+## Remaining porting work
 
-Quantized pages, row indices and histogram caches now persist on Metal buffers.
-Split selection, histogram conversion/accumulation/subtraction, uniform/gradient-based sampling
-and root-gradient/stump reductions also execute on Metal. Host orchestration still synchronizes at each tree level;
-ordinary gradient calls can share host arrays directly, while other gradient and prediction-state paths still stage data between host arrays and GPU buffers.
-Keeping those arrays resident and reducing synchronization are the next architectural
-steps. Host model construction and serialization can remain on the CPU.
+Training gradients, sampling buffers, histogram state, leaf positions, prediction
+caches/results, category dictionaries/mappings and prediction tree mirrors now
+have explicit Metal storage paths. Source-defined host model construction,
+serialization and SHAP compression remain on CPU. The detailed records below
+show which consumers and edge cases have actually been exercised.
 
-Split tests include categorical partitions, missing directions, monotonic and
-interaction constraints, vector leaves and external-memory pages. Column sampling
-now uses GPU initialization, random draws, selection and ordering. Remaining
-training-state updates and more efficient external-memory staging are still required.
+The remaining work includes a complete CUDA operation/arithmetic audit and GPU
+collective integration. One concrete arithmetic follow-up is SHAP tree-weight
+placement: CUDA weights leaves before traversal, while Metal currently weights
+later contributions. Distributed sketch reduction also needs the GPU collective
+path. CUDA/NVIDIA execution comparison and testing on other Apple hardware remain
+separate validation requirements; local passing tests cannot establish them.
 
-Remaining sketch construction, CUDA algorithm alignment and collectives are
-separate coverage requirements. AFT source arithmetic is now fully on GPU, with
-its numerical validation limits recorded below.
-The observed prediction speedups do not establish any of those as complete.
+Further performance work includes reducing synchronization and improving external
+memory staging. It follows coverage/correctness work. Historical benchmark gains
+do not establish full CUDA parity, and this publication change has no new timing
+claim.
 
 ## Legacy CPU-formula gradient sampler
 
@@ -4005,3 +4006,69 @@ No production/test changes followed that run.
 Persistent prediction-model storage, remaining CUDA arithmetic/operation audits,
 GPU collective transport and cross-hardware validation remain open. No benchmark
 or NVIDIA execution comparison was run. Full CUDA parity is incomplete.
+
+
+### Prediction model publication
+
+CUDA authority is `predictor/gpu_predictor.cu` and `predictor/gbtree_view.h`:
+each prediction constructs transient view descriptors under `GBTreeModel::Mutex`,
+while `RegTree` retains its node, category and vector-leaf device mirrors. Metal
+now selects those same device-aware views with `DeviceOrd::MPS()` for batch,
+inplace and leaf prediction. CPU prediction still selects CPU explicitly,
+including when it is dispatched from a CUDA context. Generic context semantics
+and the shared CUDA view/mutation/thread-safety rules are unchanged.
+
+Previously `MakeMetalPrediction` walked every node on the CPU, assembled full
+node/category/leaf vectors, then uploaded them. Now a Metal kernel packs its
+traversal representation directly from the device arrays. Host preparation reads
+only view sizes, strides, per-tree weights and descriptors. Scalar raw node flags,
+missing directions, deleted nodes and floating-point payload bits are preserved;
+vector leaves use the right-array leaf-index mapping and leaf matrix strides.
+Category words are copied on GPU and segment offsets adjusted to the packed
+buffer. Existing traversal kernels and their arithmetic are unchanged.
+
+Packed buffers are owned snapshots, valid after the input model is changed or
+destroyed. They are constructed per call, rather than cached using an insufficient
+pointer/tree-count key. The lasting cache is the model's existing device mirrors:
+leaf edits, split changes and reloads invalidate them using HostDeviceVector's
+normal access rules. Immutable concurrent readers reuse those arrays. First
+publication imports model arrays; subsequent publication needs no vector upload,
+readback or model payload staging. Explicit CPU model views still switch the
+small tree-group vector to CPU, as upstream does, so the next GPU call may
+reimport that vector. This is separate from changes to node/leaf/category arrays.
+
+Three optional diagnostics expose model pack dispatches, shared input bytes and
+staging bytes. Per-tree control descriptors are excluded. The internal Statistics
+structure grows, requiring all native clients to be rebuilt; the public C API is
+unchanged and CPU-only builds report zero for the new JSON fields.
+
+**Scope correction from source audit:** SHAP model compression is not a missing
+GPU operation. CUDA `interpretability/shap.cu::CompressTreeBucket` explicitly
+builds host node/category/leaf arrays and uploads them, and
+`PrepareGpuQuadratureModel` computes root means and depth buckets on the host.
+Metal's corresponding host preparation remains intentional. SHAP arithmetic
+still needs a separate source audit: for example CUDA applies tree weights to
+leaf payloads during compression, while Metal currently weights accumulated
+contributions. This step does not resolve that operation-order difference.
+
+Focused validation passes the original 98 new native cases / 719,746 checks and
+123 existing prediction/storage cases / 19,058,906 checks / four expected
+rejections, plus 199 Python tests (41 warnings, 13.49s). Final native coverage adds
+threadgroup-boundary cases: **103 cases / 1,124,304 checks** pass with Metal API
+validation. Tests cover categorical/numeric and scalar/vector trees, deleted
+slots, reordered leaf indices, mutations without shape changes, reload into the
+same objects, CPU/MPS read handoffs, slices, weights, snapshots after destruction,
+empty models and concurrent readers. Twelve new Python cases assert resident
+model publication across forced cache misses and CPU comparisons; two additional
+cases exercise concurrent first publication. Existing cache tests now explicitly
+warm the model mirrors before requiring zero repeated imports; numerical
+expectations and tolerances are unchanged.
+
+Full validation completed **2026-11-05 01:24:19–01:32:40 UTC** (8m21s), exit 0:
+all **96 native groups** rebuilt and passed; **3,374 Python tests passed, one
+expected skip** (638 warnings, 200.79s); and the CPU-only incremental build (four
+steps) plus device/native input/output/quantile/cache API checks passed, including
+the new zero-valued diagnostics. No production or test edits followed that run.
+[Validation record](../validation/cuda-metal-prediction-model-m3.txt).
+Remaining CUDA operation/arithmetic audits, GPU collectives and cross-hardware
+validation remain open. No benchmark or NVIDIA execution comparison was run.

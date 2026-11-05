@@ -304,6 +304,12 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.category_state_shared_output_bytes)};
   info["category_state_staging_bytes"] =
       Integer{static_cast<std::int64_t>(stats.category_state_staging_bytes)};
+  info["prediction_model_pack_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.prediction_model_pack_dispatches)};
+  info["prediction_model_shared_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.prediction_model_shared_input_bytes)};
+  info["prediction_model_staging_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.prediction_model_staging_bytes)};
   info["category_sort_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.category_sort_dispatches)};
   info["category_recode_dispatches"] =
@@ -695,6 +701,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["category_state_shared_input_bytes"] = Integer{0};
   info["category_state_shared_output_bytes"] = Integer{0};
   info["category_state_staging_bytes"] = Integer{0};
+  info["prediction_model_pack_dispatches"] = Integer{0};
+  info["prediction_model_shared_input_bytes"] = Integer{0};
+  info["prediction_model_staging_bytes"] = Integer{0};
   info["category_sort_dispatches"] = Integer{0};
   info["category_recode_dispatches"] = Integer{0};
   info["category_gpu_time_ns"] = Integer{0};

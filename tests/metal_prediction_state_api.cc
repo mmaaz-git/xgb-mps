@@ -19,6 +19,7 @@
 #include "../xgboost/src/data/adapter.h"
 #include "../xgboost/src/data/proxy_dmatrix.h"
 #include "../xgboost/src/gbm/gbtree_model.h"
+#include "../xgboost/src/tree/tree_view.h"
 #include "xgboost/learner.h"
 #include "xgboost/predictor.h"
 
@@ -61,6 +62,13 @@ void Reject(Fn fn) {
 void NoTransfers(metal::Statistics const& before) {
   auto after = metal::GetStatistics();
   Check(after.vector_readback_bytes == before.vector_readback_bytes, "Host mirror");
+  if (after.vector_upload_bytes != before.vector_upload_bytes) {
+    std::fprintf(
+        stderr, "Unexpected import: %llu bytes, model packs=%llu\n",
+        static_cast<unsigned long long>(after.vector_upload_bytes - before.vector_upload_bytes),
+        static_cast<unsigned long long>(after.prediction_model_pack_dispatches -
+                                        before.prediction_model_pack_dispatches));
+  }
   Check(after.vector_upload_bytes == before.vector_upload_bytes, "Vector import");
   Check(after.prediction_host_input_bytes == before.prediction_host_input_bytes &&
             after.prediction_host_output_bytes == before.prediction_host_output_bytes,
@@ -143,6 +151,16 @@ void StateCase(Context const& gpu, std::size_t rows, unsigned groups, bool vecto
   auto initial = expected.predictions.ConstHostVector();
   ref->PredictBatch(data.get(), &expected, model, 0, model.trees.size());
   Resident(data->Info().base_margin_.Data());
+  // First publication creates the model's lazy device mirrors, as in CUDA.
+  // These checks isolate prediction/cache storage after that one-time import.
+  for (auto const& tree : model.trees) {
+    if (tree->IsMultiTarget()) {
+      tree::MultiTargetTreeView{DeviceOrd::MPS(), false, tree.get()};
+    } else {
+      tree::ScalarTreeView{DeviceOrd::MPS(), false, tree.get()};
+    }
+  }
+  model.TreeGroups(DeviceOrd::MPS());
   for (unsigned repeat = 0; repeat < 2; ++repeat) {
     auto before = metal::GetStatistics();
     obj->InitOutPredictions(data->Info(), &actual.predictions, model);
@@ -162,6 +180,9 @@ void StateCase(Context const& gpu, std::size_t rows, unsigned groups, bool vecto
   }
   HostDeviceVector<float> leaves, expected_leaves;
   ref->PredictLeaf(data.get(), &expected_leaves, model, 0);
+  // GBTreeModelView explicitly switches tree_info to CPU for the CPU reference,
+  // also in CUDA. Restore that small group array before cache-only assertions.
+  model.TreeGroups(DeviceOrd::MPS());
   auto before = metal::GetStatistics();
   obj->PredictLeaf(data.get(), &leaves, model, 0);
   NoTransfers(before);
@@ -307,6 +328,9 @@ void LearnerCase(Context const& gpu, char const* objective, bool vector) {
   actual->SetParams({{"device", "mps"}, {"nthread", "2"}});
   actual->Configure();
   HostDeviceVector<float> out, expected;
+  // Publish all model mirrors before measuring incremental cache operations.
+  // The model publication test separately verifies the first import.
+  actual->Predict(data, true, &out, 0, 0, false, false, false, false, false, false);
   // Prefix increment, repeat, backwards reset, nonzero start, full-model reset.
   std::vector<std::pair<int, int>> ranges{{0, 1}, {0, 3}, {0, 3}, {0, 1}, {1, 3}, {0, 0}};
   for (bool margin : {false, true}) {

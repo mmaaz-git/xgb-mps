@@ -41,7 +41,7 @@
 #include "metal_model.h"
 #include "metal_ops.h"
 #include "metal_output.h"
-#include "metal_predictor.h"
+#include "metal_prediction_model.h"
 #include "metal_quantile.h"
 #include "metal_ranking.h"
 #include "metal_reduction.h"
@@ -129,6 +129,8 @@ std::atomic<std::uint64_t> binning_dispatches{0}, binning_gpu_time_ns{0};
 std::atomic<std::uint64_t> mean_dispatches{0}, mean_gpu_time_ns{0};
 std::atomic<std::uint64_t> small_histogram_dispatches{0}, vector_arithmetic_dispatches{0},
     float_mean_dispatches{0};
+std::atomic<std::uint64_t> prediction_model_pack_dispatches{0},
+    prediction_model_shared_input_bytes{0}, prediction_model_staging_bytes{0};
 std::atomic<std::uint64_t> category_state_shared_input_bytes{0},
     category_state_shared_output_bytes{0}, category_state_staging_bytes{0};
 std::atomic<std::uint64_t> category_sort_dispatches{0}, category_recode_dispatches{0},
@@ -335,7 +337,7 @@ class Runtime {
       adapter_offsets_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
   id<MTLComputePipelineState> quantize_pipeline, objective_pipeline, transform_pipeline,
-      prediction_pipeline, leaf_pipeline, metric_pipeline;
+      prediction_pipeline, prediction_model_pipeline, leaf_pipeline, metric_pipeline;
   id<MTLComputePipelineState> row_iota_pipeline, partition_classify_pipeline,
       partition_prefix_pipeline, partition_prefix_serial_pipeline, partition_scatter_pipeline,
       leaf_positions_pipeline, transpose_index_pipeline;
@@ -378,6 +380,7 @@ class Runtime {
       objective_pipeline = make_pipeline(@"xgb_objective");
       transform_pipeline = make_pipeline(@"xgb_transform");
       prediction_pipeline = make_pipeline(@"xgb_predict");
+      prediction_model_pipeline = make_pipeline(@"xgb_pack_prediction_model");
       leaf_pipeline = make_pipeline(@"xgb_add_leaf");
       metric_pipeline = make_pipeline(@"xgb_metric");
       metric_sum_pipeline = make_pipeline(@"xgb_metric_sum");
@@ -2095,7 +2098,10 @@ Statistics GetStatistics() {
           auc_final_readback_bytes.load(std::memory_order_relaxed),
           category_state_shared_input_bytes.load(std::memory_order_relaxed),
           category_state_shared_output_bytes.load(std::memory_order_relaxed),
-          category_state_staging_bytes.load(std::memory_order_relaxed)};
+          category_state_staging_bytes.load(std::memory_order_relaxed),
+          prediction_model_pack_dispatches.load(std::memory_order_relaxed),
+          prediction_model_shared_input_bytes.load(std::memory_order_relaxed),
+          prediction_model_staging_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -8857,6 +8863,27 @@ EllpackCachePlan PlanEllpackCache(EllpackInfo info, Span<bst_idx_t const> batch_
 }
 
 namespace {
+struct PredictionModelParams {
+  std::uint64_t leaf_stride_row{0}, leaf_stride_target{0};
+  std::uint32_t nodes{0}, categories{0}, leaves{0}, targets{0};
+  std::uint32_t root{0}, category_begin{0}, leaf_begin{0}, tree{0};
+  std::uint32_t multi{0}, has_categories{0};
+  float weight{1};
+  std::uint32_t padding{0};
+};
+
+BorrowedMemory PredictionModelInput(Runtime const& rt, void const* data, std::size_t bytes,
+                                    std::size_t alignment = 4) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, alignment);
+  if (input.buffer) {
+    prediction_model_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  } else {
+    input = {Upload(rt, data, bytes), 0};
+    prediction_model_staging_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
+
 class MetalPrediction final : public Prediction {
   Runtime& rt_;
   id<MTLCommandQueue> queue_;
@@ -8876,6 +8903,115 @@ class MetalPrediction final : public Prediction {
       categories_ =
           Upload(rt_, model.categories.data(), model.categories.size() * sizeof(std::uint32_t));
       leaves_ = Upload(rt_, model.leaves.data(), model.leaves.size() * sizeof(float));
+    }
+  }
+  MetalPrediction(Span<PredictionTreeView const> views, Span<bst_target_t const> groups,
+                  OptionalWeights weights) : rt_{GetRuntime()}, queue_{rt_.queue} {
+    static_assert(sizeof(RegTree::Node) == 20 && std::is_standard_layout_v<RegTree::Node> &&
+                  std::is_trivially_copyable_v<RegTree::Node>);
+    static_assert(sizeof(RegTree::CategoricalSplitMatrix::Segment) == 16 &&
+                  sizeof(FeatureType) == 1 && sizeof(bst_target_t) == 4);
+    static_assert(sizeof(PredictionModelParams) == 64);
+    CHECK_EQ(views.size(), groups.size());
+    CHECK(weights.Empty() || weights.Size() == views.size());
+    auto checked = [](std::size_t n) {
+      CHECK_LE(n, std::numeric_limits<std::uint32_t>::max());
+      return static_cast<std::uint32_t>(n);
+    };
+    n_trees_ = checked(views.size());
+    std::size_t nodes = 0, categories = 0, leaves = 0;
+    std::vector<PredictionModelParams> params;
+    for (std::size_t t = 0; t < views.size(); ++t) {
+      std::visit([&](auto const& view) {
+        PredictionModelParams p;
+        p.nodes = checked(view.Size());
+        CHECK_GT(p.nodes, 0);
+        p.targets = checked(view.NumTargets());
+        CHECK_GT(p.targets, 0);
+        auto const& cats = view.GetCategoriesMatrix();
+        p.categories = checked(cats.categories.size());
+        p.has_categories = !cats.categories.empty();
+        if (p.has_categories) {
+          CHECK_EQ(cats.split_type.size(), p.nodes);
+          CHECK_EQ(cats.node_ptr.size(), p.nodes);
+        }
+        p.leaves = p.nodes;
+        if constexpr (std::is_same_v<std::decay_t<decltype(view)>, tree::MultiTargetTreeView>) {
+          p.multi = 1;
+          p.leaves = checked(view.leaf_weights.Size());
+          p.leaf_stride_row = view.leaf_weights.Stride(0);
+          p.leaf_stride_target = view.leaf_weights.Stride(1);
+        }
+        p.root = checked(nodes);
+        p.category_begin = checked(categories);
+        p.leaf_begin = checked(leaves);
+        p.tree = t;
+        p.weight = weights[t];
+        nodes += p.nodes;
+        categories += p.categories;
+        leaves += p.leaves;
+        checked(nodes);
+        checked(categories);
+        checked(leaves);
+        params.push_back(p);
+      }, views[t]);
+    }
+    @autoreleasepool {
+      nodes_ = Allocate(rt_, nodes * sizeof(PredictionNode));
+      trees_ = Allocate(rt_, views.size() * sizeof(PredictionTree));
+      categories_ = Allocate(rt_, categories * sizeof(std::uint32_t));
+      leaves_ = Allocate(rt_, leaves * sizeof(float));
+      if (views.empty()) return;
+      auto tree_groups = PredictionModelInput(rt_, groups.data(), groups.size_bytes());
+      auto command = [queue_ commandBuffer];
+      CHECK(command);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt_.prediction_model_pipeline];
+      [e setBuffer:tree_groups.buffer offset:tree_groups.offset atIndex:10];
+      [e setBuffer:nodes_ offset:0 atIndex:11];
+      [e setBuffer:trees_ offset:0 atIndex:12];
+      [e setBuffer:categories_ offset:0 atIndex:13];
+      [e setBuffer:leaves_ offset:0 atIndex:14];
+      auto empty = Allocate(rt_, sizeof(RegTree::Node));
+      for (std::size_t t = 0; t < views.size(); ++t) {
+        // Unused arguments must still have valid bindings for Metal validation.
+        for (unsigned i = 0; i < 10; ++i) [e setBuffer:empty offset:0 atIndex:i];
+        auto bind = [&](unsigned index, void const* data, std::size_t bytes,
+                        std::size_t alignment = 4) {
+          auto input = PredictionModelInput(rt_, data, bytes, alignment);
+          [e setBuffer:input.buffer offset:input.offset atIndex:index];
+        };
+        auto const& p = params[t];
+        std::visit([&](auto const& view) {
+          if constexpr (std::is_same_v<std::decay_t<decltype(view)>, tree::ScalarTreeView>) {
+            bind(0, view.nodes, p.nodes * sizeof(RegTree::Node));
+          } else {
+            bind(1, view.left, p.nodes * sizeof(bst_node_t));
+            bind(2, view.right, p.nodes * sizeof(bst_node_t));
+            bind(3, view.split_index, p.nodes * sizeof(bst_feature_t));
+            bind(4, view.default_left, p.nodes, 1);
+            bind(5, view.split_conds, p.nodes * sizeof(float));
+            auto data = view.leaf_weights.Values();
+            bind(6, data.data(), data.size_bytes());
+          }
+          if (p.has_categories) {
+            auto const& cats = view.GetCategoriesMatrix();
+            bind(7, cats.split_type.data(), cats.split_type.size_bytes(), 1);
+            bind(8, cats.categories.data(), cats.categories.size_bytes());
+            bind(9, cats.node_ptr.data(), cats.node_ptr.size_bytes(), 8);
+          }
+        }, views[t]);
+        [e setBytes:&p length:sizeof(p) atIndex:15];
+        auto count = std::max({p.nodes, p.categories, p.multi ? p.leaves : 0u});
+        [e dispatchThreads:MTLSizeMake(count, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      }
+      [e endEncoding];
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      prediction_model_pack_dispatches.fetch_add(views.size(), std::memory_order_relaxed);
     }
   }
   void Predict(InputBatch const& data, std::uint32_t groups, Span<float> predictions,
@@ -8934,6 +9070,11 @@ class MetalPrediction final : public Prediction {
 }  // namespace
 std::unique_ptr<Prediction> MakePrediction(PredictionModel const& model) {
   return std::make_unique<MetalPrediction>(model);
+}
+std::unique_ptr<Prediction> MakePrediction(Span<PredictionTreeView const> trees,
+                                         Span<bst_target_t const> groups,
+                                         OptionalWeights weights) {
+  return std::make_unique<MetalPrediction>(trees, groups, weights);
 }
 
 namespace {

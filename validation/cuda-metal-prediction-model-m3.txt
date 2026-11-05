@@ -1,0 +1,56 @@
+Prediction model publication — Apple M3, 2026-11-04 local
+=======================================================
+Authority: predictor/gpu_predictor.cu, predictor/gbtree_view.h, tree/tree_view.cc.
+Scope: persistent tree device mirrors and GPU packing for batch/inplace/leaf
+prediction. Traversal arithmetic, context defaults and shared CUDA lifecycle
+rules are unchanged. Per-tree descriptors/weights remain host control data.
+
+Native with Metal API validation:
+  New prediction_model: PASS 103 cases / 1124304 checks (full run first stage).
+  Existing prediction_state: PASS 123 cases / 19058906 checks / 4 rejected calls.
+  Scalar/vector trees, category bitsets, deleted nodes, missing flags, leaf-index
+  indirection, mutation with unchanged shape, reload into existing objects,
+  independent snapshots after source replacement/destruction, slices/weights,
+  CPU/MPS read handoffs, concurrent immutable readers, empty models and 256-thread
+  boundary coverage (1023-node tree; 129-target leaves).
+  Resident publication requires zero payload staging, vector upload or readback.
+  First publication explicitly verifies lazy model imports; owned vector lifetime
+  gauges return to zero. New pack/shared-input/staging diagnostics are exercised.
+
+Focused: 199 Python passed, 41 warnings, 13.49 seconds.
+  Twelve new repeated-publication checks cover batch/inplace/leaf prediction,
+  scalar regression, multiclass, vector leaves and dropout trees. Changing ranges
+  forces traversal; CPU comparisons retain existing 2e-6 tolerances. Two more
+  tests added for concurrent first publication are included in the full run.
+
+Implementation/test corrections before final validation:
+- Build v1 passed. Focus v1 found the unused raw-node argument needs a 20-byte
+  binding even for vector trees. Metal API validation caught its 16-byte dummy.
+  Corrected dummy allocation, rebuilt in focus v2; all98 original new cases pass.
+- Existing cache tests assumed zero imports before first model publication.
+  They now explicitly warm model mirrors, and restore tree groups after a CPU
+  view (which switches their device just as CUDA does), before measuring cache
+  operations. New tests assert initial imports and repeated zero-transfer packing.
+  Focus v3/v4 isolated these expected imports; v5 passes all remaining focused
+  checks. Numerical expectations and tolerances were not changed.
+
+Logs: results/build-prediction-model-v1.log,
+  prediction-model-focused-v1.log through prediction-model-focused-v5.log.
+Full regression: PASS, exit 0.
+  2026-11-05T01:24:19Z–01:32:40Z (8 minutes 21 seconds).
+  All96 native check groups rebuilt and passed with the final Statistics layout.
+  Python: 3374 passed, one expected skip, 638 warnings, 200.79 seconds.
+  CPU-only: four incremental build steps passed; device/native input/output/
+    quantile/cache API checks passed, including new zero-valued JSON diagnostics.
+  All14 new Python cases passed; numerical tolerances were not changed.
+  No production/test edits followed the full run.
+Full driver/log: results/run-prediction-model-full-v1.sh,
+  results/prediction-model-full-v1.log.
+GitHub repository verified PUBLIC: mmaaz-git/xgb-mps.
+
+Scope clarification: CUDA SHAP CompressTreeBucket and PrepareGpuQuadratureModel
+build compressed arrays, root means and depth buckets on CPU. Porting that host
+preparation to GPU is not required for parity. SHAP arithmetic (including where
+weights are applied) remains a separate audit. GPU collectives and broader CUDA
+operation/arithmetic/cross-hardware validation also remain open. No benchmark or
+NVIDIA execution comparison; full CUDA parity is incomplete.

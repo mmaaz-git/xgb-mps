@@ -337,6 +337,67 @@ struct PredictionParams {
   ulong rows;
   uint features, groups, trees, leaf;
 };
+
+// RegTree::Node is five 32-bit words. Keep its flags and leaf payload bits
+// intact; multi-target trees instead use parallel arrays and right[leaf] as
+// the leaf-weight row index (not a child id).
+struct PredictionRawNode {
+  int parent, left, right;
+  uint split_index, value;
+};
+struct PredictionCategorySegment { ulong begin, size; };
+struct PredictionModelParams {
+  ulong leaf_stride_row, leaf_stride_target;
+  uint nodes, categories, leaves, targets;
+  uint root, category_begin, leaf_begin, tree;
+  uint multi, has_categories;
+  float weight;
+  uint padding;
+};
+kernel void xgb_pack_prediction_model(
+    device const PredictionRawNode* raw [[buffer(0)]],
+    device const int* left [[buffer(1)]], device const int* right [[buffer(2)]],
+    device const uint* features [[buffer(3)]], device const uchar* default_left [[buffer(4)]],
+    device const uint* conditions [[buffer(5)]], device const uint* weights [[buffer(6)]],
+    device const uchar* split_types [[buffer(7)]], device const uint* categories [[buffer(8)]],
+    device const PredictionCategorySegment* segments [[buffer(9)]], device const uint* groups [[buffer(10)]],
+    device PredictionNode* out_nodes [[buffer(11)]],
+    device PredictionTree* out_trees [[buffer(12)]], device uint* out_categories [[buffer(13)]],
+    device uint* out_leaves [[buffer(14)]], constant PredictionModelParams& p [[buffer(15)]],
+    uint i [[thread_position_in_grid]]) {
+  if (i == 0) out_trees[p.tree] = {p.root, p.targets, p.multi ? 0u : groups[p.tree], p.weight};
+  if (i < p.categories) out_categories[p.category_begin + i] = categories[i];
+  if (p.multi && i < p.leaves) {
+    ulong row = i / p.targets, target = i % p.targets;
+    out_leaves[p.leaf_begin + i] = weights[row * p.leaf_stride_row + target * p.leaf_stride_target];
+  }
+  if (i >= p.nodes) return;
+  PredictionNode node = {-1, -1, -1, 0, 0.f, 0, 0, 0, 0, 0};
+  if (!p.multi && raw[i].split_index == 0xffffffffu) {
+    out_nodes[p.root + i] = node;  // Deleted scalar nodes remain unreachable.
+    return;
+  }
+  int l = p.multi ? left[i] : raw[i].left;
+  int r = p.multi ? right[i] : raw[i].right;
+  if (l == -1) {
+    node.leaf_begin = p.leaf_begin + (p.multi ? uint(r) * p.targets : i);
+    if (!p.multi) out_leaves[node.leaf_begin] = raw[i].value;
+  } else {
+    bool missing_left = p.multi ? default_left[i] != 0 : (raw[i].split_index >> 31) != 0;
+    node.left = l;
+    node.right = r;
+    node.missing = missing_left ? l : r;
+    node.feature = p.multi ? features[i] : (raw[i].split_index & 0x7fffffffu);
+    node.split = as_type<float>(p.multi ? conditions[i] : raw[i].value);
+    node.categorical = p.has_categories && split_types[i] == 1;
+    if (node.categorical) {
+      node.category_begin = p.category_begin + uint(segments[i].begin);
+      node.category_size = uint(segments[i].size);
+    }
+  }
+  out_nodes[p.root + i] = node;
+}
+
 kernel void xgb_predict(
     device const float* data [[buffer(0)]], device const PredictionNode* nodes [[buffer(1)]],
     device const PredictionTree* trees [[buffer(2)]], device const uint* categories [[buffer(3)]],

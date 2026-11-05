@@ -19,6 +19,9 @@ assert json.loads(out.value)["USE_METAL"] is False
 check(lib.XGBMetalInfo(ctypes.byref(out)))
 info = json.loads(out.value)
 assert info["built"] is False and info["available"] is False
+for key in ("prediction_model_pack_dispatches", "prediction_model_shared_input_bytes",
+            "prediction_model_staging_bytes"):
+    assert info[key] == 0
 assert all(value == 0 for key, value in info.items() if key not in {"built", "available"})
 booster = ctypes.c_void_p()
 check(lib.XGBoosterCreate(None, ctypes.c_uint64(0), ctypes.byref(booster)))

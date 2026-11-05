@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 import xgboost as xgb
+from concurrent.futures import ThreadPoolExecutor
 from cuda_uniform_reference import UniformSquaredError
 
 
@@ -11,6 +12,67 @@ def metal_copy(model):
     result = xgb.Booster(model_file=model.save_raw())
     result.set_param({"device": "mps", "nthread": 2})
     return result
+
+
+@pytest.mark.parametrize("kind", ["regression", "multiclass", "vector", "dart"])
+@pytest.mark.parametrize("method", ["batch", "inplace", "leaf"])
+def test_prediction_model_publication_reuses_device_arrays(metal, kind, method):
+    rng = np.random.default_rng(709)
+    x = rng.normal(size=(257, 5)).astype(np.float32)
+    y = x[:, 0] - x[:, 1]
+    params = dict(nthread=2, max_depth=3, base_score=.25)
+    if kind == "multiclass":
+        params.update(objective="multi:softprob", num_class=3)
+        y = np.digitize(y, [-.5, .5])
+    elif kind == "vector":
+        params["multi_strategy"] = "multi_output_tree"
+        y = np.column_stack([y, -y, y * .5])
+    elif kind == "dart":
+        params.update(booster="dart", rate_drop=.5, seed=19)
+    data = xgb.DMatrix(x, label=y, nthread=2)
+    cpu = xgb.train(params, data, 4)
+    gpu = metal_copy(cpu)
+
+    def predict(model, end):
+        if method == "inplace":
+            return model.inplace_predict(x, iteration_range=(0, end))
+        return model.predict(data, pred_leaf=method == "leaf", iteration_range=(0, end))
+
+    # Publish all tree mirrors once. Changing the range then forces real model
+    # packing/traversal instead of merely retrieving an existing prediction cache.
+    predict(gpu, 4)
+    for end in [1, 2, 3, 4, 1]:
+        expected = predict(cpu, end)
+        before = xgb.metal_info()
+        actual = predict(gpu, end)
+        after = xgb.metal_info()
+        np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=2e-6)
+        assert after["prediction_model_pack_dispatches"] > before["prediction_model_pack_dispatches"]
+        assert after["prediction_model_shared_input_bytes"] > before["prediction_model_shared_input_bytes"]
+        assert after["prediction_model_staging_bytes"] == before["prediction_model_staging_bytes"]
+        assert after["vector_readback_bytes"] == before["vector_readback_bytes"]
+        assert after["vector_upload_bytes"] == before["vector_upload_bytes"]
+
+
+@pytest.mark.parametrize("vector", [False, True])
+def test_concurrent_first_model_publication(metal, vector):
+    rng = np.random.default_rng(234)
+    x = rng.normal(size=(257, 3)).astype(np.float32)
+    y = x[:, 0] - x[:, 1]
+    if vector:
+        y = np.column_stack([y, -y, y * .25])
+    data = xgb.DMatrix(x, label=y, nthread=2)
+    cpu = xgb.train(dict(nthread=2, max_depth=3, base_score=.25,
+                        multi_strategy="multi_output_tree" if vector else "one_output_per_tree"),
+                    data, 4)
+    gpu = metal_copy(cpu)
+    gpu.save_config()  # Configure without publishing tree arrays or predictions.
+    expected = cpu.inplace_predict(x)
+    counts = [1, 33, 257, 17] * 2
+    with ThreadPoolExecutor(4) as executor:
+        results = list(executor.map(lambda n: gpu.inplace_predict(x[:n]), counts))
+    for n, result in zip(counts, results):
+        np.testing.assert_allclose(result, expected[:n], rtol=2e-6, atol=2e-6)
 
 
 @pytest.mark.parametrize("objective", ["reg:expectileerror", "binary:logistic", "multi:softmax"])

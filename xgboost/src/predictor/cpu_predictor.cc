@@ -45,7 +45,7 @@
 #include "xgboost/tree_model.h"               // for RegTree, MTNotImplemented, RTreeNodeStat
 
 #if defined(XGBOOST_USE_METAL)
-#include "../common/metal_predictor.h"
+#include "../common/metal_prediction_model.h"
 #include "../common/metal_vector.h"
 #endif
 
@@ -63,67 +63,15 @@ struct CopyViews {
 
 template <typename T>
 using Vec = std::vector<T, std::allocator<T>>;
-// The input device should be DeviceOrd::CPU() instead of Context::Device(). The GBTree
-// has an optimization to use CPU predictor when the DMatrix SparsePage is on CPU, even if
-// the context is a CUDA context.
+// The view descriptors stay on the host. CPU traversal explicitly selects CPU
+// (even when dispatched from a CUDA context); Metal packing selects MPS mirrors
+// of the tree payloads, with synchronization provided by GBTreeModelView.
 using HostModel = GBTreeModelView<Vec, TreeViewVar, CopyViews>;
 
 #if defined(XGBOOST_USE_METAL)
 std::unique_ptr<common::metal::Prediction> MakeMetalPrediction(HostModel const &model,
                                                                common::OptionalWeights weights) {
-  common::metal::PredictionModel packed;
-  std::size_t t = 0;
-  for (auto const &variant : model.Trees()) {
-    std::visit(
-        [&](auto const &view) {
-          CHECK_LE(packed.nodes.size() + view.Size(), std::numeric_limits<std::uint32_t>::max());
-          auto root = static_cast<std::uint32_t>(packed.nodes.size());
-          auto group = view.NumTargets() == 1 ? model.tree_groups[t] : 0;
-          packed.trees.push_back({root, view.NumTargets(), group, weights[t]});
-          auto const &categories = view.GetCategoriesMatrix();
-          for (bst_node_t nid = 0; nid < view.Size(); ++nid) {
-            common::metal::PredictionNode node;
-            if constexpr (std::is_same_v<std::decay_t<decltype(view)>, tree::ScalarTreeView>) {
-              if (view.IsDeleted(nid)) {
-                packed.nodes.push_back(node);
-                continue;
-              }
-            }
-            if (view.IsLeaf(nid)) {
-              CHECK_LE(packed.leaves.size() + view.NumTargets(),
-                       std::numeric_limits<std::uint32_t>::max());
-              node.leaf_begin = packed.leaves.size();
-              if constexpr (std::is_same_v<std::decay_t<decltype(view)>, tree::ScalarTreeView>) {
-                packed.leaves.push_back(view.LeafValue(nid));
-              } else {
-                auto leaf = view.LeafValue(nid);
-                for (bst_target_t k = 0; k < view.NumTargets(); ++k)
-                  packed.leaves.push_back(leaf(k));
-              }
-            } else {
-              node.left = view.LeftChild(nid);
-              node.right = view.RightChild(nid);
-              node.missing = view.DefaultChild(nid);
-              node.feature = view.SplitIndex(nid);
-              node.split = view.SplitCond(nid);
-              node.categorical = common::IsCat(categories.split_type, nid);
-              if (node.categorical) {
-                auto segment = categories.node_ptr[nid];
-                CHECK_LE(packed.categories.size() + segment.size,
-                         std::numeric_limits<std::uint32_t>::max());
-                node.category_begin = packed.categories.size();
-                node.category_size = segment.size;
-                auto bits = categories.categories.subspan(segment.beg, segment.size);
-                packed.categories.insert(packed.categories.end(), bits.begin(), bits.end());
-              }
-            }
-            packed.nodes.push_back(node);
-          }
-        },
-        variant);
-    ++t;
-  }
-  return common::metal::MakePrediction(packed);
+  return common::metal::MakePrediction(model.Trees(), model.tree_groups, weights);
 }
 
 // Prepare raw input chunks and apply category maps on GPU before traversal.
@@ -530,8 +478,12 @@ class CPUPredictor : public Predictor {
     auto values = ctx_->IsMPS() ? out_preds->DeviceSpan() : out_preds->HostSpan();
     auto out_predt = linalg::MakeTensorView(device, values, n_samples, n_groups);
     bool any_missing = !(p_fmat->IsDense());
-    auto const h_model =
-        HostModel{DeviceOrd::CPU(), model, false, tree_begin, tree_end, CopyViews{}};
+    auto const h_model = HostModel{ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU(),
+                                   model,
+                                   false,
+                                   tree_begin,
+                                   tree_end,
+                                   CopyViews{}};
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
@@ -593,8 +545,12 @@ class CPUPredictor : public Predictor {
     // Always use block as we don't know the nnz.
     ThreadTmp<BlockPolicy::kBlockOfRowsSize> feat_vecs{n_threads};
     bst_idx_t n_groups = model.learner_model_param->OutputLength();
-    auto const h_model =
-        HostModel{DeviceOrd::CPU(), model, false, tree_begin, tree_end, CopyViews{}};
+    auto const h_model = HostModel{ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU(),
+                                   model,
+                                   false,
+                                   tree_begin,
+                                   tree_end,
+                                   CopyViews{}};
     auto const *tree_weights = model.TreeWeights();
     auto weights = tree_weights == nullptr ? common::OptionalWeights{1.0f}
                                            : common::OptionalWeights{common::Span<float const>{
@@ -678,7 +634,12 @@ class CPUPredictor : public Predictor {
     auto n_features = model.learner_model_param->num_feature;
     ThreadTmp<1> feat_vecs{n_threads};
 
-    auto const h_model = HostModel{DeviceOrd::CPU(), model, false, 0, ntree_limit, CopyViews{}};
+    auto const h_model = HostModel{ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU(),
+                                   model,
+                                   false,
+                                   0,
+                                   ntree_limit,
+                                   CopyViews{}};
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       out_preds->SetDevice(DeviceOrd::MPS());

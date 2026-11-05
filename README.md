@@ -14,7 +14,26 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **categorical dictionaries and mappings retain Metal storage**.
+Latest step: **prediction model publication runs on Metal**. Batch, inplace and
+leaf prediction now reuse the trees' device arrays and pack traversal buffers on
+GPU. Model updates invalidate those arrays through the existing XGBoost ownership
+rules; host code assembles only per-tree descriptors and weights. The traversal
+arithmetic is unchanged.
+
+New native validation passes **103 cases / 1,124,304 checks**, covering model edits,
+reloads, independent snapshots, category bits, deleted nodes, tree slices, missing
+values, vector leaf indices, concurrent readers and dispatch boundaries. The
+existing **123 prediction/storage cases** and **199 focused Python tests** pass.
+Full regression passes **3,374 Python tests, one expected skip**, all **96 native
+check groups**, and the CPU-only build/API checks.
+[Prediction model validation](validation/cuda-metal-prediction-model-m3.txt).
+
+CUDA itself prepares SHAP's compressed model and root means on the CPU, so that
+host work is intentional. Remaining CUDA arithmetic/operation audits, GPU
+collectives and cross-hardware validation are still open. This step has no new
+benchmark or NVIDIA execution comparison.
+
+The preceding step: **categorical dictionaries and mappings retain Metal storage**.
 Dictionary names now use reusable GPU snapshots; sorting, recoding and model
 copies retain GPU arrays. Native columnar input gathers names into Metal storage,
 and prediction/SHAP/quantile ingestion consume resident mappings. Host mirrors
@@ -28,9 +47,10 @@ the CPU-only build/API checks. Fifteen new Python cases verify repeated
 prediction with reordered categories without payload readback or staging.
 [Dictionary storage validation](validation/cuda-metal-category-state-m3.txt).
 
-Persistent prediction-model storage, remaining CUDA operation/arithmetic audits,
-GPU collective transport and cross-hardware validation remain open. No benchmark
-or NVIDIA execution comparison was run for this step.
+At that checkpoint, prediction-model publication was still pending; the latest
+step addresses it. Remaining CUDA audits, GPU collective transport and
+cross-hardware validation remain open. No benchmark or NVIDIA execution
+comparison was run for the dictionary step.
 
 The preceding step: **tree training retains Metal gradients and leaf positions**. Both
 `hist` and `approx` now keep sampling buffers on GPU, including per-class gradient
@@ -593,9 +613,9 @@ The preceding step added CUDA-derived ordinary-matrix quantile sketches for
 category deduplication and resident summary pruning/merging.
 [Sketch validation](validation/cuda-resident-sketch-m3.txt).
 
-The major remaining areas are general metadata/state ownership and manipulation,
-persistent dictionary storage, remaining state operations,
-CUDA algorithm alignment and distributed collectives. Compressed disk caches,
+Subsequent updates below and the latest checkpoint above address many metadata,
+training/prediction-state and persistent dictionary paths. Remaining work includes
+CUDA operation/arithmetic audits and GPU collective integration. Compressed disk caches,
 internal ELLPACK save/load and optional Snappy compute compression are implemented.
 Sensitive AFT tails and some
 long-run ranking and Covertype comparisons have numerical differences.
@@ -1383,7 +1403,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port batch/inplace/leaf traversal and training prediction-cache updates.
 - [x] Port common elementwise/multiclass metrics with bounded GPU reductions.
 - [x] Measure large-batch prediction gains and retain training regressions publicly.
-- [ ] Keep training data and intermediate state resident on Metal buffers.
+- [x] Keep compressed training pages, gradients, sampling buffers and leaf positions on Metal.
 - [x] Port stable row partitioning and leaf assignment; keep row indices on the GPU.
 - [x] Port scalar/vector split evaluation, including categorical ordering and constraints.
 - [x] Keep histograms in Metal shared memory; port conversion, subtraction and gathering.
@@ -1395,6 +1415,7 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port final numeric sketch level merging and pruning.
 - [x] Port sketch weighting, sorted-column summaries and streaming level compaction.
 - [x] Port exact SHAP contributions and interactions.
+- [ ] Finish SHAP arithmetic alignment with CUDA, including tree-weight placement.
 - [x] Implement Metal coordinate-descent reductions and residual updates.
 - [x] Align linear FP32 arithmetic and selector snapshots with CUDA source.
 - [x] Align precision/NDCG/MAP arithmetic, prefixes and degenerate-query weighting with CUDA source.
@@ -1418,7 +1439,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Keep nonranking objective inputs/gradients/transforms in Metal vector storage.
 - [x] Keep initialization/statistics/stump payloads on Metal through their GPU stages.
 - [x] Keep scalar/multiclass, quantile/expectile and survival metric inputs on Metal.
-- [ ] Migrate remaining state allocations/consumers and persistent dictionary ownership.
+- [x] Retain categorical dictionaries, mappings and prediction tree mirrors on Metal.
+- [ ] Finish auditing remaining state allocations/consumers against CUDA.
 - [x] Port CUDA ranking gradient/cost arithmetic with explicit edge policies and source-oracle tests.
 - [x] Port query maxima/counts/prefixes and reuse GPU metadata through ranking caches.
 - [x] Port remaining elementwise/survival metric sums and CUDA FP32 row arithmetic; validate multiclass labels on GPU.

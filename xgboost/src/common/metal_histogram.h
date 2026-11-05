@@ -147,6 +147,9 @@ struct Statistics {
   // Dictionary sort/recode and mapping bindings; scalar error returns excluded.
   std::uint64_t category_state_shared_input_bytes, category_state_shared_output_bytes,
       category_state_staging_bytes;
+  // Tree payload publication; per-tree control descriptors are excluded.
+  std::uint64_t prediction_model_pack_dispatches, prediction_model_shared_input_bytes,
+      prediction_model_staging_bytes;
 };
 
 class Histogram {
