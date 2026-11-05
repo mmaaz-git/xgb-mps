@@ -11,6 +11,7 @@
 #include <vector>
 #include "../xgboost/src/common/metal_gradient.h"
 #include "../xgboost/src/common/metal_histogram.h"
+#include "../xgboost/src/common/metal_memory.h"
 
 namespace metal = xgboost::common::metal;
 using xgboost::StringView;
@@ -60,12 +61,30 @@ void Pack(std::string const& g, std::string const& h, std::size_t rows, Matrix* 
   metal::CopyNativeGradients(StringView{g}, StringView{h}, rows, out);
   auto after = metal::GetStatistics();
   auto n = out->Size();
+  Check(out->Device().IsMPS() && out->Data()->DeviceCanWrite() &&
+            !out->Data()->HostCanRead(), "Imported pairs must own authoritative Metal storage");
+  Check(after.vector_readback_bytes == before.vector_readback_bytes,
+        "Import materialized a host mirror");
   Check(after.gradient_import_pairs - before.gradient_import_pairs == n, "Pair count");
   Check(after.gradient_import_dispatches - before.gradient_import_dispatches == (n != 0), "Dispatch count");
-  Check(after.gradient_import_shared_output_bytes - before.gradient_import_shared_output_bytes +
-        after.gradient_import_host_copy_bytes - before.gradient_import_host_copy_bytes == n * 8,
-        "Destination sharing/copy accounting");
+  Check(after.gradient_import_shared_output_bytes - before.gradient_import_shared_output_bytes == n * 8,
+        "Packed output did not bind owned Metal storage");
+  Check(after.gradient_import_host_copy_bytes == before.gradient_import_host_copy_bytes,
+        "Packed output copied through the CPU");
   Check(after.input_staging_bytes == before.input_staging_bytes, "No CPU input staging");
+  // Consume the result on GPU before any scalar comparison can create a host
+  // mirror. This also tests the empty shape's device access state.
+  Matrix copied{{out->Shape(0), out->Shape(1)}, xgboost::DeviceOrd::MPS()};
+  metal::CopyGradients(out->View(xgboost::DeviceOrd::MPS()),
+                       copied.View(xgboost::DeviceOrd::MPS()));
+  Check(!out->Data()->HostCanRead() && !copied.Data()->HostCanRead(),
+        "GPU consumer materialized host state");
+  Check(metal::GetStatistics().vector_readback_bytes == after.vector_readback_bytes,
+        "GPU consumer read back packed pairs");
+  auto source = out->Data()->ConstDeviceSpan();
+  auto const& host_copy = copied.Data()->ConstHostVector();
+  Check(n == 0 || !std::memcmp(source.data(), host_copy.data(), n * sizeof(xgboost::GradientPair)),
+        "GPU consumer changed imported pair bits");
   ++cases;
 }
 template <class T> int Code() {
@@ -140,6 +159,32 @@ void Edges(id<MTLDevice> device, id<MTLCommandQueue> queue, bool private_buffer)
     auto desc = Descriptor(nil, shape.first, shape.second, 0, 1, 1, 2, 32);
     Pack(desc, desc, shape.first, &out);
     Check(out.Shape(0) == shape.first && out.Shape(1) == shape.second, "Empty shape");
+    Matrix fresh;
+    Pack(desc, desc, shape.first, &fresh);
+  }
+}
+void AliasedDestination(id<MTLDevice> device) {
+  for (bool host_authoritative : {false, true}) {
+    for (bool grow : {false, true}) {
+      Matrix out{{2, 2}, xgboost::DeviceOrd::MPS()};
+      auto pairs = out.Data()->DeviceSpan();
+      auto memory = metal::TryBorrowMemory(device, pairs.data(), pairs.size_bytes(), 8);
+      Check(memory.buffer != nil, "Could not expose native destination alias");
+      float g = -3.5f, h = 2.25f;
+      // The producer writes the existing allocation, then snapshots must finish
+      // before import resizes or overwrites it. Broadcast growth reallocates it.
+      std::memcpy(static_cast<char*>(memory.buffer.contents) + memory.offset, &g, 4);
+      std::memcpy(static_cast<char*>(memory.buffer.contents) + memory.offset + 4, &h, 4);
+      if (host_authoritative) out.Data()->HostVector();
+      auto rows = grow ? 1025 : 2;
+      auto grad = Descriptor(memory.buffer, rows, 2, memory.offset, 0, 0, 2, 32);
+      auto hess = Descriptor(memory.buffer, rows, 2, memory.offset + 4, 0, 0, 2, 32);
+      Pack(grad, hess, rows, &out);
+      for (auto const& pair : out.Data()->ConstHostVector()) {
+        Same(pair.GetGrad(), g);
+        Same(pair.GetHess(), h);
+      }
+    }
   }
 }
 void Invalid(id<MTLDevice> device, id<MTLCommandQueue> queue) {
@@ -192,6 +237,7 @@ int main() {
         Edges(device, queue, p);
       }
       Invalid(device, queue);
+      AliasedDestination(device);
       auto stats = metal::GetStatistics();
       std::printf("Native gradient import PASS: %zu cases, %zu fields, %zu invalid inputs; "
                   "%llu pairs, %llu shared output bytes, %llu host copy bytes\n",

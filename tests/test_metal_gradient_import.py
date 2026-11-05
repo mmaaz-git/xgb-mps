@@ -97,6 +97,15 @@ def test_native_boost(metal, name, device, dtype, layout):
     assert (
         after["gradient_import_dispatches"] - before["gradient_import_dispatches"] == 2
     )
+    assert (
+        after["gradient_import_shared_output_bytes"]
+        - before["gradient_import_shared_output_bytes"]
+        == 2 * rows * targets * 8
+    )
+    assert (
+        after["gradient_import_host_copy_bytes"]
+        == before["gradient_import_host_copy_bytes"]
+    )
     assert actual.save_raw() == expected.save_raw()
     np.testing.assert_array_equal(actual.predict(data), expected.predict(data))
 
@@ -187,6 +196,15 @@ def test_independent_split_value_pairs(metal, name, placement, device):
     assert (
         after["gradient_import_pairs"] - before["gradient_import_pairs"]
         == 2 * 137 * pairs
+    )
+    assert (
+        after["gradient_import_shared_output_bytes"]
+        - before["gradient_import_shared_output_bytes"]
+        == 2 * 137 * pairs * 8
+    )
+    assert (
+        after["gradient_import_host_copy_bytes"]
+        == before["gradient_import_host_copy_bytes"]
     )
     expected = xgb.train(params(device, 3), data, 2, obj=Separate(None, "host"))
     assert actual.save_raw() == expected.save_raw()

@@ -61,6 +61,7 @@ void ExtractHessians(linalg::MatrixView<GradientPair const> input,
 // Native tensor descriptors have explicit device_type=8 tags, not host pointers.
 // Preserve CUDA CustomGradHessOp casts and packing without clamping/validation
 // of the numerical values. Shape/device validation precedes output publication.
+// Output owns Metal storage even for a CPU learner; host access is explicit.
 void CopyNativeGradients(StringView grad, StringView hess, bst_idx_t rows,
                          linalg::Matrix<GradientPair>* output);
 }  // namespace xgboost::common::metal

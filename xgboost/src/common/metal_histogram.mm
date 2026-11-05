@@ -8057,10 +8057,14 @@ void CopyNativeGradients(StringView grad, StringView hess, bst_idx_t rows,
   auto& rt = GetRuntime();
   CHECK_LT(count, std::numeric_limits<std::uint32_t>::max());
   CHECK_LE(count, rt.device.maxBufferLength / sizeof(GradientPair));
+  // CUDA selects the input device independently of the learner's device. Keep
+  // the packed pairs device-authoritative until a consumer explicitly reads
+  // them on the CPU, including empty and reused destinations.
+  output->SetDevice(DeviceOrd::MPS());
   output->Reshape(rows, g.columns);
+  auto destination = output->Data()->DeviceSpan();
   if (!count) return;
   static_assert(sizeof(GradientPair) == 8);
-  auto destination = output->Data()->HostSpan();
   @autoreleasepool {
     auto out = TryBorrowMemory(rt.device, destination.data(), destination.size_bytes(), 8);
     bool shared = out.buffer != nil;
