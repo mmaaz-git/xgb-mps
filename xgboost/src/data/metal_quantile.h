@@ -25,12 +25,12 @@ void AdapterWindows(Context const* ctx, DMatrixProxy const* proxy, float missing
     using A = typename std::decay_t<decltype(adapter)>::element_type;
     if constexpr (std::is_same_v<A, ArrayAdapter> || std::is_same_v<A, ColumnarAdapter> ||
                   std::is_same_v<A, common::metal::Tensor>) {
-      std::vector<std::int32_t> map;
+      HostDeviceVector<std::int32_t> map;
       enc::MappingView mapping;
       if constexpr (std::is_same_v<A, ColumnarAdapter> ||
                     std::is_same_v<A, common::metal::Tensor>) {
         if (adapter->HasRefCategorical()) {
-          CatContainer cats{adapter->RefCats(), true};
+          CatContainer cats{ctx, adapter->RefCats(), true};
           cats.Sort(ctx);
           auto encoded = ::xgboost::cpu_impl::MakeCatAccessor(ctx, adapter->Cats(), &cats);
           mapping = std::get<0>(encoded).enc;

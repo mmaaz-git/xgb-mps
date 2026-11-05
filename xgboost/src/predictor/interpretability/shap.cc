@@ -521,8 +521,7 @@ void DispatchByBatchView(Context const *ctx, DMatrix *p_fmat, EncAccessor acc, F
 template <typename Fn>
 void LaunchShap(Context const *ctx, DMatrix *p_fmat, gbm::GBTreeModel const &model, Fn &&fn) {
   if (model.Cats()->HasCategorical() && p_fmat->Cats()->NeedRecode()) {
-    auto new_enc = p_fmat->Cats()->HostView();
-    auto [acc, mapping] = ::xgboost::cpu_impl::MakeCatAccessor(ctx, new_enc, model.Cats());
+    auto [acc, mapping] = ::xgboost::cpu_impl::MakeCatAccessor(ctx, p_fmat->Cats(), model.Cats());
     DispatchByBatchView(ctx, p_fmat, acc, fn);
   } else {
     DispatchByBatchView(ctx, p_fmat, NoOpAccessor{}, fn);

@@ -40,9 +40,9 @@ SimpleDMatrix::SimpleDMatrix(common::metal::Tensor const& tensor, float missing,
   info_.num_col_ = tensor.NumColumns();
   info_.num_nonzero_ = sparse_page_->data.Size();
   if (tensor.HasRefCategorical()) {
-    info_.Cats(std::make_shared<CatContainer>(tensor.RefCats(), true));
+    info_.Cats(std::make_shared<CatContainer>(&fmat_ctx_, tensor.RefCats(), true));
   } else if (tensor.HasCategorical()) {
-    info_.Cats(std::make_shared<CatContainer>(tensor.Cats(), false));
+    info_.Cats(std::make_shared<CatContainer>(&fmat_ctx_, tensor.Cats(), false));
   }
   info_.SynchronizeNumberOfColumns(&fmat_ctx_);
   SyncCategories(&fmat_ctx_, info_.Cats(), info_.num_row_ == 0);

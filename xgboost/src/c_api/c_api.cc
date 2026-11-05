@@ -298,6 +298,12 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["vector_arithmetic_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.vector_arithmetic_dispatches)};
   info["float_mean_dispatches"] = Integer{static_cast<std::int64_t>(stats.float_mean_dispatches)};
+  info["category_state_shared_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.category_state_shared_input_bytes)};
+  info["category_state_shared_output_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.category_state_shared_output_bytes)};
+  info["category_state_staging_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.category_state_staging_bytes)};
   info["category_sort_dispatches"] =
       Integer{static_cast<std::int64_t>(stats.category_sort_dispatches)};
   info["category_recode_dispatches"] =
@@ -686,6 +692,9 @@ XGB_DLL int XGBMetalInfo(char const **out) {
   info["small_histogram_dispatches"] = Integer{0};
   info["vector_arithmetic_dispatches"] = Integer{0};
   info["float_mean_dispatches"] = Integer{0};
+  info["category_state_shared_input_bytes"] = Integer{0};
+  info["category_state_shared_output_bytes"] = Integer{0};
+  info["category_state_staging_bytes"] = Integer{0};
   info["category_sort_dispatches"] = Integer{0};
   info["category_recode_dispatches"] = Integer{0};
   info["category_gpu_time_ns"] = Integer{0};

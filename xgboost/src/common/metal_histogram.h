@@ -144,6 +144,9 @@ struct Statistics {
   // auc_final_readback_bytes counts normalization/grouped AUC scalar returns.
   std::uint64_t metric_shared_output_bytes, metric_host_output_bytes, metric_copy_dispatches,
       metric_copy_bytes, auc_final_readback_bytes;
+  // Dictionary sort/recode and mapping bindings; scalar error returns excluded.
+  std::uint64_t category_state_shared_input_bytes, category_state_shared_output_bytes,
+      category_state_staging_bytes;
 };
 
 class Histogram {

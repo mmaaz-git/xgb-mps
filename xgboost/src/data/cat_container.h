@@ -117,7 +117,7 @@ class CatContainer {
    * targeted devices.
    */
   void CopyCommon(Context const* ctx, CatContainer const& that) {
-    auto device = ctx->Device();
+    auto device = ctx->IsMPS() ? DeviceOrd::MPS() : ctx->Device();
 
     that.sorted_idx_.SetDevice(device);
     this->sorted_idx_.SetDevice(device);
@@ -151,6 +151,10 @@ class CatContainer {
  public:
   CatContainer();
   explicit CatContainer(enc::HostColumnsView const& df, bool is_ref);
+#if defined(XGBOOST_USE_METAL)
+  explicit CatContainer(Context const* ctx, enc::HostColumnsView const& df, bool is_ref);
+  [[nodiscard]] common::metal::CategoryDictionary const& MetalView() const;
+#endif
 #if defined(XGBOOST_USE_CUDA)
   explicit CatContainer(Context const* ctx, enc::DeviceColumnsView const& df, bool is_ref);
 #endif  // defined(XGBOOST_USE_CUDA)
@@ -162,7 +166,14 @@ class CatContainer {
   [[nodiscard]] bool DeviceCanRead() const { return this->feature_segments_.DeviceCanRead(); }
 
   // Mostly used for testing.
-  void Push(cpu_impl::ColumnType const& column) { this->cpu_impl_->columns.emplace_back(column); }
+  void Push(cpu_impl::ColumnType const& column) {
+#if defined(XGBOOST_USE_METAL)
+    (void)this->HostView();
+    metal_impl_.reset();
+    feature_segments_.HostSpan();
+#endif
+    this->cpu_impl_->columns.emplace_back(column);
+  }
   /**
    * @brief Wether the container is initialized at all. If the input is not a DataFrame,
    *        this method returns True.
@@ -188,10 +199,10 @@ class CatContainer {
    */
   [[nodiscard]] common::Span<bst_cat_t const> RefSortedIndex(Context const* ctx) const {
     std::lock_guard guard{device_mu_};
-    if (ctx->IsCPU()) {
+    if (ctx->IsCPU() && !ctx->IsMPS()) {
       return this->sorted_idx_.ConstHostSpan();
     } else {
-      sorted_idx_.SetDevice(ctx->Device());
+      sorted_idx_.SetDevice(ctx->IsMPS() ? DeviceOrd::MPS() : ctx->Device());
       return this->sorted_idx_.ConstDeviceSpan();
     }
   }
@@ -222,6 +233,9 @@ class CatContainer {
   bst_cat_t n_total_cats_{0};
 
   std::unique_ptr<cpu_impl::CatContainerImpl> cpu_impl_;
+#if defined(XGBOOST_USE_METAL)
+  mutable std::unique_ptr<common::metal::CategoryDictionary> metal_impl_;
+#endif
 
   HostDeviceVector<bst_cat_t> sorted_idx_;
 #if defined(XGBOOST_USE_CUDA)
@@ -279,21 +293,39 @@ void SyncCategories(Context const* ctx, CatContainer* cats, bool is_empty);
 namespace cpu_impl {
 inline auto MakeCatAccessor(Context const* ctx, enc::HostColumnsView const& new_enc,
                             CatContainer const* orig_cats) {
-  std::vector<std::int32_t> mapping(new_enc.n_total_cats);
+  HostDeviceVector<std::int32_t> mapping(new_enc.n_total_cats, 0,
+                                         ctx->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU());
   auto sorted_idx = orig_cats->RefSortedIndex(ctx);
-  auto orig_enc = orig_cats->HostView();
+  common::Span<std::int32_t const> values;
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
-    common::metal::RecodeCategories(orig_enc, sorted_idx, new_enc, common::Span{mapping});
+    auto incoming = common::metal::MakeCategoryDictionary(new_enc);
+    orig_cats->MetalView().Recode(sorted_idx, *incoming, mapping.DeviceSpan());
+    values = mapping.ConstDeviceSpan();
   } else
 #endif
   {
-    enc::Recode(cpu_impl::EncPolicy, orig_enc, sorted_idx, new_enc, common::Span{mapping});
+    auto orig_enc = orig_cats->HostView();
+    enc::Recode(cpu_impl::EncPolicy, orig_enc, sorted_idx, new_enc, mapping.HostSpan());
+    values = mapping.ConstHostSpan();
   }
-  CHECK_EQ(new_enc.feature_segments.size(), orig_enc.feature_segments.size());
-  auto cats_mapping = enc::MappingView{new_enc.feature_segments, mapping};
+  auto cats_mapping = enc::MappingView{new_enc.feature_segments, values};
   auto acc = CatAccessor{cats_mapping};
   return std::tuple{acc, std::move(mapping)};
+}
+inline auto MakeCatAccessor(Context const* ctx, CatContainer const* incoming,
+                            CatContainer const* original) {
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    auto const& next = incoming->MetalView();
+    auto const& orig = original->MetalView();
+    HostDeviceVector<std::int32_t> mapping(next.View().n_total_cats, 0, DeviceOrd::MPS());
+    orig.Recode(original->RefSortedIndex(ctx), next, mapping.DeviceSpan());
+    auto acc = CatAccessor{{next.View().feature_segments, mapping.ConstDeviceSpan()}};
+    return std::tuple{acc, std::move(mapping)};
+  }
+#endif
+  return MakeCatAccessor(ctx, incoming->HostView(), original);
 }
 }  // namespace cpu_impl
 }  // namespace xgboost

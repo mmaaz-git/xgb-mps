@@ -147,14 +147,18 @@ void Run(unsigned n, unsigned mode, std::mt19937_64* rng) {
     before = metal::GetStatistics();
     copied.Sort(&ctx);
     auto [accessor, actual] = cpu_impl::MakeCatAccessor(&ctx, next, &copied);
-    Check(actual == known, "Container recoding differs");
+    Check(actual.Device().IsMPS() && !actual.HostCanRead(),
+          "Container mapping lost GPU storage");
+    auto values = actual.ConstDeviceSpan();
+    Check(std::equal(values.begin(), values.end(), known.begin(), known.end()),
+          "Container recoding differs");
     Check(metal::GetStatistics().category_sort_dispatches == before.category_sort_dispatches + 1 &&
               metal::GetStatistics().category_recode_dispatches ==
                   before.category_recode_dispatches + 1,
           "Container bypassed GPU");
-    fields += actual.size();
+    fields += actual.Size();
     for (std::size_t f = 0; f < next.Size(); ++f) {
-      auto segment = enc::MappingView{next.feature_segments, actual}[f];
+      auto segment = accessor.enc[f];
       for (std::size_t i = 0; i < segment.size(); ++i)
         Check(segment[i] == known[next.feature_segments[f] + i], "Accessor mapping");
     }

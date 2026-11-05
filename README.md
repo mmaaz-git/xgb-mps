@@ -14,7 +14,25 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **tree training retains Metal gradients and leaf positions**. Both
+Latest step: **categorical dictionaries and mappings retain Metal storage**.
+Dictionary names now use reusable GPU snapshots; sorting, recoding and model
+copies retain GPU arrays. Native columnar input gathers names into Metal storage,
+and prediction/SHAP/quantile ingestion consume resident mappings. Host mirrors
+are created for explicit CPU access or serialization. Reloading an existing
+container now replaces its old columns and invalidates the prior GPU snapshot.
+
+Validation passes **37 new native cases / 530,726 checks**, the existing typed-name
+and native-columnar checks, and **81 focused Python tests**. Full regression
+passes **3,360 Python tests, one expected skip**, all **95 native groups**, and
+the CPU-only build/API checks. Fifteen new Python cases verify repeated
+prediction with reordered categories without payload readback or staging.
+[Dictionary storage validation](validation/cuda-metal-category-state-m3.txt).
+
+Persistent prediction-model storage, remaining CUDA operation/arithmetic audits,
+GPU collective transport and cross-hardware validation remain open. No benchmark
+or NVIDIA execution comparison was run for this step.
+
+The preceding step: **tree training retains Metal gradients and leaf positions**. Both
 `hist` and `approx` now keep sampling buffers on GPU, including per-class gradient
 selection, multi-target/reduced gradients, quantizer layout copies and float
 sampling replay. Approximate training also retains Hessians and sketch weights

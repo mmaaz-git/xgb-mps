@@ -129,6 +129,8 @@ std::atomic<std::uint64_t> binning_dispatches{0}, binning_gpu_time_ns{0};
 std::atomic<std::uint64_t> mean_dispatches{0}, mean_gpu_time_ns{0};
 std::atomic<std::uint64_t> small_histogram_dispatches{0}, vector_arithmetic_dispatches{0},
     float_mean_dispatches{0};
+std::atomic<std::uint64_t> category_state_shared_input_bytes{0},
+    category_state_shared_output_bytes{0}, category_state_staging_bytes{0};
 std::atomic<std::uint64_t> category_sort_dispatches{0}, category_recode_dispatches{0},
     category_gpu_time_ns{0};
 std::atomic<std::uint64_t> input_prepare_dispatches{0}, input_recode_dispatches{0},
@@ -2090,7 +2092,10 @@ Statistics GetStatistics() {
           metric_host_output_bytes.load(std::memory_order_relaxed),
           metric_copy_dispatches.load(std::memory_order_relaxed),
           metric_copy_bytes.load(std::memory_order_relaxed),
-          auc_final_readback_bytes.load(std::memory_order_relaxed)};
+          auc_final_readback_bytes.load(std::memory_order_relaxed),
+          category_state_shared_input_bytes.load(std::memory_order_relaxed),
+          category_state_shared_output_bytes.load(std::memory_order_relaxed),
+          category_state_staging_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2129,6 +2134,7 @@ class MetalVectorBuffer final : public VectorBuffer {
       vector_capacity_bytes.fetch_sub(capacity_, std::memory_order_relaxed);
     }
   }
+  id<MTLBuffer> Buffer() const { return buffer_; }
   void* Data() const override { return buffer_ ? buffer_.contents : nullptr; }
   std::size_t SizeBytes() const override { return size_; }
   void Resize(std::size_t bytes) override {
@@ -2527,62 +2533,167 @@ struct CategoryError {
   void Error(std::string&& message) const { LOG(FATAL) << message; }
 };
 using CategoryPolicy = enc::Policy<CategoryError>;
-struct PackedCategories {
-  std::vector<CategoryColumn> columns;
-  std::vector<std::uint8_t> data;
-  std::uint64_t Append(void const* source, std::size_t bytes) {
-    auto offset = (data.size() + 7) & ~std::size_t{7};
-    data.resize(offset + bytes);
-    if (bytes) std::memcpy(data.data() + offset, source, bytes);
-    return offset;
+BorrowedMemory BindCategoryInput(Runtime const& rt, void const* data, std::size_t bytes,
+                                  std::size_t alignment) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, alignment);
+  if (input.buffer) {
+    category_state_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  } else {
+    input = {Upload(rt, data, bytes), 0};
+    category_state_staging_bytes.fetch_add(bytes, std::memory_order_relaxed);
   }
-  explicit PackedCategories(enc::HostColumnsView view) {
-    CHECK_EQ(view.feature_segments.size(), view.Size() + 1);
-    CHECK_EQ(view.feature_segments.front(), 0);
-    CHECK_EQ(view.feature_segments.back(), view.n_total_cats);
-    CHECK_LE(view.Size(), std::numeric_limits<std::uint32_t>::max());
-    columns.resize(view.Size());
-    for (std::size_t f = 0; f < view.Size(); ++f) {
-      auto& out = columns[f];
-      CHECK_GE(view.feature_segments[f + 1], view.feature_segments[f]);
-      out.begin = view.feature_segments[f];
-      std::visit(
-          [&](auto const& col) {
-            CHECK_EQ(col.size(), view.feature_segments[f + 1] - view.feature_segments[f]);
-            out.size = col.size();
-            out.empty = col.empty();
-            if constexpr (std::is_same_v<std::decay_t<decltype(col)>, enc::CatStrArrayView>) {
-              out.offsets = Append(col.offsets.data(), col.offsets.size_bytes());
-              out.values = Append(col.values.data(), col.values.size_bytes());
-            } else {
-              using T = std::remove_const_t<typename std::decay_t<decltype(col)>::value_type>;
-              static_assert(std::is_integral_v<T>,
-                            "Extend Metal category comparisons for new types");
-              out.type = (sizeof(T) == 1   ? 1
-                          : sizeof(T) == 2 ? 3
-                          : sizeof(T) == 4 ? 5
-                                           : 7) +
-                         std::is_signed_v<T>;
-              out.values = Append(col.data(), col.size_bytes());
-            }
-          },
-          view.columns[f]);
+  return input;
+}
+void PublishCategoryOutput(Runtime const& rt, id<MTLBuffer> source, Span<std::int32_t> output) {
+  if (output.empty()) return;
+  auto destination = TryBorrowMemory(rt.device, output.data(), output.size_bytes(), 4);
+  if (destination.buffer) {
+    auto command = [rt.queue commandBuffer];
+    auto blit = [command blitCommandEncoder];
+    CHECK(blit);
+    [blit copyFromBuffer:source sourceOffset:0 toBuffer:destination.buffer
+      destinationOffset:destination.offset size:output.size_bytes()];
+    [blit endEncoding];
+    CompleteOperation(command, nullptr, &category_gpu_time_ns);
+    category_state_shared_output_bytes.fetch_add(output.size_bytes(), std::memory_order_relaxed);
+  } else {
+    std::memcpy(output.data(), source.contents, output.size_bytes());
+    category_state_staging_bytes.fetch_add(output.size_bytes(), std::memory_order_relaxed);
+  }
+}
+class MetalCategoryDictionary final : public CategoryDictionary {
+  std::vector<CategoryColumn> columns_;
+  std::vector<std::pair<std::size_t, std::size_t>> string_sizes_;
+  std::vector<std::int32_t> segments_;
+  std::vector<enc::HostCatIndexView> views_;
+  std::unique_ptr<VectorBuffer> data_{MakeVectorBuffer()}, metadata_{MakeVectorBuffer()};
+
+  std::vector<enc::HostCatIndexView> Views(void const* data) const {
+    auto bytes = static_cast<std::uint8_t const*>(data);
+    std::vector<enc::HostCatIndexView> views;
+    auto address = [&](std::size_t offset) { return bytes ? bytes + offset : nullptr; };
+    for (std::size_t f = 0; f < columns_.size(); ++f) {
+      auto const& col = columns_[f];
+      switch (col.type) {
+        case 0:
+          views.emplace_back(enc::CatStrArrayView{
+              {reinterpret_cast<std::int32_t const*>(address(col.offsets)), string_sizes_[f].first},
+              {reinterpret_cast<enc::CatCharT const*>(address(col.values)), string_sizes_[f].second}});
+          break;
+#define CATEGORY_VIEW(Code, T) \
+        case Code: views.emplace_back(Span<T const>{reinterpret_cast<T const*>(address(col.values)), col.size}); break;
+        CATEGORY_VIEW(1, std::uint8_t)
+        CATEGORY_VIEW(2, std::int8_t)
+        CATEGORY_VIEW(3, std::uint16_t)
+        CATEGORY_VIEW(4, std::int16_t)
+        CATEGORY_VIEW(5, std::uint32_t)
+        CATEGORY_VIEW(6, std::int32_t)
+        CATEGORY_VIEW(7, std::uint64_t)
+        CATEGORY_VIEW(8, std::int64_t)
+#undef CATEGORY_VIEW
+        default: LOG(FATAL) << "Invalid Metal category type.";
+      }
     }
+    return views;
   }
+
+ public:
+  explicit MetalCategoryDictionary(enc::HostColumnsView view) {
+    struct Part { void const* source; std::size_t bytes, offset; };
+    std::vector<Part> parts;
+    std::size_t size = 0;
+    auto append = [&](void const* source, std::size_t bytes) {
+      auto offset = (size + 7) & ~std::size_t{7};
+      CHECK_LE(bytes, GetRuntime().device.maxBufferLength);
+      CHECK_LE(offset, GetRuntime().device.maxBufferLength - bytes);
+      parts.push_back({source, bytes, offset});
+      size = offset + bytes;
+      return offset;
+    };
+    if (view.Size() == 0 && view.feature_segments.empty()) {
+      CHECK_EQ(view.n_total_cats, 0);
+      segments_ = {0};
+    } else {
+      CHECK_EQ(view.feature_segments.size(), view.Size() + 1);
+      CHECK_EQ(view.feature_segments.front(), 0);
+      CHECK_EQ(view.feature_segments.back(), view.n_total_cats);
+      segments_.assign(view.feature_segments.begin(), view.feature_segments.end());
+    }
+    CHECK_LE(view.Size(), std::numeric_limits<std::uint32_t>::max());
+    columns_.resize(view.Size());
+    string_sizes_.resize(view.Size());
+    for (std::size_t f = 0; f < view.Size(); ++f) {
+      auto& out = columns_[f];
+      CHECK_GE(segments_[f + 1], segments_[f]);
+      out.begin = segments_[f];
+      std::visit([&](auto const& col) {
+        CHECK_EQ(col.size(), segments_[f + 1] - segments_[f]);
+        out.size = col.size();
+        out.empty = col.empty();
+        if constexpr (std::is_same_v<std::decay_t<decltype(col)>, enc::CatStrArrayView>) {
+          string_sizes_[f] = {col.offsets.size(), col.values.size()};
+          out.offsets = append(col.offsets.data(), col.offsets.size_bytes());
+          out.values = append(col.values.data(), col.values.size_bytes());
+        } else {
+          using T = std::remove_const_t<typename std::decay_t<decltype(col)>::value_type>;
+          static_assert(std::is_integral_v<T>);
+          out.type = (sizeof(T) == 1 ? 1 : sizeof(T) == 2 ? 3 : sizeof(T) == 4 ? 5 : 7) +
+                     std::is_signed_v<T>;
+          out.values = append(col.data(), col.size_bytes());
+        }
+      }, view.columns[f]);
+    }
+    data_->Resize(size);
+    for (auto const& part : parts) data_->Import(part.source, part.offset, part.bytes);
+    metadata_->Resize(columns_.size() * sizeof(CategoryColumn));
+    metadata_->Import(columns_.data(), 0, metadata_->SizeBytes());
+    views_ = Views(data_->Data());
+  }
+  explicit MetalCategoryDictionary(MetalCategoryDictionary const& that)
+      : columns_{that.columns_}, string_sizes_{that.string_sizes_}, segments_{that.segments_} {
+    data_->Resize(that.data_->SizeBytes());
+    data_->Copy(*that.data_, 0, 0, that.data_->SizeBytes());
+    metadata_->Resize(that.metadata_->SizeBytes());
+    metadata_->Copy(*that.metadata_, 0, 0, that.metadata_->SizeBytes());
+    views_ = Views(data_->Data());
+  }
+  enc::HostColumnsView View() const override { return {views_, segments_, segments_.back()}; }
+  std::unique_ptr<CategoryDictionary> Clone() const override {
+    return std::make_unique<MetalCategoryDictionary>(*this);
+  }
+  void CopyToHost(::xgboost::cpu_impl::CatContainerImpl* output) const override {
+    std::vector<std::uint8_t> data(data_->SizeBytes());
+    data_->Readback(data.data(), data.size());
+    auto views = Views(data.data());
+    output->columns.clear();
+    for (auto const& col : views) {
+      std::visit([&](auto const& values) {
+        if constexpr (std::is_same_v<std::decay_t<decltype(values)>, enc::CatStrArrayView>) {
+          output->columns.emplace_back(::xgboost::cpu_impl::CatStrArray{
+              {values.offsets.begin(), values.offsets.end()}, {values.values.begin(), values.values.end()}});
+        } else {
+          using T = std::remove_const_t<typename std::decay_t<decltype(values)>::value_type>;
+          output->columns.emplace_back(std::vector<T>{values.begin(), values.end()});
+        }
+      }, col);
+    }
+    output->Finalize();
+  }
+  void Sort(Span<std::int32_t> sorted) const override;
+  void Recode(Span<std::int32_t const> sorted, CategoryDictionary const& incoming,
+              Span<std::int32_t> mapping) const override;
 };
 }  // namespace
-
-void SortCategories(enc::HostColumnsView columns, Span<std::int32_t> sorted) {
+void MetalCategoryDictionary::Sort(Span<std::int32_t> sorted) const {
+  auto columns = View();
   CHECK_GE(columns.n_total_cats, 0);
   CHECK_EQ(sorted.size(), columns.n_total_cats)
       << "`sorted_idx` should have the same size as `n_total_cats`.";
   if (sorted.empty()) return;
-  PackedCategories packed{columns};
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto metadata =
-        Upload(rt, packed.columns.data(), packed.columns.size() * sizeof(CategoryColumn));
-    auto data = Upload(rt, packed.data.data(), packed.data.size());
+    auto metadata = BindCategoryInput(rt, metadata_->Data(), metadata_->SizeBytes(), 8);
+    auto data = BindCategoryInput(rt, data_->Data(), data_->SizeBytes(), 8);
     auto keys = Allocate(rt, sorted.size() * 8), scratch = Allocate(rt, sorted.size() * 8);
     auto result = Allocate(rt, sorted.size_bytes());
     CategoryParams p{static_cast<std::uint32_t>(sorted.size()),
@@ -2592,7 +2703,7 @@ void SortCategories(enc::HostColumnsView columns, Span<std::int32_t> sorted) {
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.category_iota_pipeline];
-    [e setBuffer:metadata offset:0 atIndex:0];
+    [e setBuffer:metadata.buffer offset:metadata.offset atIndex:0];
     [e setBuffer:keys offset:0 atIndex:1];
     [e setBytes:&p length:sizeof(p) atIndex:2];
     [e dispatchThreads:MTLSizeMake(p.count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -2601,8 +2712,8 @@ void SortCategories(enc::HostColumnsView columns, Span<std::int32_t> sorted) {
       e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.category_merge_pipeline];
-      [e setBuffer:data offset:0 atIndex:0];
-      [e setBuffer:metadata offset:0 atIndex:1];
+      [e setBuffer:data.buffer offset:data.offset atIndex:0];
+      [e setBuffer:metadata.buffer offset:metadata.offset atIndex:1];
       [e setBuffer:keys offset:0 atIndex:2];
       [e setBuffer:scratch offset:0 atIndex:3];
       [e setBytes:&p length:sizeof(p) atIndex:4];
@@ -2619,24 +2730,27 @@ void SortCategories(enc::HostColumnsView columns, Span<std::int32_t> sorted) {
     [e dispatchThreads:MTLSizeMake(p.count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     CompleteOperation(command, &category_sort_dispatches, &category_gpu_time_ns);
-    std::memcpy(sorted.data(), result.contents, sorted.size_bytes());
+    PublishCategoryOutput(rt, result, sorted);
   }
 }
 
-void RecodeCategories(enc::HostColumnsView original, Span<std::int32_t const> sorted,
-                      enc::HostColumnsView incoming, Span<std::int32_t> mapping) {
+void MetalCategoryDictionary::Recode(Span<std::int32_t const> sorted,
+                                       CategoryDictionary const& input,
+                                       Span<std::int32_t> mapping) const {
+  auto original = View();
+  auto const& next = dynamic_cast<MetalCategoryDictionary const&>(input);
+  auto incoming = next.View();
   enc::detail::BasicChecks(CategoryPolicy{}, original, sorted, incoming, mapping);
   CHECK_GE(original.n_total_cats, 0);
   CHECK_GE(incoming.n_total_cats, 0);
   if (original.Empty()) return;
-  PackedCategories orig{original}, next{incoming};
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto om = Upload(rt, orig.columns.data(), orig.columns.size() * sizeof(CategoryColumn));
-    auto od = Upload(rt, orig.data.data(), orig.data.size());
-    auto nm = Upload(rt, next.columns.data(), next.columns.size() * sizeof(CategoryColumn));
-    auto nd = Upload(rt, next.data.data(), next.data.size());
-    auto order = Upload(rt, sorted.data(), sorted.size_bytes());
+    auto om = BindCategoryInput(rt, metadata_->Data(), metadata_->SizeBytes(), 8);
+    auto od = BindCategoryInput(rt, data_->Data(), data_->SizeBytes(), 8);
+    auto nm = BindCategoryInput(rt, next.metadata_->Data(), next.metadata_->SizeBytes(), 8);
+    auto nd = BindCategoryInput(rt, next.data_->Data(), next.data_->SizeBytes(), 8);
+    auto order = BindCategoryInput(rt, sorted.data(), sorted.size_bytes(), 4);
     auto result = Allocate(rt, mapping.size_bytes());
     CategoryParams p{static_cast<std::uint32_t>(mapping.size()),
                      static_cast<std::uint32_t>(incoming.Size()), 0, 0};
@@ -2647,8 +2761,8 @@ void RecodeCategories(enc::HostColumnsView original, Span<std::int32_t const> so
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.category_validate_pipeline];
-    [e setBuffer:om offset:0 atIndex:0];
-    [e setBuffer:nm offset:0 atIndex:1];
+    [e setBuffer:om.buffer offset:om.offset atIndex:0];
+    [e setBuffer:nm.buffer offset:nm.offset atIndex:1];
     [e setBuffer:error offset:0 atIndex:2];
     [e setBytes:&p.features length:sizeof(p.features) atIndex:3];
     [e dispatchThreads:MTLSizeMake(p.features, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
@@ -2657,11 +2771,11 @@ void RecodeCategories(enc::HostColumnsView original, Span<std::int32_t const> so
       e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.category_recode_pipeline];
-      [e setBuffer:od offset:0 atIndex:0];
-      [e setBuffer:om offset:0 atIndex:1];
-      [e setBuffer:order offset:0 atIndex:2];
-      [e setBuffer:nd offset:0 atIndex:3];
-      [e setBuffer:nm offset:0 atIndex:4];
+      [e setBuffer:od.buffer offset:od.offset atIndex:0];
+      [e setBuffer:om.buffer offset:om.offset atIndex:1];
+      [e setBuffer:order.buffer offset:order.offset atIndex:2];
+      [e setBuffer:nd.buffer offset:nd.offset atIndex:3];
+      [e setBuffer:nm.buffer offset:nm.offset atIndex:4];
       [e setBuffer:result offset:0 atIndex:5];
       [e setBuffer:error offset:0 atIndex:6];
       [e setBytes:&p length:sizeof(p) atIndex:7];
@@ -2694,8 +2808,26 @@ void RecodeCategories(enc::HostColumnsView original, Span<std::int32_t const> so
           incoming.columns[f]);
       enc::detail::ReportMissing(CategoryPolicy{}, name.str(), f);
     }
-    if (!mapping.empty()) std::memcpy(mapping.data(), result.contents, mapping.size_bytes());
+    PublishCategoryOutput(rt, result, mapping);
   }
+}
+std::unique_ptr<CategoryDictionary> MakeCategoryDictionary(enc::HostColumnsView columns) {
+  @autoreleasepool { return std::make_unique<MetalCategoryDictionary>(columns); }
+}
+void SortCategories(enc::HostColumnsView columns, Span<std::int32_t> sorted) {
+  CHECK_GE(columns.n_total_cats, 0);
+  CHECK_EQ(sorted.size(), columns.n_total_cats);
+  if (sorted.empty()) return;
+  MakeCategoryDictionary(columns)->Sort(sorted);
+}
+void RecodeCategories(enc::HostColumnsView original, Span<std::int32_t const> sorted,
+                      enc::HostColumnsView incoming, Span<std::int32_t> mapping) {
+  enc::detail::BasicChecks(CategoryPolicy{}, original, sorted, incoming, mapping);
+  CHECK_GE(original.n_total_cats, 0);
+  CHECK_GE(incoming.n_total_cats, 0);
+  if (original.Empty()) return;
+  auto orig = MakeCategoryDictionary(original), next = MakeCategoryDictionary(incoming);
+  orig->Recode(sorted, *next, mapping);
 }
 
 void CopyModelBuffer(void* output, std::size_t words, Span<ModelCopy const> copies,
@@ -6993,31 +7125,32 @@ std::unique_ptr<MetalTensor> NativeVector(Json const& json) {
   return std::make_unique<MetalTensor>(Json::Dump(json), true);
 }
 template <typename T>
-std::vector<T> NativeNames(MetalTensor const& tensor) {
+Span<T const> NativeNames(MetalTensor const& tensor,
+                           std::vector<std::unique_ptr<VectorBuffer>>* owners) {
   auto& rt = GetRuntime();
   CHECK_LE(tensor.rows, rt.device.maxBufferLength / sizeof(T));
-  std::vector<T> output(tensor.rows);
-  if (output.empty()) return output;
-  auto out = TryBorrowMemory(rt.device, output.data(), output.size() * sizeof(T), alignof(T));
-  bool shared = out.buffer != nil;
-  if (!shared) out = {Allocate(rt, output.size() * sizeof(T)), 0};
+  if (!tensor.rows) return {};
+  auto owner = std::make_unique<MetalVectorBuffer>();
+  owner->Resize(tensor.rows * sizeof(T));
+  auto output = Span<T const>{static_cast<T const*>(owner->Data()), tensor.rows};
+  auto out = owner->Buffer();
   std::uint32_t p[]{static_cast<std::uint32_t>(output.size()), sizeof(T)};
   auto command = [rt.queue commandBuffer];
   auto e = [command computeCommandEncoder];
   [e setComputePipelineState:rt.tensor_gather_bytes_pipeline];
   [e setBuffer:tensor.buffer offset:0 atIndex:0];
-  [e setBuffer:out.buffer offset:out.offset atIndex:1];
+  [e setBuffer:out offset:0 atIndex:1];
   [e setBytes:&tensor.array length:sizeof(tensor.array) atIndex:2];
   [e setBytes:p length:sizeof(p) atIndex:3];
   [e dispatchThreads:MTLSizeMake(output.size(), 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
   [e endEncoding];
   CompleteOperation(command, &category_import_dispatches, &columnar_gpu_time_ns);
-  if (!shared) std::memcpy(output.data(), out.buffer.contents, output.size() * sizeof(T));
-  (shared ? category_import_shared_bytes : category_import_copy_bytes)
-      .fetch_add(output.size() * sizeof(T), std::memory_order_relaxed);
+  category_import_shared_bytes.fetch_add(output.size_bytes(), std::memory_order_relaxed);
+  owners->push_back(std::move(owner));
   return output;
 }
-::xgboost::cpu_impl::ColumnType NativeCategory(Json const& names) {
+enc::HostCatIndexView NativeCategory(Json const& names,
+                                   std::vector<std::unique_ptr<VectorBuffer>>* owners) {
   auto const& obj = get<Object const>(names);
   if (obj.find("offsets") != obj.cend()) {
     auto offsets = NativeVector(names["offsets"]), values = NativeVector(names["values"]);
@@ -7025,7 +7158,8 @@ std::vector<T> NativeNames(MetalTensor const& tensor) {
     CHECK_EQ(values->array.type, 4) << "String category values must be int8.";
     CHECK_GT(offsets->rows, 1) << "Categorical feature must have at least one category.";
     CHECK_LE(offsets->rows - 1, std::numeric_limits<std::int32_t>::max());
-    ::xgboost::cpu_impl::CatStrArray out{NativeNames<std::int32_t>(*offsets), NativeNames<std::int8_t>(*values)};
+    enc::CatStrArrayView out{NativeNames<std::int32_t>(*offsets, owners),
+                             NativeNames<std::int8_t>(*values, owners)};
     CHECK_GE(out.offsets.front(), 0) << "Invalid negative string offset from category index.";
     CHECK(std::is_sorted(out.offsets.begin(), out.offsets.end())) << "Invalid string offsets.";
     CHECK_LE(out.offsets.back(), out.values.size()) << "String category offset exceeds values.";
@@ -7037,14 +7171,14 @@ std::vector<T> NativeNames(MetalTensor const& tensor) {
   data::CheckNonEmptyCategory(tensor->rows);
   CHECK_LE(tensor->rows, std::numeric_limits<std::int32_t>::max());
   switch (tensor->array.type) {
-    case 4: return NativeNames<std::int8_t>(*tensor);
-    case 5: return NativeNames<std::int16_t>(*tensor);
-    case 6: return NativeNames<std::int32_t>(*tensor);
-    case 7: return NativeNames<std::int64_t>(*tensor);
-    case 8: return NativeNames<std::uint8_t>(*tensor);
-    case 9: return NativeNames<std::uint16_t>(*tensor);
-    case 10: return NativeNames<std::uint32_t>(*tensor);
-    case 11: return NativeNames<std::uint64_t>(*tensor);
+    case 4: return NativeNames<std::int8_t>(*tensor, owners);
+    case 5: return NativeNames<std::int16_t>(*tensor, owners);
+    case 6: return NativeNames<std::int32_t>(*tensor, owners);
+    case 7: return NativeNames<std::int64_t>(*tensor, owners);
+    case 8: return NativeNames<std::uint8_t>(*tensor, owners);
+    case 9: return NativeNames<std::uint16_t>(*tensor, owners);
+    case 10: return NativeNames<std::uint32_t>(*tensor, owners);
+    case 11: return NativeNames<std::uint64_t>(*tensor, owners);
     default: LOG(FATAL) << "Unsupported category index type.";
   }
   return {};
@@ -7053,7 +7187,7 @@ class MetalColumnar final : public MetalFeatureInput {
   id<MTLBuffer> buffer_;
   bst_idx_t rows_{0};
   std::vector<InputArray> arrays_;
-  ::xgboost::cpu_impl::CatContainerImpl categories_;
+  std::unique_ptr<CategoryDictionary> categories_;
   std::vector<std::int32_t> segments_{0};
   std::shared_ptr<CatContainer> reference_;
 
@@ -7064,6 +7198,8 @@ class MetalColumnar final : public MetalFeatureInput {
       CHECK_GT(columns.size(), 0) << "The number of columns must not equal to 0.";
       CHECK_LE(columns.size(), std::numeric_limits<bst_feature_t>::max());
       std::vector<std::unique_ptr<MetalTensor>> sources;
+      std::vector<std::unique_ptr<VectorBuffer>> names;
+      std::vector<enc::HostCatIndexView> categories;
       std::vector<std::size_t> destinations;
       std::size_t length{0};
       auto& rt = GetRuntime();
@@ -7099,20 +7235,22 @@ class MetalColumnar final : public MetalFeatureInput {
         }
         arrays_.push_back(a);
         if (obj.find("categories") != obj.cend()) {
-          categories_.columns.push_back(NativeCategory(col["categories"]));
+          categories.push_back(NativeCategory(col["categories"], &names));
         } else {
-          categories_.columns.emplace_back();
+          categories.emplace_back();
         }
-        auto count = std::visit([](auto const& c) { return c.size(); }, categories_.columns.back());
+        auto count = std::visit([](auto const& c) { return c.size(); }, categories.back());
         segments_.push_back(data::AddCatCount(count, segments_.back()));
       }
-      categories_.Finalize();
+      categories_ = MakeCategoryDictionary({categories, segments_, segments_.back()});
       auto const& obj = get<Object const>(json);
       if (obj.find("ref_categories") != obj.cend()) {
         auto handle = get<Integer const>(json["ref_categories"]);
         CHECK_GT(handle, 0);
         auto cats = reinterpret_cast<CatContainer const*>(handle);
-        reference_ = std::make_shared<CatContainer>(cats->HostView(), true);
+        Context ctx;
+        ctx.Init({{"device", "mps"}});
+        reference_ = std::make_shared<CatContainer>(&ctx, cats->MetalView().View(), true);
         if (reference_->HasCategorical()) {
           CHECK_EQ(reference_->NumFeatures(), columns.size())
               << "Invalid reference categories, different number of columns";
@@ -7149,10 +7287,10 @@ class MetalColumnar final : public MetalFeatureInput {
     return result;
   }
   enc::HostColumnsView Cats() const override {
-    return {categories_.columns_v, segments_, segments_.back()};
+    return categories_->View();
   }
   enc::HostColumnsView RefCats() const override {
-    return reference_ ? reference_->HostView() : enc::HostColumnsView{};
+    return reference_ ? reference_->MetalView().View() : enc::HostColumnsView{};
   }
 };
 struct PackedInput {
@@ -7238,8 +7376,8 @@ struct PackedInput {
                                          FeatureType::kNumerical);
       if (types.empty()) types = numerical;
       auto ft = Upload(rt, types.data(), types.size_bytes());
-      auto segments = Upload(rt, map.offsets.data(), map.offsets.size_bytes()),
-           mapping = Upload(rt, map.mapping.data(), map.mapping.size_bytes());
+      auto segments = BindCategoryInput(rt, map.offsets.data(), map.offsets.size_bytes(), 4),
+           mapping = BindCategoryInput(rt, map.mapping.data(), map.mapping.size_bytes(), 4);
       std::uint32_t zero = 0;
       auto error = Upload(rt, &zero, 4);
       auto command = [rt.queue commandBuffer];
@@ -7253,8 +7391,8 @@ struct PackedInput {
       [e setBuffer:ptrs offset:0 atIndex:2];
       [e setBuffer:values offset:0 atIndex:3];
       [e setBuffer:ft offset:0 atIndex:4];
-      [e setBuffer:segments offset:0 atIndex:5];
-      [e setBuffer:mapping offset:0 atIndex:6];
+      [e setBuffer:segments.buffer offset:segments.offset atIndex:5];
+      [e setBuffer:mapping.buffer offset:mapping.offset atIndex:6];
       [e setBuffer:output offset:0 atIndex:7];
       [e setBuffer:error offset:0 atIndex:8];
       [e setBytes:&params length:sizeof(params) atIndex:9];
@@ -7462,8 +7600,8 @@ std::unique_ptr<AdapterInput> PackedInput::FinishAdapter(enc::MappingView map, b
     }
     auto raw = native ? native : Upload(rt, bytes.data(), bytes.size());
     auto descriptors = Upload(rt, arrays.data(), arrays.size() * sizeof(InputArray));
-    auto segments = Upload(rt, map.offsets.data(), map.offsets.size_bytes());
-    auto mapping = Upload(rt, map.mapping.data(), map.mapping.size_bytes());
+    auto segments = BindCategoryInput(rt, map.offsets.data(), map.offsets.size_bytes(), 4);
+    auto mapping = BindCategoryInput(rt, map.mapping.data(), map.mapping.size_bytes(), 4);
     auto counts = Allocate(rt, (params.rows + 1) * 8);
     std::uint32_t zeros[2]{};
     auto status = Upload(rt, zeros, sizeof(zeros));
@@ -7474,8 +7612,8 @@ std::unique_ptr<AdapterInput> PackedInput::FinishAdapter(enc::MappingView map, b
       [e setComputePipelineState:pipeline];
       [e setBuffer:raw offset:0 atIndex:0];
       [e setBuffer:descriptors offset:0 atIndex:1];
-      [e setBuffer:segments offset:0 atIndex:2];
-      [e setBuffer:mapping offset:0 atIndex:3];
+      [e setBuffer:segments.buffer offset:segments.offset atIndex:2];
+      [e setBuffer:mapping.buffer offset:mapping.offset atIndex:3];
       [e setBuffer:row_ptr offset:0 atIndex:4];
       [e setBuffer:entries offset:0 atIndex:5];
       [e setBuffer:status offset:0 atIndex:6];
@@ -7537,12 +7675,12 @@ std::shared_ptr<Tensor> ImportTensor(StringView descriptor) {
 }
 void CopyTensorToSparsePage(Tensor const& source, float missing, SparsePage* output) {
   auto const& input = dynamic_cast<MetalFeatureInput const&>(source);
-  std::vector<std::int32_t> mapping;
+  HostDeviceVector<std::int32_t> mapping;
   enc::MappingView map;
   if (input.HasRefCategorical()) {
     Context ctx;
     ctx.Init({{"device", "mps"}});
-    CatContainer cats{input.RefCats(), true};
+    CatContainer cats{&ctx, input.RefCats(), true};
     cats.Sort(&ctx);
     auto encoded = ::xgboost::cpu_impl::MakeCatAccessor(&ctx, input.Cats(), &cats);
     map = std::get<0>(encoded).enc;

@@ -335,7 +335,7 @@ using cpu_impl::MakeCatAccessor;
 // Ordinal re-coder.
 struct EncAccessorPolicy {
  private:
-  std::vector<int32_t> mapping_;
+  HostDeviceVector<int32_t> mapping_;
 
  public:
   EncAccessorPolicy() = default;
@@ -346,7 +346,8 @@ struct EncAccessorPolicy {
   EncAccessorPolicy &operator=(EncAccessorPolicy &&that) = default;
   EncAccessorPolicy(EncAccessorPolicy &&that) = default;
 
-  [[nodiscard]] auto MakeAccessor(Context const *ctx, enc::HostColumnsView new_enc,
+  template <typename Input>
+  [[nodiscard]] auto MakeAccessor(Context const *ctx, Input const &new_enc,
                                   gbm::GBTreeModel const &model) {
     auto [acc, mapping] = MakeCatAccessor(ctx, new_enc, model.Cats());
     std::swap(mapping, this->mapping_);
@@ -390,7 +391,7 @@ struct LaunchConfig : public Args... {
   // Helper for running prediction with DMatrix inputs.
   template <typename Fn>
   void ForEachBatch(Fn &&fn) {
-    auto acc = this->MakeAccessor(ctx, p_fmat->Cats()->HostView(), model);
+    auto acc = this->MakeAccessor(ctx, p_fmat->Cats(), model);
 
     if (!p_fmat->PageExists<SparsePage>()) {
       auto ft = p_fmat->Info().feature_types.ConstHostVector();
@@ -606,7 +607,7 @@ class CPUPredictor : public Predictor {
       CHECK(metal_prediction) << "Native Metal inplace prediction requires device=mps.";
       auto input = std::any_cast<std::shared_ptr<common::metal::Tensor>>(proxy->Adapter());
       CheckProxyDMatrix(input, proxy, model.learner_model_param);
-      std::vector<std::int32_t> mapping;
+      HostDeviceVector<std::int32_t> mapping;
       enc::MappingView map;
       if (model.Cats()->HasCategorical() && input->HasCategorical()) {
         auto encoded = MakeCatAccessor(ctx_, input->Cats(), model.Cats());

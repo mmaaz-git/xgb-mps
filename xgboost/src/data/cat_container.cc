@@ -212,10 +212,14 @@ void LoadJson(Json jvalues, Vec* p_out) {
 }  // namespace
 
 void CatContainer::Load(Json const& in) {
+#if defined(XGBOOST_USE_METAL)
+  this->metal_impl_.reset();
+#endif
   auto array = get<Array const>(in["enc"]);
   auto n_features = array.size();
 
   auto& columns = this->cpu_impl_->columns;
+  columns.clear();
   for (std::size_t fidx = 0; fidx < n_features; ++fidx) {
     auto const& column = get<Object>(array[fidx]);
     auto it = column.find("offsets");
@@ -296,30 +300,82 @@ CatContainer::CatContainer() : cpu_impl_{std::make_unique<cpu_impl::CatContainer
 CatContainer::~CatContainer() = default;
 
 void CatContainer::Copy(Context const* ctx, CatContainer const& that) {
+  if (this == &that) return;
+#if defined(XGBOOST_USE_METAL)
+  if (ctx->IsMPS()) {
+    auto snapshot = that.MetalView().Clone();
+    that.sorted_idx_.SetDevice(DeviceOrd::MPS());
+    that.sorted_idx_.ConstDeviceSpan();
+    this->CopyCommon(ctx, that);
+    this->metal_impl_ = std::move(snapshot);
+    this->cpu_impl_->columns.clear();
+    this->cpu_impl_->columns_v.clear();
+    return;
+  }
+  this->metal_impl_.reset();
+#endif
   [[maybe_unused]] auto h_view = that.HostView();
   this->CopyCommon(ctx, that);
   this->cpu_impl_->Copy(that.cpu_impl_.get());
 }
 
-[[nodiscard]] enc::HostColumnsView CatContainer::HostView() const { return this->HostViewImpl(); }
+[[nodiscard]] enc::HostColumnsView CatContainer::HostView() const {
+#if defined(XGBOOST_USE_METAL)
+  std::lock_guard guard{device_mu_};
+  if (!this->HostCanRead()) {
+    CHECK(this->metal_impl_);
+    this->metal_impl_->CopyToHost(this->cpu_impl_.get());
+    this->feature_segments_.ConstHostSpan();
+  }
+#endif
+  return this->HostViewImpl();
+}
 
-[[nodiscard]] bool CatContainer::Empty() const { return this->cpu_impl_->columns.empty(); }
+[[nodiscard]] bool CatContainer::Empty() const { return this->NumFeatures() == 0; }
 
 [[nodiscard]] std::size_t CatContainer::NumFeatures() const {
+#if defined(XGBOOST_USE_METAL)
+  if (!this->HostCanRead() && metal_impl_) return metal_impl_->View().Size();
+#endif
   return this->cpu_impl_->columns.size();
 }
+
+#if defined(XGBOOST_USE_METAL)
+CatContainer::CatContainer(Context const* ctx, enc::HostColumnsView const& df, bool is_ref)
+    : CatContainer{} {
+  CHECK(ctx->IsMPS());
+  this->is_ref_ = is_ref;
+  this->n_total_cats_ = df.n_total_cats;
+  if (!this->n_total_cats_) return;
+  this->metal_impl_ = common::metal::MakeCategoryDictionary(df);
+  this->feature_segments_ = HostDeviceVector<std::int32_t>{
+      std::vector<std::int32_t>{df.feature_segments.begin(), df.feature_segments.end()},
+      DeviceOrd::MPS()};
+  this->feature_segments_.DeviceSpan();
+}
+
+common::metal::CategoryDictionary const& CatContainer::MetalView() const {
+  std::lock_guard guard{device_mu_};
+  if (!metal_impl_) metal_impl_ = common::metal::MakeCategoryDictionary(this->HostViewImpl());
+  this->feature_segments_.SetDevice(DeviceOrd::MPS());
+  this->feature_segments_.ConstDeviceSpan();
+  return *metal_impl_;
+}
+#endif
 
 void CatContainer::Sort(Context const* ctx) {
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
-    auto view = this->HostView();
-    this->sorted_idx_.HostVector().resize(view.n_total_cats);
-    common::metal::SortCategories(view, this->sorted_idx_.HostSpan());
+    auto const& view = this->MetalView();
+    this->sorted_idx_.SetDevice(DeviceOrd::MPS());
+    this->sorted_idx_.Resize(view.View().n_total_cats);
+    view.Sort(this->sorted_idx_.DeviceSpan());
     return;
   }
 #endif
   CHECK(ctx->IsCPU());
   auto view = this->HostView();
+  this->sorted_idx_.SetDevice(DeviceOrd::CPU());
   this->sorted_idx_.HostVector().resize(view.n_total_cats);
   enc::SortNames(enc::Policy<EncErrorPolicy>{}, view, this->sorted_idx_.HostSpan());
 }

@@ -94,7 +94,7 @@ void MakeSketches(Context const* ctx,
     auto cats = cpu_impl::BatchCats(proxy);
     if (!ext.n_batches) {
       ext.n_features = cols;
-      ext.cats = std::make_shared<CatContainer>(cats, BatchCatsIsRef(proxy));
+      ext.cats = std::make_shared<CatContainer>(ctx, cats, BatchCatsIsRef(proxy));
       types = ref ? ref->Info().feature_types.ConstHostVector()
                   : proxy->Info().feature_types.ConstHostVector();
       CHECK(types.empty() || types.size() == cols);

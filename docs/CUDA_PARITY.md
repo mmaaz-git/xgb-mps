@@ -101,7 +101,7 @@ must be reported rather than hidden by widening test tolerances.
 | Ranking metrics | `metric/rank_metric.cu`, `metric/auc.cu` | NDCG/MAP/precision use CUDA-source arithmetic/fallbacks, grouped sorting, actual-label MAP prefix scans and query-sum reduction in one Metal command. NDCG discounts/inverse ideal gains, cached sort indices and ranking label validation retain Metal storage; metric inputs bind shared arrays directly. Grouped ROC uses GPU stable label order, merge-based pair counts, query normalization and final aggregation. Grouped PR uses CUDA-source FP32 cast boundaries, original-order positive totals, binary64 prefixes/integrals, two-row validity and GPU aggregation |
 | Quantile sketching, cuts, weighted/category handling | `common/hist_util.cu/.cuh`, `common/quantile.cu`, `data/gradient_index.cu` | Ordinary CSR matrices use Metal sorting, FP32 weight scans, category deduplication, resident pruning/merging and rank repair. Final cut materialization is host-side in both CUDA and Metal. Explicit MPS in-memory and external quantile matrices add host dense/columnar and native Metal tensor/columnar ingestion, resident sketches and bins; native metadata conversion/validation is supported; distributed sketch collectives remain open |
 | Compressed GPU matrix, external memory, iterators | `data/ellpack_page.cu/.cuh`, `ellpack_page_source.cu`, `iterative_dmatrix.cu`, `quantile_dmatrix.cu` | External host cache adds direct adapter-to-ELLPACK GPU construction, concatenation, adaptive shared/private storage and two-page prefetch. Histograms, partitioning and prediction/SHAP preparation read compressed views directly. Host gradient-index/column mirrors are created only for CPU access; prefetch stays compressed. In-memory quantile matrices now use direct compressed construction or one-time compression of CPU bins, with separate lazy CPU views. Ordinary in-memory DMatrix now compresses raw CSR directly with separate lazy CPU views and cache-generation tracking. MPS-origin external disk caches now store/read compressed pages; internal quantile cuts+ELLPACK save/load is implemented. Ordinary external on_host selection now uses CUDA single-/multiple-page defaults. Optional Snappy compute compression/decompression now follows the native fallback opt-in, sparse eligibility and forced-prefetch rules. Mapped-file zero-copy remains open; CPU-origin external matrices retain their existing compatibility path |
-| Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `data/data.cu`, `metainfo.cu`, `array_interface.cu` | Category sorting/schema checks/lower-bound mapping/first-unknown search, row-code mapping, native dictionary gathers and metadata conversion/validation/query-ID grouping run on GPU. Native float metadata retains Metal vector storage; internal row gathers, device copies/stacking and feature-type equality run on Metal. Group boundaries and public ordinary row slicing remain host as upstream; persistent dictionary storage/copies and remaining allocation/consumer migration remain open |
+| Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `data/data.cu`, `metainfo.cu`, `array_interface.cu` | Category sorting/schema checks/lower-bound mapping/first-unknown search, row-code mapping, native dictionary gathers and metadata conversion/validation/query-ID grouping run on GPU. Native float metadata retains Metal vector storage; internal row gathers, device copies/stacking and feature-type equality run on Metal. Group boundaries and public ordinary row slicing remain host as upstream. Typed dictionaries now own reusable Metal snapshots, copies and sorted indices; native names are gathered on GPU; recoding mappings stay Metal-owned through prediction, SHAP and ingestion. Explicit CPU access/serialization lazily publishes host mirrors; host shape/type descriptors remain |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
@@ -3935,3 +3935,73 @@ validation ran **00:50:41–00:51:19 UTC**, exit 0. No production/test edits fol
 Persistent model/dictionaries, remaining CUDA operation/arithmetic audits, GPU
 collective transport and cross-hardware validation remain open. No benchmark or
 NVIDIA execution comparison was run; full CUDA parity is incomplete.
+
+
+### Categorical dictionary and recoding storage
+
+CUDA authority is `data/cat_container.cu`: independent device copies, lazy host
+publication, typed category views, sorted indices and owned recoding mappings.
+The existing Metal comparison, merge-sort, schema validation and name-search
+kernels are unchanged. This change ports the surrounding data lifecycle.
+
+`CategoryDictionary` owns packed name bytes and kernel metadata in Metal vector
+buffers. Packing computes offsets/descriptors on the host and copies payloads by
+GPU commands; it no longer assembles a full CPU byte array. Integer widths,
+signed-byte string comparisons, empty columns/strings, embedded nulls and unused
+trailing string bytes are preserved. Cloning copies the owned GPU buffers and
+rebuilds views referencing the clone. Explicit host publication performs a
+tracked readback before reconstructing CPU category arrays.
+
+`CatContainer` caches its immutable Metal dictionary, keeps feature segments and
+sorted indices in Metal storage, and lazily materializes names for `HostView` or
+serialization. MPS copies remain independent; CPU copies preserve CPU placement.
+Reload invalidates the GPU snapshot and now clears prior columns before loading;
+previously the shared loader appended columns when reusing an existing object.
+The test-only `Push` helper also invalidates the snapshot. The generic execution
+context still defaults to CPU; these consumers select MPS explicitly.
+
+Recoding returns an owned `HostDeviceVector` mapping. Prediction, SHAP, native
+DMatrix conversion and quantile adapter consumers keep that mapping alive through
+synchronous GPU use. Sort/recode results publish by GPU copy into shareable output,
+with guarded host fallbacks. Recoding computes into scratch and publishes only
+after schema/missing-name checks, preserving aliased input and leaving output
+unchanged on failure. Existing source-defined scalar error/status returns remain.
+
+Native columnar imports gather typed names into GPU-owned buffers and snapshot
+those buffers into their dictionary. Reference categories are independently
+snapshotted on GPU. Production DMatrix and Metal quantile construction select
+Metal containers. Feature-prefix/shape/type descriptors and error formatting
+remain host control metadata; this is not a claim that all metadata handling or
+CPU code has disappeared. Snapshotting a transient adapter may still require an
+additional GPU copy, which is separate from later performance work.
+
+Three diagnostics expose dictionary/mapping shared input, shared output and
+staged bytes through `metal_info`. Existing vector counters track dictionary
+allocation, clone/import and explicit readback. The internal C++ statistics
+structure grew, so all native clients are rebuilt; the public C API stays intact
+and CPU-only builds report the new optional JSON fields as zero.
+
+`tests/metal_category_state_api.cc` passes **37 cases / 530,726 checks** with
+Metal API validation. It exercises all eight integer widths, strings, empty
+columns, exact snapshot bytes, source replacement, CPU/MPS handoffs, repeated
+sorting, serialization, reload into existing containers, concurrent immutable
+readers, guarded mappings, input/output aliasing, read-only input, unaligned
+output and failure publication. Resident repeated calls require no vector
+upload/readback or category staging; all owned vector allocations are released.
+Existing native checks pass **33 typed-dictionary cases / 2,730,917 exact indices /
+80 expected errors** and **48 native-columnar cases / 9,263 fields / 14 rejected
+descriptors**. Their arithmetic/serialization expectations remain unchanged.
+**81 focused Python tests pass** (242 warnings, 8.33s). Fifteen new prediction
+checks cover reordered string/int64/uint64 names across batch, leaf, contribution,
+interaction and inplace calls, using changing tree ranges to exercise actual
+recoding rather than merely cached results.
+
+Full validation completed **2026-11-05 01:05:07–01:13:24 UTC** (8m17s), exit 0:
+all **95 native groups** rebuilt and passed; **3,360 Python tests passed, one
+expected skip** (640 warnings, 192.20s); and the CPU-only incremental build
+(25 steps) plus API/device/native input/output/quantile/cache checks passed.
+No production/test changes followed that run.
+[Validation record](../validation/cuda-metal-category-state-m3.txt).
+Persistent prediction-model storage, remaining CUDA arithmetic/operation audits,
+GPU collective transport and cross-hardware validation remain open. No benchmark
+or NVIDIA execution comparison was run. Full CUDA parity is incomplete.

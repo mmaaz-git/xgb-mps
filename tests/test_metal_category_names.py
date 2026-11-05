@@ -102,3 +102,34 @@ def test_category_schema_validation_precedes_name_search(metal):
     with pytest.raises(xgb.core.XGBoostError, match="data type doesn't match"):
         model.inplace_predict(bad)
     assert xgb.metal_info()["category_recode_dispatches"] > before
+
+
+@pytest.mark.parametrize("kind", ["strings", "uint64", "int64"])
+@pytest.mark.parametrize("surface", ["batch", "leaf", "contrib", "interaction", "inplace"])
+def test_repeated_category_payloads_stay_on_metal(metal, kind, surface):
+    frame, y = data(kind)
+    model = xgb.train({"device": "mps", "tree_method": "hist", "nthread": 2,
+                       "max_depth": 3},
+                      xgb.DMatrix(frame, label=y, enable_categorical=True), 3)
+    reordered = frame.copy()
+    reordered["a"] = reordered.a.cat.reorder_categories(frame.a.cat.categories[::-1])
+    dtest = xgb.DMatrix(reordered, enable_categorical=True)
+    options = {"leaf": {"pred_leaf": True}, "contrib": {"pred_contribs": True},
+               "interaction": {"pred_interactions": True}}.get(surface, {})
+    cpu = clone(model, "cpu")
+    def predict(booster, end):
+        kwargs = {"iteration_range": (0, end)}
+        return (booster.inplace_predict(reordered, **kwargs) if surface == "inplace"
+                else booster.predict(dtest, **options, **kwargs))
+    predict(model, 3)  # Publish dictionaries and model storage once.
+    # Changing the end forces real prediction work even for cached batch calls.
+    for end in [1, 2, 3]:
+        reference = predict(cpu, end)
+        before = xgb.metal_info()
+        actual = predict(model, end)
+        after = xgb.metal_info()
+        assert after["category_recode_dispatches"] > before["category_recode_dispatches"]
+        assert after["category_state_shared_output_bytes"] > before["category_state_shared_output_bytes"]
+        assert after["category_state_staging_bytes"] == before["category_state_staging_bytes"]
+        assert after["vector_readback_bytes"] == before["vector_readback_bytes"]
+        np.testing.assert_allclose(actual, reference, rtol=3e-6, atol=3e-6)
