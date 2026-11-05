@@ -164,6 +164,12 @@ passes the strict comparison for a separate 100-round diagnostic, with all split
 agreeing. CUDA sketch agreement still needs NVIDIA execution.
 System-wide swap use was high, and CPU times ranged from 195 to 289 seconds.
 [Timings, correctness results and limits](docs/PUBLISHED_BENCHMARKS.md#accepted-production-tree-68c800e).
+A subsequent compressed-data reader optimization reduces median MPS training
+from **64.8 s to 55.2 s** in three before/after pairs using the full HIGGS rows
+and **100 rounds**. All six models and prediction arrays are bit-identical.
+This is a 1.17× improvement over the previous MPS version; CPU was not rerun.
+[Focused tests, every timing and measurement limits](docs/PUBLISHED_BENCHMARKS.md#compressed-ellpack-reader).
+
 Older measurements are historical; raw reports remain under [validation/](validation/).
 
 ## Repository guide

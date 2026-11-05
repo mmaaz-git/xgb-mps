@@ -5,6 +5,7 @@
 // results/histogram.json
 // Optional comparison: pass candidate.metal baseline.metal bins_per_feature.
 // This alternates both kernels and checks every sum against the same CPU oracle.
+// Append --ellpack to compare the compressed row-major page path (1-8 bit symbols).
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <algorithm>
@@ -31,8 +32,10 @@ void Check(bool ok, char const* message) {
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
-      Check(argc == 2 || argc == 4, "Pass candidate shader [baseline shader bins_per_feature]");
-      bool compare = argc == 4;
+      Check(argc == 2 || argc == 4 || (argc == 5 && std::string(argv[4]) == "--ellpack"),
+            "Pass candidate shader [baseline shader bins_per_feature [--ellpack]]");
+      bool compare = argc >= 4;
+      bool compressed = argc == 5 && std::string(argv[4]) == "--ellpack";
       auto device = MTLCreateSystemDefaultDevice();
       Check(device != nil, "No Metal GPU");
       std::ifstream file(argv[1]);
@@ -44,7 +47,8 @@ int main(int argc, char** argv) {
                                           options:options
                                             error:&error];
       if (!library) throw std::runtime_error(error.localizedDescription.UTF8String);
-      auto function = [library newFunctionWithName:@"xgb_histogram_dense_shared"];
+      auto name = compressed ? @"xgb_histogram_dense_shared_ellpack" : @"xgb_histogram_dense_shared";
+      auto function = [library newFunctionWithName:name];
       auto pipeline = [device newComputePipelineStateWithFunction:function error:&error];
       Check(pipeline != nil, "Missing histogram pipeline");
       id<MTLComputePipelineState> baseline_pipeline = nil;
@@ -58,7 +62,7 @@ int main(int argc, char** argv) {
                                    error:&error];
         if (!baseline_library) throw std::runtime_error(error.localizedDescription.UTF8String);
         auto baseline_function =
-            [baseline_library newFunctionWithName:@"xgb_histogram_dense_shared"];
+            [baseline_library newFunctionWithName:name];
         baseline_pipeline = [device newComputePipelineStateWithFunction:baseline_function
                                                                   error:&error];
         Check(baseline_pipeline != nil, "Missing baseline histogram pipeline");
@@ -71,6 +75,8 @@ int main(int argc, char** argv) {
       constexpr uint32_t features = 32;
       uint32_t per_feature = compare ? std::stoi(argv[3]) : 256;
       Check(per_feature >= 1 && per_feature <= 256, "This benchmark uses 8-bit indices");
+      uint32_t symbol_bits = 1;
+      while ((uint64_t{1} << symbol_bits) < per_feature) ++symbol_bits;
       uint32_t bins = per_feature * features;
       std::mt19937 rng(123);
       std::vector<uint8_t> indices(n * features);
@@ -85,12 +91,25 @@ int main(int argc, char** argv) {
       }
       rowptr[n] = n * features;
       for (uint32_t f = 0; f <= features; ++f) offsets[f] = f * per_feature;
-      auto index = upload(indices.data(), indices.size()),
-           gradient = upload(gradients.data(), gradients.size() * sizeof(Pair)),
+      std::vector<uint8_t> packed;
+      if (compressed) {
+        packed.resize(8 + (n * features * symbol_bits + 7) / 8, 0);
+        for (uint64_t r = 0; r < n; ++r) {
+          for (uint32_t f = 0; f < features; ++f) {
+            uint32_t value = indices[f * n + r];
+            for (uint32_t b = 0; b < symbol_bits; ++b) {
+              uint64_t bit = (r * features + f) * symbol_bits + b;
+              packed[8 + bit / 8] |= ((value >> (symbol_bits - b - 1)) & 1) << (7 - bit % 8);
+            }
+          }
+        }
+      }
+      auto index = compressed ? upload(packed.data(), packed.size()) : upload(indices.data(), indices.size());
+      auto gradient = upload(gradients.data(), gradients.size() * sizeof(Pair)),
            ptr = upload(rowptr.data(), rowptr.size() * sizeof(uint64_t)),
            offset = upload(offsets.data(), offsets.size() * sizeof(uint32_t));
-      printf("{\"device\":\"%s\",\"rows\":%llu,\"features\":%u,\"repeats\":5,\"cases\":[\n",
-             device.name.UTF8String, (unsigned long long)n, features);
+      printf("{\"device\":\"%s\",\"rows\":%llu,\"features\":%u,\"ellpack\":%s,\"repeats\":5,\"cases\":[\n",
+             device.name.UTF8String, (unsigned long long)n, features, compressed ? "true" : "false");
       for (uint32_t layout = 0; layout < 5; ++layout) {
         uint32_t nodes = layout == 0 ? 1 : (layout == 1 ? 2 : (layout == 2 ? 8 : 32));
         std::vector<uint32_t> membership(n);
@@ -147,6 +166,13 @@ int main(int argc, char** argv) {
             [e setBuffer:boundaries offset:0 atIndex:7];
             [e setBuffer:boundaries offset:0 atIndex:8];
             [e setBuffer:blocks offset:0 atIndex:9];
+            if (compressed) {
+              struct Compressed { uint64_t split; uint32_t stride, bits, symbols, dense, features, padding; };
+              static_assert(sizeof(Compressed) == 32);
+              Compressed page{index.length, features, symbol_bits, per_feature, 1, features, 0};
+              [e setBuffer:index offset:0 atIndex:10];  // Unused tail, still a valid binding.
+              [e setBytes:&page length:sizeof(page) atIndex:11];
+            }
             [e setThreadgroupMemoryLength:per_feature * sizeof(Pair) atIndex:0];
             [e dispatchThreadgroups:MTLSizeMake(block_ptr.back(), features, 1)
                 threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];

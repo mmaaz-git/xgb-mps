@@ -286,3 +286,72 @@ row-partition memory traffic, and synchronization overhead from many small GPU
 commands. The current results do not establish a hardware-only limit. The target
 is useful, measured MPS gains over this machine's CPU; historical CUDA ratios help
 select workloads rather than define an identical speedup requirement.
+
+
+## Compressed ELLPACK reader
+
+On 2026-11-05, profiling the existing HIGGS run led to a small change in
+`xgb_ellpack_read`: read packed symbols by byte rather than fetching each bit
+separately, with direct paths for one- and eight-bit symbols. The bitstream,
+head/tail split handling, histogram arithmetic and training algorithm are unchanged.
+The baseline is the production tree at `dc568a5`; the candidate shader and
+library hashes are retained in the [run record](../validation/ellpack-read-m3-run.json).
+
+Three fresh-process pairs use all 10.5 million training rows and 500,000 test
+rows, **100 rounds**, depth six, 256 bins and eight CPU threads. The existing
+HIGGS worker is unchanged, with separate frozen Python/library copies; loaded
+library paths were independently checked. Within-pair order was randomized.
+
+| Median time | Before | After |
+| --- | ---: | ---: |
+| Training | 64.754 s | 55.194 s |
+| Histogram GPU time | 25.214 s | 12.916 s |
+| Partition GPU time | 8.106 s | 7.852 s |
+
+Training takes **14.8% less time (1.17× speedup)** in this comparison. Baseline
+trials were 49.389, 83.526 and 64.754 seconds; candidate trials were 38.400,
+58.064 and 55.194 seconds. All six saved models and all 500,000-margin arrays
+are bit-identical. All workers used AC power; system-wide swap was high and
+wall times varied considerably. These are before/after MPS measurements, not
+CPU/NVIDIA speedups or a repeat of the published 1,000-round workload.
+The earlier full HIGGS CPU/MPS result and its strict-equivalence failure remain.
+
+The extended existing histogram microbenchmark compares compressed pages using
+one million rows, 32 features, five repeats, randomized baseline/candidate order,
+and an independent exact integer reference for every result. Across root,
+balanced and skewed node layouts and both row batch sizes, median kernel ratios
+are **1.25–2.56× for eight-bit symbols**, **1.08–1.48× for four-bit symbols**, and
+**0.97–1.08× for one-bit symbols**. Every timing is retained. An initial general
+byte decoder regressed one-bit kernels; the direct one-bit path corrected that
+regression before the final measurements.
+
+The existing six focused native groups and 160 Python tests pass. Native cases
+cover all symbol widths 1–32, cross-byte copies and head/tail boundaries; Python
+checks exercise ordinary, native and external-memory matrices. No tolerance was
+changed. This is focused acceptance of the reader change; the last full regression
+remains at `41d4dc2`. [Complete acceptance log](../validation/ellpack-read-m3.txt).
+
+To reproduce the compressed kernel comparison, use fresh output files:
+
+```sh
+git show dc568a5:xgboost/src/common/metal_histogram.metal > results/reader-baseline.metal
+clang++ -O2 -std=c++17 -fobjc-arc scripts/metal_histogram_benchmark.mm \
+  -framework Metal -framework Foundation -o results/reader-compare
+for bins in 2 16 256; do
+  results/reader-compare xgboost/src/common/metal_histogram.metal \
+    results/reader-baseline.metal "$bins" --ellpack > "results/reader-kernel-$bins.json"
+done
+```
+
+For training, build the baseline and candidate in separate checkouts with
+`bash scripts/build.sh`, then alternate three fresh workers per build against
+the same prepared HIGGS cache. Use a different output path for each worker:
+
+```sh
+.venv/bin/python scripts/benchmark_published.py --preset nvidia2017-higgs \
+  --worker mps --cache /absolute/path/to/.cache/datasets --threads 8 \
+  --rounds 100 --progress-every 25 --output results/reader-trial.json
+```
+
+The run record includes all six worker reports, power and memory observations,
+source/library hashes, dataset provenance, kernel timings and focused-test status.

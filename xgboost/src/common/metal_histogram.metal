@@ -22,13 +22,27 @@ struct CompressedParams {
 };
 inline uint xgb_ellpack_read(device const uchar* head, device const uchar* tail, ulong split,
                              ulong index, uint bits) {
-  uint symbol = 0;
-  for (uint j = 0; j < bits; ++j) {
-    ulong bit = index * bits + j, byte = 8 + bit / 8;
-    uint value = byte < split ? head[byte] : tail[byte - split];
-    symbol = (symbol << 1) | ((value >> (7 - bit % 8)) & 1);
+  // CUDA's stream is big-endian within each byte, after the eight-byte header.
+  // Read each required byte once; a symbol spans at most five bytes at 32 bits.
+  // Byte addressing also handles a head/tail split inside a symbol without
+  // unaligned word loads or reading beyond the last allocated payload byte.
+  if (bits == 8) {
+    ulong byte = 8 + index;
+    return byte < split ? head[byte] : tail[byte - split];
   }
-  return symbol;
+  if (bits == 1) {
+    ulong byte = 8 + index / 8;
+    uint value = byte < split ? head[byte] : tail[byte - split];
+    return (value >> (7 - uint(index % 8))) & 1;
+  }
+  ulong bit = index * bits, first = 8 + bit / 8;
+  uint leading = uint(bit % 8), count = (leading + bits + 7) / 8;
+  ulong word = 0;
+  for (uint j = 0; j < count; ++j) {
+    ulong byte = first + j;
+    word = (word << 8) | ulong(byte < split ? head[byte] : tail[byte - split]);
+  }
+  return uint((word >> (count * 8 - leading - bits)) & ((1ul << bits) - 1));
 }
 inline uint xgb_read_bin(device const uchar* index, ulong pos, uint width) {
   if (width == 1) return index[pos];
