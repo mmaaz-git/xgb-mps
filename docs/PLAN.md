@@ -48,7 +48,7 @@ classification.
 | PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA compile passed at `bf1ebea` | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
 | PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA compile passed at `bf1ebea` | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
 | VERIFY-1 | Integration at a fixed revision | Locally complete; NVIDIA execution remains separate | [Acceptance report](LOCAL_ACCEPTANCE.md) maps all 17 contracts and 16 original gap rows; full Metal/CPU/federated evidence at `68c800e`, focused numerical fixtures at `0c66454`; CUDA compile passed at `bf1ebea` |
-| VERIFY-2 | NVIDIA execution comparison | External hardware required | Shared fixtures run against vendored CUDA on NVIDIA; publish numerical contracts and failures, not just compiler success |
+| VERIFY-2 | NVIDIA execution comparison | First three-contract harness added; external hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; remaining contracts/callers still need harness coverage; publish differences, not just compiler success |
 | PERF-1 | Profile/optimize a frozen benchmark matrix | Ready after completed VERIFY-1; no current-source timing claimed | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
 
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
@@ -63,8 +63,11 @@ separately without production changes. [CUDA run
 42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238) at
 `bf1ebea` passed all 197 compile/link steps on the same production tree.
 
-VERIFY-2 needs an actual NVIDIA runner. Integrate the portable numerical inputs
-and existing source fixtures with vendored CUDA consumers, recording GPU model,
+VERIFY-2 needs an actual NVIDIA runner. The [first harness](NVIDIA_COMPARISON.md)
+connects P5-N08/13/14 inputs to vendored quantile/sketch consumers and records
+full output bits; its Metal reporting path and integrity checks pass. Actual
+CUDA execution and the remaining contract/caller harnesses are still needed.
+Integrate the remaining source fixtures with CUDA consumers, recording GPU model,
 NVCC/CCCL/libdevice versions and flags. Use the per-contract exact, bounded,
 race-policy and domain-extension rules in the acceptance report. Portable inputs
 alone are not a completed NVIDIA harness; compiler success is not execution.
@@ -75,6 +78,16 @@ Freeze the accepted source and workload parameters; inspect prior outputs before
 running repeated CPU/MPS HIGGS, wide, sparse and vector benchmarks. Separate
 construction, training and prediction timing, retain correctness results and CPU
 wins, then profile a measured bottleneck before changing production code.
+
+The full HIGGS replay is running in `xgb-perf1-higgs` (three CPU/MPS pairs,
+10.5M training rows, 1,000 rounds). The first pair failed the unchanged strict
+margin comparison and was slower on MPS. After this run terminates, compare
+quantile cuts and the earliest differing tree, then use a common-cut diagnostic
+if needed. MPS's CUDA-style sketch and CPU's host sketch differ by design, but
+that alone does not establish the cause of this result. Retain the failure;
+do not change formulas solely to obtain CPU identity or widen tolerances.
+Histogram, objective and partition timings are the first profiling candidates;
+the observed system-wide swap pressure must accompany published timings.
 
 ## PORT-4 audit boundary
 

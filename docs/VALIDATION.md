@@ -84,6 +84,9 @@ The GitHub [CUDA workflow](../.github/workflows/cuda-compile.yml) compiles share
 source with CUDA/NCCL/nvCOMP/federated dependencies on a CPU runner. It has no
 NVIDIA GPU and runs no Metal tests. A newer same-branch/PR run supersedes its old
 compile job. Runtime jobs remain a separate planned gate.
+The workflow now also compiles/links the [shared numerical comparison harness](NVIDIA_COMPARISON.md)
+without executing it. The report parser's synthetic integrity tests and a
+successful link must not be reported as NVIDIA runtime evidence.
 
 Publish concise records in `validation/` naming revision, commands, dependencies,
 hardware, passed/skipped/failed scope and limitations. Keep full local logs in

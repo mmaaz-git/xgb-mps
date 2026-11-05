@@ -1,0 +1,151 @@
+{
+  "status": "Metal observations and comparison integrity checks passed; CUDA harness compilation in progress",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "harness_commit": "00748612f2b879ee657b030bdbed29d94f41db93",
+  "scope": "First VERIFY-2 harness: P5-N08/13/14 only. No NVIDIA runtime execution.",
+  "metal_native_run": {
+    "status": "passed",
+    "started_utc": "20261105T130814Z",
+    "revision": "eb885972331712f4d461a9eddaa6484baaf7db65",
+    "working_tree": "M .github/workflows/cuda-compile.yml\n M scripts/ci_cuda_build.sh\n M tests/metal_numerical_contracts.mm\n?? scripts/build_cuda_comparison.py\n?? scripts/compare_numerical_contracts.py\n?? tests/cuda_comparison/\n?? tests/cuda_numerical_contracts.cu\n?? tests/numerical_contract_report.h\n?? tests/test_numerical_contract_reports.py",
+    "diff_sha256": "778b157c1dba3f3782b375f874fb527dc9d70db524ffbb34462236c4f70bd539",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "scripts/build_cuda_comparison.py": "a04965f9df3eae35acf64741729d648b37f2f9088cd930e2b8ffb516e2a04e80",
+      "scripts/compare_numerical_contracts.py": "f5f1da37acdfa1da82d450a3756baa530c7060e3a650259138575f35a67fb8cc",
+      "tests/cuda_comparison/CMakeLists.txt": "6cdf0857f6c404196b8675bd2dff0e4761ac6a589f7e3fd1e73c521cfd4527fd",
+      "tests/cuda_numerical_contracts.cu": "f5c8a208e12cf0de246ff56b9ec8a48e56ecfdfee94213abde00b8174ac1c836",
+      "tests/numerical_contract_report.h": "4ce538f7017b9e9c5776cb96a2f970b0e96a8896822d8a9b461c7af008fb8a40",
+      "tests/test_numerical_contract_reports.py": "3f3b04397ad62ad23191fa757c4c685438923c450519663ebd493f72877ecb6f"
+    },
+    "native_groups": [
+      "metal_numerical_contracts"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.6195201671216637
+      },
+      {
+        "name": "compile-metal_numerical_contracts",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-fobjc-arc",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_numerical_contracts.mm",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-framework",
+          "Metal",
+          "-framework",
+          "Foundation",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_numerical_contracts_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_numerical_contracts.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.6725644171237946
+      },
+      {
+        "name": "metal_numerical_contracts",
+        "command": [
+          "results/metal_numerical_contracts_test",
+          "xgboost/src/common/metal_histogram.metal"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_numerical_contracts.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.6976654999889433
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T13:08:17.909601+00:00",
+    "log_sha256": {
+      "001-build-metal.log": "346b60862da6f6214c175dc92d9caedec8df936245350d1f30b5c7fb8b53b897",
+      "002-compile-metal_numerical_contracts.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "003-metal_numerical_contracts.log": "712f2c60c97dca791f9914ead847e81c62390bd3d1243e470c5e187cfb5a6993"
+    }
+  },
+  "tracked_tested_patch_matches_commit": true,
+  "report_header_hash_matches_tested_input": true,
+  "metal_observations": {
+    "path": "validation/cuda-comparison-metal-m3.jsonl",
+    "sha256": "e0be983c9b88da8c887caef482bf102e771235af4458f86872939f0c89edba46",
+    "input_cases": 21,
+    "exact_native_checks": 3431,
+    "command": [
+      "results/metal_numerical_contracts_test",
+      "xgboost/src/common/metal_histogram.metal",
+      "--report",
+      "results/verify2-metal-observations.jsonl"
+    ],
+    "environment": {
+      "MTL_DEBUG_LAYER": "1"
+    },
+    "log": "results/verify2-metal-fixed.log",
+    "log_sha256": "ed2a43cc39591cc32c9b25216828836c202bdedeb237c4d94dcc20ebb5f39099",
+    "completeness_check": "python3 scripts/compare_numerical_contracts.py inspect results/verify2-metal-observations.jsonl"
+  },
+  "comparison_integrity_tests": {
+    "command": ".venv/bin/python -m pytest -q tests/test_numerical_contract_reports.py",
+    "passed": 10,
+    "seconds": 0.26,
+    "scope": "Synthetic report integrity tests; not CUDA execution."
+  },
+  "initial_compile_failure": {
+    "log": "results/verify2-numeric-metal/002-compile-metal_numerical_contracts.log",
+    "sha256": "a61bf286fcbd748de9ef7c6692a581b08b65268aabca8ac6da3757030c2c1a79",
+    "reason": "Local ptr name collision in the added Metal report projection. Renamed before the passing rerun; no production code or arithmetic failure."
+  },
+  "cuda_compile": {
+    "run_id": 42033438919,
+    "head": "00748612f2b879ee657b030bdbed29d94f41db93",
+    "status": "in_progress",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42033438919",
+    "gpu_execution": false,
+    "last_observed_utc": "2026-11-05T13:34:25.964173+00:00"
+  },
+  "nvidia_runtime": "not-run; no accessible NVIDIA host or repository self-hosted GPU runner",
+  "limitations": [
+    "This first harness covers three of seventeen numerical contracts, not the full operation audit.",
+    "CUDA CDF trace is a separate source-primitive execution from the production API.",
+    "Metal reverse-unique records use host projection of observed GPU scan outputs, not a new GPU compaction test.",
+    "Repeated source-race observations cannot enumerate every scheduling outcome.",
+    "Order-dependent differences require contract review; comparison code does not silently accept all differences."
+  ]
+}

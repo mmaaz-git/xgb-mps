@@ -42,6 +42,10 @@ pointers and categorical state on GPU; subsequent work adds numerical witnesses.
 execution comparisons and current-source performance work.** Full parity remains
 unproven.
 
+The first [NVIDIA comparison harness](docs/NVIDIA_COMPARISON.md) covers shared
+CDF and sketch-order witnesses. It records full output bits and keeps differences
+visible for review; NVIDIA execution is still required.
+
 `tree_method="exact"` is unsupported on MPS. For linear GPU training, use
 `booster="gblinear", updater="coord_descent"`; the default `shotgun` updater
 remains on CPU, as it does with CUDA. Distributed `gblinear` is unsupported.
