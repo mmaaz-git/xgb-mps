@@ -6,7 +6,7 @@ mkdir -p build-cuda-ci
 date -u
 nvcc --version
 cmake --version
-dpkg-query -W libnccl-dev libnvcomp6-dev-cuda-13 libgrpc++-dev protobuf-compiler
+dpkg-query -W libnccl-dev libnvcomp5-dev-cuda-13 libgrpc++-dev protobuf-compiler
 
 echo 'Checking that CUDA uses the modern Philox4x64 branch targeted by Metal'
 cat > build-cuda-ci/rng-branch.cu <<'CPP'
@@ -24,7 +24,7 @@ cmake -S xgboost -B build-cuda-ci -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=80 \
   -DUSE_CUDA=ON -DUSE_METAL=OFF -DUSE_NCCL=ON -DBUILD_WITH_SHARED_NCCL=ON \
   -DUSE_NVCOMP=ON -DPLUGIN_FEDERATED=ON -DUSE_OPENMP=ON \
-  -Dnvcomp_DIR=/usr/lib/x86_64-linux-gnu/libnvcomp6-cuda-13/cmake/nvcomp \
+  -Dnvcomp_DIR=/usr/lib/x86_64-linux-gnu/cmake/libnvcomp5-dev-cuda-13/nvcomp \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 echo 'Compiling and linking libxgboost (no GPU execution)'
 cmake --build build-cuda-ci --parallel 2
