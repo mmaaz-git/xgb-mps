@@ -200,9 +200,13 @@
     "results/verify2-grouped-pr-io.cc": "c43215c67a7875a0c937e5de1f09f2fa90a6023c47844bf71e6f97374534b53c"
   },
   "cuda_compile": {
-    "status": "not_started",
+    "status": "in_progress",
+    "run_id": 42117995770,
+    "head": "b1d678babbe438905e3cfb33a27a56ae49eda630",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770",
     "gpu_execution": false,
-    "reason": "Linear run42113854537 is separate and predates the AUC consumer"
+    "inputs": 71,
+    "binaries": 8
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -217,5 +221,6 @@
     "Negative/nonfinite weights exercise the direct implementation; normal public metadata validation rejects them.",
     "Only Apple M3 evidence. Binary/multi-output PR and ROC, their prefix/pathology diagnostics, grouped ROC and public caller coverage remain necessary.",
     "P5-N09/10/11 are not closed and the twelve-addressed-contract count is unchanged."
-  ]
+  ],
+  "updated_compile_scope": "New grouped PR consumer and production AUC capacity follow-up; compilation only, not GPU execution."
 }
