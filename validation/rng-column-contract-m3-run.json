@@ -1,5 +1,5 @@
 {
-  "status": "Metal corpus passed; CUDA RNG compiler compatibility fix awaiting validation",
+  "status": "Metal corpus passed; corrected RNG CUDA compile job in progress; NVIDIA execution absent",
   "suite": "rng-v2",
   "scope": "training-rng-modern streams/unweighted shuffle/ColumnSampler hierarchy, extending unchanged P5-N06 corpus",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -152,8 +152,13 @@
   },
   "build_driver_check": "All 14 build input hashes resolve, including new shared column fixture/oracle. Three-binary lifecycle code unchanged from passing mock in base run record.",
   "cuda_compile": {
-    "status": "pending_fix_validation",
-    "gpu_execution": false
+    "status": "in_progress",
+    "gpu_execution": false,
+    "run_id": 42058206746,
+    "job_id": 127352309034,
+    "head": "4ed216b9addac7e481c4aa7ba0c0de5f0e8d6661",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42058206746",
+    "last_observed_utc": "2026-11-05T15:50:26.871313+00:00"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -262,5 +267,6 @@
     "local_check": "clang++ -fsyntax-only -std=c++17 -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include results/verify2-rng-empty-views.cc",
     "local_check_status": "passed; actual XGBoost view constructor/types only, no NVCC or GPU execution",
     "local_check_source_sha256": "223b5dbb91f4a8f2f9dee8ebee368a2e7dbefc58e72300a9c27d86032a6adcb0"
-  }
+  },
+  "harness_commit": "4ed216b9addac7e481c4aa7ba0c0de5f0e8d6661"
 }
