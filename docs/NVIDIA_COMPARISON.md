@@ -1308,7 +1308,7 @@ do not prove CUDA execution or numerical agreement. The full **528-record** corp
 report checker. The local acceptance record is
 [auc-contract-m3-run.json](../validation/auc-contract-m3-run.json); the complete
 [saved Metal report](../validation/auc-contract-metal-m3.bin.xz) retains exact input
-and observed-output bits. The [new replay build is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42125079498)
+and observed-output bits. The [new replay build is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731)
 behind the [active helper-fix build](https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995).
 Both need terminal verification, and NVIDIA execution remains pending.
 
@@ -1393,7 +1393,7 @@ are exact within this corpus's documented binary64 integer range. FP32 weight
 squares and half-products remain separate operations, including subnormal
 rounding; an ordinary 0.5 tie credit would be wrong for some witnesses.
 
-The common-domain adaptation follows two concrete source constraints:
+The common-domain adaptation follows the source constraints:
 
 - In a mixed call, zero-pair queries (length 0 or 1) have no transform-output
   write to their `d_auc` slot. The replay removes those queries before the
@@ -1422,8 +1422,9 @@ its packing transformation matches **6,363,747 words** independently selected in
 Python, including weight alignment after removing zero-pair groups. The
 [acceptance record](../validation/grouped-roc-contract-m3-run.json) links the
 [saved Metal observations](../validation/grouped-roc-contract-metal-m3.bin.xz)
-and records source/library hashes. CUDA compilation and NVIDIA runtime
-validation of this new replay are pending.
+and records source/library hashes. The [combined AUC/grouped ROC build is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731);
+NVIDIA runtime validation remains pending. This supersedes AUC-only run
+42125079498 before it started, preserving the active helper-fix build.
 
 ```sh
 python3 scripts/compare_grouped_roc_contracts.py validate-metal \

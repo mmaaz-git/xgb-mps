@@ -187,8 +187,11 @@
     "results/grouped-roc-codec.cc": "3b5111c3938deebef622c4909bbfaab9c536a150c6d1ec1e1ed8b78bd018c46a"
   },
   "cuda_compile": {
-    "status": "not_run_for_new_grouped_ROC_replay",
-    "gpu_execution": false
+    "status": "pending",
+    "gpu_execution": false,
+    "run_id": 42126588731,
+    "head": "63770982ca38cba3e8d3816916ffe5ef1eeafb9f",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731"
   },
   "cuda_runtime": {
     "status": "not_run",
