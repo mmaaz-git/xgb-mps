@@ -1,0 +1,117 @@
+PORT-8: GPU split-bound gathers through active evaluators
+Date: 2026-11-05
+Source commit: ed5afcfd3753ebdce4fd1dd18c544a3eb9978886
+Base: d2b313099ddd6ad2882624e9438525384352b9b4
+
+Change and source contract:
+  GatherSplitBounds selects node-major/target-minor lower and upper bounds on
+  Metal. Node IDs remain host scheduling metadata. The shader copies float bits
+  with uint stores; disabled constraints produce exact +/-infinity constants.
+  Input shapes, target count, node ranges and output size are checked before
+  dispatch. Empty gathers do not dispatch. Invalid calls preserve the last view.
+  Each gather publishes a separate GPU snapshot owned by SplitWorkspace until
+  its next gather or destruction. Source update/growth/destruction cannot change
+  the snapshot. Old output aliases stay alive until command and borrowed-buffer
+  references are released, then the new snapshot is published.
+  TreeEvaluator::GatherBounds feeds actual scalar/vector EvaluateSplits and both
+  InitRoot finalizers. CPU per-node bound dereferences were removed from those
+  paths. Feature task assembly and finalization bind the GPU snapshot directly.
+  Bound-update, clamping, scoring, tie and precision formulas are unchanged.
+  CUDA authority: scalar/vector split evaluators index device bounds through
+  TreeEvaluator::SplitEvaluator. Existing CUDA-source arithmetic fixtures remain
+  the oracle, rather than assuming CPU tree identity for different algorithms.
+
+Remaining host-bound access:
+  updater_quantile_hist.cc:424 is reduced-gradient leaf refitting with monotonic
+  constraints. GBTree::DoBoost rejects that combination at gbtree.cc:253, before
+  this branch can execute. The public restriction and existing rejection test
+  are unchanged. It is not a remaining supported PORT-8 consumer.
+  Source-defined selected-node/scalar results and launch descriptors remain on
+  CPU. Numeric cut lookup is separately tracked by PORT-10.
+
+Diagnostics:
+  Four appended fields: split_bounds_gather_dispatches, split_bounds_gather_values,
+  split_bounds_shared_input_bytes, split_bounds_host_copy_bytes.
+  These cover gathers and bound input binding in feature evaluation/finalization.
+  They count physical binding copies; they are not a general detector of arbitrary
+  CPU reads of unified memory. Residency evidence also uses known GPU producers,
+  GPU consumers before CPU comparisons and the actual caller/source trace.
+  Read-only diagnostic input fallback is preserved and its copied bytes tested.
+  All 303 native statistics initializer positions were verified, including the
+  three original counter-name aliases; CPU/Metal C API schema has 305 fields.
+
+Environment:
+  Apple M3, 10-core GPU, 16 GiB; macOS 26.6.2 arm64.
+  numpy 2.5.4, scipy 1.18.1, pytest 9.2.0, torch 2.15.0, mlx 0.32.4,
+  scikit-learn 1.9.1, pandas 3.1.0. PyTorch and MLX GPU interop ran.
+  Applicable native API groups ran with the Metal validation layer.
+
+Final full regression:
+  bash scripts/test.sh --full --log-dir results/port8-integration
+  Named session xgb-port8-integration; driver results/port8-integration.log.
+  PASS all 209 stages: 103 freshly compiled native groups, independent linear
+  reference and 3647 Python passes, one expected skip, 670 warnings in 306.86s.
+  Skip: test_no_gpu_means_error_not_silent_cpu_fallback, inapplicable on this M3.
+  No source edits occurred during the run. The committed source and Metal library
+  match the recorded patch and library hashes. Full run finished 11:36:35 UTC.
+  Commands, timings, statuses and log hashes: cuda-port8-m3-run.json.
+
+Focused checks (also present in the full run):
+  bash scripts/test.sh --native metal_bound_state_api metal_feature_split_api
+    --python tests/test_metal_cuda_splits.py tests/test_metal_cuda_multi_splits.py
+    --log-dir results/port8-focused
+  PASS seven stages: two native groups and 185 Python tests in 15.35s.
+  A statistics-header scope comment was added after this focused run, before the
+  final full run; no implementation or test changes followed the focused pass.
+
+Acceptance evidence:
+  Bound storage: 24 cases / 76 updates / 3863180 exact values, including existing
+  CPU update references. Added 65 GPU gather/consumer chains: scalar and vector
+  1/2/33/129 targets, reordered and duplicate IDs, growth beyond node 1024,
+  disabled/empty cases, source destruction, aliased previous output, invalid
+  shapes/IDs/overflow, and a read-only mmap fallback. Gathered bounds feed GPU
+  finalization and stored GPU weights before CPU result/bit comparisons.
+  Feature assembly: 48 cases / 5248 exact checks / 64 rejected inputs. GPU bound
+  updates now precede gather, actual scalar/vector feature evaluation, finalization
+  and queued weight storage. Covers growth, duplicate/empty/binless feature sets,
+  numerical/OHE/partition categories and monotonic cases. The assembly reference
+  uses independent CPU descriptors/bounds with the existing arithmetic kernels;
+  arithmetic correctness is covered separately by CUDA-source oracle suites.
+  Full scalar/vector tree tests assert GPU bound gathers and zero physical bound
+  input copies before independent CUDA-source tree audits and CPU predictions.
+  Existing finalizer reference: 448 exact nodes / 11904 target weights / 90 bound
+  updates, plus invalid layout/overlap/NaN checks. Training-state regression:
+  249 cases / 397296 checks. The global vector readback guard remains unchanged.
+  PORT-7 native constructor regression remains green: 144 cases / 288 resident
+  batches / 16001 checks. No tolerances were widened or formulas changed.
+
+Separate CPU gate:
+  bash results/port8-cpu.sh (session xgb-port8-cpu, log results/port8-cpu.log)
+  cmake --build build-cpu -j4
+  .venv/bin/python scripts/check_cpu_build.py --metal-library xgboost/lib/libxgboost.dylib
+  PYTHONPATH=results/cpu-python .venv/bin/python -m pytest -q
+    tests/test_metal_updater.py -k cpu -o pythonpath=results/cpu-python
+  PASS disabled APIs/cache/schema checks and nine updater tests, 72 deselected,
+  11 warnings in 0.17s. Isolated Python package confirms USE_METAL=false and uses
+  the rebuilt build-cpu library. Focused, full and CPU gates had no test failures.
+
+Hashes:
+  CPU library: 258f32107e8000212d21e0b5511b1721acad6f37081648ce7f2befc1df548a3e
+  Metal library: 4d93a85d571db21f28842069225c909707f6586d374ec4a0ea9129f2551d278b
+  Patch against base: c492f24d27a1e767f97bc58c25a1d947f83526f5c0d2b92113091cf83fb1907f
+  Native manifest: 99e0ae1efd47158ae181170229b8bcf3efedba7c4b81e43a9474cd10ad8bee5b
+  Original full summary: ba876d23e4ac2c84ee0953ba67da1f70e4a3388fb795cb8bf89187d7164c990c
+
+Boundaries and next work:
+  Eight original audited implementation tasks are locally complete. PORT-10
+  numeric thresholds and PORT-11 sketch initialization remain, followed by
+  fixed-revision VERIFY-1 integration/numerical fixtures, actual NVIDIA execution
+  under VERIFY-2, and performance work. Counts are not a completion percentage.
+  Frozen audit structure is unchanged: 42 families / 109 roots / 1078 sites /
+  174 operations / 10 original tasks / 17 numerical contracts / 2119 references.
+  CUDA compilation last succeeded at a531694 (42010137944). PORT-6 run
+  42015634776 was cancelled by superseding branch work; PORT-7 run 42017601402
+  was still compiling when this record was prepared. This source needs its own
+  compile result. Compilation does not execute CUDA kernels.
+  No new benchmarks, NVIDIA execution, optional federated runtime or other Apple
+  hardware runs are claimed. Last optional federated evidence remains dd44829.
