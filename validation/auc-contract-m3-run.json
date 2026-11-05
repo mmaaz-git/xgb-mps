@@ -1,0 +1,202 @@
+{
+  "status": "Full Metal export and local reference/codec checks passed; new CUDA replay compilation and NVIDIA execution pending",
+  "suite": "auc-v1",
+  "recorded_utc": "2026-11-05T22:51:36.559042+00:00",
+  "production_source_commit": "41d4dc26cc23bf58357e59f986cbbf7aec0e2864",
+  "production_tree": "145fdffbc52f59354bed55b96d184d9e50c23ff4",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T224827Z",
+    "revision": "5f9f1f7c6b8fe49ef87c1a2c41c65b06d8744ecc",
+    "working_tree": "M .github/workflows/cuda-compile.yml\n M scripts/build_cuda_comparison.py\n M tests/cuda_auc_contracts.cu\n M tests/metal_auc_api.cc\n M tests/test_cuda_metric_build.py\n?? scripts/compare_auc_contracts.py\n?? tests/auc_contract_io.h\n?? tests/cuda_auc_replay.cuh\n?? tests/test_auc_contract_reports.py",
+    "diff_sha256": "268f0adb1cc093f68b0edf1dc8cb83a5bc968e6a7d4bff853c65c1aee54f23ae",
+    "manifest_sha256": "075bb5f9021f1d26c6601ee9e04ae464b81926f4699a6d6484c42db19adf9cf7",
+    "untracked_sha256": {
+      "scripts/compare_auc_contracts.py": "ee325ed32c65f6b648d9915c0409943dfc6da7bba6bb17810a2265a4a1b5832d",
+      "tests/auc_contract_io.h": "e1100bf78b9de23324e2ad1dc43fe534b7f212c35047fb8e7d5568b57c865893",
+      "tests/cuda_auc_replay.cuh": "eb6990a2858fa3af0aa4d7cb9b094a0c47d9c0869b3fc8f11250442434c0c897",
+      "tests/test_auc_contract_reports.py": "0a99583b1a84718d7d32acaf8added493ab8da73f06364238232ca4dc6b8a992"
+    },
+    "native_groups": [
+      "metal_auc_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.48624554090201855
+      },
+      {
+        "name": "compile-metal_auc_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_auc_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_auc_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_auc_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.3667083331383765
+      },
+      {
+        "name": "metal_auc_api",
+        "command": [
+          "results/metal_auc_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_auc_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 3.183333999942988
+      }
+    ],
+    "library_sha256": "71517892c338586cb0da4e4fcad3ae18b1335a1b0f424e5ad982837b8abb48ca",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T22:48:32.879413+00:00"
+  },
+  "source_hashes": {
+    "tests/metal_auc_api.cc": "338445208293a39031c46b2597eb3432f79c2d259e49966be22efe3473b964c9",
+    "tests/auc_contract_io.h": "e1100bf78b9de23324e2ad1dc43fe534b7f212c35047fb8e7d5568b57c865893",
+    "tests/auc_capture.cuh": "41071f9a7f7b7d7a48fb58a6e35ffcb7ed2948ca1912e9db77ff1dbff975200a",
+    "tests/cuda_auc_contracts.cu": "9022c9b1a94c93bcfb8de3520626e2464f5c1cd2a4c1cb40ce0c1e5901d24feb",
+    "tests/cuda_auc_replay.cuh": "eb6990a2858fa3af0aa4d7cb9b094a0c47d9c0869b3fc8f11250442434c0c897",
+    "scripts/prepare_auc_probe.py": "801da6e7a9c568c3874d22d1fb011259f739dff2d84dbe214775dc37de14bda0",
+    "scripts/compare_auc_contracts.py": "c878d68dbcff6a44b1213a589c74239cae70248461b7226ef8bf15bcc6bc0fee",
+    "scripts/build_cuda_comparison.py": "54cd674517b7b124839a5718fea9de90f0856b1cbf7934494ad18ea647d6873e",
+    "tests/test_auc_contract_reports.py": "070d1d42f78af6f3fc775e9aee81e8cf48891f97d7cf10a991aa41dce772391d",
+    "tests/test_auc_probe_source.py": "6ba57bdabb39a8a3e8c445842bc37eb16954eb6dd21b4913bd7c8a4785c5f687",
+    "tests/test_cuda_metric_build.py": "75ec541bcfac9da1e2cd3379af01c7e92c5e1d20d74e2be011207856be885b32",
+    "tests/cuda_comparison/CMakeLists.txt": "8e15e900c09d5c0748d62389502dc271455c21e07e12c650cdc72180fc2b7195"
+  },
+  "independent_reference": {
+    "cases": 528,
+    "input_words": 34282242,
+    "checked_fields": 5752203,
+    "exact_terms": 1690464,
+    "bounded_fields": 1690656,
+    "source_integrals": 78,
+    "source_nonfinite_integrals": 15,
+    "independent_pair_curves": 420,
+    "independent_pr_integrals": 519,
+    "reference_failures": []
+  },
+  "artifacts": {
+    "path": "validation/auc-contract-metal-m3.bin.xz",
+    "bytes": 22087496,
+    "sha256": "565f9147e339578ff4f3fabc36b71532f911fca8372070fa0beebc0b24d21eec",
+    "raw_bytes": 189548696,
+    "raw_sha256": "dcc13745afdedfa7a7d8600fb1ba3ca059bbe438542f9090b533dae6169f112c"
+  },
+  "input_only": {
+    "bytes": 143445248,
+    "sha256": "ef61fba2ed098c87ae0a63994a3d14c99e02674faf7aea4b5e9b3ef4631d2516",
+    "derivation": "Exact input extraction by compare_auc_contracts.py unpack; not duplicated in git"
+  },
+  "codec": {
+    "status": "passed",
+    "cases": 528,
+    "roundtrip_sha256": "ef61fba2ed098c87ae0a63994a3d14c99e02674faf7aea4b5e9b3ef4631d2516",
+    "rejected": [
+      "Metal observation file",
+      "truncated input",
+      "wrong case identity"
+    ]
+  },
+  "corpus": {
+    "records": 528,
+    "calls": 1014,
+    "binary_edge_cases": 4,
+    "normalization": 22,
+    "metadata": 8,
+    "malformed_shape": 1,
+    "wide": 6,
+    "main": 486,
+    "extreme": 1,
+    "main_score_label_pairs_per_metric": 7607088
+  },
+  "report_integrity_tests": {
+    "status": "passed",
+    "count": 21,
+    "gpu_execution": false
+  },
+  "source_capture_tests": {
+    "status": "passed",
+    "count": 8,
+    "gpu_execution": false
+  },
+  "mocked_build_tests": {
+    "status": "passed",
+    "count": 14,
+    "gpu_execution": false
+  },
+  "logs": {
+    "results/auc-comparison-acceptance.log": "f5e1b2fc43d97583ca84b919d670c8c4614551e636d9bf778a4fa6e6e32997f2",
+    "results/auc-replay-integrity-final.log": "91ea9d3240107aafa0d3c07ede619efda3d47d41adcceacfd165a832dad288b2",
+    "results/auc-comparison-package.log": "de5d4ea8ce9d33c60ac71b09f9b485ed36777fdf4cb3082871327597ebee0ae6",
+    "results/auc-comparison-accepted.validation-final.log": "3ba344c0b23c21b7e4ec1ef3a3d25d5f5ca8ba27ac983b1ed66dfe06d5a4ee0b",
+    "results/run-auc-comparison-acceptance.sh": "50425090ed382c99542d871c39193c4993a1643e9cc8b063a6e5f5e1f994f8d9",
+    "results/auc-replay-codec.cc": "b215b1848beaebe7f4806147a77ee45e0c4b43c96e039c167d16b8d10298c36c",
+    "results/package-auc-comparison.py": "32bd1a51c25bd71c0430947e5d4cd248151c69c6324b52b047a4f77dfb242828"
+  },
+  "cuda_compile": {
+    "status": "not_run_for_new_replay",
+    "foundation_run": 42123616995,
+    "foundation_head": "5f9f1f7c6b8fe49ef87c1a2c41c65b06d8744ecc",
+    "foundation_status": "in_progress",
+    "gpu_execution": false
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "cuda_auc_contracts --auc input-only.bin new-cuda.bin"
+  },
+  "limits": [
+    "No actual NVIDIA execution. Current active compiler run covers source-capture preparation, not this new replay.",
+    "Source capture adds synchronization and copies. Its results must equal separate linked-library calls; this is not performance instrumentation.",
+    "CUDA receives contiguous packed inputs; original strided Metal backing arrays and guard bits remain in the corpus.",
+    "Empty binary ROC is an observed source guard; malformed two-value Metal normalization is one explicit CUDA API-shape exclusion.",
+    "Skipped binary PR producer stages and empty multi-output raw curves are absent, not synthesized as zeros.",
+    "Each pathological PR curve uses its own backend prefixes/totals and original tested error bounds; no universal CUB/libdevice accuracy claim.",
+    "Wide CUDA cases also invoke the public metric. Full grouped ROC/ranking-metric and broader caller coverage remain.",
+    "This batch does not establish full CUDA parity or change the twelve-addressed-contract count before its CUDA gate."
+  ]
+}

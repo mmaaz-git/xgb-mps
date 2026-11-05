@@ -18,6 +18,21 @@
 #include "../xgboost/src/common/optional_weight.h"
 #include "../xgboost/src/metric/metric_common.h"
 #include "xgboost/context.h"
+#include "auc_contract_io.h"
+namespace ac = auc_contracts;
+std::unique_ptr<ac::Exporter> report;
+std::vector<double> Triples(xgboost::common::Span<xgboost::common::metal::ROCAUCSums const> input) {
+  std::vector<double> output;
+  for (auto value : input) output.insert(output.end(), {value.fp, value.tp, value.area});
+  return output;
+}
+void ExportEdge(std::vector<float> const& p, std::vector<float> const& y,
+                std::vector<float> const& w, xgboost::common::metal::ROCAUCSums out) {
+  if (!report) return;
+  ac::Observation observed;
+  observed.curves = Triples({&out, 1});
+  report->Add({report->NextSpec(), p, y, w, {}}, {observed});
+}
 namespace xgboost::metric {
 std::tuple<double, double, double> BinaryPRAUC(Context const*, common::Span<float const>,
                                                linalg::VectorView<float const>,
@@ -38,10 +53,12 @@ void CudaContracts() {
                         {}, false, {&out, 1});
   Check(out.fp == 0 && out.tp == 1 && out.area == 0,
         "CUDA binary ROC retains raw positive mass for degenerate curves");
+  ExportEdge(predictions, labels, {}, out);
   common::metal::PRAUC({predictions, shape, DeviceOrd::CPU()}, {labels, shape, DeviceOrd::CPU()},
                        {}, false, {&out, 1});
   Check(out.fp == 0 && out.tp == 0 && out.area == 0,
         "CUDA binary PR returns zero triples for nonpositive original totals");
+  ExportEdge(predictions, labels, {}, out);
   shape[0] = 2;
   predictions = {0, 0};
   labels = {.25f, .25f};
@@ -52,10 +69,12 @@ void CudaContracts() {
   double tp = 2 * double(labels[0] * weights[0]);
   Check(out.fp == fp && out.tp == tp && out.area == (fp * tp) * .5,
         "CUDA curve terms must round once after binary64 negative expression");
+  ExportEdge(predictions, labels, weights, out);
   common::metal::PRAUC({predictions, shape, DeviceOrd::CPU()}, {labels, shape, DeviceOrd::CPU()},
                        weights, false, {&out, 1});
   Check(out.fp == 1 && out.tp == 1 && out.area == 1.0 / (fp / tp + 1),
         "CUDA tied PR must use rounded curve terms");
+  ExportEdge(predictions, labels, weights, out);
   std::puts("PASS four exact CUDA binary AUC degenerate/cast contracts");
 }
 size_t current_n, current_targets, current_target;
@@ -75,6 +94,29 @@ void Close(double actual, double expected, char const* field = "pair", double at
 struct CudaCurves {
   xgboost::common::metal::ROCAUCSums roc, pr;
 };
+void ExportMulti(xgboost::linalg::MatrixView<float const> p,
+                 xgboost::linalg::MatrixView<float const> y,
+                 xgboost::common::Span<float const> weights, bool multiclass, bool roc,
+                 ac::Observation* observed) {
+  if (p.Shape(1) == 1 && !multiclass) return;
+  observed->metadata.resize(3 * p.Shape(1));
+  xgboost::common::metal::MultiAUC(p, y, weights, multiclass, roc, observed->metadata);
+  double numerator = 0, denominator = 0;
+  for (std::size_t t = 0; t < p.Shape(1); ++t) {
+    auto fp = observed->curves[3 * t], tp = observed->curves[3 * t + 1];
+    auto area = roc ? fp * tp : p.Shape(0) ? 1.0 : 0.0;
+    auto weight = p.Shape(0) ? (roc && multiclass ? tp : 1.0) : 0.0;
+    Close(observed->metadata[3 * t], area, "export local area");
+    Close(observed->metadata[3 * t + 1], weight, "export output weight");
+    Close(observed->metadata[3 * t + 2], observed->curves[3 * t + 2], "export curve area");
+    numerator += area > 0 ? (observed->metadata[3 * t + 2] / area) * weight : NAN;
+    denominator += area > 0 ? weight : 0;
+  }
+  auto normalized = xgboost::common::metal::NormalizeAUC(observed->metadata);
+  Close(normalized, denominator != 0 && !std::isnan(numerator) ? numerator / denominator : NAN,
+        "export normalization", 2e-12);
+  observed->final = {normalized};
+}
 CudaCurves CudaReference(std::vector<float> const& scores, std::vector<float> const& labels,
                          std::vector<float> const& weights, bool multi) {
   if (scores.empty()) return {};
@@ -262,6 +304,11 @@ void CheckNormalization() {
     Check(input.empty() || std::memcmp(input.data(), snapshot.data(), input.size() * sizeof(double)) == 0,
           "AUC normalization modified its collective input");
     Close(actual, expected, "CUDA ScaleOutputs", 2e-12);
+    if (report) {
+      ac::Observation observed;
+      observed.final = {actual};
+      report->Add({report->NextSpec(), {}, {}, {}, input}, {observed});
+    }
     ++checked;
   };
   for (auto input : std::vector<std::vector<double>>{{2, 3, 1},
@@ -316,6 +363,13 @@ void CheckNormalization() {
           Close(output[3 + 3 * t], weight, "GPU output_weight");
           Close(output[4 + 3 * t], curve.area, "GPU integral", 2e-12);
         }
+        if (report) {
+          ac::Observation observed;
+          observed.metadata.assign(output.begin() + 2, output.begin() + 11);
+          observed.guards = {output[0], output[1], output[11], output[12]};
+          observed.final = {common::metal::NormalizeAUC(observed.metadata)};
+          report->Add({report->NextSpec(), scores, labels, weights, {}}, {observed});
+        }
         ++checked;
       }
     }
@@ -332,6 +386,11 @@ void CheckNormalization() {
       rejected = true;
     }
     Check(rejected, "Invalid normalization shape accepted");
+    if (report) {
+      ac::Observation observed;
+      observed.status = 1;
+      report->Add({report->NextSpec(), {}, {}, {}, bad}, {observed});
+    }
   }
   std::printf("PASS %zu GPU normalization/metadata cases and one malformed shape error\n", checked);
 }
@@ -379,12 +438,14 @@ void WideOutputs() {
       auto cpu_eval=dynamic_cast<MetricNoCache*>(cpu_metric.get());
       auto gpu_eval=dynamic_cast<MetricNoCache*>(gpu_metric.get());
       Check(cpu_eval && gpu_eval,"Wrong AUC metric type");
-      Close(cpu_eval->Eval(pred,info),expected,"wide CPU production metric",2e-12);
+      auto cpu_actual = cpu_eval->Eval(pred,info);
+      Close(cpu_actual,expected,"wide CPU production metric",2e-12);
       pred.SetDevice(DeviceOrd::MPS());pred.DevicePointer();
       info.labels.SetDevice(DeviceOrd::MPS());info.labels.Data()->DevicePointer();
       info.weights_.SetDevice(DeviceOrd::MPS());info.weights_.DevicePointer();
       before=common::metal::GetStatistics();
-      Close(gpu_eval->Eval(pred,info),expected,"wide MPS production metric",2e-12);
+      auto gpu_actual = gpu_eval->Eval(pred,info);
+      Close(gpu_actual,expected,"wide MPS production metric",2e-12);
       after=common::metal::GetStatistics();
       Check(after.metric_dispatches==before.metric_dispatches+2 &&
             after.vector_readback_bytes==before.vector_readback_bytes &&
@@ -392,6 +453,16 @@ void WideOutputs() {
             after.metric_host_input_bytes==before.metric_host_input_bytes &&
             after.auc_final_readback_bytes==before.auc_final_readback_bytes+8,
             "Wide public AUC did not preserve resident inputs/GPU normalization");
+      if (report) {
+        ac::Observation observed;
+        observed.curves = Triples(curves);
+        ExportMulti({predictions, shape, DeviceOrd::CPU()}, {labels, shape, DeviceOrd::CPU()},
+                     {}, false, roc, &observed);
+        Close(observed.final[0], gpu_actual, "export and public metric", 2e-12);
+        observed.final = {gpu_actual};
+        observed.cpu = {cpu_actual};
+        report->Add({report->NextSpec(), predictions, labels, {}, {}}, {observed});
+      }
       fields+=2;
       std::printf("PASS wide %s: %zu outputs, actual %.17g\n",name,targets,expected);std::fflush(stdout);
     }
@@ -436,8 +507,9 @@ long double ReferencePR(std::vector<float> const& scores, std::vector<float> con
   }
   return area;
 }
-int main() {
+int main(int argc, char** argv) {
   try {
+    report = ac::ReportOption(argc, argv);
     CudaContracts();
     CheckNormalization();
     WideOutputs();
@@ -588,6 +660,18 @@ int main() {
               }
               checked += n;
             }
+            if (report) {
+              ac::Observation roc_observed, pr_observed;
+              roc_observed.curves = Triples(result);
+              pr_observed.curves = Triples(pr_result);
+              pr_observed.terms = trace.terms;
+              pr_observed.prefixes = trace.prefixes;
+              pr_observed.totals = trace.totals;
+              ExportMulti(p, y, weights, multiclass, true, &roc_observed);
+              ExportMulti(p, y, weights, multiclass, false, &pr_observed);
+              report->Add({report->NextSpec(), predictions, labels, weights, {}},
+                           {roc_observed, pr_observed});
+            }
             ++cases;
             if (cases % 144 == 0) {
               std::printf("Checked %zu ROC cases / %zu score-label pairs\n", cases, checked);
@@ -612,6 +696,12 @@ int main() {
       auto cpu_result = metric::BinaryPRAUC(&cpu, scores,
           linalg::MakeVec(labels.data(), labels.size(), DeviceOrd::CPU()), common::OptionalWeights{weights});
       Check(std::get<2>(cpu_result) == 1.0, "Update the documented upstream cancellation example");
+      if (report) {
+        ac::Observation observed;
+        observed.curves = Triples({&result, 1});
+        observed.cpu = {std::get<2>(cpu_result)};
+        report->Add({report->NextSpec(), scores, labels, weights, {}}, {observed});
+      }
       std::printf("PASS extreme-weight PR integral %.17g; upstream CPU %.17g\n", result.area, std::get<2>(cpu_result));
     }
     std::printf(
@@ -619,6 +709,7 @@ int main() {
         "(%zu NaN); max prefix/bound %.9g, integral/bound %.9g\n",
         traced_terms, traced_prefixes, traced_curves, source_nan_curves, max_prefix_ratio,
         max_integral_ratio);
+    if (report) report->Finish();
     return 0;
   } catch (std::exception const& e) {
     std::fprintf(stderr, "FAIL: %s\n", e.what());

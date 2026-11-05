@@ -64,8 +64,12 @@ records and 893 actions; its Metal and independent reference checks pass.
 Grouped PR now also has a complete local replay of its 319 existing records;
 its CUDA build passed; NVIDIA execution remains pending. [Evidence and domain limits](docs/NVIDIA_COMPARISON.md#grouped-precisionrecall-auc).
 
-Remaining work is to complete comparisons for PR/ROC/ranking metrics, SHAP
-and compiler arithmetic behavior; extend caller coverage, including the full
+The binary/multi-output AUC replay now retains all 528 original records. Its
+Metal export, independent reference checks and complete input round trip pass;
+CUDA compilation and execution remain pending. [AUC evidence](validation/auc-contract-m3-run.json).
+
+Remaining work is to validate the new AUC replay on CUDA, complete grouped ROC,
+ranking-metric, SHAP and compiler arithmetic comparisons; extend caller coverage, including the full
 linear updater/selector; then execute the comparisons on NVIDIA and resolve the
 differences. Further performance tuning follows correctness. Detailed corpus
 counts, exclusions, failed attempts and corrected builds belong in the

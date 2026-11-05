@@ -203,7 +203,7 @@ its contract until actual NVIDIA results have been reviewed.
 | --- | --- | --- |
 | 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
 | 2 | P5-N07 and training-reduction-association | Full statistics, linalg, metric, root/stump, current CUDA-derived sampling, integer leaf/cache and linear operation corpora added; complete outstanding compiler/runtime gates. Full linear updater/selector and broader caller comparisons remain separate. |
-| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Complete grouped PR corpus exported and locally checked; CUDA build passed, runtime pending. Next: binary/multi-output PR/ROC, grouped ROC, then ranking metrics. Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
+| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Complete grouped PR corpus exported and locally checked; CUDA build passed, runtime pending. Binary/multi-output PR/ROC export, CUDA replay and local validation added; new replay compilation pending. Next: grouped ROC, then ranking metrics. Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
 | Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |
 
@@ -247,10 +247,19 @@ edge cases and six label rejections. Independent input reconstruction and source
 checks pass, as do the full C++ codec and 23 report-integrity tests. CUDA calls
 the linked production `RankingPRAUC` directly. Empty-query compaction and
 isolated-query calls are explicitly distinct from the original Metal layout
-and its per-query diagnostics. No NVIDIA comparison or compiler pass is claimed
-for this new consumer. Binary/multi-output PR prefix/pathology coverage remains
-necessary before counting P5-N09 as addressed by the comparison tools. See the
+and its per-query diagnostics. Its CUDA compile/link gate passed in run
+42117995770; actual NVIDIA execution remains. See the
 [grouped PR record](../validation/grouped-pr-contract-m3-run.json).
+
+The binary/multi-output AUC extension retains all 528 records and 1,014 calls,
+including every original prefix/pathology and wide-output case. Both Metal modes,
+independent input/output checks and the full C++ input round trip pass. Its CUDA
+replay compares captured results with separate original linked-library calls;
+compiler and NVIDIA runtime validation are pending. The 21 report-integrity
+checks retain original bounds and explicit empty/invalid API distinctions.
+See the [AUC record](../validation/auc-contract-m3-run.json). P5-N09 still requires
+those gates before changing the comparison-coverage count; grouped ROC and
+ranking-metric comparisons follow next.
 
 PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
 Freeze the accepted source and workload parameters; inspect prior outputs before

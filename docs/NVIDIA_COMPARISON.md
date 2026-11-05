@@ -1282,7 +1282,7 @@ This covers grouped PR only. Binary/multi-output AUC, their pathological prefix
 diagnostics, grouped ROC, public metric caller combinations and the remaining
 ranking metrics are separate work; P5-N09/10/11 are not closed by this batch.
 
-## Binary and multi-output AUC observation preparation
+## Binary and multi-output AUC
 
 The CUDA comparison build now prepares a separate `auc_probe` namespace copy of
 the pinned `src/metric/auc.cu`. `scripts/prepare_auc_probe.py` preserves the source
@@ -1304,7 +1304,69 @@ and the consumer's global helper through argument-dependent lookup. Explicit
 qualification fixes the ambiguity. The host-copy check now includes that global
 helper: it fails to compile with the old header and passes with the correction.
 All 22 checks pass; corrected CUDA compilation remains pending. These host checks
-do not prove CUDA execution or numerical agreement. The full 528-record Metal AUC
-corpus still needs its exporter, CUDA replay and comparison checks. Replay must
-also compare the instrumented results with calls to the original linked library.
-This preparation does not increase the count of completed comparison contracts.
+do not prove CUDA execution or numerical agreement. The full **528-record** corpus now has a Metal exporter, CUDA replay and independent
+report checker. The local acceptance record is
+[auc-contract-m3-run.json](../validation/auc-contract-m3-run.json); the complete
+[saved Metal report](../validation/auc-contract-metal-m3.bin.xz) retains exact input
+and observed-output bits. The new replay still needs CUDA compilation and NVIDIA
+execution; the active helper-fix build predates this replay.
+
+The corpus retains four binary edge cases, 22 normalization cases, eight metadata
+cases, one malformed shape, six wide cases, 486 ordinary/pathological cases with
+both ROC and PR calls, and the extreme-weight cancellation example. That is
+1,014 recorded calls, including the malformed-shape rejection. The main matrix
+retains empty, singleton, tied, subnormal, infinite-score, soft-label, zero-weight
+and extreme-weight inputs, three layouts and up to 65,537 rows. Normalization
+reaches 262,145 outputs, and complete ROC/PR calls cross the former 65,535-output
+limit. Every original native assertion and tolerance remains in place.
+
+Independent reconstruction matches **34,282,242 input words**, including backing
+guards and every original MT19937 draw. Exported observations retain **1,690,464
+exact terms**, bounded prefixes/original totals, 78 source-integral curves
+(including 15 NaNs), 420 independent pair checks and 519 stable-log1p checks.
+The unchanged native test and report mode pass under Metal API validation; the
+C++ input reader/writer reproduces the complete input file exactly. Twenty-one
+report-integrity tests include identical wrong outputs on both synthetic GPUs,
+missing stages, altered inputs, source/linked disagreement and corrupted terms,
+prefixes, totals, ordering and integrals. They are host tests, not GPU evidence.
+
+The CUDA replay invokes the original linked binary/multi-output functions and
+`ScaleOutputs`, separately executes the source-preserving capture copy, and
+requires exact output agreement (allowing NaN payload differences). Wide cases
+also invoke the public metric. Input arrays are checked for mutation. Captured
+terms, prefixes, PR totals, raw multi-output endpoints and normalization metadata
+come from actual source producers. Each pathological integral is checked against
+that backend's own observed endpoints; Metal prefixes never substitute for CUDA.
+The existing error budgets are tested limits, not universal CUB/libdevice bounds.
+
+API differences remain explicit:
+
+- Original strided Metal storage is saved, then packed into contiguous CUDA inputs.
+- Empty binary ROC calls must hit the actual guard in both CUDA implementations;
+  the Metal zero triple is retained without fabricating a CUDA result.
+- Invalid binary PR totals skip the source's term/prefix producers. Their actual
+  totals and zero result remain recorded; absent stages stay absent.
+- Empty multi-output calls record actual normalization metadata and NaN results;
+  no raw curve endpoint is invented for a skipped source stage.
+- The two-value malformed Metal summary has no equivalent CUDA array signature
+  and is the single API-shape exclusion.
+
+```sh
+python3 scripts/compare_auc_contracts.py validate-metal \
+  validation/auc-contract-metal-m3.bin.xz
+python3 scripts/compare_auc_contracts.py unpack \
+  validation/auc-contract-metal-m3.bin.xz results/auc-inputs.bin
+# On NVIDIA, after building the comparison tools:
+results/cuda-comparison-build/cmake/cuda_auc_contracts --auc \
+  results/auc-inputs.bin results/auc-cuda.bin
+python3 scripts/compare_auc_contracts.py compare \
+  validation/auc-contract-metal-m3.bin.xz results/auc-cuda.bin \
+  --output results/auc-comparison.json
+```
+
+All output names must be new. Comparison exits 1 for malformed data or reference
+failure, and 2 for results requiring review; agreement alone does not certify
+full parity. The CUDA metadata sidecar records hardware, compiler, CUDA and
+CCCL versions, observed guards and explicit packing adaptations. Keep it with
+the compiler evidence and observation file. Grouped ROC, ranking metrics and
+broader public callers remain separate work.
