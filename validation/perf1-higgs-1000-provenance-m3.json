@@ -1,0 +1,39 @@
+{
+  "status": "finished",
+  "started_utc": "2026-11-05T13:12:33.745393+00:00",
+  "revision": "00748612f2b879ee657b030bdbed29d94f41db93",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "working_tree": "",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "script_sha256": "1892fcc3df10382c79579bb35d45e42a2f65df22e9023ef52c4e834b896e76b9",
+  "dataset_sha256": {
+    ".cache/datasets/higgs/manifest.json": "2b53990d8592ae909a55fa85d340a197d955eee96e6038c2aacb7465dd2ec5eb",
+    ".cache/datasets/higgs/X.npy": "bd19c9d3a95392a2f6dbb36b5aa29809ce10a94cf5b58096689efa839dd6ae38",
+    ".cache/datasets/higgs/y.npy": "fed2348cb923ea201b0956a797729c7b86e499b9d01f425653ff6ddc41931a04"
+  },
+  "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+  "session": "xgb-perf1-higgs",
+  "log": "results/perf1-higgs-1000.log",
+  "other_work": "CUDA compilation is remote in GitHub Actions; no concurrent local test/build/benchmark jobs started. User applications remain open.",
+  "command": [
+    ".venv/bin/python",
+    "scripts/benchmark_published.py",
+    "--preset",
+    "nvidia2017-higgs",
+    "--threads",
+    "8",
+    "--rounds",
+    "1000",
+    "--repeats",
+    "3",
+    "--progress-every",
+    "50",
+    "--output",
+    "results/perf1-higgs-1000.json"
+  ],
+  "exit_code": 0,
+  "production_unchanged_after": true,
+  "library_unchanged_after": true,
+  "finished_utc": "2026-11-05T13:49:29.491140+00:00"
+}

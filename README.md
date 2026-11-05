@@ -126,8 +126,14 @@ There is no general speedup promise. Existing M3 measurements include improvemen
 CPU wins, and failed strict-equivalence checks. The
 [published-workload replay notes](docs/PUBLISHED_BENCHMARKS.md) describe HIGGS and
 Covertype settings, timing boundaries, hardware, and reproduction commands.
-Their measurements predate later correctness changes and are not benchmarks of
-current HEAD. Raw reports are retained under [validation/](validation/).
+The latest full HIGGS replay covers the accepted `68c800e` production tree:
+three pairs of 1,000 rounds give **288 s CPU / 469 s MPS** median training time
+on this M3. MPS is slower, and strict prediction equivalence fails. The saved
+MPS model predicts identically on CPU; the independently trained models use
+different quantile cuts and differ from their first split. Diagnosis continues.
+System-wide swap use was high, and CPU times ranged from 195 to 289 seconds.
+[Timings, correctness results and limits](docs/PUBLISHED_BENCHMARKS.md#accepted-production-tree-68c800e).
+Older measurements are historical; raw reports remain under [validation/](validation/).
 
 ## Repository guide
 

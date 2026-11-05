@@ -90,6 +90,63 @@ Datasets: [HIGGS, D. Whiteson (2014)](https://doi.org/10.24432/C5V312) and
 under CC BY 4.0. Dataset files stay in the ignored local cache; this repository
 contains provenance, commands and results.
 
+## Accepted production tree `68c800e`
+
+The 2026-11-05 replay uses the full 10.5M/500K HIGGS split and 1,000 rounds,
+with three alternating CPU/MPS pairs. The production tree and library hashes
+were unchanged throughout; the benchmark harness was at `0074861`. This is the
+latest accepted production code, including the CUDA-style sketch and subsequent
+coverage fixes. Older measurements below predate these changes.
+
+| Measurement | CPU | MPS |
+| --- | ---: | ---: |
+| Training runs, seconds | 195.167, 287.918, 289.030 | 458.656, 469.100, 486.718 |
+| Median training, seconds | 287.918 | 469.100 |
+| Median DMatrix + training, seconds | 289.307 | 470.713 |
+| Test accuracy, all repeats | 0.761210 | 0.761654 |
+
+CPU/MPS median training ratio is **0.614×**: MPS takes about 1.63 times as long.
+Each pair fails strict margin equivalence on **499,937 of 500,000** test values:
+maximum absolute difference 5.15643, RMS 0.360498, and 30,266 class disagreements.
+Accuracy differs by 0.000444 and log loss by 0.000106572; similar quality does not
+turn the failed equivalence check into a pass.
+
+These measurements were on AC power with no concurrent local build/test jobs.
+User applications remained open. Recorded system-wide swap use ranged from
+19,608 to 22,778 MB; this is not the benchmark's own swap use. Peak process RSS
+was approximately 3.78–4.06 GB. CPU timing varied substantially, so the median
+and all individual runs are retained. Wall/monotonic differences were below
+0.017 seconds. These results do not isolate hardware limits from implementation
+costs or system memory pressure.
+
+The first MPS run records 176.56 s of histogram GPU time, 76.50 s objective time,
+75.02 s partition time and 10.48 s split time. Wait time overlaps GPU execution
+and must not be added as independent work. Diagnose correctness before tuning
+these measured costs.
+
+The saved MPS model produces **bit-identical margins for all 500,000 test rows**
+when evaluated with the CPU predictor, with no Metal prediction dispatches.
+The separately trained models already differ at tree zero's root: both choose
+feature 25, but CPU uses threshold 1.0758163 and MPS 1.0759506. Fresh one-round
+replays reproduce both first trees exactly. Their exported quantile cuts differ
+for 24 of 28 features. This locates a difference before prediction, but does not
+prove that quantile construction explains every subsequent divergence. A
+common-cut training diagnostic is the next check; NVIDIA execution remains
+necessary to compare the CUDA-style sketch against CUDA itself.
+
+[Raw runs](../validation/perf1-higgs-1000-m3.json),
+[source/dataset provenance](../validation/perf1-higgs-1000-provenance-m3.json),
+and [first-divergence diagnosis](../validation/perf1-higgs-diagnosis-m3.json).
+Models and prediction arrays remain in the ignored local results directory.
+Reproduce the diagnostic after a completed benchmark and provenance check:
+
+```sh
+.venv/bin/python scripts/diagnose_higgs.py \
+  --benchmark results/perf1-higgs-1000.json \
+  --provenance results/perf1-higgs-1000-provenance.json \
+  --output-dir results/perf1-higgs-diagnosis
+```
+
 ## Initial M3 measurements
 
 These use the backend at commit `989ee7a`, before the low-bin histogram change.

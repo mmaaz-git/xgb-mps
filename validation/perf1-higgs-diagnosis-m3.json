@@ -1,0 +1,1628 @@
+{
+  "status": "recorded; interpretation-required",
+  "scope": "HIGGS correctness diagnosis; not a timing benchmark",
+  "started_utc": "2026-11-05T13:53:27.402642+00:00",
+  "benchmark_sha256": "5a5fe26afa617cf28a15fe45616542a75dd2067aa71cf25a5304b5f7f06810b0",
+  "provenance_sha256": "56375cc2b90e0039bdc0b308bd53d2a96f30d9b458d980fea33f9e5aec72c5d7",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "script_sha256": "ec1f62f6db07e067754a0a6a96b6950bd7e5c563ef164520445f642f8a8f7d5d",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "steps": [
+    {
+      "stage": "predict",
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/diagnose_higgs.py",
+        "--benchmark",
+        "results/perf1-higgs-1000.json",
+        "--provenance",
+        "results/perf1-higgs-1000-provenance.json",
+        "--output-dir",
+        "results/perf1-higgs-diagnosis",
+        "--cache",
+        "/Users/maaz/Documents/xgb-mps/.cache/datasets/higgs",
+        "--worker",
+        "predict"
+      ],
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "stage": "cpu",
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/diagnose_higgs.py",
+        "--benchmark",
+        "results/perf1-higgs-1000.json",
+        "--provenance",
+        "results/perf1-higgs-1000-provenance.json",
+        "--output-dir",
+        "results/perf1-higgs-diagnosis",
+        "--cache",
+        "/Users/maaz/Documents/xgb-mps/.cache/datasets/higgs",
+        "--worker",
+        "cpu"
+      ],
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "stage": "mps",
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/diagnose_higgs.py",
+        "--benchmark",
+        "results/perf1-higgs-1000.json",
+        "--provenance",
+        "results/perf1-higgs-1000-provenance.json",
+        "--output-dir",
+        "results/perf1-higgs-diagnosis",
+        "--cache",
+        "/Users/maaz/Documents/xgb-mps/.cache/datasets/higgs",
+        "--worker",
+        "mps"
+      ],
+      "status": "passed",
+      "exit_code": 0
+    }
+  ],
+  "saved_model_difference": {
+    "cpu_trees": 1000,
+    "mps_trees": 1000,
+    "different_trees": 1000,
+    "first_prediction_field_difference": {
+      "tree": 0,
+      "path": "root",
+      "cpu": {
+        "kind": "split",
+        "feature": 25,
+        "threshold": 1.0758163,
+        "threshold_bits": 1065989209,
+        "default_left": 0
+      },
+      "mps": {
+        "kind": "split",
+        "feature": 25,
+        "threshold": 1.0759506,
+        "threshold_bits": 1065990336,
+        "default_left": 0
+      }
+    },
+    "first_split_difference": {
+      "tree": 0,
+      "path": "root",
+      "cpu": {
+        "kind": "split",
+        "feature": 25,
+        "threshold": 1.0758163,
+        "threshold_bits": 1065989209,
+        "default_left": 0
+      },
+      "mps": {
+        "kind": "split",
+        "feature": 25,
+        "threshold": 1.0759506,
+        "threshold_bits": 1065990336,
+        "default_left": 0
+      }
+    },
+    "first_tree_roots": {
+      "cpu": {
+        "kind": "split",
+        "feature": 25,
+        "threshold": 1.0758163,
+        "threshold_bits": 1065989209,
+        "default_left": 0
+      },
+      "mps": {
+        "kind": "split",
+        "feature": 25,
+        "threshold": 1.0759506,
+        "threshold_bits": 1065990336,
+        "default_left": 0
+      }
+    }
+  },
+  "model_sha256": {
+    "cpu": "26df62ee69f5f6cb62adb97e1f4da1e9f1208860c092e8a86a8f5f181163c67d",
+    "mps": "d480a4849e49d4b75e9244f2501e9bf5790b4f5fa91c1d49154018f68e9ef3a5"
+  },
+  "cpu_prediction_of_mps_model": {
+    "finite": true,
+    "strict_equivalence": true,
+    "values": 500000,
+    "outside_tolerance": 0,
+    "max_abs": 0.0,
+    "rmse": 0.0,
+    "exact_bits": 500000,
+    "metal_prediction_dispatches": 0
+  },
+  "first_round": {
+    "cpu": {
+      "status": "recorded",
+      "first_tree_exact_replay": true,
+      "root": {
+        "kind": "split",
+        "feature": 25,
+        "threshold": 1.0758163,
+        "threshold_bits": 1065989209,
+        "default_left": 0
+      },
+      "cut_count": 6184,
+      "dispatch_statistics": {
+        "adapter_debug_readback_bytes": 0,
+        "adapter_gpu_time_ns": 0,
+        "adapter_index_dispatches": 0,
+        "adapter_prepare_dispatches": 0,
+        "auc_final_readback_bytes": 0,
+        "base_score_dispatches": 0,
+        "base_score_gpu_time_ns": 0,
+        "binning_dispatches": 0,
+        "binning_gpu_time_ns": 0,
+        "category_gpu_time_ns": 0,
+        "category_import_copy_bytes": 0,
+        "category_import_dispatches": 0,
+        "category_import_shared_bytes": 0,
+        "category_recode_dispatches": 0,
+        "category_sort_dispatches": 0,
+        "category_state_shared_input_bytes": 0,
+        "category_state_shared_output_bytes": 0,
+        "category_state_staging_bytes": 0,
+        "column_init_dispatches": 0,
+        "column_sampling_dispatches": 0,
+        "column_sampling_gpu_time_ns": 0,
+        "columnar_gpu_time_ns": 0,
+        "columnar_imports": 0,
+        "columnar_pack_bytes": 0,
+        "csr_input_copy_bytes": 0,
+        "csr_shared_input_bytes": 0,
+        "cuda_gradient_sampling_dispatches": 0,
+        "cuda_integer_multi_split_dispatches": 0,
+        "cuda_integer_split_dispatches": 0,
+        "cuda_sketch_batches": 0,
+        "cuda_sketch_dispatches": 0,
+        "cuda_sketch_gpu_time_ns": 0,
+        "cuda_sketch_input_entries": 0,
+        "cuda_uniform_sampling_dispatches": 0,
+        "ellpack_adapter_dispatches": 0,
+        "ellpack_adapter_values": 0,
+        "ellpack_cache_dispatches": 0,
+        "ellpack_cached_device_bytes": 0,
+        "ellpack_cached_host_bytes": 0,
+        "ellpack_copy_dispatches": 0,
+        "ellpack_count_dispatches": 0,
+        "ellpack_csr_dispatches": 0,
+        "ellpack_csr_input_bytes": 0,
+        "ellpack_csr_values": 0,
+        "ellpack_debug_readback_bytes": 0,
+        "ellpack_gpu_time_ns": 0,
+        "ellpack_histogram_dispatches": 0,
+        "ellpack_host_materializations": 0,
+        "ellpack_host_readback_bytes": 0,
+        "ellpack_input_dispatches": 0,
+        "ellpack_io_dispatches": 0,
+        "ellpack_io_read_bytes": 0,
+        "ellpack_io_read_pages": 0,
+        "ellpack_io_write_bytes": 0,
+        "ellpack_io_write_pages": 0,
+        "ellpack_pack_dispatches": 0,
+        "ellpack_pack_input_bytes": 0,
+        "ellpack_partition_dispatches": 0,
+        "ellpack_restore_dispatches": 0,
+        "ellpack_view_pages": 0,
+        "expectile_init_dispatches": 0,
+        "feature_host_input_bytes": 0,
+        "feature_readback_bytes": 0,
+        "feature_shared_input_bytes": 0,
+        "feature_shared_output_bytes": 0,
+        "feature_task_candidates": 0,
+        "feature_task_dispatches": 0,
+        "float_mean_dispatches": 0,
+        "float_sum_dispatches": 0,
+        "float_sum_gpu_time_ns": 0,
+        "gpu_time_ns": 0,
+        "gradient_bound_dispatches": 0,
+        "gradient_copy_dispatches": 0,
+        "gradient_import_dispatches": 0,
+        "gradient_import_gpu_time_ns": 0,
+        "gradient_import_host_copy_bytes": 0,
+        "gradient_import_pairs": 0,
+        "gradient_import_shared_output_bytes": 0,
+        "gradient_sampling_dispatches": 0,
+        "gradient_sampling_gpu_time_ns": 0,
+        "gradient_state_gpu_time_ns": 0,
+        "gradient_state_shared_input_bytes": 0,
+        "gradient_state_shared_output_bytes": 0,
+        "gradient_state_staging_bytes": 0,
+        "gradient_sum_dispatches": 0,
+        "gradient_sum_gpu_time_ns": 0,
+        "gradient_sum_readback_bytes": 0,
+        "gradient_sum_shared_output_bytes": 0,
+        "group_sort_dispatches": 0,
+        "group_sort_gpu_time_ns": 0,
+        "hessian_extract_dispatches": 0,
+        "histogram_conversion_dispatches": 0,
+        "histogram_dispatches": 0,
+        "histogram_integer_accumulation_dispatches": 0,
+        "histogram_integer_store_dispatches": 0,
+        "histogram_integer_subtraction_dispatches": 0,
+        "histogram_integer_sum_dispatches": 0,
+        "histogram_shared_gradient_bytes": 0,
+        "histogram_subtraction_dispatches": 0,
+        "index_gpu_time_ns": 0,
+        "index_uploaded_bytes": 0,
+        "index_uploads": 0,
+        "initialization_copy_bytes": 0,
+        "initialization_copy_dispatches": 0,
+        "initialization_fill_dispatches": 0,
+        "initialization_gpu_time_ns": 0,
+        "initialization_host_input_bytes": 0,
+        "initialization_host_output_bytes": 0,
+        "initialization_shared_input_bytes": 0,
+        "initialization_shared_output_bytes": 0,
+        "input_debug_readback_bytes": 0,
+        "input_prepare_dispatches": 0,
+        "input_prepare_gpu_time_ns": 0,
+        "input_recode_dispatches": 0,
+        "input_staging_bytes": 0,
+        "interaction_buffer_growths": 0,
+        "interaction_gpu_time_ns": 0,
+        "interaction_query_dispatches": 0,
+        "interaction_reset_dispatches": 0,
+        "interaction_split_dispatches": 0,
+        "label_validation_dispatches": 0,
+        "label_validation_gpu_time_ns": 0,
+        "leaf_fitting_gpu_time_ns": 0,
+        "leaf_integer_sum_dispatches": 0,
+        "leaf_partition_dispatches": 0,
+        "leaf_shared_gradient_bytes": 0,
+        "leaf_shared_output_bytes": 0,
+        "leaf_sum_dispatches": 0,
+        "leaf_sum_init_dispatches": 0,
+        "leaf_update_dispatches": 0,
+        "leaf_weight_dispatches": 0,
+        "linear_gpu_time_ns": 0,
+        "linear_gradient_dispatches": 0,
+        "linear_residual_dispatches": 0,
+        "mean_dispatches": 0,
+        "mean_gpu_time_ns": 0,
+        "metadata_convert_dispatches": 0,
+        "metadata_copy_dispatches": 0,
+        "metadata_equal_dispatches": 0,
+        "metadata_gather_dispatches": 0,
+        "metadata_gather_values": 0,
+        "metadata_gpu_time_ns": 0,
+        "metadata_host_copy_bytes": 0,
+        "metadata_qid_dispatches": 0,
+        "metadata_shared_output_bytes": 0,
+        "metadata_validate_dispatches": 0,
+        "metadata_values": 0,
+        "metric_copy_bytes": 0,
+        "metric_copy_dispatches": 0,
+        "metric_dispatches": 0,
+        "metric_final_readback_bytes": 0,
+        "metric_gpu_time_ns": 0,
+        "metric_host_input_bytes": 0,
+        "metric_host_output_bytes": 0,
+        "metric_label_dispatches": 0,
+        "metric_reduction_passes": 0,
+        "metric_shared_input_bytes": 0,
+        "metric_shared_output_bytes": 0,
+        "model_category_copy_dispatches": 0,
+        "model_copy_words": 0,
+        "model_host_copy_bytes": 0,
+        "model_scale_dispatches": 0,
+        "model_snapshot_bytes": 0,
+        "model_state_gpu_time_ns": 0,
+        "model_weight_copy_dispatches": 0,
+        "objective_dispatches": 0,
+        "objective_gpu_time_ns": 0,
+        "objective_shared_input_bytes": 0,
+        "objective_shared_output_bytes": 0,
+        "objective_staging_bytes": 0,
+        "output_dlpack_exports": 0,
+        "output_gpu_time_ns": 0,
+        "output_host_readback_bytes": 0,
+        "output_live_buffers": 0,
+        "output_live_exports": 0,
+        "output_snapshot_bytes": 0,
+        "output_snapshot_dispatches": 0,
+        "output_snapshot_host_copy_bytes": 0,
+        "output_snapshot_shared_input_bytes": 0,
+        "partition_category_host_copy_bytes": 0,
+        "partition_category_shared_input_bytes": 0,
+        "partition_dispatches": 0,
+        "partition_gpu_time_ns": 0,
+        "pr_auc_dispatches": 0,
+        "pr_auc_gpu_time_ns": 0,
+        "prediction_device_copy_bytes": 0,
+        "prediction_dispatches": 0,
+        "prediction_gpu_time_ns": 0,
+        "prediction_host_input_bytes": 0,
+        "prediction_host_output_bytes": 0,
+        "prediction_init_dispatches": 0,
+        "prediction_model_pack_dispatches": 0,
+        "prediction_model_shared_input_bytes": 0,
+        "prediction_model_staging_bytes": 0,
+        "prediction_shared_input_bytes": 0,
+        "prediction_shared_output_bytes": 0,
+        "quantile_dispatches": 0,
+        "quantile_gpu_time_ns": 0,
+        "quantization_dispatches": 0,
+        "quantized_gradient_sum_dispatches": 0,
+        "radix_sort_dispatches": 0,
+        "ranking_bias_dispatches": 0,
+        "ranking_cache_dispatches": 0,
+        "ranking_cache_gpu_time_ns": 0,
+        "ranking_gradient_dispatches": 0,
+        "ranking_gradient_gpu_time_ns": 0,
+        "ranking_label_dispatches": 0,
+        "ranking_label_gpu_time_ns": 0,
+        "ranking_metric_dispatches": 0,
+        "ranking_metric_gpu_time_ns": 0,
+        "ranking_pair_batches": 0,
+        "ranking_pairs": 0,
+        "ranking_plan_dispatches": 0,
+        "ranking_plan_gpu_time_ns": 0,
+        "ranking_plan_reuses": 0,
+        "ranking_pr_auc_dispatches": 0,
+        "ranking_pr_auc_gpu_time_ns": 0,
+        "ranking_roc_auc_dispatches": 0,
+        "ranking_roc_auc_gpu_time_ns": 0,
+        "readback_time_ns": 0,
+        "resident_histogram_dispatches": 0,
+        "resident_split_dispatches": 0,
+        "residual_scale_dispatches": 0,
+        "roc_auc_dispatches": 0,
+        "roc_auc_gpu_time_ns": 0,
+        "row_init_dispatches": 0,
+        "row_workspace_allocations": 0,
+        "row_workspace_reuses": 0,
+        "rows_processed": 0,
+        "sampling_dispatches": 0,
+        "sampling_gpu_time_ns": 0,
+        "shap_dispatches": 0,
+        "shap_gpu_time_ns": 0,
+        "shap_interaction_dispatches": 0,
+        "shared_histogram_dispatches": 0,
+        "sketch_finalize_columns": 0,
+        "sketch_finalize_dispatches": 0,
+        "sketch_finalize_gpu_time_ns": 0,
+        "sketch_ingest_gpu_time_ns": 0,
+        "sketch_sorted_dispatches": 0,
+        "sketch_update_dispatches": 0,
+        "sketch_weight_dispatches": 0,
+        "small_histogram_dispatches": 0,
+        "snappy_compress_dispatches": 0,
+        "snappy_compressed_bytes": 0,
+        "snappy_copy_dispatches": 0,
+        "snappy_decoded_bytes": 0,
+        "snappy_decompress_dispatches": 0,
+        "snappy_gpu_time_ns": 0,
+        "snappy_host_readback_bytes": 0,
+        "snappy_input_bytes": 0,
+        "split_bounds_dispatches": 0,
+        "split_bounds_gather_dispatches": 0,
+        "split_bounds_gather_values": 0,
+        "split_bounds_host_copy_bytes": 0,
+        "split_bounds_init_dispatches": 0,
+        "split_bounds_shared_input_bytes": 0,
+        "split_category_dispatches": 0,
+        "split_category_nodes": 0,
+        "split_category_readback_bytes": 0,
+        "split_category_store_dispatches": 0,
+        "split_dispatches": 0,
+        "split_finalize_dispatches": 0,
+        "split_gpu_time_ns": 0,
+        "split_sum_apply_dispatches": 0,
+        "split_sum_gather_dispatches": 0,
+        "split_sum_host_input_bytes": 0,
+        "split_sum_readback_bytes": 0,
+        "split_sum_shared_input_bytes": 0,
+        "split_sum_store_dispatches": 0,
+        "split_weight_readback_bytes": 0,
+        "split_weight_store_dispatches": 0,
+        "staging_time_ns": 0,
+        "stump_dispatches": 0,
+        "survival_cpu_corrections": 0,
+        "survival_cpu_time_ns": 0,
+        "survival_gradient_dispatches": 0,
+        "survival_metric_dispatches": 0,
+        "tensor_adapter_windows": 0,
+        "tensor_copied_bytes": 0,
+        "tensor_copy_dispatches": 0,
+        "tensor_csr_dispatches": 0,
+        "tensor_csr_gpu_time_ns": 0,
+        "tensor_csr_host_copy_bytes": 0,
+        "tensor_csr_shared_output_bytes": 0,
+        "tensor_csr_values": 0,
+        "tensor_gpu_time_ns": 0,
+        "tensor_imports": 0,
+        "tensor_prediction_windows": 0,
+        "transform_dispatches": 0,
+        "vector_allocations": 0,
+        "vector_arithmetic_dispatches": 0,
+        "vector_capacity_bytes": 0,
+        "vector_copy_bytes": 0,
+        "vector_copy_dispatches": 0,
+        "vector_fill_bytes": 0,
+        "vector_fill_dispatches": 0,
+        "vector_gpu_time_ns": 0,
+        "vector_host_copy_bytes": 0,
+        "vector_live_buffers": 0,
+        "vector_readback_bytes": 0,
+        "vector_upload_bytes": 0,
+        "wait_time_ns": 0
+      }
+    },
+    "mps": {
+      "status": "recorded",
+      "first_tree_exact_replay": true,
+      "root": {
+        "kind": "split",
+        "feature": 25,
+        "threshold": 1.0759506,
+        "threshold_bits": 1065990336,
+        "default_left": 0
+      },
+      "cut_count": 6184,
+      "dispatch_statistics": {
+        "adapter_debug_readback_bytes": 0,
+        "adapter_gpu_time_ns": 0,
+        "adapter_index_dispatches": 0,
+        "adapter_prepare_dispatches": 0,
+        "auc_final_readback_bytes": 0,
+        "base_score_dispatches": 0,
+        "base_score_gpu_time_ns": 0,
+        "binning_dispatches": 0,
+        "binning_gpu_time_ns": 0,
+        "category_gpu_time_ns": 0,
+        "category_import_copy_bytes": 0,
+        "category_import_dispatches": 0,
+        "category_import_shared_bytes": 0,
+        "category_recode_dispatches": 0,
+        "category_sort_dispatches": 0,
+        "category_state_shared_input_bytes": 0,
+        "category_state_shared_output_bytes": 0,
+        "category_state_staging_bytes": 0,
+        "column_init_dispatches": 1,
+        "column_sampling_dispatches": 0,
+        "column_sampling_gpu_time_ns": 1749,
+        "columnar_gpu_time_ns": 0,
+        "columnar_imports": 0,
+        "columnar_pack_bytes": 0,
+        "csr_input_copy_bytes": 0,
+        "csr_shared_input_bytes": 5208000064,
+        "cuda_gradient_sampling_dispatches": 0,
+        "cuda_integer_multi_split_dispatches": 0,
+        "cuda_integer_split_dispatches": 6,
+        "cuda_sketch_batches": 5,
+        "cuda_sketch_dispatches": 53,
+        "cuda_sketch_gpu_time_ns": 4542824014,
+        "cuda_sketch_input_entries": 294000000,
+        "cuda_uniform_sampling_dispatches": 0,
+        "ellpack_adapter_dispatches": 0,
+        "ellpack_adapter_values": 0,
+        "ellpack_cache_dispatches": 1,
+        "ellpack_cached_device_bytes": 294000008,
+        "ellpack_cached_host_bytes": 0,
+        "ellpack_copy_dispatches": 0,
+        "ellpack_count_dispatches": 1,
+        "ellpack_csr_dispatches": 3,
+        "ellpack_csr_input_bytes": 2436000024,
+        "ellpack_csr_values": 294000000,
+        "ellpack_debug_readback_bytes": 0,
+        "ellpack_gpu_time_ns": 170130831,
+        "ellpack_histogram_dispatches": 6,
+        "ellpack_host_materializations": 0,
+        "ellpack_host_readback_bytes": 0,
+        "ellpack_input_dispatches": 0,
+        "ellpack_io_dispatches": 0,
+        "ellpack_io_read_bytes": 0,
+        "ellpack_io_read_pages": 0,
+        "ellpack_io_write_bytes": 0,
+        "ellpack_io_write_pages": 0,
+        "ellpack_pack_dispatches": 1,
+        "ellpack_pack_input_bytes": 0,
+        "ellpack_partition_dispatches": 6,
+        "ellpack_restore_dispatches": 0,
+        "ellpack_view_pages": 1,
+        "expectile_init_dispatches": 0,
+        "feature_host_input_bytes": 0,
+        "feature_readback_bytes": 0,
+        "feature_shared_input_bytes": 155496,
+        "feature_shared_output_bytes": 112,
+        "feature_task_candidates": 1764,
+        "feature_task_dispatches": 6,
+        "float_mean_dispatches": 0,
+        "float_sum_dispatches": 0,
+        "float_sum_gpu_time_ns": 0,
+        "gpu_time_ns": 825482664,
+        "gradient_bound_dispatches": 1,
+        "gradient_copy_dispatches": 0,
+        "gradient_import_dispatches": 0,
+        "gradient_import_gpu_time_ns": 0,
+        "gradient_import_host_copy_bytes": 0,
+        "gradient_import_pairs": 0,
+        "gradient_import_shared_output_bytes": 0,
+        "gradient_sampling_dispatches": 0,
+        "gradient_sampling_gpu_time_ns": 0,
+        "gradient_state_gpu_time_ns": 0,
+        "gradient_state_shared_input_bytes": 0,
+        "gradient_state_shared_output_bytes": 0,
+        "gradient_state_staging_bytes": 0,
+        "gradient_sum_dispatches": 1,
+        "gradient_sum_gpu_time_ns": 1866916,
+        "gradient_sum_readback_bytes": 16,
+        "gradient_sum_shared_output_bytes": 16,
+        "group_sort_dispatches": 0,
+        "group_sort_gpu_time_ns": 0,
+        "hessian_extract_dispatches": 0,
+        "histogram_conversion_dispatches": 6,
+        "histogram_dispatches": 6,
+        "histogram_integer_accumulation_dispatches": 0,
+        "histogram_integer_store_dispatches": 6,
+        "histogram_integer_subtraction_dispatches": 5,
+        "histogram_integer_sum_dispatches": 0,
+        "histogram_shared_gradient_bytes": 84000000,
+        "histogram_subtraction_dispatches": 5,
+        "index_gpu_time_ns": 0,
+        "index_uploaded_bytes": 0,
+        "index_uploads": 0,
+        "initialization_copy_bytes": 0,
+        "initialization_copy_dispatches": 0,
+        "initialization_fill_dispatches": 0,
+        "initialization_gpu_time_ns": 0,
+        "initialization_host_input_bytes": 0,
+        "initialization_host_output_bytes": 0,
+        "initialization_shared_input_bytes": 0,
+        "initialization_shared_output_bytes": 0,
+        "input_debug_readback_bytes": 0,
+        "input_prepare_dispatches": 8,
+        "input_prepare_gpu_time_ns": 3180411,
+        "input_recode_dispatches": 0,
+        "input_staging_bytes": 116000064,
+        "interaction_buffer_growths": 0,
+        "interaction_gpu_time_ns": 0,
+        "interaction_query_dispatches": 0,
+        "interaction_reset_dispatches": 0,
+        "interaction_split_dispatches": 0,
+        "label_validation_dispatches": 1,
+        "label_validation_gpu_time_ns": 1153999,
+        "leaf_fitting_gpu_time_ns": 0,
+        "leaf_integer_sum_dispatches": 0,
+        "leaf_partition_dispatches": 1,
+        "leaf_shared_gradient_bytes": 84000000,
+        "leaf_shared_output_bytes": 42000000,
+        "leaf_sum_dispatches": 0,
+        "leaf_sum_init_dispatches": 0,
+        "leaf_update_dispatches": 1,
+        "leaf_weight_dispatches": 0,
+        "linear_gpu_time_ns": 0,
+        "linear_gradient_dispatches": 0,
+        "linear_residual_dispatches": 0,
+        "mean_dispatches": 0,
+        "mean_gpu_time_ns": 0,
+        "metadata_convert_dispatches": 0,
+        "metadata_copy_dispatches": 0,
+        "metadata_equal_dispatches": 0,
+        "metadata_gather_dispatches": 0,
+        "metadata_gather_values": 0,
+        "metadata_gpu_time_ns": 0,
+        "metadata_host_copy_bytes": 0,
+        "metadata_qid_dispatches": 0,
+        "metadata_shared_output_bytes": 0,
+        "metadata_validate_dispatches": 0,
+        "metadata_values": 0,
+        "metric_copy_bytes": 0,
+        "metric_copy_dispatches": 0,
+        "metric_dispatches": 1,
+        "metric_final_readback_bytes": 16,
+        "metric_gpu_time_ns": 205708,
+        "metric_host_input_bytes": 0,
+        "metric_host_output_bytes": 0,
+        "metric_label_dispatches": 0,
+        "metric_reduction_passes": 2,
+        "metric_shared_input_bytes": 4000000,
+        "metric_shared_output_bytes": 0,
+        "model_category_copy_dispatches": 0,
+        "model_copy_words": 0,
+        "model_host_copy_bytes": 0,
+        "model_scale_dispatches": 0,
+        "model_snapshot_bytes": 0,
+        "model_state_gpu_time_ns": 0,
+        "model_weight_copy_dispatches": 0,
+        "objective_dispatches": 1,
+        "objective_gpu_time_ns": 62250874,
+        "objective_shared_input_bytes": 126000000,
+        "objective_shared_output_bytes": 84000000,
+        "objective_staging_bytes": 0,
+        "output_dlpack_exports": 0,
+        "output_gpu_time_ns": 0,
+        "output_host_readback_bytes": 0,
+        "output_live_buffers": 0,
+        "output_live_exports": 0,
+        "output_snapshot_bytes": 0,
+        "output_snapshot_dispatches": 0,
+        "output_snapshot_host_copy_bytes": 0,
+        "output_snapshot_shared_input_bytes": 0,
+        "partition_category_host_copy_bytes": 0,
+        "partition_category_shared_input_bytes": 0,
+        "partition_dispatches": 6,
+        "partition_gpu_time_ns": 83684707,
+        "pr_auc_dispatches": 0,
+        "pr_auc_gpu_time_ns": 0,
+        "prediction_device_copy_bytes": 0,
+        "prediction_dispatches": 8,
+        "prediction_gpu_time_ns": 2209995,
+        "prediction_host_input_bytes": 0,
+        "prediction_host_output_bytes": 0,
+        "prediction_init_dispatches": 0,
+        "prediction_model_pack_dispatches": 1,
+        "prediction_model_shared_input_bytes": 2544,
+        "prediction_model_staging_bytes": 0,
+        "prediction_shared_input_bytes": 42000508,
+        "prediction_shared_output_bytes": 44000000,
+        "quantile_dispatches": 0,
+        "quantile_gpu_time_ns": 0,
+        "quantization_dispatches": 1,
+        "quantized_gradient_sum_dispatches": 1,
+        "radix_sort_dispatches": 0,
+        "ranking_bias_dispatches": 0,
+        "ranking_cache_dispatches": 0,
+        "ranking_cache_gpu_time_ns": 0,
+        "ranking_gradient_dispatches": 0,
+        "ranking_gradient_gpu_time_ns": 0,
+        "ranking_label_dispatches": 0,
+        "ranking_label_gpu_time_ns": 0,
+        "ranking_metric_dispatches": 0,
+        "ranking_metric_gpu_time_ns": 0,
+        "ranking_pair_batches": 0,
+        "ranking_pairs": 0,
+        "ranking_plan_dispatches": 0,
+        "ranking_plan_gpu_time_ns": 0,
+        "ranking_plan_reuses": 0,
+        "ranking_pr_auc_dispatches": 0,
+        "ranking_pr_auc_gpu_time_ns": 0,
+        "ranking_roc_auc_dispatches": 0,
+        "ranking_roc_auc_gpu_time_ns": 0,
+        "readback_time_ns": 0,
+        "resident_histogram_dispatches": 6,
+        "resident_split_dispatches": 6,
+        "residual_scale_dispatches": 0,
+        "roc_auc_dispatches": 0,
+        "roc_auc_gpu_time_ns": 0,
+        "row_init_dispatches": 1,
+        "row_workspace_allocations": 31,
+        "row_workspace_reuses": 31,
+        "rows_processed": 26708336,
+        "sampling_dispatches": 0,
+        "sampling_gpu_time_ns": 0,
+        "shap_dispatches": 0,
+        "shap_gpu_time_ns": 0,
+        "shap_interaction_dispatches": 0,
+        "shared_histogram_dispatches": 6,
+        "sketch_finalize_columns": 0,
+        "sketch_finalize_dispatches": 0,
+        "sketch_finalize_gpu_time_ns": 0,
+        "sketch_ingest_gpu_time_ns": 0,
+        "sketch_sorted_dispatches": 0,
+        "sketch_update_dispatches": 0,
+        "sketch_weight_dispatches": 0,
+        "small_histogram_dispatches": 0,
+        "snappy_compress_dispatches": 0,
+        "snappy_compressed_bytes": 0,
+        "snappy_copy_dispatches": 0,
+        "snappy_decoded_bytes": 0,
+        "snappy_decompress_dispatches": 0,
+        "snappy_gpu_time_ns": 0,
+        "snappy_host_readback_bytes": 0,
+        "snappy_input_bytes": 0,
+        "split_bounds_dispatches": 0,
+        "split_bounds_gather_dispatches": 7,
+        "split_bounds_gather_values": 64,
+        "split_bounds_host_copy_bytes": 0,
+        "split_bounds_init_dispatches": 0,
+        "split_bounds_shared_input_bytes": 1016,
+        "split_category_dispatches": 0,
+        "split_category_nodes": 0,
+        "split_category_readback_bytes": 0,
+        "split_category_store_dispatches": 0,
+        "split_dispatches": 6,
+        "split_finalize_dispatches": 7,
+        "split_gpu_time_ns": 7331605,
+        "split_sum_apply_dispatches": 0,
+        "split_sum_gather_dispatches": 0,
+        "split_sum_host_input_bytes": 0,
+        "split_sum_readback_bytes": 0,
+        "split_sum_shared_input_bytes": 2032,
+        "split_sum_store_dispatches": 0,
+        "split_weight_readback_bytes": 1024,
+        "split_weight_store_dispatches": 0,
+        "staging_time_ns": 1252376,
+        "stump_dispatches": 0,
+        "survival_cpu_corrections": 0,
+        "survival_cpu_time_ns": 0,
+        "survival_gradient_dispatches": 0,
+        "survival_metric_dispatches": 0,
+        "tensor_adapter_windows": 0,
+        "tensor_copied_bytes": 0,
+        "tensor_copy_dispatches": 0,
+        "tensor_csr_dispatches": 0,
+        "tensor_csr_gpu_time_ns": 0,
+        "tensor_csr_host_copy_bytes": 0,
+        "tensor_csr_shared_output_bytes": 0,
+        "tensor_csr_values": 0,
+        "tensor_gpu_time_ns": 0,
+        "tensor_imports": 0,
+        "tensor_prediction_windows": 0,
+        "transform_dispatches": 0,
+        "vector_allocations": 15,
+        "vector_arithmetic_dispatches": 0,
+        "vector_capacity_bytes": 2398024640,
+        "vector_copy_bytes": 2482029335,
+        "vector_copy_dispatches": 12,
+        "vector_fill_bytes": 44000000,
+        "vector_fill_dispatches": 2,
+        "vector_gpu_time_ns": 86633701,
+        "vector_host_copy_bytes": 2352000000,
+        "vector_live_buffers": 6,
+        "vector_readback_bytes": 4,
+        "vector_upload_bytes": 2480029331,
+        "wait_time_ns": 828887624
+      }
+    }
+  },
+  "cut_comparison": [
+    {
+      "feature": 0,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 127,
+      "first_differences": [
+        {
+          "index": 4,
+          "cpu": 0.30654022097587585,
+          "mps": 0.30690625309944153
+        },
+        {
+          "index": 5,
+          "cpu": 0.3140436112880707,
+          "mps": 0.3142266273498535
+        },
+        {
+          "index": 6,
+          "cpu": 0.32118093967437744,
+          "mps": 0.3213639557361603
+        },
+        {
+          "index": 8,
+          "cpu": 0.33454063534736633,
+          "mps": 0.3349066376686096
+        },
+        {
+          "index": 10,
+          "cpu": 0.34753426909446716,
+          "mps": 0.3473512530326843
+        }
+      ]
+    },
+    {
+      "feature": 1,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 30,
+      "first_differences": [
+        {
+          "index": 3,
+          "cpu": -2.0970089435577393,
+          "mps": -2.097982883453369
+        },
+        {
+          "index": 6,
+          "cpu": -1.932408094406128,
+          "mps": -1.9314342737197876
+        },
+        {
+          "index": 7,
+          "cpu": -1.8866316080093384,
+          "mps": -1.8856576681137085
+        },
+        {
+          "index": 10,
+          "cpu": -1.7687814235687256,
+          "mps": -1.7678074836730957
+        },
+        {
+          "index": 12,
+          "cpu": -1.7006036043167114,
+          "mps": -1.6996296644210815
+        }
+      ]
+    },
+    {
+      "feature": 2,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 108,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": -1.7297464609146118,
+          "mps": -1.7291914224624634
+        },
+        {
+          "index": 2,
+          "cpu": -1.7158747911453247,
+          "mps": -1.7153199911117554
+        },
+        {
+          "index": 6,
+          "cpu": -1.6614984273910522,
+          "mps": -1.660943627357483
+        },
+        {
+          "index": 9,
+          "cpu": -1.6204386949539185,
+          "mps": -1.6198838949203491
+        },
+        {
+          "index": 13,
+          "cpu": -1.566062331199646,
+          "mps": -1.5655075311660767
+        }
+      ]
+    },
+    {
+      "feature": 3,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 253,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.06937386095523834,
+          "mps": 0.06848721951246262
+        },
+        {
+          "index": 2,
+          "cpu": 0.09765364229679108,
+          "mps": 0.09666460752487183
+        },
+        {
+          "index": 3,
+          "cpu": 0.11924932897090912,
+          "mps": 0.11884698271751404
+        },
+        {
+          "index": 4,
+          "cpu": 0.13819368183612823,
+          "mps": 0.1376739889383316
+        },
+        {
+          "index": 5,
+          "cpu": 0.15451711416244507,
+          "mps": 0.15406768023967743
+        }
+      ]
+    },
+    {
+      "feature": 4,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 253,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": -1.7305011749267578,
+          "mps": -1.7304067611694336
+        },
+        {
+          "index": 2,
+          "cpu": -1.7167538404464722,
+          "mps": -1.7166483402252197
+        },
+        {
+          "index": 3,
+          "cpu": -1.7029563188552856,
+          "mps": -1.703000783920288
+        },
+        {
+          "index": 4,
+          "cpu": -1.6891533136367798,
+          "mps": -1.6892365217208862
+        },
+        {
+          "index": 5,
+          "cpu": -1.6755057573318481,
+          "mps": -1.675611138343811
+        }
+      ]
+    },
+    {
+      "feature": 5,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 177,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.2859061062335968,
+          "mps": 0.28572291135787964
+        },
+        {
+          "index": 2,
+          "cpu": 0.31870150566101074,
+          "mps": 0.3189763128757477
+        },
+        {
+          "index": 3,
+          "cpu": 0.3412368893623352,
+          "mps": 0.34105366468429565
+        },
+        {
+          "index": 4,
+          "cpu": 0.3584590554237366,
+          "mps": 0.35809260606765747
+        },
+        {
+          "index": 6,
+          "cpu": 0.3857579827308655,
+          "mps": 0.38548317551612854
+        }
+      ]
+    },
+    {
+      "feature": 6,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 59,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": -2.720186948776245,
+          "mps": -2.721177339553833
+        },
+        {
+          "index": 3,
+          "cpu": -2.4013330936431885,
+          "mps": -2.4003429412841797
+        },
+        {
+          "index": 4,
+          "cpu": -2.2636911869049072,
+          "mps": -2.264681339263916
+        },
+        {
+          "index": 5,
+          "cpu": -2.158726692199707,
+          "mps": -2.1607069969177246
+        },
+        {
+          "index": 6,
+          "cpu": -2.069605827331543,
+          "mps": -2.0725767612457275
+        }
+      ]
+    },
+    {
+      "feature": 7,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 140,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": -1.7307043075561523,
+          "mps": -1.7312586307525635
+        },
+        {
+          "index": 2,
+          "cpu": -1.7151817083358765,
+          "mps": -1.7146273851394653
+        },
+        {
+          "index": 3,
+          "cpu": -1.697441816329956,
+          "mps": -1.6979961395263672
+        },
+        {
+          "index": 7,
+          "cpu": -1.6436673402786255,
+          "mps": -1.6431130170822144
+        },
+        {
+          "index": 13,
+          "cpu": -1.5677180290222168,
+          "mps": -1.568272352218628
+        }
+      ]
+    },
+    {
+      "feature": 8,
+      "cpu_count": 4,
+      "mps_count": 4,
+      "exact": true,
+      "same_index_differences": 0,
+      "first_differences": []
+    },
+    {
+      "feature": 9,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 150,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.259487122297287,
+          "mps": 0.25910940766334534
+        },
+        {
+          "index": 2,
+          "cpu": 0.2900816798210144,
+          "mps": 0.29045936465263367
+        },
+        {
+          "index": 3,
+          "cpu": 0.311737060546875,
+          "mps": 0.311862975358963
+        },
+        {
+          "index": 4,
+          "cpu": 0.32885995507240295,
+          "mps": 0.3289858400821686
+        },
+        {
+          "index": 5,
+          "cpu": 0.34346476197242737,
+          "mps": 0.343590646982193
+        }
+      ]
+    },
+    {
+      "feature": 10,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 54,
+      "first_differences": [
+        {
+          "index": 2,
+          "cpu": -2.5255112648010254,
+          "mps": -2.5245399475097656
+        },
+        {
+          "index": 3,
+          "cpu": -2.3827195167541504,
+          "mps": -2.38369083404541
+        },
+        {
+          "index": 8,
+          "cpu": -1.9116030931472778,
+          "mps": -1.9125744104385376
+        },
+        {
+          "index": 10,
+          "cpu": -1.786295771598816,
+          "mps": -1.7872672080993652
+        },
+        {
+          "index": 14,
+          "cpu": -1.5842500925064087,
+          "mps": -1.5852214097976685
+        }
+      ]
+    },
+    {
+      "feature": 11,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 106,
+      "first_differences": [
+        {
+          "index": 3,
+          "cpu": -1.7007594108581543,
+          "mps": -1.7013142108917236
+        },
+        {
+          "index": 4,
+          "cpu": -1.6885530948638916,
+          "mps": -1.6879982948303223
+        },
+        {
+          "index": 7,
+          "cpu": -1.6463860273361206,
+          "mps": -1.64694082736969
+        },
+        {
+          "index": 16,
+          "cpu": -1.5243234634399414,
+          "mps": -1.5248783826828003
+        },
+        {
+          "index": 23,
+          "cpu": -1.428892731666565,
+          "mps": -1.4283379316329956
+        }
+      ]
+    },
+    {
+      "feature": 12,
+      "cpu_count": 4,
+      "mps_count": 4,
+      "exact": true,
+      "same_index_differences": 0,
+      "first_differences": []
+    },
+    {
+      "feature": 13,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 118,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.2834528386592865,
+          "mps": 0.2831016182899475
+        },
+        {
+          "index": 2,
+          "cpu": 0.2996099889278412,
+          "mps": 0.29996123909950256
+        },
+        {
+          "index": 4,
+          "cpu": 0.3271825313568115,
+          "mps": 0.3270069360733032
+        },
+        {
+          "index": 5,
+          "cpu": 0.33877357840538025,
+          "mps": 0.33859795331954956
+        },
+        {
+          "index": 7,
+          "cpu": 0.3591456413269043,
+          "mps": 0.3593212366104126
+        }
+      ]
+    },
+    {
+      "feature": 14,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 39,
+      "first_differences": [
+        {
+          "index": 2,
+          "cpu": -2.4402036666870117,
+          "mps": -2.442934513092041
+        },
+        {
+          "index": 3,
+          "cpu": -2.3309741020202637,
+          "mps": -2.330063581466675
+        },
+        {
+          "index": 6,
+          "cpu": -2.0642709732055664,
+          "mps": -2.0633606910705566
+        },
+        {
+          "index": 8,
+          "cpu": -1.926823616027832,
+          "mps": -1.9277337789535522
+        },
+        {
+          "index": 10,
+          "cpu": -1.8084912300109863,
+          "mps": -1.8094016313552856
+        }
+      ]
+    },
+    {
+      "feature": 15,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 112,
+      "first_differences": [
+        {
+          "index": 2,
+          "cpu": -1.7154414653778076,
+          "mps": -1.7148866653442383
+        },
+        {
+          "index": 8,
+          "cpu": -1.6327859163284302,
+          "mps": -1.63334059715271
+        },
+        {
+          "index": 11,
+          "cpu": -1.5917353630065918,
+          "mps": -1.5922902822494507
+        },
+        {
+          "index": 16,
+          "cpu": -1.5240577459335327,
+          "mps": -1.524612545967102
+        },
+        {
+          "index": 17,
+          "cpu": -1.5112987756729126,
+          "mps": -1.5107440948486328
+        }
+      ]
+    },
+    {
+      "feature": 16,
+      "cpu_count": 4,
+      "mps_count": 4,
+      "exact": true,
+      "same_index_differences": 0,
+      "first_differences": []
+    },
+    {
+      "feature": 17,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 67,
+      "first_differences": [
+        {
+          "index": 21,
+          "cpu": 0.4556581676006317,
+          "mps": 0.455414742231369
+        },
+        {
+          "index": 23,
+          "cpu": 0.463447242975235,
+          "mps": 0.4636906087398529
+        },
+        {
+          "index": 26,
+          "cpu": 0.4753741919994354,
+          "mps": 0.47561758756637573
+        },
+        {
+          "index": 28,
+          "cpu": 0.4831632077693939,
+          "mps": 0.48340660333633423
+        },
+        {
+          "index": 29,
+          "cpu": 0.48705771565437317,
+          "mps": 0.48730114102363586
+        }
+      ]
+    },
+    {
+      "feature": 18,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 45,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": -2.398991823196411,
+          "mps": -2.399824380874634
+        },
+        {
+          "index": 3,
+          "cpu": -2.229928493499756,
+          "mps": -2.2307612895965576
+        },
+        {
+          "index": 6,
+          "cpu": -2.0283854007720947,
+          "mps": -2.0292181968688965
+        },
+        {
+          "index": 8,
+          "cpu": -1.916787028312683,
+          "mps": -1.9176198244094849
+        },
+        {
+          "index": 9,
+          "cpu": -1.8659847974777222,
+          "mps": -1.8668177127838135
+        }
+      ]
+    },
+    {
+      "feature": 19,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 107,
+      "first_differences": [
+        {
+          "index": 6,
+          "cpu": -1.6616735458374023,
+          "mps": -1.661118745803833
+        },
+        {
+          "index": 7,
+          "cpu": -1.6472458839416504,
+          "mps": -1.6478008031845093
+        },
+        {
+          "index": 10,
+          "cpu": -1.6072922945022583,
+          "mps": -1.6067372560501099
+        },
+        {
+          "index": 12,
+          "cpu": -1.5789916515350342,
+          "mps": -1.579546570777893
+        },
+        {
+          "index": 13,
+          "cpu": -1.5662287473678589,
+          "mps": -1.565673828125
+        }
+      ]
+    },
+    {
+      "feature": 20,
+      "cpu_count": 4,
+      "mps_count": 4,
+      "exact": true,
+      "same_index_differences": 0,
+      "first_differences": []
+    },
+    {
+      "feature": 21,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 252,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.26595816016197205,
+          "mps": 0.2638041079044342
+        },
+        {
+          "index": 2,
+          "cpu": 0.3124051094055176,
+          "mps": 0.3125351071357727
+        },
+        {
+          "index": 3,
+          "cpu": 0.3499188721179962,
+          "mps": 0.34861665964126587
+        },
+        {
+          "index": 4,
+          "cpu": 0.3799545466899872,
+          "mps": 0.37850406765937805
+        },
+        {
+          "index": 5,
+          "cpu": 0.4043274521827698,
+          "mps": 0.4045087695121765
+        }
+      ]
+    },
+    {
+      "feature": 22,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 244,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.5248032808303833,
+          "mps": 0.5252150893211365
+        },
+        {
+          "index": 2,
+          "cpu": 0.5592462420463562,
+          "mps": 0.5591405630111694
+        },
+        {
+          "index": 3,
+          "cpu": 0.5812510251998901,
+          "mps": 0.5813623070716858
+        },
+        {
+          "index": 4,
+          "cpu": 0.598581075668335,
+          "mps": 0.5986812114715576
+        },
+        {
+          "index": 5,
+          "cpu": 0.6126276254653931,
+          "mps": 0.6128056645393372
+        }
+      ]
+    },
+    {
+      "feature": 23,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 208,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.9646320343017578,
+          "mps": 0.9644871950149536
+        },
+        {
+          "index": 2,
+          "cpu": 0.9707473516464233,
+          "mps": 0.9706847667694092
+        },
+        {
+          "index": 3,
+          "cpu": 0.9726657867431641,
+          "mps": 0.9726547002792358
+        },
+        {
+          "index": 4,
+          "cpu": 0.9738768339157104,
+          "mps": 0.9738388061523438
+        },
+        {
+          "index": 5,
+          "cpu": 0.9747095704078674,
+          "mps": 0.9747058153152466
+        }
+      ]
+    },
+    {
+      "feature": 24,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 249,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.4853842854499817,
+          "mps": 0.4848504662513733
+        },
+        {
+          "index": 2,
+          "cpu": 0.502966046333313,
+          "mps": 0.5028517842292786
+        },
+        {
+          "index": 3,
+          "cpu": 0.516295313835144,
+          "mps": 0.5163055062294006
+        },
+        {
+          "index": 4,
+          "cpu": 0.5274376273155212,
+          "mps": 0.5273505449295044
+        },
+        {
+          "index": 5,
+          "cpu": 0.5370276570320129,
+          "mps": 0.5369559526443481
+        }
+      ]
+    },
+    {
+      "feature": 25,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 250,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.15756738185882568,
+          "mps": 0.15718892216682434
+        },
+        {
+          "index": 2,
+          "cpu": 0.18573719263076782,
+          "mps": 0.18551360070705414
+        },
+        {
+          "index": 3,
+          "cpu": 0.20710277557373047,
+          "mps": 0.2070324569940567
+        },
+        {
+          "index": 4,
+          "cpu": 0.22555766999721527,
+          "mps": 0.22540991008281708
+        },
+        {
+          "index": 5,
+          "cpu": 0.24273419380187988,
+          "mps": 0.24210450053215027
+        }
+      ]
+    },
+    {
+      "feature": 26,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 251,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.5021593570709229,
+          "mps": 0.5014663338661194
+        },
+        {
+          "index": 2,
+          "cpu": 0.5334734916687012,
+          "mps": 0.533220648765564
+        },
+        {
+          "index": 3,
+          "cpu": 0.5541393756866455,
+          "mps": 0.5541423559188843
+        },
+        {
+          "index": 4,
+          "cpu": 0.5698529481887817,
+          "mps": 0.5698559284210205
+        },
+        {
+          "index": 5,
+          "cpu": 0.5827766060829163,
+          "mps": 0.5827319622039795
+        }
+      ]
+    },
+    {
+      "feature": 27,
+      "cpu_count": 257,
+      "mps_count": 257,
+      "exact": false,
+      "same_index_differences": 251,
+      "first_differences": [
+        {
+          "index": 1,
+          "cpu": 0.5262635350227356,
+          "mps": 0.5258783102035522
+        },
+        {
+          "index": 2,
+          "cpu": 0.5525267124176025,
+          "mps": 0.5521160364151001
+        },
+        {
+          "index": 3,
+          "cpu": 0.5696371793746948,
+          "mps": 0.5693790912628174
+        },
+        {
+          "index": 4,
+          "cpu": 0.5823718309402466,
+          "mps": 0.5823444724082947
+        },
+        {
+          "index": 5,
+          "cpu": 0.5929341912269592,
+          "mps": 0.5929419994354248
+        }
+      ]
+    }
+  ],
+  "features_with_different_cuts": 24,
+  "finished_utc": "2026-11-05T13:53:49.198472+00:00"
+}
