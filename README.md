@@ -45,12 +45,14 @@ remains unproven.
 The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) address eleven of the
 seventeen numerical contracts: quantile/sketch behavior, survival objectives,
 RNG and column sampling, primitive math, ranking rounding/gradients/bias, and
-statistics reductions and means.
+statistics reductions and means, and linear algebra.
 Ranking replay now includes all **4,038 calls** from the existing gradient and
 repeated unbiased-objective suites, plus the separate primitive rounding boundary
-corpus. Metal observations are published with exact input bits and unchanged
-tolerances; the primitive-rounding and statistics extensions still need CUDA compiler
-validation. Production pipeline comparisons also cover eight
+corpus. Linear-algebra replay preserves all 258 existing cases plus two empty
+operations; three Metal-only guard cases are explicitly outside CUDA's domain.
+Metal observations are published with exact input bits and unchanged numerical
+tolerances; the newest extensions still need CUDA compiler validation.
+Production pipeline comparisons also cover eight
 fixtures and full-size HIGGS quantile construction. Six contracts still lack
 dedicated runners, broader caller coverage remains, and **none of these runners
 has NVIDIA execution evidence yet**. Differences remain visible for review.

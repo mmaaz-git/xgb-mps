@@ -17,6 +17,8 @@
 #include "../xgboost/src/common/optional_weight.h"
 #include "../xgboost/src/common/stats.h"
 #include "stats_contract_io.h"
+#include "../xgboost/src/common/linalg_op.h"
+#include "linalg_contract_io.h"
 #include "xgboost/json.h"
 #include "numerical_contract_fixtures.h"
 #include "numerical_contract_report.h"
@@ -178,6 +180,119 @@ void Summary(Context const* ctx, fixture::Report& report, int exponent, bool rep
                {"ptr", {observed_ptr.begin(), observed_ptr.end()}}});
 }
 
+void Linalg(char const* input_path, char const* output_path) {
+  namespace lc = linalg_contracts;
+  namespace la = xgboost::linalg;
+  std::string metadata_path=std::string(output_path)+".json";
+  Check(!std::filesystem::exists(metadata_path),"Linalg metadata already exists");
+  int devices=0; Cuda(cudaGetDeviceCount(&devices));
+  Check(devices>0,"Actual NVIDIA GPU required; no skipped pass or CPU fallback");
+  Cuda(cudaSetDevice(0));
+  auto ctx=Context{}.MakeCUDA(0); ctx.Init({{"device","cuda:0"},{"nthread","2"}});
+  lc::InputReader input(input_path); lc::Writer report(output_path,lc::kCuda);
+  std::size_t fields=0, executed=0, projections=0;
+  auto same_bits=[](std::vector<float> const& a,std::vector<float> const& b) {
+    return a.size()==b.size() && (a.empty() || !std::memcmp(a.data(),b.data(),a.size()*sizeof(float)));
+  };
+  for (unsigned index=0; index<lc::kCases; ++index) {
+    auto in=input.Next(); auto s=in.spec; lc::Observation observed;
+    if (s.kind==3) {
+      // NUM-OP-11: nonfinite/too-many-run rejection is a Metal extension of
+      // undefined CUDA buffer behavior. No CUDA call and no fabricated results.
+      observed.status=2;
+    } else {
+      dh::device_vector<float> values(in.values), weights(in.weights);
+      dh::device_vector<float> output(in.initial);
+      auto vector=[&](dh::device_vector<float>& v,std::size_t n,std::size_t stride) {
+        std::size_t shape[1]{n}, strides[1]{stride};
+        return la::VectorView<float>{dh::ToSpan(v),shape,strides,ctx.Device()};
+      };
+      if (s.kind==1 || s.kind==5) {
+        auto view=vector(values,s.rows,s.stride0);
+        if (s.op==0) la::VecScaMul(&ctx,view,s.parameter);
+        if (s.op==1) la::VecScaDiv(&ctx,view,s.parameter);
+        if (s.op==2) la::LogE(&ctx,view,float(s.parameter));
+        if (s.op==3) {
+          // Exact source expression from SoftmaxMultiClassObj::InitEstimation.
+          // This tests the transform, not the entire objective call chain.
+          dh::device_vector<float> mean(1,float(s.parameter));
+          auto d_mean=la::MakeVec(mean.data().get(),1,ctx.Device());
+          la::TransformKernel(&ctx,view,[=] XGBOOST_DEVICE(float v) { return v-d_mean(0); });
+          Cuda(cudaDeviceSynchronize());
+        }
+        observed.actual=Read(values);
+      } else if (s.kind==2) {
+        std::size_t shape[2]{s.rows,s.columns}, strides[2]{s.stride0,s.stride1};
+        la::MatrixView<float const> matrix{dh::ToSpan(values),shape,strides,ctx.Device()};
+        if (s.columns==1) {
+          la::Vector<float> mean;
+          common::Mean(&ctx,matrix.Slice(la::All(),0),&mean);
+          Check(mean.Data()->Device().IsCUDA() && !mean.Data()->HostCanRead(),
+                "Linalg mean output not resident on CUDA");
+          observed.actual=mean.Data()->ConstHostVector();
+        } else {
+          // The Metal batched primitive corresponds to one source FP32 Mean
+          // per column. Preserve all input/output strides and guard storage.
+          for (unsigned t=0; t<s.columns; ++t) {
+            auto out=la::MakeVec(output.data().get()+t*s.out_stride,1,ctx.Device());
+            common::cuda_impl::Mean(&ctx,matrix.Slice(la::All(),t),out);
+          }
+          observed.actual=Read(output);
+        }
+      } else {
+        // CUDA ArgSort consumes contiguous keys. Gather only logical labels,
+        // leaving the original strided backing storage unchanged. This does
+        // not assert that the CUDA histogram supports strided input labels.
+        dh::device_vector<float> packed(s.rows);
+        auto src=dh::ToSpan(values), dst=dh::ToSpan(packed);
+        dh::LaunchN(s.rows,ctx.CUDACtx()->Stream(),[=] XGBOOST_DEVICE(std::size_t i) {
+          dst[i]=src[i*s.stride0];
+        });
+        auto gathered=Read(packed);
+        for (std::size_t i=0; i<s.rows; ++i)
+          Check(lc::Bits<std::uint32_t>(gathered[i])==lc::Bits<std::uint32_t>(in.values[i*s.stride0]),
+                "CUDA histogram gather changed logical input bits");
+        ++projections;
+        std::size_t shape[2]{s.rows,1};
+        la::MatrixView<float const> labels{dh::ToSpan(packed),shape,ctx.Device()};
+        auto optional=s.kind==0 && s.mode ? common::OptionalWeights{dh::ToSpan(weights)}
+                                         : common::OptionalWeights{float(s.parameter)};
+        la::SmallHistogram(&ctx,labels,optional,vector(output,s.columns,s.out_stride));
+        observed.actual=Read(output);
+      }
+      if (s.kind!=1 && s.kind!=5) Check(same_bits(Read(values),in.values),"Linalg modified input bits");
+      Check(same_bits(Read(weights),in.weights),"Linalg modified weight bits");
+      ++executed;
+    }
+    fields+=observed.actual.size(); report.Add(in,observed);
+    if ((index+1)%20==0 || index+1==lc::kCases) {
+      std::printf("CUDA linalg %u/%u: executed=%zu outside_domain=%u observed_fields=%zu\n",
+                  index+1,lc::kCases,executed,unsigned(index+1-executed),fields);
+      std::fflush(stdout);
+    }
+  }
+  input.Finish(); report.Finish();
+  cudaDeviceProp gpu{}; Cuda(cudaGetDeviceProperties(&gpu,0));
+  int driver=0,runtime=0; Cuda(cudaDriverGetVersion(&driver)); Cuda(cudaRuntimeGetVersion(&runtime));
+  using namespace xgboost;
+  Json meta{Object{}};
+  meta["status"]=String("completed common-domain observations; three Metal-only guards not executed; comparison remains");
+  meta["suite"]=String("linalg-v1"); meta["backend"]=String("cuda"); meta["device"]=String(gpu.name);
+  meta["compute_capability"]=String(std::to_string(gpu.major)+"."+std::to_string(gpu.minor));
+  meta["nvcc"]=String(std::to_string(__CUDACC_VER_MAJOR__)+"."+
+      std::to_string(__CUDACC_VER_MINOR__)+"."+std::to_string(__CUDACC_VER_BUILD__));
+  meta["driver"]=Integer(driver); meta["runtime"]=Integer(runtime);
+  meta["thrust_version"]=Integer(THRUST_VERSION); meta["cub_version"]=Integer(CUB_VERSION);
+  meta["cases"]=Integer(lc::kCases); meta["executed_cases"]=Integer(executed);
+  meta["outside_domain_cases"]=Integer(3); meta["output_fields"]=Integer(fields);
+  meta["histogram_contiguous_projections"]=Integer(projections);
+  meta["scope"]=String("CUDA histogram uses bit-checked GPU gather of logical labels; multi-column means invoke scalar CUDA Mean per column; subtraction invokes multiclass source transform expression; no CPU/reference outputs supplied");
+  meta["input_file"]=String(input_path); meta["observation_file"]=String(output_path);
+  std::string text; Json::Dump(meta,&text);
+  std::ofstream stream{metadata_path}; stream.exceptions(std::ios::badbit|std::ios::failbit); stream<<text<<'\n';
+  std::printf("CUDA linalg observations completed: %zu executed cases, 3 outside domain; comparison remains\n",executed);
+}
+
 void Statistics(char const* input_path, char const* output_path) {
   namespace sc = stats_contracts;
   std::string metadata_path = std::string(output_path)+".json";
@@ -258,6 +373,7 @@ void Statistics(char const* input_path, char const* output_path) {
 
 int main(int argc, char** argv) {
   try {
+    if (argc == 4 && std::string(argv[1]) == "--linalg") { Linalg(argv[2], argv[3]); return 0; }
     if (argc == 4 && std::string(argv[1]) == "--statistics") { Statistics(argv[2], argv[3]); return 0; }
     Check(argc == 2, "Usage: cuda_numerical_contracts_test new-report.jsonl");
     int devices = 0;

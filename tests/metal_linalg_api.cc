@@ -15,9 +15,12 @@
 #include "../xgboost/src/common/metal_reduction.h"
 #include "../xgboost/src/common/stats.h"
 #include "cuda_metric_reference.h"
+#include "linalg_contract_io.h"
 using namespace xgboost;
 namespace metal = common::metal;
 using namespace cuda_metric;
+namespace lc = linalg_contracts;
+std::unique_ptr<lc::Exporter> report;
 std::size_t cases = 0, fields = 0, packed_witnesses = 0;
 double worst_bound = 0;
 std::array<std::uint64_t, 4> max_vector_ulp{};
@@ -77,6 +80,7 @@ void Histogram(Context const& ctx, std::size_t n, unsigned bins, unsigned mode, 
   }
   auto saved_labels = labels;
   auto saved_weights = weights;
+  auto initial = output;
   std::vector<std::size_t> order(n);
   std::iota(order.begin(), order.end(), 0);
   std::stable_sort(order.begin(), order.end(),
@@ -106,6 +110,12 @@ void Histogram(Context const& ctx, std::size_t n, unsigned bins, unsigned mode, 
   for (std::size_t i = 0; i < output.size(); ++i)
     if (i % stride || i / stride >= bins) Check(output[i] == -91, "Histogram output guard changed");
   Check(labels == saved_labels && weights == saved_weights, "Histogram modified input");
+  if (report) {
+    lc::Observation observed{0,output,{},{}};
+    for (unsigned b=0; b<bins; ++b)
+      observed.reductions.push_back(lc::Reference(expected[b],magnitude[b],counts[b]));
+    report->Add(0,n,bins,mode,0,stride,1,stride,1.,saved_labels,saved_weights,initial,observed);
+  }
   ++cases;
 }
 void Vectors(Context const& ctx, std::mt19937& rng) {
@@ -140,6 +150,7 @@ void Vectors(Context const& ctx, std::mt19937& rng) {
           values[i * stride] = v;
           expected[i * stride] = result;
         }
+        auto saved = report ? values : std::vector<float>{};
         auto before = metal::GetStatistics();
         auto view = Vector(values, input.size(), stride);
         if (op == 0) linalg::VecScaMul(&ctx, view, parameter);
@@ -159,6 +170,8 @@ void Vectors(Context const& ctx, std::mt19937& rng) {
           Check(ulp <= (op == 2 ? 1 : 0), "Vector arithmetic/source cast mismatch");
           ++fields;
         }
+        if (report) report->Add(1,input.size(),1,0,op,stride,1,stride,parameter,saved,{}, {},
+                                {0,values,expected,{}});
         ++cases;
       }
     }
@@ -189,11 +202,14 @@ void Means(Context const& ctx, std::mt19937& rng) {
                 after.mean_dispatches == before.mean_dispatches + 1,
             "FP32 mean missed GPU dispatch");
       Bound(output.HostView()(0), sum, magnitude, n, mode == 4);
+      if (report) report->Add(2,n,1,mode,0,3,1,1,0.,input,{}, {},
+                              {0,{output.HostView()(0)},{},{lc::Reference(sum,magnitude,n)}});
       ++cases;
     }
   for (unsigned targets : {3u, 7u}) {
     std::size_t n = 257, stride0 = 2 * targets + 1, stride1 = 2;
     std::vector<float> input(n * stride0 + 4, -75), output(targets * 3 + 4, -81);
+    auto initial = output;
     std::vector<long double> sums(targets, 0), magnitudes(targets, 0);
     for (std::size_t r = 0; r < n; ++r)
       for (unsigned t = 0; t < targets; ++t) {
@@ -210,6 +226,12 @@ void Means(Context const& ctx, std::mt19937& rng) {
     for (unsigned t = 0; t < targets; ++t) Bound(output[t * 3], sums[t], magnitudes[t], n, false);
     for (std::size_t i = 0; i < output.size(); ++i)
       if (i % 3 || i / 3 >= targets) Check(output[i] == -81, "Mean output guard changed");
+    if (report) {
+      lc::Observation observed{0,output,{},{}};
+      for (unsigned t=0; t<targets; ++t)
+        observed.reductions.push_back(lc::Reference(sums[t],magnitudes[t],n));
+      report->Add(2,n,targets,5,0,stride0,stride1,3,0.,input,{},initial,observed);
+    }
     ++cases;
   }
   // A transparent association witness: this tree's FP32 cancellation loses the
@@ -221,6 +243,13 @@ void Means(Context const& ctx, std::mt19937& rng) {
   linalg::Vector<float> out;
   common::Mean(&ctx, Matrix(input, input.size()).Slice(linalg::All(), 0), &out);
   Check(out.HostView()(0) == 0, "Mean still uses wider accumulation");
+  if (report) {
+    // Export an association bound, not the Metal-specific zero assertion, for CUDA.
+    long double sum=0, magnitude=0;
+    for (float v : input) { float term=Div(v,float(input.size())); sum+=term; magnitude+=std::abs(term); }
+    report->Add(2,input.size(),1,6,0,1,1,1,0.,input,{}, {},
+                {0,{out.HostView()(0)},{},{lc::Reference(sum,magnitude,input.size())}});
+  }
   ++cases;
 }
 void Guards(Context const& ctx) {
@@ -236,12 +265,17 @@ void Guards(Context const& ctx) {
     }
     Check(caught && output == std::vector<float>(3, -77),
           "Invalid run/label guard failed or modified output");
+    if (report) report->Add(3,labels.size(),3,0,0,1,1,1,1.,labels,{},std::vector<float>(3,-77),
+                            {1,output,{},{}});
     ++cases;
   }
   std::vector<float> labels{7, 7, 9, 9, 9}, output(4, -1);
   linalg::SmallHistogram(&ctx, Matrix(labels, labels.size()), common::OptionalWeights{.5f},
                          Vector(output, 4));
   Check(output == std::vector<float>({1, 1.5f, 0, 0}), "Source packed runs/default weights differ");
+  if (report) report->Add(4,labels.size(),4,0,0,1,1,1,.5,labels,{},std::vector<float>(4,-1),
+                          {0,output,{},{lc::Reference(1,1,2),lc::Reference(1.5,1.5,3),
+                                        lc::Reference(0,0,0),lc::Reference(0,0,0)}});
   ++cases;
   std::vector<float> empty, marker{91};
   auto before = metal::GetStatistics();
@@ -251,9 +285,14 @@ void Guards(Context const& ctx) {
       metal::GetStatistics().vector_arithmetic_dispatches == before.vector_arithmetic_dispatches &&
           metal::GetStatistics().small_histogram_dispatches == before.small_histogram_dispatches,
       "Empty operation dispatched");
+  if (report) {
+    report->Add(5,0,1,0,0,1,1,1,2.,empty,{}, {},{});
+    report->Add(6,0,0,0,0,1,1,1,1.,empty,{}, {},{});
+  }
 }
-int main() {
+int main(int argc, char** argv) {
   try {
+    report = lc::ReportOption(argc,argv);
     Context ctx;
     ctx.Init({{"device", "mps"}, {"nthread", "2"}});
     std::mt19937 rng(712);
@@ -267,6 +306,7 @@ int main() {
     Vectors(ctx, rng);
     Means(ctx, rng);
     Guards(ctx);
+    if (report) report->Finish();
     std::printf(
         "PASS CUDA linalg: %zu cases / %zu fields / %zu packed-class witnesses; maximum "
         "reduction-bound ratio %.9g\n",

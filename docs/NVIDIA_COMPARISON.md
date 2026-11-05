@@ -9,7 +9,7 @@ unweighted column sampling. A fourth exports the existing **P5-N03** primitive
 math corpus. A fifth adds **P5-N04/05** observations from the full existing
 ranking-rounding, ranking-gradient, repeated unbiased-objective and primitive
 rounding boundary corpora. The numerical executable also has a **P5-N07** mode
-for the complete statistics API corpus.
+for the complete statistics API corpus and a separate linear-algebra mode.
 The other six numerical contracts and
 broader caller/integration comparisons remain work;
 these harnesses are not a full parity certificate.
@@ -684,3 +684,79 @@ the initial validator error and 18 passing synthetic integrity tests. NVIDIA
 results are still absent. These integration cases do not close the numerical
 contracts or cover external memory, native device inputs,
 distributed execution and all other caller combinations.
+
+## Linear algebra and packed histograms
+
+`cuda_numerical_contracts --linalg` replays the complete `metal_linalg_api` corpus:
+141 histograms, 80 vector operations, 33 mean cases, three invalid-input guards,
+one packed-label/default-weight case and two previously uncounted empty
+operations. The [record](../validation/linalg-contract-m3-run.json) contains
+**260 records / 10,508,701 Metal output fields**. The original native checks still
+report 258 cases / 10,499,275 checked fields; the export also records guard storage
+and the additional observations. The single original RNG stream, parameter order,
+edge values and binary64 scalar parameters are retained.
+
+```sh
+python3 scripts/compare_linalg_contracts.py unpack \
+  validation/linalg-contract-inputs-m3.bin.gz --output results/linalg-inputs.bin
+results/cuda-comparison-build/cmake/cuda_numerical_contracts --linalg \
+  results/linalg-inputs.bin results/linalg-cuda.bin
+python3 scripts/compare_linalg_contracts.py compare \
+  validation/linalg-contract-metal-m3.bin.gz results/linalg-cuda.bin \
+  --output results/linalg-comparison.json
+```
+
+CUDA calls `SmallHistogram`, `VecScaMul`, `VecScaDiv`, `LogE` and `Mean` directly.
+For the two batched mean cases it invokes the source FP32 `cuda_impl::Mean` once
+per column, retaining strided input/output storage. Subtraction invokes the
+multiclass initialization source's `TransformKernel` expression, `v - d_mean(0)`;
+it is not a replay of the complete objective.
+
+There are two explicit domain/layout adaptations:
+
+- CUDA histogram sorting reads contiguous keys, whereas the Metal tests include
+  padded, strided labels. A GPU gather projects the logical labels to contiguous
+  CUDA storage, checks every gathered bit, then calls the unchanged CUDA helper.
+  Original backing inputs and weights are checked unchanged. This establishes a
+  common logical input; it does not claim CUDA strided-label support. Output
+  strides and guards are retained.
+- The frozen audit's NUM-OP-11 defines nonfinite-label and excessive-run rejection
+  as Metal extensions outside the CUDA contract. All three cases and their Metal
+  rejection observations remain in the corpus. CUDA marks them **not executed**
+  and writes no output values for them. They are never counted as CUDA passes.
+
+Both GPUs are independently checked against the Metal report's original vector
+references and reduction sum/magnitude/count diagnostics. None of these references
+is present in CUDA input files. Scale, division and subtraction retain zero-ULP
+checks; logarithm retains its one-ULP budget and original nonfinite semantics.
+Reductions retain the original exact modes or
+`gamma(ceil(n / 256) + 8, 2^-23) * sum_abs` bound. The cancellation witness retains
+its Metal-specific zero assertion; CUDA receives the association bound, not a
+requirement to reproduce Metal's reduction tree. Output guard storage is
+additionally required bit-exact, including the vector logarithm case where the
+original general one-ULP check also covered guards.
+
+Every GPU bit difference requires review, even if both results pass the reference
+check. Comparison exits 1 for malformed reports/reference failures and 2 for
+review, including the three domain exclusions even if all common-domain fields
+are identical. Counts include every differing field; diagnostic JSON shows up to
+32 examples per case/policy, with full bits retained in the binary reports.
+No overall full-execution or full-parity success is inferred from exclusions.
+
+Both Metal modes, all exported Metal reference checks and 16 synthetic integrity
+tests pass. C++ input round-trip and host view/API type checks pass. CUDA compiler
+validation and actual NVIDIA execution remain pending. No production code or
+original test tolerances changed.
+
+```sh
+bash scripts/test.sh --native metal_linalg_api
+MTL_DEBUG_LAYER=1 results/metal_linalg_api_test --report-prefix results/new-linalg
+python3 scripts/compare_linalg_contracts.py validate-metal results/new-linalg.metal.bin
+```
+
+Use fresh output paths and retain `.bin.json`, runtime logs and `build.json`.
+The little-endian `XGBLIN1\0` format requires all 260 fixed identities in order,
+all backing inputs and actual outputs, backend-specific execution statuses,
+the completion marker and exact EOF. Metal-only reference diagnostics serialize
+binary64 sums/magnitudes and the original FP32 cast separately; the published
+observations were produced on the M3, where `long double` is binary64.

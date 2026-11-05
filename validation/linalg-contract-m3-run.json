@@ -1,0 +1,221 @@
+{
+  "status": "Complete Metal linalg corpus and reference/integrity checks passed; CUDA compiler and NVIDIA execution pending",
+  "suite": "linalg-v1",
+  "recorded_utc": "2026-11-05T18:12:27.150279+00:00",
+  "scope": "Complete existing metal_linalg_api corpus for P5-N07: 258 counted cases and two uncounted empty operations. Three invalid-input cases retained as Metal-only domain guards.",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T180439Z",
+    "revision": "4ea6587495dd1abf3b9944b31e9a9b482e7d928e",
+    "working_tree": "M tests/metal_linalg_api.cc\n?? tests/linalg_contract_io.h",
+    "diff_sha256": "3807b8be8ade391f58fb7dd160e3a81604240f2ca8d35487032244226bed7bd1",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/linalg_contract_io.h": "def896c0264bd80f72a04282f001e6e8b249badc80627fdc4992c5dfa3ee589b"
+    },
+    "native_groups": [
+      "metal_linalg_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.7409531669691205
+      },
+      {
+        "name": "compile-metal_linalg_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_linalg_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_linalg_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_linalg_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.5840334580279887
+      },
+      {
+        "name": "metal_linalg_api",
+        "command": [
+          "results/metal_linalg_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_linalg_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.044296125182882
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T18:04:43.362558+00:00"
+  },
+  "export_run": {
+    "status": "passed",
+    "command": "MTL_DEBUG_LAYER=1 results/metal_linalg_api_test --report-prefix results/verify2-linalg",
+    "log": "results/verify2-linalg.log",
+    "same_binary_as_native_run": true
+  },
+  "counts": {
+    "cases": 260,
+    "inputs": 21611969,
+    "actual_fields": 10508701,
+    "reference_fields": 10487920,
+    "reduction_oracles": 11360,
+    "domain_exclusion_cases": 3
+  },
+  "original_checks": {
+    "cases": 258,
+    "fields": 10499275,
+    "packed_class_witnesses": 660150,
+    "maximum_bound_ratio": 0.106798212,
+    "max_vector_ulp": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "binary64_scalar_witnesses": 108340,
+    "tolerances_changed": false,
+    "generator_changed": false
+  },
+  "family_cases": {
+    "histogram": 141,
+    "vectors": 80,
+    "means": 33,
+    "metal_only_invalid_histograms": 3,
+    "packed_default_weights": 1,
+    "empty_vector": 1,
+    "empty_histogram": 1
+  },
+  "source_sha256": {
+    "tests/metal_linalg_api.cc": "9da1cd3ae609553ac706bfbc1787e00ec9f6ea7619027a7be9388c81f0cd2adc",
+    "tests/linalg_contract_io.h": "def896c0264bd80f72a04282f001e6e8b249badc80627fdc4992c5dfa3ee589b",
+    "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+    "tests/cuda_numerical_contracts.cu": "8f970f58212a641106234d06efda8d96ff12cc524d752d7b9e4c11ee78606646",
+    "scripts/compare_linalg_contracts.py": "d044a06c9035436276ecdc44cf1f8a040daff437ecf5cf66eebeb7fdd57dc57a",
+    "tests/test_linalg_contract_reports.py": "631c0f6c9f3a7d0554051f151f84867d9298a825e02bb0d401ecc4a19caaba07",
+    "scripts/build_cuda_comparison.py": "66ef1dccaf1faf2276a5b77deb9c44ffa3c214eb986b9ca0f2f2fa0af855efd5",
+    "tests/cuda_comparison/CMakeLists.txt": "91ca294ab18dc51b073fc9ad83e46fea3c8ceea6da28a9bc155af04a1997ec76",
+    ".github/workflows/cuda-compile.yml": "5e8a99e7910078caf3438e9975d3dcb0b2d687c4c24cf1e29b3cb0b2717bd830"
+  },
+  "log_sha256": {
+    "results/verify2-linalg.log": "9bae61d98a317773f25e9d13e094dc90b4fafcc87994f30965c2dddf12fa5811",
+    "results/verify2-linalg-io.log": "829a98fdd66dd902365fa0a58457c67f6a8c255a79c329cf88c1ccc006e8bf57",
+    "results/verify2-linalg-types.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/verify2-linalg-build-mock.log": "28b471b80bbd83151deb2cbaec8272f4bf441b344684771da90569ef03e2f29e",
+    "results/verify2-linalg-report-tests-final.log": "3072f36c22377645921f89d9e716931be385608d5fa373e4e683e1c62d14bef9"
+  },
+  "artifacts": {
+    "inputs": {
+      "path": "validation/linalg-contract-inputs-m3.bin.gz",
+      "bytes": 30045620,
+      "sha256": "d073d338ccde0af15854c338aa6e97afe6f7e4bc161a45597572cbf0a2fe4fc9",
+      "raw_bytes": 86463500,
+      "raw_sha256": "510285fe817d80ae123ec2349a910b443a12dfe55f4c1aacb397752a92f475c7"
+    },
+    "metal": {
+      "path": "validation/linalg-contract-metal-m3.bin.gz",
+      "bytes": 50524872,
+      "sha256": "eda24bbb74e03a99d0c07f10aaaab52e06d77641cc9a543835a1b032d8c9c965",
+      "raw_bytes": 170769104,
+      "raw_sha256": "ef1d4907bc2bde95148dc14eae32ee08f84c6601ac3dc249768b388c4cdbc13d"
+    }
+  },
+  "integrity_tests": {
+    "status": "passed",
+    "count": 16,
+    "log": "results/verify2-linalg-report-tests-final.log",
+    "command": "PYTHONPATH=xgboost/python-package DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib .venv/bin/python -m pytest -q tests/test_linalg_contract_reports.py",
+    "gpu_execution": false
+  },
+  "codec_check": {
+    "status": "passed",
+    "complete_input_roundtrip_byte_exact": true,
+    "observations_rejected_as_inputs_before_output": true,
+    "source": "results/verify2-linalg-io.cc",
+    "source_sha256": "9af633b995ad3a144b3fc750c64eedf7d91d86356f7c29567138033749f7f01d"
+  },
+  "host_type_check": {
+    "status": "passed",
+    "source": "results/verify2-linalg-types.cc",
+    "source_sha256": "49d8019450324c4eeac366b52cf6e91404133b60bf47c51a0b23b58962a1cc9c",
+    "scope": "Host clang syntax check of tensor constructors, const views and API signatures; not NVCC/device compilation"
+  },
+  "build_driver_mock": {
+    "status": "passed",
+    "source": "results/verify2-linalg-build-mock.py",
+    "source_sha256": "ba09c1cf33f14cb3f4444aceba8ae15e322d798dbe5646b200a6997d3b3cd682",
+    "scope": "Five-binary compile/link lifecycle and 23 source hashes; no compiler/GPU execution"
+  },
+  "cuda_compile": {
+    "status": "not_run",
+    "gpu_execution": false,
+    "previous_run": 42079045498,
+    "previous_run_includes_linalg": false
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "results/cuda-comparison-build/cmake/cuda_numerical_contracts --linalg results/linalg-inputs.bin results/linalg-cuda.bin",
+    "planned_executed_cases": 257,
+    "planned_outside_domain_cases": 3,
+    "planned_output_fields": 10508692
+  },
+  "limits": [
+    "No actual NVIDIA execution has occurred; CUDA compiler validation of this extension is pending.",
+    "Three Metal invalid histogram guards are outside the audited CUDA contract; they are not executed or counted as CUDA passes. CUDA writes status 2 and no fabricated output values.",
+    "CUDA histograms use a GPU gather of logical input labels into contiguous storage, with every gathered bit checked. This does not validate CUDA support for strided labels.",
+    "Two multi-column mean cases use one source CUDA Mean per column; subtraction uses the multiclass transform expression rather than the full objective.",
+    "Both GPUs are independently checked against recorded vector references and original per-case reduction bounds. All bit differences require review; no universal reduction-error guarantee is claimed.",
+    "Guard storage is additionally bit-exact, including vector logarithm guards where the original general one-ULP test also covered guards.",
+    "The cancellation zero assertion remains Metal-only; CUDA receives the source term sum/magnitude bound rather than an assertion about CUB association.",
+    "Reference vectors and 11360 reduction oracles exist only in Metal reports. CUDA inputs contain parameters, backing inputs, weights and initial output guard storage.",
+    "Published long-double references were generated on Apple M3, where long double is binary64; sum/magnitude and original FP32 cast are explicitly serialized.",
+    "Comparison returns 1 for malformed reports/reference failures, otherwise 2 for numerical/domain review; full bit reports retain differences beyond the 32 diagnostic examples per case/policy.",
+    "This extends P5-N07 comparison coverage; it does not close a new contract or cover the remaining metric/training corpora."
+  ]
+}

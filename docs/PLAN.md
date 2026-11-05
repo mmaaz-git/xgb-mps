@@ -159,7 +159,14 @@ uses actual public APIs, with no reference values in its inputs. Each GPU is
 checked independently against recorded CPU references and the original
 operation-specific bounds; identical wrong GPU outputs cannot pass. See the
 [statistics record](../validation/stats-contract-m3-run.json). Compiler/runtime
-validation and the separate linalg, metric and training-reduction corpora remain.
+validation and the separate metric and training-reduction corpora remain.
+The linalg extension now exports the complete 258-case corpus and two empty
+operations. Both Metal modes, all exported reference checks and 16 report-integrity
+tests pass. CUDA replays actual source consumers, explicitly gathers histogram
+labels into its supported contiguous layout, and records three Metal-only invalid
+input cases as outside-domain, without executing them or fabricating results.
+Its compiler/runtime gates remain; see the
+[linalg record](../validation/linalg-contract-m3-run.json).
 Runners now address eleven contracts; six still lack dedicated runners, broader
 caller coverage remains, and none has actual NVIDIA execution evidence.
 
@@ -171,7 +178,7 @@ its contract until actual NVIDIA results have been reviewed.
 | Order | Remaining contract work | Required comparison |
 | --- | --- | --- |
 | 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
-| 2 | P5-N07 and training-reduction-association | Full statistics API replay added; complete its compiler/runtime gates. Add the separate linalg, metric and training-reduction corpora under their declared term precision and association bounds. |
+| 2 | P5-N07 and training-reduction-association | Full statistics and linalg replays added; complete their compiler/runtime gates. Add the separate metric and training-reduction corpora under their declared term precision and association bounds. |
 | 3 | P5-N09/10/11: PR, ROC and ranking metrics | Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
 | Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |
