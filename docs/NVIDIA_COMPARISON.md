@@ -2,9 +2,10 @@
 
 VERIFY-2 requires actual GPU execution. The current native harness,
 `numerical-v2`, covers **P5-N01, P5-N08, P5-N13 and P5-N14**, using the same 39
-inputs as the Metal numerical-contract test. The other thirteen numerical
-contracts and broader caller/integration
-comparisons remain work; this harness is not a full parity certificate.
+inputs as the Metal numerical-contract test. A second native harness covers
+**P5-N02**, using the complete AFT corpus described below. The other twelve
+numerical contracts and broader caller/integration comparisons remain work;
+these harnesses are not a full parity certificate.
 
 No NVIDIA execution result is published yet. The CUDA CI job compiles/links the
 harness on a CPU runner and retains its exact compiler command and input/library
@@ -81,9 +82,9 @@ results/cuda-comparison-build/cmake/cuda_numerical_contracts \
   results/cuda-observations.jsonl
 ```
 
-The build driver first compiles the harness object using the configured compiler,
+The build driver first compiles both harness objects using the configured compiler,
 CCCL, architectures and arithmetic flags. It then checks/rebuilds production
-dependencies and links the executable. This exposes harness compiler errors
+dependencies and links the executables. This exposes harness compiler errors
 before the expensive library build. It writes `build.json`, including terminal
 status; CI separates the object and link phases and rejects changed inputs
 between them. Git metadata reads trust only the selected checkout for that
@@ -116,6 +117,76 @@ including selected-observation changes and source-race policies.
 
 The comparison tool's Python tests use explicitly synthetic data. Passing those
 integrity tests is not a substitute for the NVIDIA command above.
+
+## AFT survival gradients and Hessians
+
+The P5-N02 harness exports the existing Metal test's complete corpus rather than
+regenerating random inputs or host-library logarithms on Linux. The
+[input file](../validation/aft-contract-inputs-m3.bin.gz) contains **96 cases /
+316,683 rows**: normal, logistic and extreme distributions; five ordinary
+scales; unweighted, weighted, zero-weighted, subnormal-weighted and uncensored
+cases; then seven domain-guard cases per distribution. The
+[Metal observations](../validation/aft-contract-metal-m3.bin.gz) retain every
+row. The [run record](../validation/aft-contract-m3-run.json) includes source,
+library and artifact hashes and the unchanged local results: 99,831 sensitive
+rows, 322 CPU-tolerance field differences, and zero production/source field
+differences. These are local results, not NVIDIA agreement.
+
+`cuda_aft_contracts` reads only the input file, evaluates vendored
+`AFTLoss<Distribution>::Gradient/Hessian` on GPU, and runs the actual
+`survival:aft` objective for all 75 ordinary cases. Its weighted outputs must
+agree with the separately executed CUDA source functions. The 21 domain-guard
+cases call source functions directly; they do not claim that invalid parameters
+are accepted by public training. A separately evaluated likelihood expression
+classifies sensitive rows; it does not capture an objective's private temporary.
+This runner covers gradients and Hessians, not survival metrics or prediction
+transformation.
+
+After building both CUDA executables as above:
+
+```sh
+python3 scripts/compare_aft_contracts.py unpack \
+  validation/aft-contract-inputs-m3.bin.gz --output results/aft-inputs.bin
+results/cuda-comparison-build/cmake/cuda_aft_contracts \
+  results/aft-inputs.bin results/aft-cuda.bin
+python3 scripts/compare_aft_contracts.py compare \
+  validation/aft-contract-metal-m3.bin.gz results/aft-cuda.bin \
+  --output results/aft-comparison.json
+```
+
+Keep `aft-cuda.bin.json`, the runtime log and `build.json` with the observations.
+They record the actual GPU, CUDA/compiler versions, build flags, source inputs
+and linked library. Use matching production and harness sources. The comparator
+enforces identical input bits and complete framing; it does not independently
+authenticate the runtime metadata or build provenance.
+
+The ordinary weighted-gradient/Hessian tolerance remains `atol=1e-6, rtol=2e-5`.
+Sensitive tails are rows with unequal bounds and likelihood not greater than
+the FP32 value `1e-5` on either backend; domain guards are reported separately.
+Exit `1` denotes invalid evidence or an ordinary tolerance failure. Exit `2`
+retains any other bit differences for review, including sensitive results,
+nonfinite classifications, NaN payloads and within-tolerance differences.
+Exit `0` means exact agreement only on the recorded inputs. No tail difference
+is automatically accepted and no global mathematical error bound is claimed.
+
+To regenerate Metal observations after relevant source changes:
+
+```sh
+bash scripts/test.sh --native metal_aft_source
+MTL_DEBUG_LAYER=1 results/metal_aft_source_test \
+  xgboost/src/common/metal_histogram.metal --report-prefix results/new-aft
+python3 scripts/compare_aft_contracts.py inspect results/new-aft.metal.bin
+```
+
+The portable binary format uses explicit little-endian words. The header is
+`XGBAFT1\0`, followed by uint32 backend kind (`0` input, `1` Metal, `2` CUDA) and
+case count. Each case has five uint32 words: distribution, mode, scale FP32 bits,
+row count and weight count. FP32 bit arrays follow for lower bounds, upper
+bounds, predictions and weights. Observation files then store each row's three
+FP64 fields (gradient, Hessian, likelihood) and two FP32 weighted outputs. The
+footer is `AFTE` plus uint32 case count; trailing bytes are rejected. Signed
+zeros, subnormals and nonfinite payloads survive interchange. Gzip is packaging
+only; the CUDA reader consumes the uncompressed input-only file.
 
 ## Production sketch, training and prediction comparison
 
@@ -168,6 +239,6 @@ same model bit for bit. HIGGS dispatched five sketch batches, and its cuts and
 first predictive tree exactly reproduce the earlier full benchmark. The
 [run record](../validation/gpu-pipeline-m3-run.json) includes hashes, commands,
 the initial validator error and 18 passing synthetic integrity tests. NVIDIA
-results are still absent. These integration cases do not close the thirteen
+results are still absent. These integration cases do not close the twelve
 remaining numerical contracts or cover external memory, native device inputs,
 distributed execution and all other caller combinations.

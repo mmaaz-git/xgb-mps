@@ -43,10 +43,12 @@ execution comparisons and current-source performance work.** Full parity remains
 unproven.
 
 The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) cover 39 shared threshold,
-CDF and sketch-order witnesses, plus production sketch/training/prediction on eight
-fixtures and full-size HIGGS quantile construction. Metal observations are
-published; NVIDIA execution is still required. Differences remain visible for
-review.
+CDF and sketch-order witnesses, plus 96 survival-objective cases with 316,683
+rows. These provide runners for five of the seventeen numerical contracts;
+twelve still need runners. Production sketch/training/prediction comparisons
+also cover eight fixtures and full-size HIGGS quantile construction. Metal
+observations are published; NVIDIA execution is still required. Differences
+remain visible for review.
 
 `tree_method="exact"` is unsupported on MPS. For linear GPU training, use
 `booster="gblinear", updater="coord_descent"`; the default `shotgun` updater

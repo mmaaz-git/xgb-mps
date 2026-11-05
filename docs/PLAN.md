@@ -48,7 +48,7 @@ classification.
 | PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA compile passed at `bf1ebea` | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
 | PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA compile passed at `bf1ebea` | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
 | VERIFY-1 | Integration at a fixed revision | Locally complete; NVIDIA execution remains separate | [Acceptance report](LOCAL_ACCEPTANCE.md) maps all 17 contracts and 16 original gap rows; full Metal/CPU/federated evidence at `68c800e`, focused numerical fixtures at `0c66454`; CUDA compile passed at `bf1ebea` |
-| VERIFY-2 | NVIDIA execution comparison | Four-contract native harness and production sketch/training/prediction runner added; Metal observations published, external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; remaining contracts/callers still need harness coverage; publish differences, not just compiler success |
+| VERIFY-2 | NVIDIA execution comparison | Runners for five contracts and production sketch/training/prediction added; Metal observations published, external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; twelve remaining contracts and broader callers still need harness coverage; publish differences, not just compiler success |
 | PERF-1 | Profile/optimize a frozen benchmark matrix | Full HIGGS repeated at `68c800e`; ordinary strict equivalence failed, common-cut 100-round diagnostic passes | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
 
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
@@ -78,6 +78,19 @@ NVCC/CCCL/libdevice versions and flags. Use the per-contract exact, bounded,
 race-policy and domain-extension rules in the acceptance report. Portable inputs
 alone are not a completed NVIDIA harness; compiler success is not execution.
 Resolve concrete discrepancies instead of widening ordinary tolerances.
+
+The P5-N02 AFT runner now consumes the complete existing Metal corpus as exact
+input bits: 96 cases / 316,683 rows, with all three distributions, weights,
+sensitive tails and domain guards retained. Its Metal export reproduces the
+previous 322 CPU-tolerance field differences and zero production/source field
+differences. The CUDA runner uses the actual objective for 75 ordinary cases;
+21 domain guards call the source functions directly. Eleven synthetic report
+checks pass. This adds a fifth contract runner; twelve still need runners,
+and none has actual NVIDIA execution evidence. See the
+[AFT run record](../validation/aft-contract-m3-run.json).
+The numerical-v2 CUDA consumer and optional nvCOMP link probe passed in
+[run 42045096489](https://github.com/mmaaz-git/xgb-mps/actions/runs/42045096489).
+The newly added AFT consumer requires its own compiler result.
 
 PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
 Freeze the accepted source and workload parameters; inspect prior outputs before

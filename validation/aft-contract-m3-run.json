@@ -1,0 +1,175 @@
+{
+  "status": "Metal export passed; AFT CUDA consumer compilation and NVIDIA execution pending",
+  "scope": "P5-N02 gradients/Hessians and source-likelihood sensitivity classification; no metric or prediction-transform comparison",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T144544Z",
+    "revision": "773356252ea18c8e9a47da704a4f97eb046a6fad",
+    "working_tree": "M tests/metal_aft_source.mm\n?? tests/aft_contract_io.h\n?? tests/cuda_aft_contracts.cu",
+    "diff_sha256": "b4516bc67c09cc9eb1427d5696766ab0749dc1d69c0843f55ebb11c91d9431c1",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/aft_contract_io.h": "a4a0d4b69398af652b5f9984f496b5a80e3a63bd6f10d731168937fdb1843ee3",
+      "tests/cuda_aft_contracts.cu": "9b7bc85c13e5a745cb4a27878b5be352a345de7efefa358f96e3b96e9d1fdcd9"
+    },
+    "native_groups": [
+      "metal_aft_source"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.7374131660908461
+      },
+      {
+        "name": "compile-metal_aft_source",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-fobjc-arc",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_aft_source.mm",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-framework",
+          "Metal",
+          "-framework",
+          "Foundation",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_aft_source_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_aft_source.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.6922247079201043
+      },
+      {
+        "name": "metal_aft_source",
+        "command": [
+          "results/metal_aft_source_test",
+          "xgboost/src/common/metal_histogram.metal"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_aft_source.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.0207592078950256
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T14:45:48.281509+00:00"
+  },
+  "tested_tracked_patch_matches_current_source": true,
+  "tested_untracked_inputs_match_current_source": true,
+  "harness_input_sha256": {
+    "tests/metal_aft_source.mm": "19243a0b11a364314cd158b8f06e911e9c9c8b6053cb25ae87170b655b513504",
+    "tests/aft_contract_io.h": "a4a0d4b69398af652b5f9984f496b5a80e3a63bd6f10d731168937fdb1843ee3",
+    "tests/cuda_aft_contracts.cu": "9b7bc85c13e5a745cb4a27878b5be352a345de7efefa358f96e3b96e9d1fdcd9",
+    "scripts/compare_aft_contracts.py": "1a495eadfb23b86e23466255d3507f99dbe4ffccbc935f4615ac3fdb7a304fff",
+    "tests/test_aft_contract_reports.py": "0f6ac0a2ac7bc15097a800dcdd03e1b5c694ea64531db2ba28ca0e7ada55d0cb",
+    "tests/cuda_comparison/CMakeLists.txt": "470a818a429f2bb3deff4762f7840716076fbfb610b2a24f4b55c78873437d55",
+    "scripts/build_cuda_comparison.py": "aaf8748e880584dbc68fbeee2ac8090aa17c459b6b542c5fc257a6012f6a9a19"
+  },
+  "export": {
+    "command": "MTL_DEBUG_LAYER=1 results/metal_aft_source_test xgboost/src/common/metal_histogram.metal --report-prefix results/verify2-aft",
+    "log": "results/verify2-aft.log",
+    "log_sha256": "df7c994913aa039ea1b0d057c5f6d08ef7c0b3c59dd886af3518c31adadfa7eb",
+    "cases": 96,
+    "rows": 316683,
+    "exact_source_fields": 3166830,
+    "math_fields": 1900098,
+    "max_log_exp_erf_binary64_ulp": [
+      2,
+      1,
+      3
+    ],
+    "sensitive_rows": 99831,
+    "cpu_tolerance_field_differences": 322,
+    "production_raw_field_differences": 0,
+    "ordinary_tolerance": {
+      "atol": 1e-06,
+      "rtol": 2e-05
+    },
+    "artifacts": {
+      "inputs": {
+        "path": "validation/aft-contract-inputs-m3.bin.gz",
+        "sha256": "6e475e225d1401da29bd82242932e67e85dd2b94a9fed018e6fa38e8bbe39175",
+        "compressed_bytes": 3436164,
+        "uncompressed_bytes": 4823052,
+        "uncompressed_sha256": "5eb552ef47dd1643129746867cd93a29693ac451e6107681c2dfbbaefa55df95"
+      },
+      "metal": {
+        "path": "validation/aft-contract-metal-m3.bin.gz",
+        "sha256": "7c49f6be35b41adeb5f163cd485a4476615f2129cdf32208f419d01e81fa6761",
+        "compressed_bytes": 7938783,
+        "uncompressed_bytes": 14956908,
+        "uncompressed_sha256": "cb77d82c85d7bf2f57f8fbd08453187e45ca11b22ff66ea2be6f66edf9685db3"
+      }
+    }
+  },
+  "interchange_checks": {
+    "cpp_input_roundtrip": "byte-identical",
+    "roundtrip_sha256": "5eb552ef47dd1643129746867cd93a29693ac451e6107681c2dfbbaefa55df95",
+    "cpp_rejects_observations_as_inputs": true,
+    "python_decodes_full_corpus": true,
+    "embedded_inputs_equal_input_only_file": true
+  },
+  "integrity_tests": {
+    "command": "PYTHONPATH=xgboost/python-package DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib .venv/bin/python -m pytest -q tests/test_aft_contract_reports.py",
+    "scope": "Synthetic report data only; no GPU execution",
+    "passed": 11,
+    "seconds": 0.32,
+    "log": "results/verify2-aft-report-tests.log",
+    "log_sha256": "272f5c71ee08e935198306f2f8e3418d89bc4fba36ece1390fb8e3d818759d06"
+  },
+  "cuda_build_driver_check": "Mocked compile/link lifecycle passed; both binary hashes and new source inputs recorded, aggregate target and nvCOMP configuration forwarded. No CUDA compilation implied.",
+  "cuda_compile": {
+    "status": "pending",
+    "gpu_execution": false
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "planned_objective_cases": 75,
+    "planned_direct_source_guard_cases": 21
+  },
+  "limits": [
+    "Actual NVIDIA observations are absent.",
+    "Sensitive/domain differences must be reviewed; none is automatically accepted.",
+    "21 domain-guard cases do not assert public objective acceptance of invalid parameters.",
+    "Separate likelihood trace is not a capture of the objective private temporary.",
+    "No universal mathematical error bound or full CUDA parity claim."
+  ]
+}

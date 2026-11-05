@@ -107,6 +107,19 @@ VERIFY-2 first consumer build (terminal failure, not a runtime result):
   Log SHA256: 844fe1617badf65c681715c000bdf1a390c2e678ba8032e9571f3e0f00dc0d0d
   Build record: results/cuda-compile-42039959199/results/cuda-comparison-build/build.json
   Fix 34b7d06 imports the same nvCOMP package in the consumer and adds an early
-  compile/link dependency check. Its actual remote validation is pending.
+  compile/link dependency check. Its remote validation passed in run 42045096489 below.
   No NVIDIA kernel was executed; this failed consumer build does not replace
   the earlier successful shared-library compiler gate with a runtime claim.
+
+VERIFY-2 numerical-v2 consumer build (terminal success, no NVIDIA execution):
+  21ee02e01e538454c0f99b57dd8a069f9965ab61: 42045096489, success,
+    completed 2026-11-05T14:56:20Z
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42045096489
+  Early nvCOMP dependency probe compiled/linked; numerical-v2 object compiled.
+  All 197 production compile/link steps and final numerical executable link passed.
+  Artifact cuda-compile-evidence; local root results/cuda-compile-42045096489
+  Log SHA256: 53c2b0ecc87ade730314b75f0b53bb2fd83bd286d7aa62f1b1775087098296b4
+  Build record SHA256: 287e3a22276e634d3367b63481fd1e7ceeb29d997508cddc65de486431b205e1
+  Numerical executable SHA256: 0e5dad78aaa901c6018e89ceb9e2da948b41fa81984bfbcf4c49fe91ebc2d93b
+  CUDA library SHA256: e1a9ccaddcc5982d98f73e596d1993d0e84e9a75d2fb6e214362dd23db2142aa
+  This run predates the AFT consumer; it does not validate that new executable.

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -16,6 +17,7 @@
 #include "../xgboost/src/common/metal_survival.h"
 #include "../xgboost/src/common/survival_util.h"
 #include "cuda_metric_reference.h"
+#include "aft_contract_io.h"
 using namespace xgboost;
 namespace metal = common::metal;
 using cuda_metric::Cast;
@@ -158,6 +160,7 @@ kernel void test_aft_source(device const float4* input [[buffer(0)]],
 std::size_t cases = 0, rows = 0, math_fields = 0, source_fields = 0, sensitive = 0,
             cpu_differences = 0, production_differences = 0;
 std::array<std::uint64_t, 3> max_ulp{};
+std::unique_ptr<aft_contracts::Writer> input_report, metal_report;
 void Primitive(double actual, double expected, unsigned kind) {
   auto ulp = Ulps(actual, expected);
   max_ulp[kind] = std::max(max_ulp[kind], ulp);
@@ -170,7 +173,7 @@ void Primitive(double actual, double expected, unsigned kind) {
 template <typename Source, typename Probability>
 void Verify(GPU& gpu, unsigned kind, float scale, std::vector<float> const& lo,
             std::vector<float> const& hi, std::vector<float> const& pred,
-            std::vector<float> const& weights, bool inspect) {
+            std::vector<float> const& weights, bool inspect, unsigned mode) {
   auto traces = gpu.Run(kind, scale, lo, hi, pred);
   std::vector<GradientPair> actual(lo.size());
   auto before = metal::GetStatistics();
@@ -183,6 +186,7 @@ void Verify(GPU& gpu, unsigned kind, float scale, std::vector<float> const& lo,
               after.survival_cpu_time_ns == before.survival_cpu_time_ns,
           "CPU AFT correction remains");
   using Replay = DistributionReplay<Source>;
+  std::vector<aft_contracts::Observation> observations;
   for (std::size_t i = 0; i < lo.size(); ++i) {
     auto const& trace = traces[i];
     for (unsigned side = 0; side < 2; ++side) {
@@ -228,6 +232,13 @@ void Verify(GPU& gpu, unsigned kind, float scale, std::vector<float> const& lo,
       cpu_differences += !close;
       if (!tail) Check(close, "Well-conditioned AFT CPU tolerance exceeded");
     }
+    if (metal_report) observations.push_back({trace.gradient, trace.hessian, trace.likelihood,
+                                              got[0], got[1]});
+  }
+  if (metal_report) {
+    aft_contracts::Input input{kind, mode, scale, lo, hi, pred, weights};
+    input_report->Add(input);
+    metal_report->Add(input, observations);
   }
   ++cases;
   rows += lo.size();
@@ -266,7 +277,7 @@ void Corpus(GPU& gpu, unsigned kind, std::mt19937& rng, bool inspect) {
         if (mode == 3) w[i] *= 1e-40f;
       }
       if (!mode) w.clear();
-      Verify<Source, Probability>(gpu, kind, scale, lo, hi, p, w, inspect);
+      Verify<Source, Probability>(gpu, kind, scale, lo, hi, p, w, inspect, mode);
     }
     std::printf("Source checked distribution%u scale%g: %zu rows\n", kind, scale, rows);
     std::fflush(stdout);
@@ -283,13 +294,18 @@ void Corpus(GPU& gpu, unsigned kind, std::mt19937& rng, bool inspect) {
         w.push_back(w.size() % 3 == 0 ? 0.f : w.size() % 3 == 1 ? 1.f : 1e-40f);
       }
   for (float scale : {.1f, 1.f, 0.f, -1.f, 1e-40f, INFINITY, NAN})
-    Verify<Source, Probability>(gpu, kind, scale, lo, hi, p, w, inspect);
+    Verify<Source, Probability>(gpu, kind, scale, lo, hi, p, w, inspect, 5);
 }
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
-      Check(argc == 2 || argc == 3, "Pass shader path [--inspect]");
       bool inspect = argc == 3 && std::string(argv[2]) == "--inspect";
+      bool reporting = argc == 4 && std::string(argv[2]) == "--report-prefix";
+      Check(argc == 2 || inspect || reporting, "Pass shader path [--inspect | --report-prefix new-prefix]");
+      if (reporting) {
+        input_report = std::make_unique<aft_contracts::Writer>(std::string(argv[3])+".inputs.bin", aft_contracts::kInputs);
+        metal_report = std::make_unique<aft_contracts::Writer>(std::string(argv[3])+".metal.bin", aft_contracts::kMetal);
+      }
       GPU gpu(argv[1]);
       std::mt19937 rng(373);
       Corpus<common::NormalDistribution, aft_replay::NormalDistribution<MathReplay>>(gpu, 0, rng,
@@ -298,6 +314,7 @@ int main(int argc, char** argv) {
           gpu, 1, rng, inspect);
       Corpus<common::ExtremeDistribution, aft_replay::ExtremeDistribution<MathReplay>>(gpu, 2, rng,
                                                                                        inspect);
+      if (reporting) { input_report->Finish(); metal_report->Finish(); }
       std::printf("PASS upstream AFT replay: %zu cases / %zu rows / %zu exact source fields / %zu "
                   "math fields; max log/exp/erf ULP %llu/%llu/%llu\n",
                   cases, rows, source_fields, math_fields, (unsigned long long)max_ulp[0],

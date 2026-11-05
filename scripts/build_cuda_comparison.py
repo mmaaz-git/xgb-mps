@@ -15,7 +15,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_report.h",
           "tests/cuda_numerical_contracts.cu", "tests/cuda_comparison/CMakeLists.txt",
-          "tests/cuda_comparison/nvcomp_link_check.cc", "scripts/build_cuda_comparison.py")
+          "tests/cuda_comparison/nvcomp_link_check.cc", "tests/cuda_aft_contracts.cu",
+          "tests/aft_contract_io.h", "scripts/build_cuda_comparison.py")
 
 
 def sha(path):
@@ -108,7 +109,7 @@ def main():
                 configure.append(f"-D{key}={cache[key]}")
         if args.phase != "link":
             run(configure)
-            run(["cmake", "--build", str(output / "cmake"), "--target", "cuda_contract_objects",
+            run(["cmake", "--build", str(output / "cmake"), "--target", "cuda_comparison_objects",
                  "--parallel", str(args.jobs)])
             record.update(status="passed-object-compile",
                           compile_commands=json.loads((output / "cmake/compile_commands.json").read_text()))
@@ -122,16 +123,21 @@ def main():
         run(["cmake", "--build", str(build), "--parallel", str(args.jobs)])
         run(["cmake", "--build", str(output / "cmake"), "--parallel", str(args.jobs)])
         binary = output / "cmake/cuda_numerical_contracts"
+        binaries = {name: {"path": str(output / f"cmake/cuda_{name}_contracts"),
+                           "sha256": sha(output / f"cmake/cuda_{name}_contracts")}
+                    for name in ("numerical", "aft")}
         if (git("rev-parse", "HEAD:xgboost").decode().strip() != tree
                 or hashlib.sha256(git("diff", "HEAD", "--", "xgboost")).hexdigest() != diff
                 or {relative: sha(ROOT / relative) for relative in INPUTS} != inputs):
             raise ValueError("Source or fixture inputs changed during compilation/linking")
         record.update(status="passed-compile-link", library=str(library.resolve(strict=True)), library_sha256=sha(library),
-                      binary=str(binary), binary_sha256=sha(binary),
+                      binary=str(binary), binary_sha256=sha(binary), binaries=binaries,
                       production_cache_sha256=sha(build / "CMakeCache.txt"),
                       compile_commands=json.loads((output / "cmake/compile_commands.json").read_text()))
         print("PASS CUDA harness compile/link; NVIDIA execution has NOT occurred.", flush=True)
         print("Runtime command:", shlex.join([str(binary), str(output / "cuda-observations.jsonl")]), flush=True)
+        print("AFT runtime command:", shlex.join([binaries["aft"]["path"], "results/aft-inputs.bin",
+                                                str(output / "cuda-aft-observations.bin")]), flush=True)
     except Exception as error:
         record.update(status="failed", error=str(error))
         raise
