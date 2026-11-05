@@ -1467,7 +1467,7 @@ std::vector<std::unique_ptr<MetalQuantizedColumn>> MakeGradientColumns(
   auto rows = gradients.Shape(0);
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
   CHECK_GT(gradients.Shape(1), 0);
-  CHECK_LE(gradients.Shape(1), 65535);
+  CHECK_LE(gradients.Shape(1), std::numeric_limits<std::uint32_t>::max());
   // Quantization is per target. A GPU layout copy handles C order, padding and
   // broadcasts; its temporary raw floats never own the persistent tree state.
   linalg::Matrix<GradientPair> contiguous;
@@ -1551,7 +1551,7 @@ MetalLeafSums::MetalLeafSums(std::size_t n_leaves, std::size_t n_targets,
                              std::shared_ptr<GradientQuantizer const> original_quantizer)
     : quantizer{std::move(original_quantizer)}, leaves{n_leaves}, targets{n_targets} {
   CHECK_GT(targets, 0);
-  CHECK_LE(targets, 65535);
+  CHECK_LE(targets, std::numeric_limits<std::uint32_t>::max());
   CHECK_LE(leaves, std::numeric_limits<std::uint32_t>::max());
   if (quantizer) CHECK_EQ(quantizer->Targets(), targets);
   auto& rt = GetRuntime();
@@ -3854,7 +3854,7 @@ id<MTLBuffer> EncodeGradientSum(Runtime& rt, linalg::MatrixView<GradientPair con
   CHECK_GT(rows, 0);
   CHECK_GT(targets, 0);
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
-  CHECK_LE(targets, 65535);
+  CHECK_LE(targets, std::numeric_limits<std::uint32_t>::max());
   auto values = gradients.Values();
   auto input = InitializationInput(rt, values.data(), values.size_bytes(), 8);
   auto blocks = (rows + 255) / 256;
@@ -4136,7 +4136,7 @@ void Mean(MeanKind kind, linalg::MatrixView<float const> values, Span<float cons
     return;
   }
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
-  CHECK_LE(targets, 65535);
+  CHECK_LE(targets, std::numeric_limits<std::uint32_t>::max());
   double global_denominator = 0;
   if (distributed) {
     // stats.cu deliberately reduces this scalar on HOST, after a GPU local
@@ -6229,7 +6229,7 @@ void Quantiles(linalg::MatrixView<float const> values, Span<float const> weights
   if (requests.empty()) return;
   auto rows = values.Shape(0), targets = values.Shape(1);
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
-  CHECK_LE(targets, 65535);
+  CHECK_LE(targets, std::numeric_limits<std::uint32_t>::max());
   CHECK(weights.empty() || weights.size() == rows);
   for (auto const& request : requests) {
     CHECK_LT(request.target, targets);
