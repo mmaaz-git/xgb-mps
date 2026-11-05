@@ -1,5 +1,5 @@
 {
-  "status": "Metal full rounding corpus and report integrity passed; new CUDA ranking compiler/runtime validation pending",
+  "status": "Metal full rounding corpus and report integrity passed; CUDA ranking compile job in progress; NVIDIA execution absent",
   "suite": "ranking-rounding-v1",
   "scope": "All 64 existing ranking-rounding cases for P5-N04/05; broader gradient/unbiased/primitive corpora remain",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -230,10 +230,15 @@
     "initial_log": "results/verify2-ranking-build-mock-initial.log"
   },
   "cuda_compile": {
-    "status": "pending",
+    "status": "in_progress",
     "gpu_execution": false,
     "prior_math_run": 42062682076,
-    "prior_math_run_includes_ranking": false
+    "prior_math_run_includes_ranking": false,
+    "run_id": 42067452564,
+    "job_id": 127385436878,
+    "head": "f6a6b82c2322847ae9fce1e46ba493d5f88ae62b",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42067452564",
+    "last_observed_utc": "2026-11-05T16:44:46.217378+00:00"
   },
   "cuda_runtime": {
     "status": "not_run",
