@@ -147,6 +147,8 @@ The [CUDA CI workflow](.github/workflows/cuda-compile.yml) separately checks tha
 shared-code changes still compile with NVIDIA dependencies. Successful compilation
 is documented in the [compiler record](validation/cuda-compile-ci-13.4.txt);
 it does **not** run CUDA kernels or validate MPS behavior.
+New pushes preserve the active build and keep the newest revision pending,
+using [GitHub's concurrency queue](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
 ## Performance
 

@@ -100,10 +100,11 @@ on:
 permissions:
   contents: read
 
-# A newer revision supersedes the same branch/PR's compile-only evidence.
+# Finish the active build; a newer revision replaces only the pending build.
+# This preserves compiler evidence while allowing development pushes to continue.
 concurrency:
   group: cuda-compile-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   compile:
