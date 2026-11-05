@@ -5,6 +5,8 @@
 #include <cub/version.cuh>
 #include <thrust/for_each.h>
 #include <thrust/iterator/counting_iterator.h>
+#include <thrust/shuffle.h>
+#include <thrust/sort.h>
 #include <thrust/version.h>
 #include <algorithm>
 #include <cstdio>
@@ -15,14 +17,18 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 
 #include "../xgboost/src/common/cuda_context.cuh"
 #include "../xgboost/src/common/device_helpers.cuh"
 #include "../xgboost/src/common/random.cuh"
+#include "../xgboost/src/common/random.h"
 #include "../xgboost/src/objective/lambdarank_obj.cuh"
 #include "../xgboost/src/tree/gpu_hist/sampler.cuh"
 #include "xgboost/json.h"
 #include "cuda_ranking_pairs.h"
+#include "cuda_column_reference.h"
+#include "column_rng_contract_fixtures.h"
 #include "rng_contract_fixtures.h"
 
 #if !__has_include(<cuda/std/random>)
@@ -214,6 +220,91 @@ void Pairs(Context const* ctx, Json* report) {
   (*report)["homogeneous_pairs"] = Integer(homogeneous);
 }
 
+void Shuffle(Context const* ctx, Json* report) {
+  std::size_t cases = 0, permutations = 0, selected = 0;
+  auto run = [&](std::vector<bst_feature_t> const& features, std::uint32_t count,
+                 std::uint32_t seed) {
+    // The exact unweighted branch from random.cu: Thrust's separate default
+    // engine, shuffle, retain the prefix, and sort selected feature IDs.
+    dh::device_vector<bst_feature_t> values(features);
+    thrust::default_random_engine rng;
+    rng.seed(seed);
+    thrust::shuffle(ctx->CUDACtx()->CTP(), values.begin(), values.end(), rng);
+    auto actual = Read(values.data().get(), values.size());
+    auto order = cuda_reference::Shuffle(features.size(), seed);
+    Check(actual.size() == order.size(), "Shuffle size changed");
+    for (std::size_t i = 0; i < actual.size(); ++i)
+      Equal(actual[i], features[order[i]], i, "Thrust shuffle permutation");
+    values.resize(count);
+    thrust::sort(ctx->CUDACtx()->CTP(), values.begin(), values.end());
+    actual = Read(values.data().get(), values.size());
+    auto expected = cuda_reference::SampleFeatures(features, {}, seed, count);
+    for (std::size_t i = 0; i < actual.size(); ++i)
+      Equal(actual[i], expected[i], i, "Unweighted selected ID");
+    permutations += features.size(); selected += count; ++cases;
+    if (cases % 32 == 0) {
+      std::printf("CUDA shuffle %zu/128 cases: %zu permutation entries / %zu selected IDs\n",
+                  cases, permutations, selected);
+      std::fflush(stdout);
+    }
+  };
+  std::vector<bst_feature_t> initial(17);
+  std::iota(initial.begin(), initial.end(), 0);
+  run(initial, 7, 7);
+  fixture::ColumnCases([&](auto n, auto count, auto seed, int mode) {
+    if (mode == 0) run(fixture::ColumnFeatures(n, mode), count, seed);
+  });
+  run({}, 0, 7);
+  Check(cases == 128 && permutations == 1320913, "Incomplete unweighted column corpus");
+  (*report)["shuffle_cases"] = Integer(cases);
+  (*report)["shuffle_permutation_entries"] = Integer(permutations);
+  (*report)["shuffle_selected_ids"] = Integer(selected);
+}
+
+void ColumnHierarchy(Json* report) {
+  std::size_t cases = 0, outputs = 0, selected = 0;
+  fixture::ColumnHierarchies([&](auto n, float tree, float level, float node, bool weighted) {
+    if (weighted) return;  // Weighted key/log arithmetic is a separate comparison.
+    auto ctx = Context{}.MakeCUDA(0);
+    ctx.Rng().seed(8721);
+    RandomEngine reference_rng(8721);
+    HostDeviceVector<float> weights;
+    common::ColumnSampler sampler;
+    auto sample = [&](std::vector<bst_feature_t> const& features, float rate) {
+      if (rate == 1.f) return features;
+      auto count = std::max(1, static_cast<int>(rate*features.size()));
+      return cuda_reference::SampleFeatures(features, {}, reference_rng(), count);
+    };
+    for (int t = 0; t < 2; ++t) {
+      sampler.Init(&ctx, n, weights, node, level, tree);
+      std::vector<bst_feature_t> all(n);
+      std::iota(all.begin(), all.end(), 0);
+      auto tree_features = sample(all, tree);
+      std::unordered_map<int, std::vector<bst_feature_t>> levels;
+      for (auto depth : {0, 1, 1, 2, 2, 2, 0}) {
+        if (!levels.count(depth)) levels.emplace(depth, sample(tree_features, level));
+        auto expected = sample(levels.at(depth), node);
+        auto actual = sampler.GetFeatureSet(&ctx, depth);
+        Check(actual->Device().IsCUDA() && actual->DeviceCanRead(), "ColumnSampler left CUDA storage");
+        auto const& host = actual->ConstHostVector();
+        Check(host.size() == expected.size(), "ColumnSampler output size differs");
+        for (std::size_t i = 0; i < host.size(); ++i)
+          Equal(host[i], expected[i], i, "Production ColumnSampler output");
+        selected += host.size(); ++outputs;
+      }
+    }
+    Equal(ctx.Rng()(), reference_rng(), cases, "ColumnSampler parent RNG consumption");
+    ++cases;
+    std::printf("CUDA ColumnSampler %zu/15 hierarchies: n=%u rates=%g/%g/%g; %zu outputs\n",
+                cases, n, tree, level, node, outputs);
+    std::fflush(stdout);
+  });
+  Check(cases == 15 && outputs == 210, "Incomplete unweighted ColumnSampler hierarchy corpus");
+  (*report)["column_hierarchies"] = Integer(cases);
+  (*report)["column_hierarchy_outputs"] = Integer(outputs);
+  (*report)["column_hierarchy_selected_ids"] = Integer(selected);
+}
+
 int main(int argc, char** argv) {
   Json report{Object{}};
   std::ofstream output;
@@ -223,7 +314,7 @@ int main(int argc, char** argv) {
     Check(!std::ifstream{argv[1]}.good(), "Report already exists");
     output.exceptions(std::ios::failbit | std::ios::badbit);
     output.open(argv[1]);
-    report["suite"] = String("rng-v1"); report["backend"] = String("cuda");
+    report["suite"] = String("rng-v2"); report["backend"] = String("cuda");
     report["rng_branch"] = String("cuda::std::philox4x64");
     report["cccl_cub_version"] = Integer(CUB_VERSION);
     report["thrust_version"] = Integer(THRUST_VERSION);
@@ -240,10 +331,12 @@ int main(int argc, char** argv) {
     Cuda(cudaDriverGetVersion(&driver)); Cuda(cudaRuntimeGetVersion(&runtime));
     report["driver"] = Integer(driver); report["runtime"] = Integer(runtime);
     report["comparison"] = String("Every actual GPU result checked exactly against the shared independent host oracle; no tolerance");
-    report["scope"] = String("P5-N06 ranking RNG/pairs and training Philox/RandomWeight primitives; no unweighted shuffle or full gradient comparison");
+    report["scope"] = String("P5-N06 ranking RNG/pairs and training RNG streams with unweighted shuffle/ColumnSampler hierarchy; no weighted log-key or full gradient comparison");
     Philox(&ctx, &report);
     Distribution(&ctx, &report);
     Pairs(&ctx, &report);
+    Shuffle(&ctx, &report);
+    ColumnHierarchy(&report);
     report["status"] = String("passed-exact-corpus");
     std::printf("PASS actual NVIDIA RNG and ranking pair corpus; broader CUDA parity remains\n");
   } catch (std::exception const& error) {

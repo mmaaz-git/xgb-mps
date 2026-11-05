@@ -256,8 +256,8 @@
   },
   "build_driver_check": "Mocked compile/link lifecycle passed: numerical/aft/rng binary metadata, shared RNG fixture and oracle input hashes, aggregate object target. Does not execute NVCC or GPU code.",
   "cuda_compile": {
-    "status": "not_run",
-    "reason": "Existing AFT compile run 42051624772 is still live; avoid cancelling it with a new compile-triggering push."
+    "status": "not_run_at_this_harness_revision",
+    "reason": "rng-v1 extended to rng-v2 before first CUDA build; current compiler status belongs to the column extension record."
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -271,5 +271,6 @@
     "Targets modern cuda::std::philox4x64; legacy Thrust RNG branch is rejected, not declared equivalent.",
     "CUDA uses contiguous one-target labels; Metal additionally checks stride-three labels and batch-buffer reuse.",
     "No full ranking-gradient, unweighted column-shuffle, distributed or general caller equivalence claim."
-  ]
+  ],
+  "superseded_by": "validation/rng-column-contract-m3-run.json"
 }

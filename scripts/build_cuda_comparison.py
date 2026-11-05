@@ -17,7 +17,9 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "tests/cuda_numerical_contracts.cu", "tests/cuda_comparison/CMakeLists.txt",
           "tests/cuda_comparison/nvcomp_link_check.cc", "tests/cuda_aft_contracts.cu",
           "tests/aft_contract_io.h", "tests/cuda_rng_contracts.cu", "tests/rng_contract_fixtures.h",
-          "tests/cuda_ranking_pairs.h", "tests/cuda_philox_reference.h", "scripts/build_cuda_comparison.py")
+          "tests/cuda_ranking_pairs.h", "tests/cuda_philox_reference.h",
+          "tests/column_rng_contract_fixtures.h", "tests/cuda_column_reference.h",
+          "scripts/build_cuda_comparison.py")
 
 
 def sha(path):

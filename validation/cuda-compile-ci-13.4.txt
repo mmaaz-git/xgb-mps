@@ -123,3 +123,16 @@ VERIFY-2 numerical-v2 consumer build (terminal success, no NVIDIA execution):
   Numerical executable SHA256: 0e5dad78aaa901c6018e89ceb9e2da948b41fa81984bfbcf4c49fe91ebc2d93b
   CUDA library SHA256: e1a9ccaddcc5982d98f73e596d1993d0e84e9a75d2fb6e214362dd23db2142aa
   This run predates the AFT consumer; it does not validate that new executable.
+
+VERIFY-2 AFT and numerical consumers (terminal success, no NVIDIA execution):
+  5e1adc9f9944b9397bb37f236557a2fd68a5ecca: 42051624772, success,
+    completed 2026-11-05T15:33:18Z
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42051624772
+  Early nvCOMP probe and both numerical/AFT objects compiled/linked as applicable.
+  All 197 production compile/link steps and both final executable links passed.
+  Artifact cuda-compile-evidence; local root results/cuda-compile-42051624772
+  Log SHA256: c90994709d2033a26a04ce2fbfb96e0badcca16314f002bbdfab410dec3ba815
+  Build record SHA256: 2db30b2d726e1f37e267fb1edb0843ce14cabcc33b5ebb5d41143b13158b04d3
+  AFT executable SHA256: f205feef277bcf10651ca5a33b9f8606328c895a3ec764a1d29a4746a46012f5
+  CUDA library SHA256: 2cb096603bc9531b6db9c88d5eafea379a12fcbc44274165eb714fe7b9c84597
+  This run predates RNG consumers and does not validate those new executables.

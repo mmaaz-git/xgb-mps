@@ -18,6 +18,7 @@
 #include "../xgboost/src/common/metal_sampling.h"
 #include "../xgboost/src/common/random.h"
 #include "cuda_column_reference.h"
+#include "column_rng_contract_fixtures.h"
 #include "xgboost/context.h"
 
 using namespace xgboost;
@@ -39,14 +40,7 @@ std::uint32_t Bits(float x) {
 void Case(std::uint32_t n, std::uint32_t count, std::uint32_t seed, int mode) {
   current = "n=" + std::to_string(n) + " count=" + std::to_string(count) +
             " seed=" + std::to_string(seed) + " mode=" + std::to_string(mode);
-  std::vector<bst_feature_t> features(n);
-  for (std::uint32_t i = 0; i < n; ++i) features[i] = i * 3 + 1;
-  // Sampling accepts unordered feature IDs; final order must still be numerical.
-  std::reverse(features.begin(), features.end());
-  if (mode == 0 && n > 2) {
-    features[0] = 0xffffffffu;
-    features[1] = 0x80000001u;
-  }
+  auto features = rng_contracts::ColumnFeatures(n, mode);
   std::vector<float> weights(mode ? 3 * n + 1 : 0, 1);
   for (std::size_t i = 0; i < weights.size(); ++i) {
     if (mode == 2) weights[i] = float(1 + i % 19) / 17;
@@ -366,32 +360,11 @@ int main() {
       Check(selected == cuda_reference::SampleFeatures(features, {}, 7, 7),
             "Column sampler does not use CUDA's Thrust shuffle");
     }
-    for (std::uint32_t n : {1u, 2u, 3u, 31u, 32u, 33u, 255u, 256u, 257u, 623u, 624u, 625u, 2047u,
-                            2048u, 2049u, 4095u, 4096u, 4097u, 65537u}) {
-      for (int mode = 0; mode < 7; ++mode) {
-        Case(n, 1, 0, mode);
-        Case(n, std::max(1u, n / 3), 7, mode);
-        Case(n, n, 0xffffffffu, mode);
-      }
-    }
-    for (std::uint32_t seed = 1; seed <= 48; ++seed) {
-      Case(1031, 517, seed, 0);
-      Case(1031, 517, seed, 2);
-    }
-    for (std::uint32_t seed : {2147483646u, 2147483647u, 2147483648u, 0xfffffffeu})
-      for (std::uint32_t n : {1u, 255u, 256u, 257u, 2049u}) Case(n, std::max(1u, n / 2), seed, 0);
-    for (int mode : {0, 2, 3, 6}) Case(1000003, 500003, 9852, mode);
-    for (std::uint32_t n : {3u, 257u, 4097u})
-      for (bool weighted : {false, true})
-        for (auto rates : {std::vector<float>{1, 1, 1},
-                           {0.7f, 1, 1},
-                           {1, 0.7f, 1},
-                           {1, 1, 0.7f},
-                           {0.9f, 0.7f, 0.5f}})
-          {
-            Hierarchy(n, rates[0], rates[1], rates[2], weighted);
-            ResidentHierarchy(n, rates[0], rates[1], rates[2], weighted);
-          }
+    rng_contracts::ColumnCases(Case);
+    rng_contracts::ColumnHierarchies([](auto n, float tree, float level, float node, bool weighted) {
+      Hierarchy(n, tree, level, node, weighted);
+      ResidentHierarchy(n, tree, level, node, weighted);
+    });
     ResidentAliases(false);
     ResidentAliases(true);
     ReadOnlyInputsAndRejectedPublication();

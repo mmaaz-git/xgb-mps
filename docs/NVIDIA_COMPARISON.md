@@ -4,7 +4,8 @@ VERIFY-2 requires actual GPU execution. The current native harness,
 `numerical-v2`, covers **P5-N01, P5-N08, P5-N13 and P5-N14**, using the same 39
 inputs as the Metal numerical-contract test. A second native harness covers
 **P5-N02**, using the complete AFT corpus described below. A third covers
-**P5-N06** ranking RNG and raw pairs. The other eleven numerical contracts and
+**P5-N06** ranking RNG and raw pairs plus **training-rng-modern** streams and
+unweighted column sampling. The other ten numerical contracts and
 broader caller/integration comparisons remain work;
 these harnesses are not a full parity certificate.
 
@@ -191,15 +192,18 @@ only; the CUDA reader consumes the uncompressed input-only file.
 
 ## Exact RNG streams and ranking pairs
 
-`cuda_rng_contracts` uses shared generators for the entire existing Metal corpus:
+`cuda_rng_contracts` (`rng-v2`) uses shared generators for the existing Metal RNG
+and ranking corpus and the unweighted column-sampling cases:
 
 | Corpus | NVIDIA execution | Exact checks |
 | --- | --- | --- |
 | 1,060,276 Philox queries | Vendored `DefaultRng` and production `RandomWeight` | Every engine word and FP32 uniform-draw bit pattern, including 64-bit discard boundaries |
 | 41,200 seed/range/discard cases; 659,200 draws | Vendored `UniformIntDistribution<size_t>` using an instrumented production engine | Draw, consumed engine position and next engine word; singleton ranges and rejection sampling retained |
 | 74 cases; 9,068,696 raw ranking pairs | Production `RankingCache`, prediction/label sorts and `MakePairsOp<false>` | Every prediction rank and both indices of every pair; seed/group wrap, homogeneous labels, empty queries and the large reused-batch Metal case retained |
+| 128 unweighted column cases; 1,320,913 permutation entries | Thrust shuffle with its separate `default_random_engine`, followed by prefix retention and GPU sorting, as in `random.cu` | Full permutations and 646,087 selected IDs; includes the million-column case, unsigned feature-ID boundaries and empty input |
+| 15 unweighted tree/level/node hierarchies; 210 outputs | Actual production `ColumnSampler`, including its CUDA initialization and `SampleFeature` consumer | Selected IDs, cached-level behavior across two trees, and exact parent RNG consumption |
 
-The shared fixture header preserves the old inputs bit for bit, including signed
+The shared fixture headers preserve the old inputs bit for bit, including signed
 zeros and subnormal labels. It uses standard integer engines, without
 implementation-defined standard random distributions. The Metal pair test still
 passes labels through its stride-three view. CUDA's `MetaInfo` stores the same
@@ -224,14 +228,21 @@ tolerance-based report comparator for this exact contract.
 
 Compilation requires the modern `cuda::std::philox4x64` branch and rejects an
 older Thrust fallback. The Philox/`RandomWeight` portion also contributes evidence
-for training RNG, but the separate unweighted column shuffle and broader
-sampling caller comparisons remain open. It therefore adds one complete
-contract runner, P5-N06. No NVIDIA result exists yet. The
+for training RNG. The unweighted shuffle primitive is a separate execution of
+the source's Thrust calls, not a capture of a private `ColumnSampler` temporary;
+the hierarchy cases invoke the actual production consumer. Weighted selection's
+log-key arithmetic and broader sampling caller combinations still need comparison.
+Together these provide runners for P5-N06 and training-rng-modern; no NVIDIA
+result exists yet. The
 [M3 record](../validation/rng-contract-m3-run.json) contains the three passing
-Metal groups and the input-preservation check. To rerun those groups:
+Metal RNG groups and their input-preservation check. The
+[column extension record](../validation/rng-column-contract-m3-run.json) adds the
+unchanged column matrix and full passing Metal column group (including its
+additional weighted/local storage checks). Those additional checks are not
+claimed as new CUDA weighted-selection evidence. To rerun the four groups:
 
 ```sh
-bash scripts/test.sh --native metal_cuda_rng metal_ranking_rng metal_ranking_pairs_api
+bash scripts/test.sh --native metal_cuda_rng metal_ranking_rng metal_ranking_pairs_api metal_column_sampling_api
 ```
 
 ## Production sketch, training and prediction comparison
@@ -285,6 +296,6 @@ same model bit for bit. HIGGS dispatched five sketch batches, and its cuts and
 first predictive tree exactly reproduce the earlier full benchmark. The
 [run record](../validation/gpu-pipeline-m3-run.json) includes hashes, commands,
 the initial validator error and 18 passing synthetic integrity tests. NVIDIA
-results are still absent. These integration cases do not close the eleven
+results are still absent. These integration cases do not close the ten
 remaining numerical contracts or cover external memory, native device inputs,
 distributed execution and all other caller combinations.
