@@ -146,7 +146,9 @@ def main():
                     *(args.python or ["tests"]),
                     "--require-metal",
                 ],
-                {},
+                # pytest.ini updates only the parent interpreter's sys.path.
+                # Distributed workers run scripts directly and inherit this env.
+                {"PYTHONPATH": str(ROOT / "xgboost/python-package") + values["pythonpath_suffix"]},
             )
         )
     if args.dry_run:
