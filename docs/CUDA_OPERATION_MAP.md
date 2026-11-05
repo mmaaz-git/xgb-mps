@@ -27,7 +27,8 @@ PORT-9 at `1034657` ([evidence](../validation/cuda-port9-m3.txt)), and PORT-1 at
 ([evidence](../validation/cuda-port3-m3.txt)). PORT-6 is locally fixed at
 `2bfb914` ([evidence](../validation/cuda-port6-m3.txt)), and PORT-7 at `796e9fa`
 ([evidence](../validation/cuda-port7-m3.txt)), and PORT-8 at `ed5afcf`
-([evidence](../validation/cuda-port8-m3.txt)); two implementation tasks remain.
+([evidence](../validation/cuda-port8-m3.txt)), and PORT-10 at `30639c6`
+([evidence](../validation/cuda-port10-m3.txt)); one audited implementation task remains.
 The frozen audit retains its original findings. PORT-4/5 classification
 is complete for that ledger; full parity remains unproven.
 
@@ -40,6 +41,8 @@ NVIDIA execution and other Apple hardware are not represented by M3 tests.
 CUDA compilation/linking also passed at audit baseline `382f78c`
 ([run 41987882440](https://github.com/mmaaz-git/xgb-mps/actions/runs/41987882440)), including
 NCCL, nvCOMP and federated consumers. See [compiler evidence](../validation/cuda-compile-ci-13.4.txt).
+The latest successful compile covers `0409c7f`, including PORT-6/7/8;
+PORT-10 needs its own completed compile result.
 Compilation is not runtime or numerical equivalence. Performance follows
 operation/storage correctness; historical timings are not current measurements.
 

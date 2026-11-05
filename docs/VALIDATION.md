@@ -91,8 +91,8 @@ ignored `results/`. The latest pre-review full regression is
 [native CSR storage](../validation/cuda-metal-native-csr-storage-m3.txt); review
 fixes have [their own record](../validation/repo-review-2026-11-05.txt).
 
-Latest full local regression: [PORT-8](../validation/cuda-port8-m3.txt), source
-`ed5afcf`, 103 native groups and 3,647 Python passes with one expected skip,
+Latest full local regression: [PORT-10](../validation/cuda-port10-m3.txt), source
+`30639c6`, 103 native groups and 3,647 Python passes with one expected skip,
 plus the separate CPU build/API/schema and nine updater checks.
 PyTorch and MLX interop ran. The diagnostic schema now has 303 native counters
 and 305 C API fields; initializer positions and CPU/Metal key agreement were checked.

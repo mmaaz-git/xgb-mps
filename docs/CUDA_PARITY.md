@@ -13,7 +13,7 @@ remain.** See the [ordered plan](PLAN.md).
 
 | Area | Current implementation | Boundary |
 | --- | --- | --- |
-| Tree training | Hist/approx histograms, quantization, sampling, scalar/vector split arithmetic, partitioning, constraints and leaf fitting have Metal paths | Bound gathers and numeric thresholds still use host payloads |
+| Tree training | Hist/approx histograms, quantization, sampling, scalar/vector split arithmetic, partitioning, constraints and leaf fitting have Metal paths | Source-defined host orchestration remains; NVIDIA runtime comparisons are pending |
 | Objectives/metrics | Regression, multiclass, ranking, AFT, adaptive objectives and metrics have Metal paths | Numerical comparisons have operation-specific limits |
 | Prediction | Tree/leaf prediction, native outputs, contributions/interactions have Metal paths | Source-defined host model setup/serialization remains |
 | Data | Native tensors/columns, CSR packing, sketches, quantile matrices, dictionaries, metadata, external caches and optional Snappy | Native ordinary entries stay resident through sketch/compression; producer readiness is synchronous |
@@ -28,7 +28,6 @@ not every branch's behavior.
 
 | Plan ID | Remaining CUDA behavior or evidence |
 | --- | --- |
-| PORT-10 | Selected numeric cut/−∞ threshold materialization runs on CPU; categorical bit construction already runs on GPU. |
 | PORT-11 | Sketch categorical detection and pointer initialization still perform CUDA GPU work on CPU. |
 
 PORT-4/5 classification is complete for the frozen [audit](CUDA_AUDIT.md):
@@ -56,7 +55,10 @@ independent cut oracles and Torch/MLX cases pass
 ([evidence](../validation/cuda-port7-m3.txt)). PORT-8 is locally fixed at `ed5afcf`:
 GPU bound updates feed resident snapshots, scalar/vector feature evaluation and
 root finalization; growth, aliases, lifetimes and complete-tree checks pass
-([evidence](../validation/cuda-port8-m3.txt)). Two implementation tasks remain.
+([evidence](../validation/cuda-port8-m3.txt)). PORT-10 is locally fixed at `30639c6`:
+selected thresholds resolve on GPU, with resident cuts through winner/category
+consumers; exact metadata and complete-tree checks pass
+([evidence](../validation/cuda-port10-m3.txt)). One audited implementation task remains.
 The frozen audit retains its original findings. This is a finite
 implementation queue, not proof that no unlisted defects remain. Numerical
 acceptance fixtures and NVIDIA comparisons remain separate verification work.
@@ -92,17 +94,17 @@ reproduced defects, confirmed gaps and architecture risks.
 
 ## Evidence boundary
 
-Latest full local regression covers `ed5afcf`: **103 native groups and 3,647
+Latest full local regression covers `30639c6`: **103 native groups and 3,647
 Python passes, one expected skip**, plus CPU build/API/schema and nine updater
 tests. Both PyTorch and MLX GPU interop tests ran.
-[Configuration, source hashes and results](../validation/cuda-port8-m3.txt).
+[Configuration, source hashes and results](../validation/cuda-port10-m3.txt).
 Optional federated learners were last tested at `dd44829`
 ([record](../validation/cuda-metal-native-csr-storage-m3.txt)). Earlier validation
 records retain their original scope and failures.
 
-CUDA compile CI passed at `a531694`, including PORT-3
-([run 42010137944](https://github.com/mmaaz-git/xgb-mps/actions/runs/42010137944)).
-The subsequent PORT-6/7/8 sources still need completed CI evidence. CI compiles/links on
+CUDA compile CI passed at `0409c7f`, including PORT-6/7/8
+([run 42020760438](https://github.com/mmaaz-git/xgb-mps/actions/runs/42020760438)).
+The subsequent PORT-10 source still needs completed CI evidence. CI compiles/links on
 a CPU runner. **No NVIDIA runtime comparison has been performed.** Other Apple
 hardware is also untested. [Historical benchmarks](PUBLISHED_BENCHMARKS.md)
 predate subsequent correctness changes and are not current-HEAD measurements.

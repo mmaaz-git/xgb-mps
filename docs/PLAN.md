@@ -24,11 +24,11 @@ Track three separate claims:
 
 The audit classified 174 logical operations and all 1,078 listed lexical sites
 across 42 families / 109 CUDA roots at `382f78c`. Sixteen missing/defective rows
-map to **10 implementation tasks** below; NUM-1, PORT-9 and PORT-1/2/3/6/7/8 are locally fixed,
-and two remain.
+map to **10 implementation tasks** below; NUM-1, PORT-9 and PORT-1/2/3/6/7/8/10 are locally fixed,
+and one remains.
 These unequal-sized rows are not a
 completion percentage, and this bounded audit cannot prove the absence of
-unlisted defects. **Next: PORT-10 numeric thresholds, then PORT-11 sketch initialization.** No new kernels were added during
+unlisted defects. **Next: PORT-11 sketch initialization.** No new kernels were added during
 classification.
 
 ## Ordered work queue
@@ -43,11 +43,11 @@ classification.
 | PORT-1 | GPU vector root/child/model weights | Locally complete at `c78cb43`; CUDA compile passed at `383b448` | Resident producer/storage/consumer chain, growth/aliases and non-MPS host views checked; 100 native groups plus final predictor check, 3,595 Python passes and CPU checks; [evidence](../validation/cuda-port1-m3.txt) |
 | PORT-2 | GPU selected categorical bitsets | Locally complete at `6a606e1`; CUDA compile passed at `99cbeb3` | Resident selection, queued state, model/view/partition consumers; 100 native groups, 3,597 Python passes and CPU checks; [evidence](../validation/cuda-port2-m3.txt) |
 | PORT-3 | GPU exact vector node/child sums | Locally complete at `ab87872`; CUDA compile passed at `a531694` | Resident exact roots, queued child storage, parent gathers and propagation; 101 native groups, 3,603 Python passes and CPU checks; [evidence](../validation/cuda-port3-m3.txt) |
-| PORT-6 | Resident sampled/allowed feature IDs | Locally complete at `2bfb914`; CUDA CI pending | GPU sampler/filter/task/gather/consumer chain, exact assembly and lifetime checks; 102 native groups, 3,603 Python passes and CPU checks; [evidence](../validation/cuda-port6-m3.txt) |
-| PORT-7 | Resident native quantile weights | Locally complete at `796e9fa`; CUDA CI pending | Native row/group weights and expansion stay GPU-owned through quantile and host/disk constructors; six native groups, 820 Python passes and CPU checks; [evidence](../validation/cuda-port7-m3.txt) |
-| PORT-8 | GPU split-bound gathers | Locally complete at `ed5afcf`; CUDA CI pending | GPU gather/snapshot/feature/finalizer chain and root consumers; 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port8-m3.txt). Unsupported reduced-gradient/monotone refit restriction unchanged |
-| PORT-10 | GPU numeric split thresholds | Next | Selected cut and −∞ materialization executes on GPU; category-bit construction already exists, with categorical cases retained as regression guards |
-| PORT-11 | GPU sketch initialization | Open; after PORT-10 | GPU categorical-type reduction and pointer-payload clear; numeric/categorical/mixed/empty and subsequent-batch fixtures |
+| PORT-6 | Resident sampled/allowed feature IDs | Locally complete at `2bfb914`; CUDA compile passed at `0409c7f` | GPU sampler/filter/task/gather/consumer chain, exact assembly and lifetime checks; 102 native groups, 3,603 Python passes and CPU checks; [evidence](../validation/cuda-port6-m3.txt) |
+| PORT-7 | Resident native quantile weights | Locally complete at `796e9fa`; CUDA compile passed at `0409c7f` | Native row/group weights and expansion stay GPU-owned through quantile and host/disk constructors; six native groups, 820 Python passes and CPU checks; [evidence](../validation/cuda-port7-m3.txt) |
+| PORT-8 | GPU split-bound gathers | Locally complete at `ed5afcf`; CUDA compile passed at `0409c7f` | GPU gather/snapshot/feature/finalizer chain and root consumers; 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port8-m3.txt). Unsupported reduced-gradient/monotone refit restriction unchanged |
+| PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA CI pending | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
+| PORT-11 | GPU sketch initialization | Next | GPU categorical-type reduction and pointer-payload clear; numeric/categorical/mixed/empty and subsequent-batch fixtures |
 | VERIFY-1 | Integration at a fixed revision | After required implementation tasks | Full native/Python run, CPU build/API + updater checks, optional federated checks, CUDA compile; complete required numerical divergence fixtures; record dependencies/skips and no unexplained required-operation gaps |
 | VERIFY-2 | NVIDIA execution comparison | External hardware required | Shared fixtures run against vendored CUDA on NVIDIA; publish numerical contracts and failures, not just compiler success |
 | PERF-1 | Profile/optimize a frozen benchmark matrix | After local coverage/correctness milestone | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
@@ -55,26 +55,27 @@ classification.
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
 while hardware is unavailable. Cross-Apple-hardware claims also require actual runs.
 
-## Next bounded change: PORT-10
+## Next bounded change: PORT-11
 
-Materialize selected numeric split thresholds on GPU. Scalar and vector
-evaluators currently use the selected bin to read a cut value or construct
-negative infinity on CPU; the CUDA split kernels perform these operations.
+Move sketch categorical detection and initial column-pointer clearing to GPU
+execution. CUDA's `SketchContainer` constructor performs a device `any_of` and
+initializes device pointer arrays; `MetalCudaSketch` currently reduces types and
+creates the initial zero pointer payload on CPU.
 
-- Feed cut values into GPU winner/finalization code and return the selected
-  threshold with the existing source-defined selected-node metadata.
-- Preserve scalar exclusive-bin and vector forward/backward formulas, including
-  first-bin negative infinity. Invalid/root-only candidates must avoid cut loads.
-- Check exact threshold bits, missing directions and ties with CUDA-source
-  fixtures; retain OHE/partition category regressions and full-tree checks.
-- Categorical bit construction already runs on GPU. Sketch initialization remains
-  PORT-11; this task does not expand into unrelated selection or arithmetic work.
+- Reduce resident feature types on GPU and publish the categorical flag used by
+  host scheduling, as CUDA does. Preserve the owned feature-type snapshot.
+- Clear initial resident column pointers on GPU, including the zero-column case.
+- Check numeric, categorical, mixed and empty types, threadgroup boundaries,
+  input lifetime/mutation, empty batches and subsequent nonempty batches against
+  the existing independent sketch oracle.
+- Preserve merge/prune, row counts and CUDA-defined host final-cut generation.
+  This task does not require a sketch rewrite or performance changes.
 
-Resident split-bound gathers are recorded under
-[PORT-8](../validation/cuda-port8-m3.txt): GPU updates feed owned snapshots,
-feature evaluation and finalization before CPU comparisons; aliases, growth,
-source lifetime and scalar/vector complete-tree checks pass. The unsupported
-reduced-gradient/monotonic combination remains rejected, as in CUDA.
+[PORT-10](../validation/cuda-port10-m3.txt) now resolves scalar exclusive and
+vector forward/backward thresholds on GPU. Exact metadata bits, resident cut
+consumers, category regressions and complete-tree checks pass. The first shader
+compile failed on a field-name mismatch; the corrected focused and full runs
+pass and retain that failed attempt in the evidence.
 
 ## PORT-4 audit boundary
 

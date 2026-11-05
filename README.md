@@ -34,17 +34,19 @@ quantile precision and vector-row validity bugs, plus GPU state/data-placement
 gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
 **not a completion percentage or proof of parity**. See the
 [findings and evidence](docs/CUDA_AUDIT.md) and [ordered plan](docs/PLAN.md).
-Eight tasks are locally complete: [quantile precision](validation/cuda-num1-m3.txt),
+Nine tasks are locally complete: [quantile precision](validation/cuda-num1-m3.txt),
 [vector sampling validity](validation/cuda-port9-m3.txt),
 [resident vector weights](validation/cuda-port1-m3.txt),
 [resident categorical state](validation/cuda-port2-m3.txt),
 [exact vector sums](validation/cuda-port3-m3.txt),
 [resident feature selection](validation/cuda-port6-m3.txt),
-[resident quantile weights](validation/cuda-port7-m3.txt), and
-[GPU split-bound gathers](validation/cuda-port8-m3.txt).
-The latest change (`ed5afcf`) keeps GPU-updated monotonic bounds on Metal through
-scalar/vector split evaluation and root finalization. **Two implementation tasks
-remain:** numeric split thresholds and sketch initialization.
+[resident quantile weights](validation/cuda-port7-m3.txt),
+[GPU split-bound gathers](validation/cuda-port8-m3.txt), and
+[GPU split thresholds](validation/cuda-port10-m3.txt).
+The latest change (`30639c6`) resolves selected numeric thresholds on the GPU and
+keeps cut values resident through scalar/vector winner and category handling.
+**One audited implementation task remains:** sketch initialization. Integration
+and external-hardware verification follow it.
 Numerical, scheduling and external-hardware limits remain explicit in the
 [parity ledger](docs/CUDA_PARITY.md).
 
@@ -107,10 +109,10 @@ check GPU execution. PyTorch and MLX are additional dependencies for their
 native-tensor tests. Optional federated tests require `brew install grpc protobuf`
 and run with `bash scripts/test_federated.sh` in separate build directories.
 
-Latest full regression covers `ed5afcf`: **103 native groups and 3,647 Python
+Latest full regression covers `30639c6`: **103 native groups and 3,647 Python
 tests passed, with one expected skip**, plus CPU build/API/schema and nine updater
 checks. PyTorch and MLX GPU interop tests ran. The
-[record](validation/cuda-port8-m3.txt) includes commands, source hashes and limits.
+[record](validation/cuda-port10-m3.txt) includes commands, source hashes and limits.
 Optional federated checks were last run at `dd44829`, as recorded
 [here](validation/cuda-metal-native-csr-storage-m3.txt).
 
