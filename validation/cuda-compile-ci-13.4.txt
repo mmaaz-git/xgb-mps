@@ -163,3 +163,16 @@ VERIFY-2 corrected RNG-v2 consumer (terminal success, no NVIDIA execution):
   RNG executable SHA256: b3a5a1f58322a76ead4df624a85e5bb7543130feb28b8ddaf364c9f3510acabc
   CUDA library SHA256: 305f371982968a87545121d17fca71c27fcbc4bfa3202f6ccc845880d4924089
   This run predates the primitive-math consumer and does not validate it.
+
+VERIFY-2 primitive-math consumer (terminal success, no NVIDIA execution):
+  69d95e2ed18c9aab31e15534b70d2d08ffd621ac: 42062682076, success,
+    completed 2026-11-05T16:42:29Z
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42062682076
+  Early nvCOMP probe and numerical/AFT/RNG/math objects passed.
+  All 197 production build steps and all four final executable links passed.
+  Artifact cuda-compile-evidence; local root results/cuda-compile-42062682076
+  Log SHA256: cbfd2f5c1c7cf1075f996f1fd64b1a972108dfabddd4e376c2b982ebd99d989e
+  Build record SHA256: 07ce60248210e61b62b7ae48e99c1b8b5f130a036610ddbb6a7c65eefb5ea39d
+  Math executable SHA256: 65520e5ca2926e91279ba9ed4877f4ecb3d11f305995f6824fc478ecef8bfd45
+  CUDA library SHA256: 34f5df00397a8a31a00d98a4ef8f06e01ff07417cda4644ab9bed2cf305580bc
+  This run predates the ranking-rounding consumer and does not validate it.

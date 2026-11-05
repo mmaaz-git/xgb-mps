@@ -247,5 +247,6 @@
     "Different shared factors and dependent bias outputs remain review items, not automatically accepted equivalence.",
     "Mode 2 zero-bias nonfinite-exponent cost behavior is a separate domain policy. Gradients/prefixes retain ordinary checks.",
     "Full input/framing validation is not hardware authentication; retain actual runtime metadata/logs with matching build record."
-  ]
+  ],
+  "harness_commit": "5898e413d3cfecd848cf282e51cdd441ddfed046"
 }

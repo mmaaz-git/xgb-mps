@@ -119,8 +119,9 @@ The P5-N03 primitive-math runner exports the unchanged binary64 arithmetic/cast,
 exp/log/erf and FP32 hypot/tanh corpora: **1,942,163 observed fields**. Three Metal
 groups and 16 synthetic report-integrity tests pass. Existing CPU budgets remain
 unchanged; GPU-to-GPU math differences require review, even at one ULP. See the
-[run record](../validation/math-contract-m3-run.json). CUDA compilation and
-execution of this new consumer remain pending. This does not close P5-N12's
+[run record](../validation/math-contract-m3-run.json). The math consumer compiled
+and linked in [run 42062682076](https://github.com/mmaaz-git/xgb-mps/actions/runs/42062682076);
+NVIDIA execution remains pending. This does not close P5-N12's
 compiler/contraction requirement or establish universal error bounds.
 The ranking-rounding runner adds P5-N04/05 observations from all 64 existing
 cases: 6,345,280 result/diagnostic fields. The Metal export and 14 synthetic
