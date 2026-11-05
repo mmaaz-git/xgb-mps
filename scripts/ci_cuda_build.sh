@@ -26,10 +26,11 @@ cmake -S xgboost -B build-cuda-ci -G Ninja \
   -DUSE_NVCOMP=ON -DPLUGIN_FEDERATED=ON -DUSE_OPENMP=ON \
   -Dnvcomp_DIR=/usr/lib/x86_64-linux-gnu/cmake/libnvcomp5-dev-cuda-13/nvcomp \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-echo 'Compiling and linking libxgboost (no GPU execution)'
-cmake --build build-cuda-ci --parallel 2
-echo 'Compiling the shared numerical observation harness (no GPU execution)'
+echo 'Compiling the numerical harness object before the full library build'
 python3 scripts/build_cuda_comparison.py --build-dir build-cuda-ci \
-  --output-dir results/cuda-comparison-build
+  --output-dir results/cuda-comparison-build --phase compile
+echo 'Compiling libxgboost and linking the numerical harness (no GPU execution)'
+python3 scripts/build_cuda_comparison.py --build-dir build-cuda-ci \
+  --output-dir results/cuda-comparison-build --phase link
 echo 'PASS CUDA compilation/linking; GPU runtime behavior remains untested'
 date -u

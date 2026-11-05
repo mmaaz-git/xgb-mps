@@ -75,9 +75,13 @@ results/cuda-comparison-build/cmake/cuda_numerical_contracts \
   results/cuda-observations.jsonl
 ```
 
-The build driver first checks/rebuilds changed production dependencies, then
-compiles the harness using the configured compiler, CCCL, architectures and
-arithmetic flags. It writes `build.json`, including terminal status. The CI's
+The build driver first compiles the harness object using the configured compiler,
+CCCL, architectures and arithmetic flags. It then checks/rebuilds production
+dependencies and links the executable. This exposes harness compiler errors
+before the expensive library build. It writes `build.json`, including terminal
+status; CI separates the object and link phases and rejects changed inputs
+between them. Git metadata reads trust only the selected checkout for that
+invocation, accommodating container checkout ownership. The CI's
 `scripts/ci_cuda_build.sh` does this against its CUDA/NCCL/nvCOMP/federated build,
 but **does not run the final GPU command**.
 
