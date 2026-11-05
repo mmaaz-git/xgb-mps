@@ -1,5 +1,5 @@
 {
-  "status": "Complete Metal statistics corpus, report integrity and host type/codec checks passed; CUDA statistics compile/runtime pending",
+  "status": "Complete Metal statistics corpus, report integrity and host type/codec checks passed; CUDA statistics compile in progress; NVIDIA execution absent",
   "suite": "stats-v1",
   "scope": "Full existing metal_stats_api corpus for P5-N07; includes median and mean callers as well as generic/optional-weight sums and precision/scalar witnesses.",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -228,10 +228,15 @@
     "log_sha256": "e27efff16d4133b70eba1a52c4a365952cd8a0492af90e3057bcfa8b031def81"
   },
   "cuda_compile": {
-    "status": "not_submitted",
+    "status": "in_progress",
     "gpu_execution": false,
     "previous_public_objective_run": 42073244457,
-    "previous_run_includes_statistics": false
+    "previous_run_includes_statistics": false,
+    "run_id": 42079045498,
+    "job_id": 127426912860,
+    "head": "7f441643411a08d4bf5188916af8cac4ff0baf0a",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42079045498",
+    "last_observed_utc": "2026-11-05T17:55:04.417872+00:00"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -243,5 +248,6 @@
     "Bounds apply to these recorded reference checks, not arbitrary CUB associations, toolkit versions or huge batches.",
     "Exact CPU reference bits can depend on the original host execution; the report preserves that evidence instead of regenerating it on another platform.",
     "Valid report framing cannot authenticate GPU execution; retain matching build/runtime metadata and logs."
-  ]
+  ],
+  "harness_commit": "7f441643411a08d4bf5188916af8cac4ff0baf0a"
 }

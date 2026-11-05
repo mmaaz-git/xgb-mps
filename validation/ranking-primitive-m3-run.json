@@ -1,5 +1,5 @@
 {
-  "status": "Complete Metal primitive corpus and integrity checks passed; CUDA primitive compile/runtime pending",
+  "status": "Complete Metal primitive corpus and integrity checks passed; CUDA primitive compile in progress; NVIDIA execution absent",
   "suite": "ranking-primitive-v1",
   "scope": "All existing metal_ranking_rounding inputs and six result fields; adds two separate delta diagnostics per case for P5-N04/05.",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -222,11 +222,15 @@
     "log_sha256": "1119911309a85346dd6a04f52b9b72fee6a5276c25531dcda92c24158cb670bb"
   },
   "cuda_compile": {
-    "status": "not_submitted",
+    "status": "in_progress",
     "gpu_execution": false,
     "prior_public_objective_run": 42073244457,
     "prior_run_includes_primitives": false,
-    "scheduling": "Next compiler build will include primitive and statistics extensions; prior public-objective build succeeded."
+    "run_id": 42079045498,
+    "job_id": 127426912860,
+    "head": "7f441643411a08d4bf5188916af8cac4ff0baf0a",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42079045498",
+    "last_observed_utc": "2026-11-05T17:55:04.416931+00:00"
   },
   "cuda_runtime": {
     "status": "not_run",
