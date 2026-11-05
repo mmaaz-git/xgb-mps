@@ -116,4 +116,5 @@ jobs:
             results/cuda-comparison-build/metric-defined-dynamic-symbols.txt
             results/cuda-comparison-build/cmake/compile_commands.json
             results/cuda-comparison-build/cmake/CMakeCache.txt
+            results/cuda-comparison-build/cmake/nvcomp-runtime-path.txt
           if-no-files-found: ignore

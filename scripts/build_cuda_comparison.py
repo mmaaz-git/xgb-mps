@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_report.h",
           "tests/cuda_numerical_contracts.cu", "tests/cuda_comparison/CMakeLists.txt",
           "tests/cuda_comparison/nvcomp_link_check.cc", "tests/cuda_aft_contracts.cu",
+          "tests/cuda_comparison/nvcomp_runtime.cmake",
           "tests/aft_contract_io.h", "tests/cuda_rng_contracts.cu", "tests/rng_contract_fixtures.h",
           "tests/cuda_ranking_pairs.h", "tests/cuda_philox_reference.h",
           "tests/column_rng_contract_fixtures.h", "tests/cuda_column_reference.h",
@@ -127,6 +128,11 @@ def main():
             run(configure)
             run(["cmake", "--build", str(output / "cmake"), "--target", "cuda_comparison_objects",
                  "--parallel", str(args.jobs)])
+            if cache.get("USE_NVCOMP") == "ON":
+                # Address-only host probe: validates the packaged SONAME search
+                # path without calling CUDA or requiring an NVIDIA device.
+                run([str(output / "cmake/cuda_nvcomp_link_check")])
+                record["nvcomp_loader_probe"] = {"status": "passed", "gpu_execution": False}
             record.update(status="passed-object-compile",
                           compile_commands=json.loads((output / "cmake/compile_commands.json").read_text()))
             save()

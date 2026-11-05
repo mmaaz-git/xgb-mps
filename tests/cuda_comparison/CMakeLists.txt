@@ -12,11 +12,12 @@ if(XGB_USE_NVCOMP)
   # information. Import the same optional package so its nonstandard library
   # directory participates in the consumer's link and build RPATH.
   find_package(nvcomp REQUIRED)
+  include("${CMAKE_CURRENT_LIST_DIR}/nvcomp_runtime.cmake")
   add_executable(cuda_nvcomp_link_check nvcomp_link_check.cc)
   target_compile_features(cuda_nvcomp_link_check PRIVATE cxx_std_17)
   target_link_libraries(cuda_nvcomp_link_check PRIVATE nvcomp::nvcomp CUDA::cudart_static)
-  # Compile/link only: no NVIDIA runtime is present on the CI runner. Check
-  # package dependencies before the expensive production-library compilation.
+  # This host-only program takes a function address; it never calls nvCOMP or
+  # CUDA. Its loader check runs before expensive production compilation.
 endif()
 
 add_custom_target(cuda_comparison_objects)
@@ -48,7 +49,7 @@ foreach(contract numerical aft rng math ranking metric)
   set_target_properties(${binary} PROPERTIES LINKER_LANGUAGE CUDA CUDA_RUNTIME_LIBRARY Static)
   target_link_libraries(${binary} PRIVATE "${XGB_LIBRARY}" CCCL::CCCL CUDA::cudart_static OpenMP::OpenMP_CXX)
   if(XGB_USE_NVCOMP)
-    target_link_libraries(${binary} PRIVATE nvcomp::nvcomp)
+    xgb_link_nvcomp_runtime(${binary})
     add_dependencies(${object} cuda_nvcomp_link_check)
   endif()
 endforeach()

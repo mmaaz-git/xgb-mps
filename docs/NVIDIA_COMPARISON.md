@@ -102,8 +102,11 @@ invocation, accommodating container checkout ownership. The CI's
 `scripts/ci_cuda_build.sh` does this against its CUDA/NCCL/nvCOMP/federated build,
 but **does not run the final GPU command**.
 When production enables nvCOMP, the consumer imports that same CMake package,
-retaining its package-specific library path. A small dependency executable is
-compiled and linked before the harness object; it is never run on CPU-only CI.
+resolves the actual shared object behind its development symlink, and adds that
+runtime directory to the harness search path. Each executable retains a direct
+nvCOMP dependency because ELF RUNPATH is not transitive. A small address-only
+host executable checks library loading before the production build; it calls
+neither nvCOMP nor CUDA functions. The resolved paths are preserved in CI evidence.
 
 Keep the runtime log, observation file and build record together. Run the same
 source/fixture revision on both platforms. The comparison command rejects
@@ -795,7 +798,12 @@ prevents these definitions from replacing library symbols. The build driver
 compares registered names/factory types with the ordinary numerical executable
 and checks the metric executable's defined dynamic symbols. These are host-only
 checks, separate from GPU execution. A host prototype passes on the M3; the
-corresponding CUDA compiler and host checks remain pending.
+six CUDA objects, all 197 production steps and six links completed in
+[run 42092645863](https://github.com/mmaaz-git/xgb-mps/actions/runs/42092645863).
+The run then failed before the registry check entered main: Linux could not load
+`libnvcomp.so.5`. Its failed log and exact source hashes are retained. The runtime
+search/dependency fix and early loader probe await CI verification; source
+isolation and NVIDIA execution remain unvalidated.
 
 Ordinary row policies and multiclass/survival reducers use the actual source
 functions. Pseudo-Huber, quantile and expectile terms separately evaluate the

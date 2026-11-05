@@ -1,0 +1,45 @@
+{
+  "status": "Harness loader correction locally validated; real NVIDIA-package CUDA CI verification pending",
+  "recorded_utc": "2026-11-05T20:04:26.808054+00:00",
+  "failed_run": 42092645863,
+  "failed_head": "7e0f91c1a59967b6f6323026dce2a1dd5362b4a1",
+  "failure": "libnvcomp.so.5 could not be loaded before the host registry check entered main",
+  "verified_prior_steps": {
+    "harness_objects": 6,
+    "production_steps": 197,
+    "links": 6,
+    "input_hashes": 31
+  },
+  "fix": [
+    "Resolve the unversioned development symlink to the actual runtime library directory",
+    "Keep a direct ELF dependency so executable RUNPATH can resolve the runtime SONAME",
+    "Execute an address-only loader probe before the production build; no nvCOMP/CUDA calls"
+  ],
+  "source_sha256": {
+    "tests/cuda_comparison/CMakeLists.txt": "2ab38be87eba583fe866b6cf5616be845aa3db96c57e0b2f850ca8d1cea37900",
+    "tests/cuda_comparison/nvcomp_runtime.cmake": "0e141a32e892e0ec6f0644581f72257c575ba99b7f4d0441ba75d6c414b3e6cc",
+    "tests/cuda_comparison/nvcomp_link_check.cc": "996f145aa0f478f1fa844cee1e00fa10056c782a91c10666f9f307285e1d6744",
+    "scripts/build_cuda_comparison.py": "2c3177367a111093b94603fd0142b8c0029da4fd925cd882a7c88ee847daaa9e",
+    "tests/test_cuda_metric_build.py": "2660aac7caaed721b479d8328ddc8cb32a84fe32ec15567d84b38efd03d79694",
+    "tests/test_cuda_loader.py": "5ab5b7611a3d26348114c74fbf0413546efcb1e9d39b530d32d2b09d549efd8e",
+    ".github/workflows/cuda-compile.yml": "ada62794b0e715c4af806db70599446eda72cfaadf4a968a3b1085e11b4e7ed1"
+  },
+  "log_sha256": {
+    "results/verify2-nvcomp-loader-tests-final.log": "657efc051bed88e47ad53601a015657c60f950aedd2d4a89cb6b0505d09d2738",
+    "results/verify2-loader-linux-v3.log": "969da9de0d60a69f088c89b00290e9cfd540eb5aaaa998c61ae564f2780b6c7d",
+    "results/verify2-loader-linux/sampling-engine-gcc.log": "527799cb2cac12c72090e009420e39a922b23d33b809e413396c36a81217fb4b",
+    "results/verify2-loader-linux/sampling-engine-clang.log": "d2e179a03e1956c677b0c56c5d4791795464b710d291c2f674c3c3876e4157ff"
+  },
+  "checks": {
+    "mocked_build_driver": "8 passed; includes early loader success/failure gates",
+    "linux_loader": "Actual CMake helper and probe source; synthetic ELF libraries, two intentionally broken controls fail and corrected executable/probe load",
+    "linux_platform": "Docker Linux aarch64; GCC14.2.0, CMake3.31.6; base python:3.12-slim sha256:23b5dc88c7dd47fec3f960b51dc30d19df9875cfbfc60f3b62d3e5b88cbccf62",
+    "setup_failures": "Initial container omitted Ninja/make. Original logs retained; v3 installed Ninja and passed.",
+    "gpu_execution": false,
+    "actual_nvcomp_runtime_validation": "Pending CI; local loader test uses synthetic libraries"
+  },
+  "limits": [
+    "This is a test-harness loader fix; production source/library unchanged.",
+    "No NVIDIA kernel execution; metric source isolation still requires the real CI job."
+  ]
+}

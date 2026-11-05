@@ -228,3 +228,20 @@ VERIFY-2 complete linalg extension (terminal success, no NVIDIA execution):
   Numerical executable SHA256: b08da4fcf385c566c71c826b8dbd7861747917218ce43cc2ff6421cfce96055c
   CUDA library SHA256: 918ef9ebad245e690905bb2b1b2560cbaf203316315722533a5fa936f222f396
   This run predates the metric consumer and its source-isolation gates.
+
+VERIFY-2 metric compiler run (failed host loader; no NVIDIA execution):
+  7e0f91c1a59967b6f6323026dce2a1dd5362b4a1: 42092645863, failure,
+    completed 2026-11-05T19:46:45Z
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42092645863
+  Six harness object builds, all 197 production steps and six executable links completed.
+  All 31 source/input hashes verified against the exact CI revision.
+  The baseline registry command exited127 before main: libnvcomp.so.5 was not found.
+  Metric registry/factory/symbol isolation did NOT run; this is not a successful full gate.
+  Artifact cuda-compile-evidence; local root results/cuda-compile-42092645863
+  Log SHA256: 6641650e541c9daf71072fdfbf87b39f88f8b454acba31e2322328a5be6249c2
+  Build record SHA256: a8a9a3ce102a116c8efbb575ad303f035cbd996d3fa62cfea5d5b82513d34a0b
+  Loader correction: resolve runtime symlink directory, retain direct ELF dependency,
+    and add an early address-only host loader probe. Real-package CI verification pending.
+  Local Linux aarch64 regression with the actual CMake helper and synthetic libraries passed;
+    both broken controls fail, corrected executable and probe load. Eight mocked driver tests pass.
+  Evidence and limits: validation/cuda-nvcomp-loader-fix.json.

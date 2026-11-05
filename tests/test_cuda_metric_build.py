@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 from types import SimpleNamespace
 import pytest
@@ -27,6 +28,9 @@ def build(tmp_path,monkeypatch):
     output=tmp_path/"report"; state={"bad":None,"calls":[]}
     def command(args,**kwargs):
         state["calls"].append(args)
+        if args[0].endswith("cuda_nvcomp_link_check"):
+            if state["bad"]=="nvcomp-loader": raise subprocess.CalledProcessError(127,args)
+            return SimpleNamespace(stdout="",returncode=0)
         if "--metric-registry" in args:
             if state["bad"]=="command":
                 return SimpleNamespace(stdout="partial diagnostic\n",stderr="loader failure retained\n",returncode=1)
@@ -63,7 +67,7 @@ def test_six_binaries_complete_hashes_and_host_only_isolation_gate(build):
     assert not any("--metric-registry" in c for c in state["calls"])
     record=run("link")
     assert record["status"]=="passed-compile-link" and not record["gpu_execution"]
-    assert len(record["binaries"])==6 and len(record["inputs"])==34
+    assert len(record["binaries"])==6 and len(record["inputs"])==35
     assert {"tests/cuda_metric_source.h","tests/cuda_metric_contracts.cu","tests/metric_contract_io.h",
             "tests/metric_registry_probe.h","tests/cuda_metric_reference.h",
             "xgboost/src/metric/elementwise_metric.cu","xgboost/src/metric/multiclass_metric.cu",
@@ -98,3 +102,21 @@ def test_failed_host_command_retains_stdout_stderr_and_failed_record(build,capsy
     assert (output/'metric-registry-baseline.txt').read_text()=='partial diagnostic\n'
     assert 'loader failure retained' in capsys.readouterr().out
     assert json.loads((output/'build.json').read_text())['status']=='failed'
+
+
+@pytest.mark.parametrize('fail',[False,True])
+def test_nvcomp_loader_gate_precedes_production_build(build,fail):
+    run,state,root,output,driver=build
+    cache=root/'build/CMakeCache.txt'
+    cache.write_text(cache.read_text().replace('USE_NVCOMP:BOOL=OFF','USE_NVCOMP:BOOL=ON'))
+    if fail:
+        state['bad']='nvcomp-loader'
+        with pytest.raises(subprocess.CalledProcessError):run('compile')
+        record=json.loads((output/'build.json').read_text())
+        assert record['status']=='failed' and 'nvcomp_loader_probe' not in record
+    else:
+        record=run('compile')
+        assert record['status']=='passed-object-compile'
+        assert record['nvcomp_loader_probe']=={'status':'passed','gpu_execution':False}
+    assert state['calls'][-1]==[str(output/'cmake/cuda_nvcomp_link_check')]
+    assert not (root/'build/lib/libxgboost.so').exists()

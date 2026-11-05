@@ -175,7 +175,9 @@ independent row/reduction checks pass. Each backend's reduction is checked using
 its own observed terms, with the original Neumaier reference and error bound.
 Eight undefined casts remain Metal-only guards under NUM-OP-36. The CUDA source
 policies/reducers are compiled without production registration or symbol changes;
-their compiler and host isolation gates are pending. See the
+their compile/link steps completed, but the first host isolation command failed
+to load `libnvcomp.so.5` in run 42092645863. The loader correction awaits CI
+verification; host isolation and NVIDIA execution remain pending. See the
 [metric record](../validation/metric-contract-m3-run.json).
 The root/stump extension preserves the complete 405-case corpus, including all
 11,964,810 gradient pairs, strided storage and guards. Normal and validation-layer

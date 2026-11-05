@@ -1,4 +1,4 @@
-// Link-only package dependency check. CI never executes this binary.
+// Host-only link/loader check. Taking an address does not invoke nvCOMP/CUDA.
 #include <nvcomp/snappy.h>
 
 int main() {
