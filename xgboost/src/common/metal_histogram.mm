@@ -13,6 +13,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <utility>
 #include <vector>
@@ -104,6 +105,9 @@ std::atomic<std::uint64_t> shap_dispatches{0}, shap_interaction_dispatches{0}, s
 std::atomic<std::uint64_t> base_score_dispatches{0}, base_score_gpu_time_ns{0};
 std::atomic<std::uint64_t> column_init_dispatches{0}, column_sampling_dispatches{0},
     column_sampling_gpu_time_ns{0};
+std::atomic<std::uint64_t> feature_shared_input_bytes{0}, feature_shared_output_bytes{0},
+    feature_host_input_bytes{0}, feature_readback_bytes{0};
+std::atomic<std::uint64_t> feature_task_dispatches{0}, feature_task_candidates{0};
 std::atomic<std::uint64_t> histogram_conversion_dispatches{0}, histogram_subtraction_dispatches{0},
     resident_split_dispatches{0};
 std::atomic<std::uint64_t> cuda_gradient_sampling_dispatches{0};
@@ -248,6 +252,8 @@ class Runtime {
   id<MTLComputePipelineState> pipeline;
   id<MTLComputePipelineState> split_pipeline, multi_split_pipeline, quantized_split_pipeline;
   id<MTLComputePipelineState> quantized_multi_split_pipeline;
+  id<MTLComputePipelineState> feature_lengths_pipeline, feature_tasks_pipeline,
+      feature_winners_pipeline;
   id<MTLComputePipelineState> split_finalize_pipeline, split_bounds_pipeline,
       split_bounds_init_pipeline;
   id<MTLComputePipelineState> model_scale_pipeline, split_weight_store_pipeline;
@@ -404,6 +410,9 @@ class Runtime {
       split_pipeline = make_pipeline(@"xgb_evaluate_splits");
       quantized_split_pipeline = make_pipeline(@"xgb_evaluate_quantized_splits");
       quantized_multi_split_pipeline = make_pipeline(@"xgb_evaluate_quantized_multi_splits");
+      feature_lengths_pipeline = make_pipeline(@"xgb_feature_split_lengths");
+      feature_tasks_pipeline = make_pipeline(@"xgb_feature_split_tasks");
+      feature_winners_pipeline = make_pipeline(@"xgb_feature_split_winners");
       split_finalize_pipeline = make_pipeline(@"xgb_finalize_split_nodes");
       split_weight_store_pipeline = make_pipeline(@"xgb_store_split_weights");
       split_bounds_pipeline = make_pipeline(@"xgb_update_split_bounds");
@@ -733,9 +742,12 @@ class MetalSplitWorkspace final : public SplitWorkspace {
   id<MTLBuffer> scales, integer_children;
   id<MTLBuffer> node_input, feature_input, node_parents, node_bounds, node_results, node_weights;
   id<MTLBuffer> category_input, category_cuts, category_output, category_error;
+  id<MTLBuffer> feature_ids, feature_lengths, feature_segments, feature_offsets,
+      feature_error, feature_selected;
   std::size_t candidate_count{0};
   std::size_t candidate_child_count{0};
-  std::vector<QuantizedMultiSplitTask> quantized_multi_tasks;
+  struct SumShape { std::uint32_t parent_begin, targets; };
+  std::vector<SumShape> quantized_multi_shapes;
   std::vector<bool> quantized_multi_valid;
   bool vector_candidates{false};
   std::vector<SplitFinalizeNode> finalized_nodes;
@@ -745,7 +757,7 @@ class MetalSplitWorkspace final : public SplitWorkspace {
   void ResetCandidates() {
     candidate_count = candidate_child_count = 0;
     vector_candidates = false;
-    quantized_multi_tasks.clear();
+    quantized_multi_shapes.clear();
     quantized_multi_valid.clear();
     finalized_nodes.clear();
     category_count = category_words = 0;
@@ -2383,7 +2395,13 @@ Statistics GetStatistics() {
           split_sum_apply_dispatches.load(std::memory_order_relaxed),
           split_sum_shared_input_bytes.load(std::memory_order_relaxed),
           split_sum_host_input_bytes.load(std::memory_order_relaxed),
-          split_sum_readback_bytes.load(std::memory_order_relaxed)};
+          split_sum_readback_bytes.load(std::memory_order_relaxed),
+          feature_shared_input_bytes.load(std::memory_order_relaxed),
+          feature_shared_output_bytes.load(std::memory_order_relaxed),
+          feature_host_input_bytes.load(std::memory_order_relaxed),
+          feature_readback_bytes.load(std::memory_order_relaxed),
+          feature_task_dispatches.load(std::memory_order_relaxed),
+          feature_task_candidates.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -4261,6 +4279,35 @@ id<MTLBuffer> EncodePrefixSum(Runtime& rt, id<MTLCommandBuffer> command, id<MTLB
   }
   return output;
 }
+BorrowedMemory BindFeatureInput(Runtime const& rt, void const* data, std::size_t bytes) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, 4);
+  if (input.buffer) {
+    feature_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  } else {
+    input = {Upload(rt, data, bytes), 0};
+    feature_host_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
+void PublishFeatureOutput(Runtime const& rt, BorrowedMemory source, void* output,
+                           std::size_t bytes, std::atomic<std::uint64_t>* duration) {
+  if (!bytes) return;
+  auto destination = TryBorrowMemory(rt.device, output, bytes, 4);
+  if (destination.buffer) {
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto blit = [command blitCommandEncoder];
+    CHECK(blit);
+    [blit copyFromBuffer:source.buffer sourceOffset:source.offset toBuffer:destination.buffer
+      destinationOffset:destination.offset size:bytes];
+    [blit endEncoding];
+    CompleteOperation(command, nullptr, duration);
+    feature_shared_output_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  } else {
+    std::memcpy(output, static_cast<std::byte const*>(source.buffer.contents) + source.offset, bytes);
+    feature_readback_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+}
 class MetalInteractionConstraints final : public InteractionConstraints {
   Runtime& rt_;
   bool enabled_;
@@ -4268,7 +4315,7 @@ class MetalInteractionConstraints final : public InteractionConstraints {
   std::size_t capacity_{0};
   std::vector<std::uint32_t> group_counts_;
   id<MTLBuffer> group_ptr_, group_features_, feature_ptr_, feature_groups_;
-  id<MTLBuffer> nodes_{nil}, feature_mask_{nil}, input_mask_{nil}, input_{nil}, flags_{nil},
+  id<MTLBuffer> nodes_{nil}, feature_mask_{nil}, input_mask_{nil}, flags_{nil},
       output_{nil}, count_{nil}, error_{nil};
 
   bool Grow(id<MTLCommandBuffer> command, std::size_t required) {
@@ -4295,16 +4342,16 @@ class MetalInteractionConstraints final : public InteractionConstraints {
     CompleteOperation(command, counter, &interaction_gpu_time_ns);
     if (grew) interaction_buffer_growths.fetch_add(1, std::memory_order_relaxed);
   }
-  std::vector<bst_feature_t> Filter(Span<bst_feature_t const> input, bst_node_t node, bool all) {
+  std::size_t Filter(Span<bst_feature_t const> input, bst_node_t node, bool all) {
     CHECK_GE(node, 0);
     CHECK_LE(input.size(), std::numeric_limits<std::uint32_t>::max());
-    if (!features_) return {};
+    if (!features_) return 0;
     @autoreleasepool {
       auto command = [rt_.queue commandBuffer];
       CHECK(command);
       auto grew = Grow(command, std::size_t(node) + 1);
       auto mask = Scratch(rt_, &input_mask_, words_ * 4ul);
-      auto source = Scratch(rt_, &input_, input.size_bytes(), input.data());
+      auto source = BindFeatureInput(rt_, input.data(), input.size_bytes());
       auto flags = Scratch(rt_, &flags_, features_ * 4ul);
       auto output = Scratch(rt_, &output_, features_ * 4ul);
       std::uint32_t zero = 0;
@@ -4322,7 +4369,7 @@ class MetalInteractionConstraints final : public InteractionConstraints {
         auto e = [command computeCommandEncoder];
         CHECK(e);
         [e setComputePipelineState:rt_.interaction_input_pipeline];
-        [e setBuffer:source offset:0 atIndex:0];
+        [e setBuffer:source.buffer offset:source.offset atIndex:0];
         [e setBuffer:mask offset:0 atIndex:1];
         [e setBytes:&p length:sizeof(p) atIndex:2];
         [e setBuffer:error offset:0 atIndex:3];
@@ -4355,8 +4402,7 @@ class MetalInteractionConstraints final : public InteractionConstraints {
           << "Interaction query feature is out of range";
       auto size = *static_cast<std::uint32_t const*>(count.contents);
       CHECK_LE(size, features_);
-      auto data = static_cast<bst_feature_t const*>(output.contents);
-      return {data, data + size};
+      return size;
     }
   }
 
@@ -4457,17 +4503,44 @@ class MetalInteractionConstraints final : public InteractionConstraints {
       Finish(command, &interaction_split_dispatches, grew);
     }
   }
-  std::vector<bst_feature_t> Query(Span<bst_feature_t const> input, bst_node_t node) override {
+  HostDeviceVector<bst_feature_t> QueryDevice(Span<bst_feature_t const> input,
+                                              bst_node_t node) override {
     // CUDA preserves the original list, including order/duplicates, at root or
     // when disabled. QueryNode deliberately does not use this root bypass.
-    if (!enabled_ || node == 0) {
-      if (input.empty()) return {};
-      return {input.begin(), input.end()};
+    @autoreleasepool {
+      BorrowedMemory source;
+      std::size_t size;
+      if (!enabled_ || node == 0) {
+        size = input.size();
+        source = BindFeatureInput(rt_, input.data(), input.size_bytes());
+      } else {
+        size = Filter(input, node, false);
+        source = {output_, 0};
+      }
+      HostDeviceVector<bst_feature_t> result(size, 0, DeviceOrd::MPS());
+      PublishFeatureOutput(rt_, source, result.DevicePointer(), result.SizeBytes(),
+                           &interaction_gpu_time_ns);
+      return result;
     }
-    return Filter(input, node, false);
+  }
+  HostDeviceVector<bst_feature_t> QueryNodeDevice(bst_node_t node) override {
+    @autoreleasepool {
+      auto size = enabled_ ? Filter({}, node, true) : 0;
+      HostDeviceVector<bst_feature_t> result(size, 0, DeviceOrd::MPS());
+      PublishFeatureOutput(rt_, {output_, 0}, result.DevicePointer(), result.SizeBytes(),
+                           &interaction_gpu_time_ns);
+      return result;
+    }
+  }
+  std::vector<bst_feature_t> Query(Span<bst_feature_t const> input, bst_node_t node) override {
+    auto result = QueryDevice(input, node);
+    feature_readback_bytes.fetch_add(result.SizeBytes(), std::memory_order_relaxed);
+    return result.ConstHostVector();
   }
   std::vector<bst_feature_t> QueryNode(bst_node_t node) override {
-    return enabled_ ? Filter({}, node, true) : std::vector<bst_feature_t>{};
+    auto result = QueryNodeDevice(node);
+    feature_readback_bytes.fetch_add(result.SizeBytes(), std::memory_order_relaxed);
+    return result.ConstHostVector();
   }
 };
 }  // namespace
@@ -6613,7 +6686,8 @@ void InitFeatureSet(Span<bst_feature_t> features) {
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-    std::memcpy(features.data(), output.contents, features.size_bytes());
+    PublishFeatureOutput(rt, {output, 0}, features.data(), features.size_bytes(),
+                         &column_sampling_gpu_time_ns);
     column_init_dispatches.fetch_add(1, std::memory_order_relaxed);
   }
 }
@@ -6629,9 +6703,9 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
   if (selected.empty()) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto input = Upload(rt, features.data(), features.size_bytes());
+    auto input = BindFeatureInput(rt, features.data(), features.size_bytes());
     auto output = Allocate(rt, selected.size_bytes());
-    auto weight = Upload(rt, weights.data(), weights.size_bytes());
+    auto weight = BindFeatureInput(rt, weights.data(), weights.size_bytes());
     auto indices = Allocate(rt, weights.empty() ? features.size_bytes() : 4);
     auto random = Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
     auto scores = Allocate(rt, weights.empty() ? 4 : features.size() * sizeof(float));
@@ -6657,11 +6731,16 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
       CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
       CHECK_EQ(*static_cast<std::uint32_t const*>(invalid.contents), 0)
           << "Feature index exceeds weights";
-      std::memcpy(selected.data(), output.contents, selected.size_bytes());
-      if (!uniforms.empty()) std::memcpy(uniforms.data(), random.contents, uniforms.size_bytes());
-      if (!keys.empty()) std::memcpy(keys.data(), scores.contents, keys.size_bytes());
-      if (!permutation.empty())
-        std::memcpy(permutation.data(), indices.contents, permutation.size_bytes());
+      // Publish only after validation. Scratch results make input/output aliases
+      // safe without staging feature IDs or weights through CPU memory.
+      PublishFeatureOutput(rt, {output, 0}, selected.data(), selected.size_bytes(),
+                           &column_sampling_gpu_time_ns);
+      PublishFeatureOutput(rt, {random, 0}, uniforms.data(), uniforms.size_bytes(),
+                           &column_sampling_gpu_time_ns);
+      PublishFeatureOutput(rt, {scores, 0}, keys.data(), keys.size_bytes(),
+                           &column_sampling_gpu_time_ns);
+      PublishFeatureOutput(rt, {indices, 0}, permutation.data(), permutation.size_bytes(),
+                           &column_sampling_gpu_time_ns);
       column_sampling_dispatches.fetch_add(1, std::memory_order_relaxed);
       auto elapsed = command.GPUEndTime - command.GPUStartTime;
       if (elapsed > 0)
@@ -6709,8 +6788,8 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
       auto e = [command computeCommandEncoder];
       CHECK(e);
       [e setComputePipelineState:rt.column_keys_pipeline];
-      [e setBuffer:input offset:0 atIndex:0];
-      [e setBuffer:weight offset:0 atIndex:1];
+      [e setBuffer:input.buffer offset:input.offset atIndex:0];
+      [e setBuffer:weight.buffer offset:weight.offset atIndex:1];
       [e setBuffer:random offset:0 atIndex:2];
       [e setBuffer:scores offset:0 atIndex:3];
       [e setBuffer:invalid offset:0 atIndex:4];
@@ -6724,7 +6803,7 @@ void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weight
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.column_select_pipeline];
-    [e setBuffer:input offset:0 atIndex:0];
+    [e setBuffer:input.buffer offset:input.offset atIndex:0];
     [e setBuffer:indices offset:0 atIndex:1];
     [e setBuffer:ranked offset:0 atIndex:2];
     [e setBuffer:records offset:0 atIndex:3];
@@ -9871,18 +9950,21 @@ std::array<double, 2> MetricSums(char const* name, Span<float const> predictions
   }
 }
 
-void EvaluateQuantizedSplits(Span<HistogramInput const> histograms,
-                             Span<QuantizedSplitTask const> tasks,
-                             SplitParameters const& parameters,
-                             std::vector<QuantizedSplitResult>* results,
-                             std::vector<std::uint32_t>* sorted_categories,
-                             SplitWorkspace* workspace) {
+// The resident mode is private to EvaluateFeatureSplits, whose GPU builder
+// validates IDs/cuts and creates the ranges. Diagnostic wrappers retain full
+// host descriptor validation; resident mode never dereferences task payloads.
+static void EvaluateQuantizedSplitsImpl(
+    Span<HistogramInput const> histograms, Span<QuantizedSplitTask const> tasks,
+    SplitParameters const& parameters, std::vector<QuantizedSplitResult>* results,
+    std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace,
+    std::optional<std::size_t> resident_bins) {
+  if (resident_bins) CHECK(!results && !sorted_categories);
   if (workspace) static_cast<MetalSplitWorkspace*>(workspace)->ResetCandidates();
   static_assert(sizeof(QuantizedSplitTask) == 48 && sizeof(QuantizedSplitResult) == 80);
   static_assert(sizeof(GradientPairInt64) == 16);
-  results->resize(tasks.size());
-  auto bins = tasks.empty() ? 0 : tasks.back().end;
-  bool categorical =
+  if (results) results->resize(tasks.size());
+  auto bins = resident_bins ? *resident_bins : (tasks.empty() ? 0 : tasks.back().end);
+  bool categorical = resident_bins.has_value() ||
       std::any_of(tasks.begin(), tasks.end(), [](auto const& task) { return task.kind == 2; });
   if (sorted_categories) sorted_categories->resize(categorical ? bins : 0);
   if (tasks.empty()) return;
@@ -9894,20 +9976,23 @@ void EvaluateQuantizedSplits(Span<HistogramInput const> histograms,
   CHECK(storage->scale);
   CHECK_LE(tasks.size(), std::numeric_limits<std::uint32_t>::max());
   std::uint32_t previous = 0;
-  for (auto const& task : tasks) {
-    CHECK_EQ(task.begin, previous);
-    CHECK_GE(task.end, task.begin);
-    CHECK_LE(task.end - task.begin, std::numeric_limits<std::int32_t>::max());
-    CHECK_LE(task.kind, 2);
-    previous = task.end;
+  if (!resident_bins) {
+    for (auto const& task : tasks) {
+      CHECK_EQ(task.begin, previous);
+      CHECK_GE(task.end, task.begin);
+      CHECK_LE(task.end - task.begin, std::numeric_limits<std::int32_t>::max());
+      CHECK_LE(task.kind, 2);
+      previous = task.end;
+    }
   }
   @autoreleasepool {
     auto& rt = GetRuntime();
     auto scratch = static_cast<MetalSplitWorkspace*>(workspace);
     auto command = [rt.queue commandBuffer];
     CHECK(command);
-    auto hist = GatherHistograms(rt, histograms, bins, command, scratch, true);
-    auto input = Scratch(rt, &scratch->input, tasks.size_bytes(), tasks.data());
+    auto hist = resident_bins ? scratch->hist
+                              : GatherHistograms(rt, histograms, bins, command, scratch, true);
+    auto input = Scratch(rt, &scratch->input, tasks.size_bytes(), resident_bins ? nullptr : tasks.data());
     auto output = Scratch(rt, &scratch->output, tasks.size() * sizeof(QuantizedSplitResult));
     auto order = Scratch(rt, &scratch->order, (categorical ? bins : 0) * sizeof(std::uint32_t));
     auto weights = Scratch(rt, &scratch->weights, (categorical ? bins : 0) * sizeof(float));
@@ -9931,9 +10016,9 @@ void EvaluateQuantizedSplits(Span<HistogramInput const> histograms,
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-    std::memcpy(results->data(), output.contents, tasks.size() * sizeof(QuantizedSplitResult));
-    for (auto const& task : tasks)
-      if (sorted_categories && task.kind == 2) {
+    if (results) std::memcpy(results->data(), output.contents, tasks.size() * sizeof(QuantizedSplitResult));
+    if (sorted_categories) for (auto const& task : tasks)
+      if (task.kind == 2) {
         std::memcpy(sorted_categories->data() + task.begin,
                     static_cast<std::uint32_t const*>(order.contents) + task.begin,
                     (task.end - task.begin) * sizeof(std::uint32_t));
@@ -9950,12 +10035,22 @@ void EvaluateQuantizedSplits(Span<HistogramInput const> histograms,
   }
 }
 
-void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
-                        Span<SplitFinalizeFeature const> features,
-                        Span<GradientPairPrecise const> parents, Span<SplitBounds const> bounds,
-                        SplitParameters const& parameters, bool vector_leaf,
-                        std::vector<SplitNodeResult>* results,
-                        std::vector<SplitNodeWeights>* weights, SplitWorkspace* workspace) {
+void EvaluateQuantizedSplits(Span<HistogramInput const> histograms,
+                             Span<QuantizedSplitTask const> tasks,
+                             SplitParameters const& parameters,
+                             std::vector<QuantizedSplitResult>* results,
+                             std::vector<std::uint32_t>* sorted_categories,
+                             SplitWorkspace* workspace) {
+  CHECK(results);
+  EvaluateQuantizedSplitsImpl(histograms, tasks, parameters, results, sorted_categories,
+                              workspace, std::nullopt);
+}
+
+static void FinalizeSplitNodesImpl(
+    Span<SplitFinalizeNode const> nodes, Span<SplitFinalizeFeature const> features,
+    Span<GradientPairPrecise const> parents, Span<SplitBounds const> bounds,
+    SplitParameters const& parameters, bool vector_leaf, std::vector<SplitNodeResult>* results,
+    std::vector<SplitNodeWeights>* weights, SplitWorkspace* workspace, bool resident_features) {
   static_assert(sizeof(SplitFinalizeNode) == 16 && sizeof(SplitFinalizeFeature) == 16);
   static_assert(sizeof(SplitNodeResult) == 40 && sizeof(SplitNodeWeights) == 16);
   results->resize(nodes.size());
@@ -9985,7 +10080,7 @@ void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
   if (!features.empty()) {
     CHECK_EQ(features.size(), scratch->candidate_count);
     CHECK_EQ(vector_leaf, scratch->vector_candidates);
-    if (vector_leaf) {
+    if (vector_leaf && !resident_features) {
       CHECK(scratch->children);
       for (auto const& node : nodes)
         for (std::uint32_t i = node.begin; i < node.end; ++i)
@@ -9998,7 +10093,8 @@ void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
     auto candidates = Scratch(rt, &scratch->output, 0);
     auto children = Scratch(rt, &scratch->children, 0);
     auto input = Scratch(rt, &scratch->node_input, nodes.size_bytes(), nodes.data());
-    auto feature = Scratch(rt, &scratch->feature_input, features.size_bytes(), features.data());
+    auto feature = Scratch(rt, &scratch->feature_input, features.size_bytes(),
+                            resident_features ? nullptr : features.data());
     auto parent = BindSplitSums(rt, &scratch->node_parents, parents.data(), parents.size_bytes());
     auto bound = Scratch(rt, &scratch->node_bounds, bounds.size_bytes(), bounds.data());
     auto out = Scratch(rt, &scratch->node_results, results->size() * sizeof(SplitNodeResult));
@@ -10033,6 +10129,16 @@ void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
     }
     scratch->finalized_nodes.assign(nodes.begin(), nodes.end());
   }
+}
+
+void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
+                        Span<SplitFinalizeFeature const> features,
+                        Span<GradientPairPrecise const> parents, Span<SplitBounds const> bounds,
+                        SplitParameters const& parameters, bool vector_leaf,
+                        std::vector<SplitNodeResult>* results,
+                        std::vector<SplitNodeWeights>* weights, SplitWorkspace* workspace) {
+  FinalizeSplitNodesImpl(nodes, features, parents, bounds, parameters, vector_leaf, results,
+                         weights, workspace, false);
 }
 
 namespace {
@@ -10098,10 +10204,10 @@ class MetalSplitSumStorage final : public SplitSumStorage {
     std::vector<std::uint32_t> ids;
     for (auto const& copy : copies) {
       CHECK(source.vector_candidates);
-      CHECK_EQ(source.quantized_multi_tasks.size(), source.candidate_count);
-      CHECK_LT(copy.candidate, source.quantized_multi_tasks.size());
+      CHECK_EQ(source.quantized_multi_shapes.size(), source.candidate_count);
+      CHECK_LT(copy.candidate, source.quantized_multi_shapes.size());
       CHECK(source.quantized_multi_valid.at(copy.candidate));
-      auto const& task = source.quantized_multi_tasks[copy.candidate];
+      auto const& task = source.quantized_multi_shapes[copy.candidate];
       CHECK_EQ(task.targets, targets_);
       CHECK_LE(2 * (std::uint64_t{task.parent_begin} + targets_), source.candidate_child_count);
       CHECK_LT(copy.node, node_ready_.size());
@@ -10120,7 +10226,7 @@ class MetalSplitSumStorage final : public SplitSumStorage {
       auto e = [command blitCommandEncoder];
       CHECK(e);
       for (auto const& copy : copies) {
-        auto begin = source.quantized_multi_tasks[copy.candidate].parent_begin;
+        auto begin = source.quantized_multi_shapes[copy.candidate].parent_begin;
         [e copyFromBuffer:source.integer_children sourceOffset:2 * std::size_t(begin) * sizeof(GradientPairInt64)
                 toBuffer:out.buffer destinationOffset:out.offset + std::size_t(copy.node) * 2 * Bytes()
                     size:2 * Bytes()];
@@ -10587,17 +10693,19 @@ void EvaluateSplits(Span<HistogramInput const> histograms, Span<SplitTask const>
                                   std::memory_order_relaxed);
   }
 }
-void EvaluateQuantizedMultiSplits(
+static void EvaluateQuantizedMultiSplitsImpl(
     Span<HistogramInput const> histograms, Span<QuantizedMultiSplitTask const> tasks,
     Span<GradientPairInt64 const> parents, Span<SplitBounds const> bounds,
     SplitParameters const& parameters, std::vector<QuantizedMultiSplitResult>* results,
     std::vector<GradientPairInt64>* integer_children, std::vector<GradientPairPrecise>* children,
-    std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace) {
+    std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace,
+    std::optional<std::size_t> resident_bins) {
+  if (resident_bins) CHECK(!results && !sorted_categories && !integer_children && !children);
   if (workspace) static_cast<MetalSplitWorkspace*>(workspace)->ResetCandidates();
   static_assert(sizeof(QuantizedMultiSplitTask) == 40 && sizeof(QuantizedMultiSplitResult) == 16);
-  results->resize(tasks.size());
-  auto bins = tasks.empty() ? 0 : tasks.back().end;
-  bool categorical =
+  if (results) results->resize(tasks.size());
+  auto bins = resident_bins ? *resident_bins : (tasks.empty() ? 0 : tasks.back().end);
+  bool categorical = resident_bins.has_value() ||
       std::any_of(tasks.begin(), tasks.end(), [](auto const& task) { return task.kind == 2; });
   if (sorted_categories) sorted_categories->resize(categorical ? bins : 0);
   CHECK_LE(parents.size(), std::numeric_limits<std::uint32_t>::max() / 2);
@@ -10608,17 +10716,19 @@ void EvaluateQuantizedMultiSplits(
   CHECK_EQ(parents.size(), bounds.size());
   CHECK_LE(tasks.size(), std::numeric_limits<std::uint32_t>::max());
   std::uint32_t previous = 0;
-  for (auto const& task : tasks) {
-    CHECK_GT(task.targets, 0);
-    CHECK_EQ(task.targets, histograms.size());
-    CHECK_EQ(task.begin, previous);
-    CHECK_GE(task.end, task.begin);
-    CHECK_EQ((task.end - task.begin) % task.targets, 0);
-    CHECK_LE((task.end - task.begin) / task.targets, std::numeric_limits<std::int32_t>::max());
-    CHECK_LE(std::uint64_t(task.parent_begin) + task.targets, parents.size());
-    CHECK_LE(task.kind, 2);
-    CHECK_LE(task.one_pass, 2);
-    previous = task.end;
+  if (!resident_bins) {
+    for (auto const& task : tasks) {
+      CHECK_GT(task.targets, 0);
+      CHECK_EQ(task.targets, histograms.size());
+      CHECK_EQ(task.begin, previous);
+      CHECK_GE(task.end, task.begin);
+      CHECK_EQ((task.end - task.begin) % task.targets, 0);
+      CHECK_LE((task.end - task.begin) / task.targets, std::numeric_limits<std::int32_t>::max());
+      CHECK_LE(std::uint64_t(task.parent_begin) + task.targets, parents.size());
+      CHECK_LE(task.kind, 2);
+      CHECK_LE(task.one_pass, 2);
+      previous = task.end;
+    }
   }
   @autoreleasepool {
     auto& rt = GetRuntime();
@@ -10640,10 +10750,11 @@ void EvaluateQuantizedMultiSplits(
                        size:sizeof(GradientScale)];
     }
     [blit endEncoding];
-    auto hist = GatherHistograms(rt, histograms, bins, command, scratch, true);
-    auto input = Scratch(rt, &scratch->input, tasks.size_bytes(), tasks.data());
+    auto hist = resident_bins ? scratch->hist
+                              : GatherHistograms(rt, histograms, bins, command, scratch, true);
+    auto input = Scratch(rt, &scratch->input, tasks.size_bytes(), resident_bins ? nullptr : tasks.data());
     auto parent = BindSplitSums(rt, &scratch->parent, parents.data(), parents.size_bytes());
-    auto bound = Scratch(rt, &scratch->bounds, bounds.size_bytes(), bounds.data());
+    auto bound = Scratch(rt, &scratch->bounds, bounds.size_bytes(), resident_bins ? nullptr : bounds.data());
     auto output = Scratch(rt, &scratch->output, tasks.size() * sizeof(QuantizedMultiSplitResult));
     auto child = Scratch(rt, &scratch->children, parents.size() * 2 * sizeof(GradientPairPrecise));
     auto exact = Scratch(rt, &scratch->integer_children,
@@ -10674,8 +10785,8 @@ void EvaluateQuantizedMultiSplits(
     [command commit];
     [command waitUntilCompleted];
     CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-    std::memcpy(results->data(), output.contents, tasks.size() * sizeof(QuantizedMultiSplitResult));
-    for (std::size_t i = 0; i < tasks.size(); ++i) {
+    if (results) std::memcpy(results->data(), output.contents, tasks.size() * sizeof(QuantizedMultiSplitResult));
+    if (results) for (std::size_t i = 0; i < tasks.size(); ++i) {
       auto const& task = tasks[i];
       if (results->at(i).bin >= 0) {
         if (children) {
@@ -10704,12 +10815,232 @@ void EvaluateQuantizedMultiSplits(
     scratch->candidate_count = tasks.size();
     scratch->vector_candidates = true;
     scratch->candidate_child_count = parents.size() * 2;
-    scratch->quantized_multi_tasks.assign(tasks.begin(), tasks.end());
-    for (auto const& result : *results) scratch->quantized_multi_valid.push_back(result.bin >= 0);
+    if (resident_bins) {
+      auto targets = static_cast<std::uint32_t>(histograms.size());
+      for (std::uint32_t i = 0; i < tasks.size(); ++i)
+        scratch->quantized_multi_shapes.push_back({i * targets, targets});
+      scratch->quantized_multi_valid.resize(tasks.size(), false);
+    } else {
+      for (auto const& task : tasks)
+        scratch->quantized_multi_shapes.push_back({task.parent_begin, task.targets});
+      for (auto const& result : *results) scratch->quantized_multi_valid.push_back(result.bin >= 0);
+    }
     auto elapsed = command.GPUEndTime - command.GPUStartTime;
     if (elapsed > 0)
       split_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
                                   std::memory_order_relaxed);
+  }
+}
+
+void EvaluateQuantizedMultiSplits(
+    Span<HistogramInput const> histograms, Span<QuantizedMultiSplitTask const> tasks,
+    Span<GradientPairInt64 const> parents, Span<SplitBounds const> bounds,
+    SplitParameters const& parameters, std::vector<QuantizedMultiSplitResult>* results,
+    std::vector<GradientPairInt64>* integer_children, std::vector<GradientPairPrecise>* children,
+    std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace) {
+  CHECK(results);
+  EvaluateQuantizedMultiSplitsImpl(histograms, tasks, parents, bounds, parameters, results,
+                                   integer_children, children, sorted_categories, workspace,
+                                   std::nullopt);
+}
+
+void EvaluateFeatureSplits(
+    Span<HistogramInput const> histograms, Span<Span<bst_feature_t const> const> features,
+    Span<std::uint32_t const> cut_ptrs, Span<FeatureType const> types,
+    Span<std::int32_t const> monotone, std::uint32_t onehot, std::uint32_t category_limit,
+    Span<GradientPairInt64 const> parents, Span<GradientPairPrecise const> precise_parents,
+    Span<SplitBounds const> bounds, SplitParameters const& parameters, bool vector_leaf,
+    std::vector<SplitNodeResult>* results, std::vector<FeatureSplitResult>* selected,
+    std::vector<SplitNodeWeights>* weights, SplitWorkspace* workspace) {
+  static_assert(sizeof(FeatureSplitResult) == 112);
+  CHECK(workspace && results && selected);
+  auto scratch = static_cast<MetalSplitWorkspace*>(workspace);
+  scratch->ResetCandidates();
+  CHECK_GT(histograms.size(), 0);
+  CHECK_LE(histograms.size(), std::numeric_limits<std::uint32_t>::max());
+  auto targets = static_cast<std::uint32_t>(histograms.size());
+  if (!vector_leaf) CHECK_EQ(targets, 1);
+  CHECK_LE(features.size(), std::numeric_limits<std::uint32_t>::max() / targets);
+  CHECK_EQ(parents.size(), features.size() * targets);
+  CHECK_EQ(precise_parents.size(), parents.size());
+  CHECK_EQ(bounds.size(), parents.size());
+  CHECK_GE(cut_ptrs.size(), 1);
+  CHECK_LE(cut_ptrs.size() - 1, std::numeric_limits<std::uint32_t>::max());
+  auto columns = static_cast<std::uint32_t>(cut_ptrs.size() - 1);
+  CHECK(types.empty() || types.size() == columns);
+  CHECK(monotone.empty() || monotone.size() == columns);
+  std::vector<SplitFinalizeNode> nodes;
+  std::size_t count = 0;
+  for (auto ids : features) {
+    CHECK_LE(ids.size(), std::numeric_limits<std::uint32_t>::max() - count);
+    nodes.push_back({static_cast<std::uint32_t>(count),
+                     static_cast<std::uint32_t>(count + ids.size()),
+                     static_cast<std::uint32_t>(nodes.size() * targets), targets});
+    count += ids.size();
+  }
+  CHECK_LE(count, std::numeric_limits<std::uint32_t>::max() / targets / 2);
+  std::vector<std::uint64_t> offsets;
+  std::uint32_t histogram_bins = 0;
+  for (auto const& input : histograms) {
+    CHECK_EQ(input.segments.size(), nodes.size());
+    CHECK(input.source);
+    auto storage = static_cast<MetalHistogramBuffer const*>(input.source);
+    CHECK(storage->integers && storage->scale);
+    for (auto const& segment : input.segments) {
+      CHECK_LE(segment.source, input.source->Data().size());
+      CHECK_LE(segment.bins, input.source->Data().size() - segment.source);
+      if (offsets.empty()) histogram_bins = segment.bins;
+      CHECK_EQ(segment.bins, histogram_bins);
+      offsets.push_back(segment.source);
+    }
+  }
+  selected->resize(nodes.size());
+  if (nodes.empty()) {
+    results->clear();
+    if (weights) weights->clear();
+    return;
+  }
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    struct FeatureParams {
+      std::uint32_t begin, count, targets, node, features, onehot, limit, flags;
+      std::uint32_t bins, nodes, candidates, padding;
+    };
+    static_assert(sizeof(FeatureParams) == 48);
+    auto params = [&](std::size_t node) {
+      return FeatureParams{nodes[node].begin, nodes[node].end - nodes[node].begin,
+                            targets, static_cast<std::uint32_t>(node), columns, onehot,
+                            category_limit, static_cast<std::uint32_t>(!types.empty()) |
+                                (static_cast<std::uint32_t>(!monotone.empty()) << 1) |
+                                (static_cast<std::uint32_t>(vector_leaf) << 2),
+                            histogram_bins, static_cast<std::uint32_t>(nodes.size()),
+                            static_cast<std::uint32_t>(count), 0};
+    };
+    auto cuts = BindFeatureInput(rt, cut_ptrs.data(), cut_ptrs.size_bytes());
+    auto type = BindFeatureInput(rt, types.data(), types.size_bytes());
+    auto constraints = BindFeatureInput(rt, monotone.data(), monotone.size_bytes());
+    auto ids = Scratch(rt, &scratch->feature_ids, count * sizeof(bst_feature_t));
+    auto lengths = Scratch(rt, &scratch->feature_lengths, count * sizeof(std::uint64_t));
+    std::uint32_t zero = 0;
+    auto error = Scratch(rt, &scratch->feature_error, sizeof(zero), &zero);
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    for (std::size_t node = 0; node < nodes.size(); ++node) {
+      if (features[node].empty()) continue;
+      auto input = BindFeatureInput(rt, features[node].data(), features[node].size_bytes());
+      auto blit = [command blitCommandEncoder];
+      CHECK(blit);
+      [blit copyFromBuffer:input.buffer sourceOffset:input.offset toBuffer:ids
+        destinationOffset:std::size_t(nodes[node].begin) * sizeof(bst_feature_t)
+                     size:features[node].size_bytes()];
+      [blit endEncoding];
+      auto p = params(node);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.feature_lengths_pipeline];
+      [e setBuffer:ids offset:0 atIndex:0];
+      [e setBuffer:cuts.buffer offset:cuts.offset atIndex:1];
+      [e setBuffer:type.buffer offset:type.offset atIndex:2];
+      [e setBuffer:lengths offset:0 atIndex:3];
+      [e setBuffer:error offset:0 atIndex:4];
+      [e setBytes:&p length:sizeof(p) atIndex:5];
+      [e dispatchThreads:MTLSizeMake(p.count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    auto prefix = count ? EncodePrefixU64(rt, command, lengths, count) : lengths;
+    CompleteOperation(command, nullptr, &split_gpu_time_ns);
+    CHECK_EQ(*static_cast<std::uint32_t const*>(error.contents), 0)
+        << "Invalid resident split feature, cut range or feature type";
+    // Only the scalar allocation length is read back, never feature IDs or tasks.
+    auto bins = count ? static_cast<std::uint64_t const*>(prefix.contents)[count - 1] : 0;
+    CHECK_LE(bins, std::numeric_limits<std::uint32_t>::max());
+    auto task_bytes = vector_leaf ? sizeof(QuantizedMultiSplitTask) : sizeof(QuantizedSplitTask);
+    auto tasks = Scratch(rt, &scratch->input, count * task_bytes);
+    auto final_features = Scratch(rt, &scratch->feature_input, count * sizeof(SplitFinalizeFeature));
+    auto segments = Scratch(rt, &scratch->feature_segments, count * targets * sizeof(HistogramGather));
+    auto hist = Scratch(rt, &scratch->hist, bins * sizeof(GradientPairInt64));
+    auto source_offsets = Scratch(rt, &scratch->feature_offsets, offsets.size() * sizeof(std::uint64_t),
+                                   offsets.data());
+    // Node bounds remain the explicitly tracked PORT-8 host gather. Repeating
+    // them and exact node sums by selected feature executes on the GPU here.
+    auto node_bounds = Scratch(rt, &scratch->node_bounds, bounds.size_bytes(), bounds.data());
+    auto node_parents = BindSplitSums(rt, &scratch->node_parents, parents.data(), parents.size_bytes());
+    auto feature_parents = Scratch(rt, &scratch->parent, vector_leaf ? count * targets * sizeof(GradientPairInt64) : 0);
+    auto feature_bounds = Scratch(rt, &scratch->bounds, vector_leaf ? count * targets * sizeof(SplitBounds) : 0);
+    command = [rt.queue commandBuffer];
+    CHECK(command);
+    for (std::size_t node = 0; node < nodes.size(); ++node) {
+      auto p = params(node);
+      if (!p.count) continue;
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.feature_tasks_pipeline];
+      [e setBuffer:ids offset:0 atIndex:0];
+      [e setBuffer:cuts.buffer offset:cuts.offset atIndex:1];
+      [e setBuffer:type.buffer offset:type.offset atIndex:2];
+      [e setBuffer:constraints.buffer offset:constraints.offset atIndex:3];
+      [e setBuffer:prefix offset:0 atIndex:4];
+      [e setBuffer:source_offsets offset:0 atIndex:5];
+      [e setBuffer:node_parents.buffer offset:node_parents.offset atIndex:6];
+      [e setBuffer:node_bounds offset:0 atIndex:7];
+      [e setBuffer:tasks offset:0 atIndex:8];
+      [e setBuffer:final_features offset:0 atIndex:9];
+      [e setBuffer:segments offset:0 atIndex:10];
+      [e setBuffer:feature_parents offset:0 atIndex:11];
+      [e setBuffer:feature_bounds offset:0 atIndex:12];
+      [e setBytes:&p length:sizeof(p) atIndex:13];
+      [e dispatchThreads:MTLSizeMake(p.count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    for (std::size_t t = 0; count && t < targets; ++t) {
+      auto storage = static_cast<MetalHistogramBuffer const*>(histograms[t].source);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.gather_hist_pipeline];
+      [e setBuffer:storage->integers offset:0 atIndex:0];
+      [e setBuffer:hist offset:0 atIndex:1];
+      [e setBuffer:segments offset:t * count * sizeof(HistogramGather) atIndex:2];
+      [e dispatchThreadgroups:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    CompleteOperation(command, nullptr, &split_gpu_time_ns);
+    if (count) feature_task_dispatches.fetch_add(1, std::memory_order_relaxed);
+    feature_task_candidates.fetch_add(count, std::memory_order_relaxed);
+    if (vector_leaf) {
+      EvaluateQuantizedMultiSplitsImpl(
+          histograms, {static_cast<QuantizedMultiSplitTask const*>(tasks.contents), count},
+          {static_cast<GradientPairInt64 const*>(feature_parents.contents), count * targets},
+          {static_cast<SplitBounds const*>(feature_bounds.contents), count * targets}, parameters,
+          nullptr, nullptr, nullptr, nullptr, workspace, bins);
+    } else {
+      EvaluateQuantizedSplitsImpl(histograms,
+          {static_cast<QuantizedSplitTask const*>(tasks.contents), count}, parameters, nullptr,
+          nullptr, workspace, bins);
+    }
+    FinalizeSplitNodesImpl(nodes,
+        {static_cast<SplitFinalizeFeature const*>(final_features.contents), count}, precise_parents,
+        bounds, parameters, vector_leaf, results, weights, workspace, true);
+    auto out = Scratch(rt, &scratch->feature_selected, selected->size() * sizeof(FeatureSplitResult));
+    command = [rt.queue commandBuffer];
+    CHECK(command);
+    auto e = [command computeCommandEncoder];
+    CHECK(e);
+    std::uint32_t multi = vector_leaf;
+    [e setComputePipelineState:rt.feature_winners_pipeline];
+    [e setBuffer:scratch->node_results offset:0 atIndex:0];
+    [e setBuffer:final_features offset:0 atIndex:1];
+    [e setBuffer:cuts.buffer offset:cuts.offset atIndex:2];
+    [e setBuffer:tasks offset:0 atIndex:3];
+    [e setBuffer:scratch->output offset:0 atIndex:4];
+    [e setBuffer:out offset:0 atIndex:5];
+    [e setBytes:&multi length:sizeof(multi) atIndex:6];
+    [e dispatchThreads:MTLSizeMake(nodes.size(), 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, nullptr, &split_gpu_time_ns);
+    std::memcpy(selected->data(), out.contents, selected->size() * sizeof(FeatureSplitResult));
+    if (vector_leaf) for (auto const& node : *results)
+      if (node.winner != std::numeric_limits<std::uint32_t>::max())
+        scratch->quantized_multi_valid.at(node.winner) = true;
   }
 }
 

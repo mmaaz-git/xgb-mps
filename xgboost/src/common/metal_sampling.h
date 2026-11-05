@@ -10,6 +10,9 @@ namespace xgboost::common::metal {
 // CUDA column sampling: modern Philox weighted priorities, Thrust Feistel shuffle
 // for unweighted samples. Optional diagnostics expose GPU uniforms/keys or the
 // full unweighted permutation of input positions. Empty selections dispatch nothing.
+// Bind addressable Metal spans directly, including offsets. Sampling publishes
+// from scratch only after validation, so output may alias either input. Host
+// diagnostic spans remain supported; unborrowable memory uses counted copies.
 void InitFeatureSet(Span<bst_feature_t> features);
 void SampleFeatures(Span<bst_feature_t const> features, Span<float const> weights,
                     std::uint32_t seed, Span<bst_feature_t> selected, Span<float> uniforms = {},

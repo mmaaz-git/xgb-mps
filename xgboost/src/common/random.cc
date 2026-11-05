@@ -48,9 +48,10 @@ std::shared_ptr<HostDeviceVector<bst_feature_t>> ColumnSampler::ColSample(
   auto seed = ctx->Rng()();
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
+    p_new_features->SetDevice(DeviceOrd::MPS());
     p_new_features->Resize(n);
-    metal::SampleFeatures(p_features->ConstHostSpan(), feature_weights_.ConstHostSpan(), seed,
-                          p_new_features->HostSpan());
+    metal::SampleFeatures(p_features->ConstDeviceSpan(), feature_weights_.ConstDeviceSpan(), seed,
+                          p_new_features->DeviceSpan());
     return p_new_features;
   }
 #endif

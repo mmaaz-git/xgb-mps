@@ -43,6 +43,9 @@ def internal_paths(tree):
 
 def check_counters(before, model, enabled=True):
     after = xgb.metal_info()
+    for key in ("feature_host_input_bytes", "feature_readback_bytes"):
+        assert after[key] == before[key], key
+    assert after["feature_task_dispatches"] > before["feature_task_dispatches"]
     models = trees(model)
     splits = sum(sum(child >= 0 for child in t["left_children"]) for t in models)
     assert after["interaction_reset_dispatches"] - before["interaction_reset_dispatches"] == (

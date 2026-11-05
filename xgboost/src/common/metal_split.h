@@ -5,6 +5,7 @@
 
 #include "metal_storage.h"
 #include "xgboost/base.h"
+#include "xgboost/data.h"
 #include "xgboost/span.h"
 namespace xgboost::common::metal {
 class QuantizedGradients;
@@ -179,6 +180,24 @@ void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
                         SplitParameters const& parameters, bool vector_leaf,
                         std::vector<SplitNodeResult>* results,
                         std::vector<SplitNodeWeights>* weights, SplitWorkspace* workspace);
+struct FeatureSplitResult {
+  std::uint32_t feature, kind, cut_begin, padding;
+  QuantizedSplitResult scalar;
+  QuantizedMultiSplitResult vector;
+};
+// Resident feature IDs drive GPU histogram gathering and task construction.
+// Each histogram input has one full-node segment per feature set (source and
+// bins are used; output/stride are assigned on GPU). Parents/bounds are in node
+// order. Only selected per-node control/scalar results are published. Vector
+// child sums, categories and weights remain in the workspace for their consumers.
+void EvaluateFeatureSplits(
+    Span<HistogramInput const> histograms, Span<Span<bst_feature_t const> const> features,
+    Span<std::uint32_t const> cut_ptrs, Span<FeatureType const> types,
+    Span<std::int32_t const> monotone, std::uint32_t onehot, std::uint32_t category_limit,
+    Span<GradientPairInt64 const> parents, Span<GradientPairPrecise const> precise_parents,
+    Span<SplitBounds const> bounds, SplitParameters const& parameters, bool vector_leaf,
+    std::vector<SplitNodeResult>* nodes, std::vector<FeatureSplitResult>* selected,
+    std::vector<SplitNodeWeights>* weights, SplitWorkspace* workspace);
 void UpdateSplitBounds(Span<float> lower, Span<float> upper, std::uint32_t parent,
                        std::uint32_t left, std::uint32_t right, std::int32_t monotone,
                        Span<float const> left_weight, Span<float const> right_weight,

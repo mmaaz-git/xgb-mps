@@ -306,68 +306,46 @@ class HistEvaluator {
     if (ctx_->IsMPS()) {
       if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
       auto evaluator = tree_evaluator_.GetEvaluator();
-      std::vector<common::metal::QuantizedSplitTask> tasks;
-      std::vector<common::metal::SplitFinalizeNode> nodes;
-      std::vector<common::metal::SplitFinalizeFeature> final_features;
+      std::vector<GradientPairInt64> parents;
       std::vector<GradientPairPrecise> final_parents;
       std::vector<common::metal::SplitBounds> final_bounds;
-      std::size_t bins = 0;
+      std::vector<HostDeviceVector<bst_feature_t>> allowed;
+      std::vector<common::Span<bst_feature_t const>> resident_features;
       std::vector<common::metal::HistogramInput> inputs{{hist.MetalBuffer(), {}}};
-      std::vector<std::pair<std::size_t, bst_feature_t>> mapping;
-      auto const &ptr = cut.Ptrs();
+      auto const& ptr = cut.Ptrs();
       for (std::size_t i = 0; i < entries.size(); ++i) {
         auto nid = entries[i].nid;
-        auto begin = static_cast<std::uint32_t>(tasks.size());
+        parents.push_back(snode_[nid].quantized);
         final_parents.emplace_back(snode_[nid].stats.GetGrad(), snode_[nid].stats.GetHess());
         final_bounds.push_back({evaluator.has_constraint ? evaluator.lower[nid] : -INFINITY,
                                 evaluator.has_constraint ? evaluator.upper[nid] : INFINITY});
-        auto sampled_features = features[i]->ConstHostSpan();
-        std::vector<bst_feature_t> allowed_features;
+        auto sampled = features[i]->ConstDeviceSpan();
         if (metal_constraints_) {
-          allowed_features = metal_constraints_->Query(sampled_features, nid);
-          sampled_features = common::Span<bst_feature_t const>{allowed_features};
+          allowed.push_back(metal_constraints_->QueryDevice(sampled, nid));
+          sampled = allowed.back().ConstDeviceSpan();
         }
-        for (auto f : sampled_features) {
-          auto n = ptr[f + 1] - ptr[f];
-          if (!n) continue;
-          CHECK_LE(bins + n, std::numeric_limits<std::uint32_t>::max());
-          bool categorical = common::IsCat(feature_types, f);
-          std::uint32_t kind =
-              categorical ? (common::UseOneHot(n, param_->max_cat_to_onehot) ? 1 : 2) : 0;
-          tasks.push_back({static_cast<std::uint32_t>(bins), static_cast<std::uint32_t>(bins + n),
-                           kind, static_cast<std::uint32_t>(param_->max_cat_threshold),
-                           snode_[nid].quantized,
-                           evaluator.has_constraint ? evaluator.lower[nid]
-                                                    : -std::numeric_limits<float>::infinity(),
-                           evaluator.has_constraint ? evaluator.upper[nid]
-                                                    : std::numeric_limits<float>::infinity(),
-                           evaluator.has_constraint ? evaluator.constraints[f] : 0});
-          inputs[0].segments.push_back(
-              {hist.Offset(nid) + ptr[f], static_cast<std::uint32_t>(bins), n, 1, 0});
-          bins += n;
-          mapping.emplace_back(i, f);
-          final_features.push_back({f, evaluator.has_constraint ? evaluator.constraints[f] : 0, 0});
-        }
-        nodes.push_back(
-            {begin, static_cast<std::uint32_t>(tasks.size()), static_cast<std::uint32_t>(i), 1});
+        resident_features.push_back(sampled);
+        inputs[0].segments.push_back(
+            {hist.Offset(nid), 0, static_cast<std::uint32_t>(cut.TotalBins()), 1, 0});
       }
       common::metal::SplitParameters parameters{param_->reg_lambda, param_->reg_alpha,
                                                 param_->max_delta_step, param_->min_child_weight};
-      std::vector<common::metal::QuantizedSplitResult> results;
-      common::metal::EvaluateQuantizedSplits(inputs, tasks, parameters, &results, nullptr,
-                                             metal_workspace_.get());
       std::vector<common::metal::SplitNodeResult> finalized;
+      std::vector<common::metal::FeatureSplitResult> selected;
       std::vector<common::metal::SplitNodeWeights> node_weights;
-      common::metal::FinalizeSplitNodes(nodes, final_features, final_parents, final_bounds,
-                                        parameters, false, &finalized, &node_weights,
-                                        metal_workspace_.get());
+      common::Span<std::int32_t const> constraints;
+      if (evaluator.has_constraint) constraints = {evaluator.constraints, ptr.size() - 1};
+      common::metal::EvaluateFeatureSplits(
+          inputs, resident_features, ptr, feature_types, constraints, param_->max_cat_to_onehot,
+          param_->max_cat_threshold, parents, final_parents, final_bounds, parameters, false,
+          &finalized, &selected, &node_weights, metal_workspace_.get());
       std::vector<common::metal::SplitCategoryTask> category_tasks;
       std::vector<std::size_t> category_slot(entries.size());
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
         auto i = finalized[entry].winner;
-        if (i == std::numeric_limits<std::uint32_t>::max() || !tasks[i].kind) continue;
+        if (i == std::numeric_limits<std::uint32_t>::max() || !selected[entry].kind) continue;
         category_slot[entry] = category_tasks.size();
-        category_tasks.push_back({i, ptr[mapping[i].second]});
+        category_tasks.push_back({i, selected[entry].cut_begin});
       }
       auto category_words =
           category_tasks.empty()
@@ -380,10 +358,10 @@ class HistEvaluator {
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
         auto i = finalized[entry].winner;
         if (i == std::numeric_limits<std::uint32_t>::max()) continue;
-        auto const& r = results[i];
-        auto f = mapping[i].second;
+        auto const& r = selected[entry].scalar;
+        auto f = selected[entry].feature;
         auto nid = entries[entry].nid;
-        auto const &task = tasks[i];
+        auto const& task = selected[entry];
         float split;
         if (task.kind == 2)
           split = std::numeric_limits<float>::quiet_NaN();
@@ -831,83 +809,41 @@ class HistMultiEvaluator {
       if (!metal_workspace_) metal_workspace_ = common::metal::MakeSplitWorkspace();
       auto evaluator = tree_evaluator_.GetEvaluator();
       auto targets = hist.size();
-      std::vector<common::metal::QuantizedMultiSplitTask> tasks;
-      std::vector<common::metal::SplitFinalizeNode> nodes;
-      std::vector<common::metal::SplitFinalizeFeature> final_features;
-      std::vector<std::uint32_t> node_ids, feature_nodes;
+      std::vector<std::uint32_t> node_ids;
       std::vector<common::metal::SplitBounds> final_bounds;
-      std::size_t bins = 0;
+      std::vector<HostDeviceVector<bst_feature_t>> allowed;
+      std::vector<common::Span<bst_feature_t const>> resident_features;
       std::vector<common::metal::HistogramInput> inputs;
       for (auto target : hist) inputs.push_back({target->MetalBuffer(), {}});
-      std::vector<common::metal::SplitBounds> bounds;
-      std::vector<std::pair<std::size_t, bst_feature_t>> mapping;
-      auto const &ptr = cut.Ptrs();
+      auto const& ptr = cut.Ptrs();
       for (std::size_t i = 0; i < entries.size(); ++i) {
         auto nid = entries[i].nid;
-        auto begin = static_cast<std::uint32_t>(tasks.size());
-        CHECK_LE((node_ids.size() + 1) * targets, std::numeric_limits<std::uint32_t>::max());
-        auto parent_begin = static_cast<std::uint32_t>(node_ids.size() * targets);
         node_ids.push_back(nid);
         for (std::size_t t = 0; t < targets; ++t) {
           final_bounds.push_back(
               {evaluator.has_constraint ? evaluator.lower[nid * targets + t] : -INFINITY,
                evaluator.has_constraint ? evaluator.upper[nid * targets + t] : INFINITY});
+          inputs[t].segments.push_back(
+              {hist[t]->Offset(nid), 0, static_cast<std::uint32_t>(cut.TotalBins()), 1, 0});
         }
-        auto sampled_features = features[i]->ConstHostSpan();
-        std::vector<bst_feature_t> allowed_features;
+        auto sampled = features[i]->ConstDeviceSpan();
         if (metal_constraints_) {
-          allowed_features = metal_constraints_->Query(sampled_features, nid);
-          sampled_features = common::Span<bst_feature_t const>{allowed_features};
+          allowed.push_back(metal_constraints_->QueryDevice(sampled, nid));
+          sampled = allowed.back().ConstDeviceSpan();
         }
-        for (auto f : sampled_features) {
-          auto n = ptr[f + 1] - ptr[f];
-          if (!n) continue;
-          CHECK_LE(bins + n * targets, std::numeric_limits<std::uint32_t>::max());
-          CHECK_LE((feature_nodes.size() + 1) * targets, std::numeric_limits<std::uint32_t>::max());
-          bool categorical = common::IsCat(feature_types, f);
-          std::uint32_t kind =
-              categorical ? (common::UseOneHot(n, param_->max_cat_to_onehot) ? 1 : 2) : 0;
-          tasks.push_back(
-              {static_cast<std::uint32_t>(bins), static_cast<std::uint32_t>(bins + n * targets),
-               kind, static_cast<std::uint32_t>(param_->max_cat_threshold),
-               static_cast<std::uint32_t>(feature_nodes.size() * targets), static_cast<std::uint32_t>(targets),
-               evaluator.has_constraint ? evaluator.constraints[f] : 0,
-               static_cast<std::uint32_t>(evaluator.has_constraint)});
-          feature_nodes.push_back(nid);
-          for (std::size_t t = 0; t < targets; ++t) {
-            bounds.push_back({evaluator.has_constraint ? evaluator.lower[nid * targets + t]
-                                                       : -std::numeric_limits<float>::infinity(),
-                              evaluator.has_constraint ? evaluator.upper[nid * targets + t]
-                                                       : std::numeric_limits<float>::infinity()});
-          }
-          for (std::size_t t = 0; t < targets; ++t)
-            inputs[t].segments.push_back({hist[t]->Offset(nid) + ptr[f],
-                                          static_cast<std::uint32_t>(bins + t), n,
-                                          static_cast<std::uint32_t>(targets), 0});
-          bins += n * targets;
-          mapping.emplace_back(i, f);
-          final_features.push_back({f, evaluator.has_constraint ? evaluator.constraints[f] : 0,
-                                    2 * tasks.back().parent_begin});
-        }
-        nodes.push_back({begin, static_cast<std::uint32_t>(tasks.size()), parent_begin,
-                         static_cast<std::uint32_t>(targets)});
+        resident_features.push_back(sampled);
       }
       common::metal::SplitParameters parameters{param_->reg_lambda, param_->reg_alpha,
                                                 param_->max_delta_step, param_->min_child_weight};
-      std::vector<common::metal::QuantizedMultiSplitResult> results;
-      // One resident gather supplies node-order finalization and feature-order scans.
-      auto node_count = node_ids.size();
-      node_ids.insert(node_ids.end(), feature_nodes.begin(), feature_nodes.end());
       auto sums = metal_sums_->Gather(node_ids);
-      auto parents = sums.integers.subspan(node_count * targets);
-      auto final_parents = sums.precise.subspan(0, node_count * targets);
-      common::metal::EvaluateQuantizedMultiSplits(inputs, tasks, parents, bounds, parameters,
-                                                  &results, nullptr, nullptr, nullptr,
-                                                  metal_workspace_.get());
+      common::Span<std::int32_t const> constraints;
+      if (evaluator.has_constraint) constraints = {evaluator.constraints, ptr.size() - 1};
       std::vector<common::metal::SplitNodeResult> finalized;
-      common::metal::FinalizeSplitNodes(nodes, final_features, final_parents, final_bounds,
-                                        parameters, true, &finalized, nullptr,
-                                        metal_workspace_.get());
+      std::vector<common::metal::FeatureSplitResult> selected;
+      common::metal::EvaluateFeatureSplits(
+          inputs, resident_features, ptr, feature_types, constraints, param_->max_cat_to_onehot,
+          param_->max_cat_threshold, sums.integers, sums.precise, final_bounds, parameters, true,
+          &finalized, &selected, nullptr, metal_workspace_.get());
       std::vector<common::metal::SplitSumCopy> sum_copies;
       std::vector<common::metal::SplitWeightCopy> weight_copies;
       std::vector<common::metal::SplitCategoryCopy> category_copies;
@@ -917,7 +853,7 @@ class HistMultiEvaluator {
         auto i = finalized[entry].winner;
         if (i == std::numeric_limits<std::uint32_t>::max() || !cut.HasCategorical()) continue;
         category_slot[entry] = category_tasks.size();
-        category_tasks.push_back({i, ptr[mapping[i].second]});
+        category_tasks.push_back({i, selected[entry].cut_begin});
       }
       auto category_words =
           category_tasks.empty()
@@ -929,10 +865,10 @@ class HistMultiEvaluator {
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
         auto i = finalized[entry].winner;
         if (i == std::numeric_limits<std::uint32_t>::max()) continue;
-        auto const& r = results[i];
-        auto f = mapping[i].second;
+        auto const& r = selected[entry].vector;
+        auto f = selected[entry].feature;
         auto nid = entries[entry].nid;
-        auto const &task = tasks[i];
+        auto const& task = selected[entry];
         float split;
         if (task.kind == 2)
           split = std::numeric_limits<float>::quiet_NaN();

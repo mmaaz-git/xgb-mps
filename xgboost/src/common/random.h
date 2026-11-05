@@ -103,7 +103,10 @@ class ColumnSampler {
    */
   void Init(Context const* ctx, int64_t num_col, HostDeviceVector<float> const& feature_weights,
             float colsample_bynode, float colsample_bylevel, float colsample_bytree) {
-    this->feature_weights_.SetDevice(ctx->Device()), feature_weights.SetDevice(ctx->Device());
+    // MPS execution keeps the context's generic storage default on CPU. The
+    // sampler owns a resident feature/weight chain and selects Metal explicitly.
+    auto device = ctx->IsMPS() ? DeviceOrd::MPS() : ctx->Device();
+    this->feature_weights_.SetDevice(device), feature_weights.SetDevice(device);
     this->feature_weights_.Resize(feature_weights.Size());
     this->feature_weights_.Copy(feature_weights);
 
@@ -118,7 +121,7 @@ class ColumnSampler {
 
     // We process ColumnSampler on host for SYCL. So don't need to push data to device
     if (!ctx->Device().IsSycl()) {
-      feature_set_tree_->SetDevice(ctx->Device());
+      feature_set_tree_->SetDevice(device);
     }
     feature_set_tree_->Resize(num_col);
     if (ctx->IsCUDA()) {
@@ -130,7 +133,7 @@ class ColumnSampler {
     }
 #if defined(XGBOOST_USE_METAL)
     else if (ctx->IsMPS()) {
-      metal::InitFeatureSet(feature_set_tree_->HostSpan());
+      metal::InitFeatureSet(feature_set_tree_->DeviceSpan());
     }
 #endif
     else {
@@ -174,12 +177,12 @@ class ColumnSampler {
     if (colsample_bynode_ == 1.0f) {
       // Level sampling
       auto ptr = feature_set_level_[depth];
-      ptr->SetDevice(ctx->Device());
+      ptr->SetDevice(ctx->IsMPS() ? DeviceOrd::MPS() : ctx->Device());
       return ptr;
     }
     // Need to sample for the node individually
     auto ptr = ColSample(ctx, feature_set_level_[depth], colsample_bynode_);
-    ptr->SetDevice(ctx->Device());
+    ptr->SetDevice(ctx->IsMPS() ? DeviceOrd::MPS() : ctx->Device());
     return ptr;
   }
 };

@@ -149,5 +149,10 @@ struct Statistics {
   std::uint64_t gradient_sum_shared_output_bytes, gradient_sum_readback_bytes,
       split_sum_store_dispatches, split_sum_gather_dispatches, split_sum_apply_dispatches,
       split_sum_shared_input_bytes, split_sum_host_input_bytes, split_sum_readback_bytes;
+  // Feature sampling/filtering payloads, including optional RNG diagnostics;
+  // excludes host RNG setup and scalar query counts/error checks.
+  std::uint64_t feature_shared_input_bytes, feature_shared_output_bytes,
+      feature_host_input_bytes, feature_readback_bytes;
+  std::uint64_t feature_task_dispatches, feature_task_candidates;
 };
 }  // namespace xgboost::common::metal

@@ -11,13 +11,16 @@
 
 #include "../xgboost/src/common/metal_constraints.h"
 #include "../xgboost/src/common/metal_histogram.h"
+#include "../xgboost/src/common/metal_sampling.h"
 #include "../xgboost/src/tree/constraints.h"
+#include "cuda_column_reference.h"
 
 using namespace xgboost;
 namespace metal = common::metal;
 using Features = std::vector<bst_feature_t>;
 using Groups = std::vector<Features>;
 std::size_t checks = 0;
+std::size_t resident_queries = 0;
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
   ++checks;
@@ -202,18 +205,99 @@ void ErrorsAndBypasses() {
   h.Split(1, 1, 3, 4);
   h.QueryNode(3);
 }
+
+void ResidentQueries(bst_feature_t n, bool enabled) {
+  Groups groups;
+  if (n) {
+    groups = {{0, n - 1}, {}};
+    for (bst_feature_t f = 0; f < n; f += 2) groups.back().push_back(f);
+  }
+  auto gpu = metal::MakeInteractionConstraints(n, groups, enabled);
+  Reference ref{groups, {}};
+  auto device = DeviceOrd::MPS();
+  Features input;
+  for (bst_feature_t f = n; f > 0; --f) {
+    input.push_back(f - 1);
+    if (f % 3 == 0) input.push_back(f - 1);
+  }
+  if (!enabled) input = {999, 1, 999};  // Disabled bypass does not validate IDs.
+  Features padded(input.size() + 2, 0xbadcafeu);
+  std::copy(input.begin(), input.end(), padded.begin() + 1);
+  HostDeviceVector<bst_feature_t> source(padded, device);
+  auto source_view = source.ConstDeviceSpan().subspan(1, input.size());
+  std::vector<HostDeviceVector<bst_feature_t>> snapshots, consumed;
+  std::vector<Features> expected_snapshots, expected_consumed;
+  auto remember = [&](HostDeviceVector<bst_feature_t> value, Features expected) {
+    Check(value.DeviceCanRead() && !value.HostCanRead(), "Query did not return GPU ownership");
+    auto count = (value.Size() + 1) / 2;
+    consumed.emplace_back(count, 0, device);
+    metal::SampleFeatures(value.ConstDeviceSpan(), {}, 731, consumed.back().DeviceSpan());
+    expected_consumed.push_back(cuda_reference::SampleFeatures(expected, {}, 731, count));
+    snapshots.push_back(std::move(value));
+    expected_snapshots.push_back(std::move(expected));
+    ++resident_queries;
+  };
+  auto before = metal::GetStatistics();
+  gpu->Reset();
+  remember(gpu->QueryDevice(source_view, 0), input);
+  remember(gpu->QueryNodeDevice(0), {});
+  if (!enabled) {
+    remember(gpu->QueryDevice(source_view, -1), input);
+    remember(gpu->QueryNodeDevice(-1), {});
+  } else if (n) {
+    gpu->Split(0, 0, 1, 2);
+    ref.Split(0, 0, 1, 2);
+    remember(gpu->QueryDevice(source_view, 1), ref.Query(input, 1));
+    remember(gpu->QueryNodeDevice(2), ref.QueryNode(2));
+    gpu->Split(1, n - 1, 511, 512);
+    ref.Split(1, n - 1, 511, 512);
+    remember(gpu->QueryDevice(source_view, 511), ref.Query(input, 511));
+    // A resident result feeds another query, then a sample, with no host view.
+    auto expected = ref.Query(expected_snapshots.back(), 512);
+    remember(gpu->QueryDevice(snapshots.back().ConstDeviceSpan(), 512), expected);
+    remember(gpu->QueryDevice({}, 512), {});
+    remember(gpu->QueryNodeDevice(128), {});
+    HostDeviceVector<bst_feature_t> invalid(1, n, device);
+    Reject([&] { gpu->QueryDevice(invalid.ConstDeviceSpan(), 1); });
+    Reject([&] { gpu->QueryDevice(source_view, -1); });
+    Reject([&] { gpu->QueryNodeDevice(-1); });
+  } else {
+    remember(gpu->QueryDevice({}, 1), {});
+  }
+  gpu->Reset();
+  remember(gpu->QueryNodeDevice(0), {});
+  // Source can be replaced by its result; old input must live until publication.
+  source = gpu->QueryDevice(source_view, 0);
+  auto after = metal::GetStatistics();
+  Check(after.feature_readback_bytes == before.feature_readback_bytes &&
+            after.feature_host_input_bytes == before.feature_host_input_bytes &&
+            after.vector_readback_bytes == before.vector_readback_bytes &&
+            after.vector_host_copy_bytes == before.vector_host_copy_bytes,
+        "Resident filtering staged or published feature payloads through CPU memory");
+  Check(source.ConstHostVector() == input, "Replacing input with root result changed IDs");
+  for (std::size_t i = 0; i < snapshots.size(); ++i) {
+    Check(snapshots[i].ConstHostVector() == expected_snapshots[i],
+          "Queued query snapshot changed after scratch reuse/growth/reset");
+    Check(consumed[i].ConstHostVector() == expected_consumed[i],
+          "Resident filter-to-sampler consumer differs from independent oracle");
+  }
+}
+
 int main() {
   try {
     auto before = metal::GetStatistics();
     Overlap();
     Sizes();
     ErrorsAndBypasses();
+    for (bst_feature_t n : {0, 1, 33, 257, 65537}) ResidentQueries(n, true);
+    ResidentQueries(0, false);
     auto after = metal::GetStatistics();
     Check(after.interaction_buffer_growths > before.interaction_buffer_growths,
           "GPU growth was not exercised");
     Check(after.interaction_gpu_time_ns > before.interaction_gpu_time_ns, "No GPU time recorded");
-    std::printf("PASS %zu interaction checks; reset=%llu split=%llu query=%llu growth=%llu\n",
-                checks, (unsigned long long)after.interaction_reset_dispatches,
+    std::printf("PASS %zu interaction checks; %zu resident queries; reset=%llu split=%llu "
+                "query=%llu growth=%llu\n",
+                checks, resident_queries, (unsigned long long)after.interaction_reset_dispatches,
                 (unsigned long long)after.interaction_split_dispatches,
                 (unsigned long long)after.interaction_query_dispatches,
                 (unsigned long long)after.interaction_buffer_growths);

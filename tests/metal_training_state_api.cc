@@ -323,6 +323,10 @@ void CategoricalUpdater(unsigned targets, bool onehot, bool lossguide) {
   Check(after.vector_readback_bytes - before.vector_readback_bytes ==
             model.NumNodes() * targets * sizeof(float),
         "Category payload was read back during production tree growth");
+  Check(after.feature_readback_bytes == before.feature_readback_bytes &&
+            after.feature_host_input_bytes == before.feature_host_input_bytes &&
+            after.feature_task_dispatches > before.feature_task_dispatches,
+        "Production feature IDs did not remain on GPU through split task construction");
   Check(after.split_category_readback_bytes == before.split_category_readback_bytes &&
             after.partition_category_host_copy_bytes == before.partition_category_host_copy_bytes,
         "Production categorical payload used host publication/staging");

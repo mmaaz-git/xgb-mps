@@ -43,6 +43,9 @@ def test_column_sampling_training(metal, rates, weights, strategy):
                 else RecordedSquaredError())
     gpu = xgb.train(params | {"device": "mps"}, data, 4, obj=recorded)
     after = xgb.metal_info()
+    for key in ("feature_host_input_bytes", "feature_readback_bytes"):
+        assert after[key] == before[key], key
+    assert after["feature_task_dispatches"] > before["feature_task_dispatches"]
     assert after["column_init_dispatches"] > before["column_init_dispatches"]
     assert (after["column_sampling_dispatches"] > before["column_sampling_dispatches"]) == (rates != (1., 1., 1.))
     if strategy == "one_output_per_tree":
@@ -87,9 +90,13 @@ def test_cuda_column_selection_in_training(metal, rates, weighted, strategy, see
     params = dict(device="mps", tree_method="hist", base_score=0, max_depth=1,
                   nthread=2, seed=seed, seed_per_iteration=True, multi_strategy=strategy,
                   colsample_bytree=rates[0], colsample_bylevel=rates[1], colsample_bynode=rates[2])
-    before = xgb.metal_info()["column_sampling_dispatches"]
+    before = xgb.metal_info()
     model = xgb.train(params, data, 3)
-    assert xgb.metal_info()["column_sampling_dispatches"] > before
+    after = xgb.metal_info()
+    assert after["column_sampling_dispatches"] > before["column_sampling_dispatches"]
+    for key in ("feature_host_input_bytes", "feature_readback_bytes"):
+        assert after[key] == before[key], key
+    assert after["feature_task_dispatches"] > before["feature_task_dispatches"]
     trees = json.loads(model.save_raw(raw_format="json"))["learner"]["gradient_booster"]["model"]["trees"]
     for iteration, tree in enumerate(trees):
         parent = np.random.RandomState((seed * 127 + iteration) & 0xffffffff)

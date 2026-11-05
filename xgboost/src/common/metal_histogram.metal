@@ -6782,6 +6782,92 @@ struct SplitNodeResult {
   float loss_chg;
   ulong parent_gain, parent_hess, left_hess, right_hess;
 };
+// Host supplies node ranges and allocation shapes; feature-indexed metadata and
+// payload gathers are computed here from the resident sampled/allowed IDs.
+struct FeatureSplitParameters {
+  uint begin, count, targets, node, features, onehot, limit, flags;
+  uint bins, nodes, candidates, padding;
+};
+kernel void xgb_feature_split_lengths(
+    device const uint* ids [[buffer(0)]], device const uint* cuts [[buffer(1)]],
+    device const uchar* types [[buffer(2)]], device ulong* lengths [[buffer(3)]],
+    device atomic_uint* error [[buffer(4)]], constant FeatureSplitParameters& p [[buffer(5)]],
+    uint i [[thread_position_in_grid]]) {
+  uint slot = p.begin + i, f = ids[slot];
+  lengths[slot] = 0;
+  if (f >= p.features) {
+    atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+    return;
+  }
+  uint begin = cuts[f], end = cuts[f + 1];
+  if (end < begin || end > p.bins || end - begin > 0x7fffffffu ||
+      ((p.flags & 1u) && types[f] > 1)) {
+    atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+    return;
+  }
+  lengths[slot] = ulong(end - begin) * p.targets;
+}
+kernel void xgb_feature_split_tasks(
+    device const uint* ids [[buffer(0)]], device const uint* cuts [[buffer(1)]],
+    device const uchar* types [[buffer(2)]], device const int* monotone [[buffer(3)]],
+    device const ulong* prefix [[buffer(4)]], device const ulong* offsets [[buffer(5)]],
+    device const ulong2* node_parents [[buffer(6)]], device const float2* node_bounds [[buffer(7)]],
+    device uchar* tasks [[buffer(8)]], device SplitFinalizeFeature* features [[buffer(9)]],
+    device HistogramGather* segments [[buffer(10)]], device ulong2* parents [[buffer(11)]],
+    device float2* bounds [[buffer(12)]], constant FeatureSplitParameters& p [[buffer(13)]],
+    uint i [[thread_position_in_grid]]) {
+  uint slot = p.begin + i, f = ids[slot], cut = cuts[f], n = cuts[f + 1] - cut;
+  uint begin = slot ? uint(prefix[slot - 1]) : 0, end = uint(prefix[slot]);
+  uint kind = ((p.flags & 1u) && types[f] == 1) ? (n < p.onehot ? 1u : 2u) : 0u;
+  int constraint = (p.flags & 2u) ? monotone[f] : 0;
+  uint parent = p.node * p.targets;
+  if (p.flags & 4u) {
+    reinterpret_cast<device QuantizedMultiSplitTask*>(tasks)[slot] =
+        {begin, end, kind, p.limit, slot * p.targets, p.targets, constraint,
+         uint((p.flags & 2u) != 0), 0, 0};
+    for (uint t = 0; t < p.targets; ++t) {
+      parents[slot * p.targets + t] = node_parents[parent + t];
+      bounds[slot * p.targets + t] = node_bounds[parent + t];
+    }
+  } else {
+    ulong2 sum = node_parents[parent];
+    float2 bound = node_bounds[parent];
+    reinterpret_cast<device QuantizedSplitTask*>(tasks)[slot] =
+        {begin, end, kind, p.limit, sum.x, sum.y, bound.x, bound.y, constraint, 0};
+  }
+  features[slot] = {f, constraint, (p.flags & 4u) ? 2 * slot * p.targets : 0u, 0};
+  for (uint t = 0; t < p.targets; ++t) {
+    segments[t * p.candidates + slot] =
+        {offsets[t * p.nodes + p.node] + cut, begin + t, n, p.targets, 0};
+  }
+}
+struct FeatureSplitResult {
+  uint feature, kind, cut_begin, padding;
+  QuantizedSplitResult scalar;
+  QuantizedMultiSplitResult vector;
+};
+kernel void xgb_feature_split_winners(
+    device const SplitNodeResult* nodes [[buffer(0)]],
+    device const SplitFinalizeFeature* features [[buffer(1)]],
+    device const uint* cuts [[buffer(2)]], device const uchar* tasks [[buffer(3)]],
+    device const uchar* candidates [[buffer(4)]], device FeatureSplitResult* output [[buffer(5)]],
+    constant uint& multi [[buffer(6)]], uint node [[thread_position_in_grid]]) {
+  uint winner = nodes[node].winner;
+  FeatureSplitResult selected{};
+  selected.feature = 0xffffffffu;
+  if (winner != 0xffffffffu) {
+    selected.feature = features[winner].feature;
+    selected.cut_begin = cuts[selected.feature];
+    if (multi) {
+      selected.kind = reinterpret_cast<device const QuantizedMultiSplitTask*>(tasks)[winner].kind;
+      selected.vector = reinterpret_cast<device const QuantizedMultiSplitResult*>(candidates)[winner];
+    } else {
+      selected.kind = reinterpret_cast<device const QuantizedSplitTask*>(tasks)[winner].kind;
+      selected.scalar = reinterpret_cast<device const QuantizedSplitResult*>(candidates)[winner];
+    }
+  }
+  output[node] = selected;
+}
 inline void xgb_final_children(device const uchar* candidates, device const ulong2* children,
                                device const SplitFinalizeFeature* features, uint winner, uint t,
                                uint nt, uint multi, thread DoublePair& left,
