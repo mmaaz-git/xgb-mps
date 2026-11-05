@@ -1,5 +1,5 @@
 {
-  "status": "Metal numerical-v2 passed; CUDA compile/link pending",
+  "status": "Metal numerical-v2 passed; corrected CUDA build in progress",
   "suite": "numerical-v2",
   "scope": "P5-N01/08/13/14: 39 inputs; CUDA expects 132 executions. Thirteen contracts and broader caller coverage remain. No NVIDIA runtime.",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -125,13 +125,18 @@
     "scope": "Synthetic report data only. Includes v1 compatibility, v2 coverage/variants, exact threshold mismatch and mixed-suite rejection."
   },
   "cuda_compile": {
-    "status": "pending-push",
-    "gpu_execution": false
+    "run_id": 42045096489,
+    "head": "21ee02e01e538454c0f99b57dd8a069f9965ab61",
+    "status": "in_progress",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42045096489",
+    "gpu_execution": false,
+    "last_observed_utc": "2026-11-05T14:28:24.155612+00:00"
   },
   "limits": [
     "NVIDIA execution is absent.",
     "Threshold API result is recorded; its private binary64 temporary is not exposed.",
     "New two-element CDFs are exactly summable; larger CDF association is a separate contract.",
     "Threshold fixtures do not replace existing stride/alias/native-ownership caller tests."
-  ]
+  ],
+  "harness_commit": "21ee02e01e538454c0f99b57dd8a069f9965ab61"
 }

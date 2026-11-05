@@ -116,6 +116,9 @@ and learner groups, including TLS, with all workers on the same M3. A subsequent
 focused run passed four native groups and 49 Python tests, including a new group
 with 21 explicit numerical witnesses. There are now 104 native groups; the new
 group passed separately from the 103-group full run. [Acceptance evidence](docs/LOCAL_ACCEPTANCE.md).
+A subsequent focused run expands that numerical group to **39 witnesses and
+3,491 exact checks**, adding threshold-precision boundaries for the shared
+[NVIDIA comparison](validation/cuda-comparison-threshold-m3.json).
 
 The [CUDA CI workflow](.github/workflows/cuda-compile.yml) separately checks that
 shared-code changes still compile with NVIDIA dependencies. Successful compilation
