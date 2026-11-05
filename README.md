@@ -130,7 +130,9 @@ The latest full HIGGS replay covers the accepted `68c800e` production tree:
 three pairs of 1,000 rounds give **288 s CPU / 469 s MPS** median training time
 on this M3. MPS is slower, and strict prediction equivalence fails. The saved
 MPS model predicts identically on CPU; the independently trained models use
-different quantile cuts and differ from their first split. Diagnosis continues.
+different quantile cuts and differ from their first split. Holding cuts fixed
+passes the strict comparison for a separate 100-round diagnostic, with all splits
+agreeing. CUDA sketch agreement still needs NVIDIA execution.
 System-wide swap use was high, and CPU times ranged from 195 to 289 seconds.
 [Timings, correctness results and limits](docs/PUBLISHED_BENCHMARKS.md#accepted-production-tree-68c800e).
 Older measurements are historical; raw reports remain under [validation/](validation/).

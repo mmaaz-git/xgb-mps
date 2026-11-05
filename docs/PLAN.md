@@ -49,7 +49,7 @@ classification.
 | PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA compile passed at `bf1ebea` | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
 | VERIFY-1 | Integration at a fixed revision | Locally complete; NVIDIA execution remains separate | [Acceptance report](LOCAL_ACCEPTANCE.md) maps all 17 contracts and 16 original gap rows; full Metal/CPU/federated evidence at `68c800e`, focused numerical fixtures at `0c66454`; CUDA compile passed at `bf1ebea` |
 | VERIFY-2 | NVIDIA execution comparison | First three-contract harness added; external hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; remaining contracts/callers still need harness coverage; publish differences, not just compiler success |
-| PERF-1 | Profile/optimize a frozen benchmark matrix | Full HIGGS repeated at `68c800e`; strict equivalence failed and diagnosis is active | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
+| PERF-1 | Profile/optimize a frozen benchmark matrix | Full HIGGS repeated at `68c800e`; ordinary strict equivalence failed, common-cut 100-round diagnostic passes | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
 
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
 while hardware is unavailable. Cross-Apple-hardware claims also require actual runs.
@@ -85,11 +85,15 @@ finished all three CPU/MPS pairs (10.5M training rows, 1,000 rounds): median
 every pair. CPU prediction of the saved MPS model matches all 500,000 margins
 bit for bit. Fresh one-round replays reproduce each backend's first tree exactly;
 24 of 28 features have different quantile cuts, and the first root threshold
-already differs. Next: hold cuts fixed to separate sketch differences from
-downstream training differences. CPU's host sketch and MPS's CUDA-style sketch
-differ by design, but this evidence does not prove CUDA sketch equivalence or
-explain every later difference. Retain the failure; do not change formulas
-solely to obtain CPU identity or widen tolerances.
+already differs. A separate 100-round common-cut diagnostic now passes all
+500,000 test margins at the original tolerance; all splits agree and evaluation
+histories match. Small leaf-weight differences remain. The CPU control reproduces
+the original CPU cuts and first 100 predictive trees exactly. This implicates
+quantile construction but does not prove CUDA sketch equivalence or explain
+every difference after 1,000 rounds. Retain the original failure; do not change
+formulas solely to obtain CPU identity or widen tolerances. Prioritize actual
+CUDA sketch outputs in VERIFY-2, then expand its remaining contract/caller
+coverage. Wide, sparse and vector timings remain PERF-1 work.
 Histogram, objective and partition timings are the first profiling candidates;
 the observed system-wide swap pressure must accompany published timings.
 

@@ -3,6 +3,7 @@
 
 Compare saved models by tree path, check the saved Metal model on the CPU
 predictor, and reproduce each backend's first round with exported quantile cuts.
+An optional common-cut run separates quantization from downstream training.
 These are correctness diagnostics, not replacement benchmark timings.
 """
 import argparse
@@ -96,10 +97,54 @@ def margin_difference(actual, expected):
             "exact_bits": int(np.count_nonzero(actual.view(np.uint32) == expected.view(np.uint32)))}
 
 
+def common_cut_worker(args, benchmark, x, y):
+    device = args.worker.removeprefix("common-")
+    params = benchmark["runs"][device][0]["params"]
+    rows = benchmark["runs"][device][0]["shapes"]["train"][0]
+    threads, bins = params["nthread"], params["max_bin"]
+    print(f"{device}: constructing a CPU reference cut set from {rows} rows", flush=True)
+    reference = xgb.QuantileDMatrix(x[:rows], label=y[:rows], nthread=threads, max_bin=bins)
+    if device == "cpu":
+        matrix = reference
+    else:
+        matrix = xgb.QuantileDMatrix(x[:rows], label=y[:rows], nthread=threads,
+                                    max_bin=bins, ref=reference, device="mps")
+    ptr, cuts = matrix.get_quantile_cut()
+    for actual, expected in zip((ptr, cuts), reference.get_quantile_cut()):
+        np.testing.assert_array_equal(actual, expected)
+    del reference
+    np.savez(args.output_dir / f"{device}-cuts.npz", ptr=ptr, cuts=cuts)
+    test = xgb.DMatrix(x[10_500_000:11_000_000], label=y[10_500_000:11_000_000], nthread=threads)
+
+    class Progress(xgb.callback.TrainingCallback):
+        def after_iteration(self, model, epoch, evals_log):
+            if (epoch+1) % 10 == 0 or epoch+1 == args.rounds:
+                print(f"{device}: common-cut round {epoch+1}/{args.rounds}", flush=True)
+            return False
+
+    history = {}
+    before = xgb.metal_info()
+    model = xgb.train(params, matrix, num_boost_round=args.rounds, evals=[(test, "test")],
+                      evals_result=history, verbose_eval=False, callbacks=[Progress()])
+    after = xgb.metal_info()
+    assert (after["histogram_dispatches"] > before["histogram_dispatches"]) == (device == "mps")
+    model.save_model(args.output_dir / f"{device}.ubj")
+    np.save(args.output_dir / f"{device}.margins.npy", model.predict(test, output_margin=True))
+    write(args.output_dir / f"{device}.json", {
+        "status": "recorded", "params": params, "rounds": args.rounds,
+        "cut_count": len(cuts), "metric_history": history,
+        "model_sha256": sha(args.output_dir / f"{device}.ubj"),
+        "margins_sha256": sha(args.output_dir / f"{device}.margins.npy"),
+        "dispatch_statistics": {k: after[k]-before[k] for k in after if k not in ("built", "available")}})
+
+
 def worker(args, benchmark):
     artifacts = args.benchmark.with_suffix("")
     x = np.load(args.cache / "X.npy", mmap_mode="r")
     y = np.load(args.cache / "y.npy", mmap_mode="r")
+    if args.worker.startswith("common-"):
+        common_cut_worker(args, benchmark, x, y)
+        return
     rows = benchmark["runs"]["cpu"][0]["shapes"]["train"][0]
     threads = benchmark["cpu_threads"]
     if args.worker == "predict":
@@ -153,7 +198,11 @@ def main():
     parser.add_argument("--provenance", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--cache", type=Path, default=ROOT / ".cache/datasets/higgs")
-    parser.add_argument("--worker", choices=("cpu", "mps", "predict"), help=argparse.SUPPRESS)
+    parser.add_argument("--common-cuts", action="store_true",
+                        help="Train fresh CPU/Metal quantile matrices with identical CPU reference cuts")
+    parser.add_argument("--rounds", type=int, default=100, help="Rounds for the common-cut diagnostic")
+    parser.add_argument("--worker", choices=("cpu", "mps", "predict", "common-cpu", "common-mps"),
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
     benchmark = json.loads(args.benchmark.read_text())
     provenance = json.loads(args.provenance.read_text())
@@ -163,12 +212,15 @@ def main():
         parser.error("The benchmark did not finish with verified source/library provenance")
     if sha(ROOT / "xgboost/lib/libxgboost.dylib") != provenance["library_sha256"]:
         parser.error("The production library changed since the benchmark")
+    if not 1 <= args.rounds <= benchmark["rounds"]:
+        parser.error("--rounds must be positive and no greater than the recorded benchmark")
     if args.worker:
         worker(args, benchmark)
         return
 
     args.output_dir.mkdir(parents=True, exist_ok=False)
     record = {"status": "running", "scope": "HIGGS correctness diagnosis; not a timing benchmark",
+              "mode": "common-cuts" if args.common_cuts else "first-divergence",
               "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "benchmark_sha256": sha(args.benchmark), "provenance_sha256": sha(args.provenance),
               "library_sha256": provenance["library_sha256"], "script_sha256": sha(Path(__file__)),
@@ -180,16 +232,18 @@ def main():
             original = provenance["dataset_sha256"][f".cache/datasets/higgs/{filename}"]
             if sha(args.cache / filename) != original:
                 raise ValueError(f"Dataset changed: {filename}")
-        artifacts = args.benchmark.with_suffix("")
-        models = [xgb.Booster(model_file=artifacts / f"{device}-1.ubj") for device in ("cpu", "mps")]
-        record["saved_model_difference"] = model_difference(*(trees(m) for m in models))
-        record["model_sha256"] = {device: sha(artifacts / f"{device}-1.ubj") for device in ("cpu", "mps")}
-        write(output, record)
-        print("Saved model comparison:", record["saved_model_difference"], flush=True)
-        for stage in ("predict", "cpu", "mps"):
+        if not args.common_cuts:
+            artifacts = args.benchmark.with_suffix("")
+            models = [xgb.Booster(model_file=artifacts / f"{device}-1.ubj") for device in ("cpu", "mps")]
+            record["saved_model_difference"] = model_difference(*(trees(m) for m in models))
+            record["model_sha256"] = {device: sha(artifacts / f"{device}-1.ubj") for device in ("cpu", "mps")}
+            write(output, record)
+            print("Saved model comparison:", record["saved_model_difference"], flush=True)
+        stages = ("common-cpu", "common-mps") if args.common_cuts else ("predict", "cpu", "mps")
+        for stage in stages:
             command = [sys.executable, str(Path(__file__).resolve()), "--benchmark", str(args.benchmark),
                        "--provenance", str(args.provenance), "--output-dir", str(args.output_dir),
-                       "--cache", str(args.cache), "--worker", stage]
+                       "--cache", str(args.cache), "--worker", stage, "--rounds", str(args.rounds)]
             print("Starting diagnostic stage:", stage, flush=True)
             record["steps"].append({"stage": stage, "command": command, "status": "running"})
             write(output, record)
@@ -197,8 +251,20 @@ def main():
             record["steps"][-1].update(exit_code=result.returncode, status="passed" if result.returncode == 0 else "failed")
             write(output, record)
             result.check_returncode()
-        record["cpu_prediction_of_mps_model"] = json.loads((args.output_dir / "predict.json").read_text())
-        record["first_round"] = {device: json.loads((args.output_dir / f"{device}.json").read_text()) for device in ("cpu", "mps")}
+        observations = {device: json.loads((args.output_dir / f"{device}.json").read_text()) for device in ("cpu", "mps")}
+        if args.common_cuts:
+            record["rounds"] = args.rounds
+            record["training"] = observations
+            models = [xgb.Booster(model_file=args.output_dir / f"{device}.ubj") for device in ("cpu", "mps")]
+            record["common_cut_model_difference"] = model_difference(*(trees(m) for m in models))
+            record["common_cut_margins"] = margin_difference(
+                np.load(args.output_dir / "mps.margins.npy"), np.load(args.output_dir / "cpu.margins.npy"))
+            record["metric_history_max_abs_difference"] = float(np.max(np.abs(
+                np.array(observations["cpu"]["metric_history"]["test"]["error"])
+                - np.array(observations["mps"]["metric_history"]["test"]["error"]))))
+        else:
+            record["cpu_prediction_of_mps_model"] = json.loads((args.output_dir / "predict.json").read_text())
+            record["first_round"] = observations
         cuts = {device: np.load(args.output_dir / f"{device}-cuts.npz") for device in ("cpu", "mps")}
         comparisons = []
         for feature in range(len(cuts["cpu"]["ptr"])-1):
@@ -212,6 +278,10 @@ def main():
                                 "first_differences": [{"index": int(i), "cpu": float(a[i]), "mps": float(b[i])} for i in indices[:5]]})
         record["cut_comparison"] = comparisons
         record["features_with_different_cuts"] = sum(not c["exact"] for c in comparisons)
+        if args.common_cuts and record["features_with_different_cuts"] != 0:
+            raise ValueError("Common-cut workers produced different cuts; comparison is invalid")
+        if sha(ROOT / "xgboost/lib/libxgboost.dylib") != record["library_sha256"]:
+            raise ValueError("The library changed during the diagnostic")
         record["status"] = "recorded; interpretation-required"
     except Exception as error:
         record.update(status="failed", error=str(error))

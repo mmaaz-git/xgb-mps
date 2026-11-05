@@ -130,13 +130,24 @@ The separately trained models already differ at tree zero's root: both choose
 feature 25, but CPU uses threshold 1.0758163 and MPS 1.0759506. Fresh one-round
 replays reproduce both first trees exactly. Their exported quantile cuts differ
 for 24 of 28 features. This locates a difference before prediction, but does not
-prove that quantile construction explains every subsequent divergence. A
-common-cut training diagnostic is the next check; NVIDIA execution remains
-necessary to compare the CUDA-style sketch against CUDA itself.
+prove that quantile construction explains every subsequent divergence.
+
+A separate **100-round common-cut diagnostic** uses a CPU reference cut set,
+with CPU and Metal quantile matrices independently constructed in fresh workers.
+All 500,000 margins pass the original tolerance: maximum difference `1.43e-6`,
+RMS `3.29e-8`; 452,930 are bit-identical. Every split agrees and test-error
+histories match exactly. Ninety-seven trees have at least one differing leaf
+weight; the first difference is one FP32 ULP in tree 3. The CPU control's cuts
+and first 100 predictive trees exactly reproduce the original CPU baseline.
+These observations implicate quantile construction, while retaining the
+1,000-round failure and the limit of this 100-round diagnostic. They do not
+establish Metal/CUDA sketch agreement; that needs NVIDIA execution.
 
 [Raw runs](../validation/perf1-higgs-1000-m3.json),
 [source/dataset provenance](../validation/perf1-higgs-1000-provenance-m3.json),
-and [first-divergence diagnosis](../validation/perf1-higgs-diagnosis-m3.json).
+the [first-divergence diagnosis](../validation/perf1-higgs-diagnosis-m3.json)
+(diagnostic source at `52069b2`), and
+[common-cut diagnosis](../validation/perf1-higgs-common-cuts-m3.json).
 Models and prediction arrays remain in the ignored local results directory.
 Reproduce the diagnostic after a completed benchmark and provenance check:
 
@@ -145,6 +156,12 @@ Reproduce the diagnostic after a completed benchmark and provenance check:
   --benchmark results/perf1-higgs-1000.json \
   --provenance results/perf1-higgs-1000-provenance.json \
   --output-dir results/perf1-higgs-diagnosis
+
+# Separate correctness experiment; not a replacement performance measurement.
+.venv/bin/python scripts/diagnose_higgs.py \
+  --benchmark results/perf1-higgs-1000.json \
+  --provenance results/perf1-higgs-1000-provenance.json \
+  --output-dir results/perf1-higgs-common-cuts --common-cuts --rounds 100
 ```
 
 ## Initial M3 measurements
