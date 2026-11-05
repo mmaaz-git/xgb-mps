@@ -34,8 +34,9 @@ coverage is an inventory check, not proof of parity. Confirmed remaining storage
 gaps are ordinary native matrix entries and vector-tree weights/category buffers;
 generic helper callers and numerical boundaries still need reconciliation.
 A separate [CUDA compile workflow](.github/workflows/cuda-compile.yml) now checks
-the NVIDIA code with NCCL, nvCOMP and federated support. Its first run passes
-all **197 compile/link steps** with CUDA 13.4.92. It does not run GPU tests.
+the NVIDIA code with NCCL, nvCOMP and federated support. The validated
+configuration passes all **197 compile/link steps** with CUDA 13.4.92. It does not
+run GPU tests.
 [Compiler evidence](validation/cuda-compile-ci-13.4.txt).
 
 Previous step: **explicit tree updater selection works with MPS**. Common hist and
