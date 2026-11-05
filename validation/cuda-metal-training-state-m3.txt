@@ -1,0 +1,81 @@
+Tree-training storage — Apple M3, 2026-11-04
+==========================================
+Authority: gbm/gbtree.cu group extraction and tree/updater_gpu_hist.cu
+per-tree sampling, original quantization and approximate-sketch ordering.
+No shader or sampling/arithmetic formula change. No measured CUDA comparison.
+
+Production scope:
+- GBTree group extraction and scalar-group scratch select Metal storage.
+- Hist split/value gradients, F-order sampling and quantizer layout scratch
+  remain Metal-owned; reduced-gradient scales precede replay as before.
+- Float replay directly binds disjoint resident outputs. Unshareable views
+  preserve staged input/output bytes, padding and guards.
+- Both hist leaf-position outputs and approx outputs remain Metal-owned.
+- Approx extracts original Hessians on GPU before any per-tree sampling and
+  uses resident sampling matrices/views. Forest cut regeneration order unchanged.
+- Hessian/row/query sketch weights publish into a resident output span, using
+  scratch plus GPU blit for aliases. Sketch objects snapshot resident weights
+  on GPU, including SetWeights, rather than retaining a borrowed allocation.
+- Existing host weight overload remains. Original-Hessian storage lives through
+  all external-page consumption and tree building; batch cache comparisons do
+  not dereference the old Hessian span. Commands remain synchronous.
+- Gradient-state byte counters include replay and weight bindings, with no ABI
+  growth. Root statistics, host model orchestration, sketch finalization and
+  input metadata retain their existing source-defined host work.
+- A final autorelease scope releases command-held borrowed buffers before
+  destruction of the owning quantizer layout tensor.
+
+New native suite, Metal API validation enabled:
+  tests/metal_training_state_api.cc
+  PASS 196 cases / 391152 checks.
+  Actual hist/approx updater states, scalar/vector/reduced gradients, one/three
+    trees, no/uniform/gradient sampling, dense/missing input, repeated updates,
+    and MPS->CPU->MPS handoffs (gradient-based sampling stays MPS).
+  Independently walked CPU model leaf assignments, including negated sampled
+    positions. Existing independent source/CPU tests verify tree arithmetic.
+  GBTree group extraction from GPU-written inputs with no payload transfers.
+  C/F/padded quantizer scratch and replay for 0/1/257/4097 rows; guarded resident
+    replay is bit-exact with deliberately unshareable staged replay.
+  Sketch Hessian/row/query inputs, exact output bits and guards, input/output
+    aliases, read-only input, unaligned output and exact fallback byte counts.
+  Constructor and SetWeights snapshots match an independent weight snapshot
+    after source GPU overwrite and allocation destruction.
+  Resident primitive calls require no vector upload/readback or gradient-state
+    staging. Actual updater assertions inspect each payload's access state;
+    they do not claim the whole updater has zero host work.
+
+Build: results/build-training-state-v2.log, exit 0. Initial v1 build caught an
+incorrect edit boundary in the CPU initialization helper; corrected before tests.
+Native logs: results/training-state-native-v1.log (initial 195 cases) and
+  training-state-native-v2.log (final 196 cases, exit 0).
+Runner: scripts/test.sh now contains 94 native groups. The full driver runs
+  its saved original 93-group script; the new group is validated separately.
+
+Full regression: PASS, exit 0, 2026-11-05T00:42:43Z–00:50:37Z (7m54s).
+  All 93 existing native groups rebuilt/passed, in addition to the new group.
+  Python: 3345 passed, 1 expected skip, 623 warnings, 189.59 seconds.
+  CPU-only: seven build steps; API/device/native input/output/quantile/cache
+    checks passed.
+  Log: results/training-state-full-v1.log.
+  Driver: results/run-training-state-full-v1.sh.
+Final lifetime rebuild and affected checks: PASS, exit 0.
+  2026-11-05T00:50:41Z–00:51:19Z (38 seconds).
+  Final Metal build: three steps passed. All native tests use Metal API validation.
+  Training state: 196 cases / 391152 checks.
+  Quantized state: 228 cases / 4319326 pairs.
+  CUDA gradient sampling: 54 sampler calls; 136 source-formula cases / 4499447
+    pairs / seven expected rejections.
+  Gradient copies/Hessian extraction: 276 cases / 25026384 pairs each.
+  Integer leaf fitting: 250 cases / 11594018 source pairs / 20458 exact sum fields,
+    plus cancellation, scales, positive curvature and conversion-domain checks.
+  Python approx/sampling: 223 passed, one warning, 23.95 seconds; includes
+    external pages, forest sampling order and source-derived fixed-cut references.
+  Log: results/training-state-final-v1.log.
+  Driver: results/run-training-state-final-v1.sh (waited for prior job to finish).
+  Only the autorelease scope/formatting changed after the full run began; no
+    shader/formula change. Affected groups revalidated against the final library.
+  No production/test edits followed final build/validation.
+
+No benchmarks, NVIDIA execution or other-Apple-hardware checks were run.
+Persistent model/dictionary storage, remaining CUDA arithmetic/operation audits
+and GPU collective transport remain open. Full CUDA parity is incomplete.

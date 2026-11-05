@@ -181,15 +181,16 @@ void GPUCopyGradient(Context const*, linalg::Matrix<GradientPair> const*, bst_gr
 
 void CopyGradient(Context const* ctx, linalg::Matrix<GradientPair> const* in_gpair,
                   bst_group_t group_id, linalg::Matrix<GradientPair>* out_gpair) {
-  out_gpair->SetDevice(ctx->Device());
+  auto device = ctx->IsMPS() ? DeviceOrd::MPS() : ctx->Device();
+  out_gpair->SetDevice(device);
   out_gpair->Reshape(in_gpair->Shape(0), 1);
   if (ctx->IsCUDA()) {
     GPUCopyGradient(ctx, in_gpair, group_id, out_gpair);
 #if defined(XGBOOST_USE_METAL)
   } else if (ctx->IsMPS()) {
     common::metal::CopyGradients(
-        in_gpair->HostView().Slice(linalg::All(), linalg::Range(group_id, group_id + 1)),
-        out_gpair->HostView());
+        in_gpair->View(device).Slice(linalg::All(), linalg::Range(group_id, group_id + 1)),
+        out_gpair->View(device));
 #endif
   } else {
     auto const& in = *in_gpair;
@@ -302,7 +303,7 @@ void GBTree::DoBoost(DMatrix* p_fmat, GradientContainer* in_gpair, PredictionCac
         << "Must have exactly n_groups * n_samples gpairs.";
     GradientContainer tmp;
     tmp.gpair = linalg::Matrix<GradientPair>{
-        {in_gpair->gpair.Shape(0), static_cast<std::size_t>(1ul)}, ctx_->Device()};
+        {in_gpair->gpair.Shape(0), static_cast<std::size_t>(1ul)}, prediction_device};
     bool cache_updated{true};
     for (bst_target_t gid = 0; gid < n_groups; ++gid) {
       node_position.clear();

@@ -152,8 +152,7 @@ void UpdateTree(common::Monitor *monitor, linalg::MatrixView<GradientPair const>
     expand_set = driver.Pop();
   }
 
-  auto &h_out_position = p_out_position->HostVector();
-  updater->LeafPartition(tree, gpair, &h_out_position);
+  updater->LeafPartition(tree, gpair, p_out_position);
   monitor->Stop(__func__);
 }
 
@@ -328,12 +327,13 @@ class MultiTargetHistBuilder {
   }
 
   void LeafPartition(RegTree const &tree, linalg::MatrixView<GradientPair const> gpair,
-                     std::vector<bst_node_t> *p_out_position) {
+                     HostDeviceVector<bst_node_t> *p_out_position) {
     monitor_->Start(__func__);
-    p_out_position->resize(gpair.Shape(0));
+    p_out_position->SetDevice(ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU());
+    p_out_position->Resize(gpair.Shape(0));
+    auto positions = ctx_->IsMPS() ? p_out_position->DeviceSpan() : p_out_position->HostSpan();
     for (auto const &part : partitioner_) {
-      part.LeafPartition(ctx_, tree.HostMtView(), gpair,
-                         common::Span{p_out_position->data(), p_out_position->size()});
+      part.LeafPartition(ctx_, tree.HostMtView(), gpair, positions);
     }
     monitor_->Stop(__func__);
   }
@@ -350,7 +350,7 @@ class MultiTargetHistBuilder {
     CHECK_EQ(full_grad.Shape(1), p_tree->NumTargets());
     auto tree = p_tree->HostMtView();
     auto n_targets = p_tree->NumTargets();
-    auto value_gpair = full_grad.HostView();
+    auto value_gpair = full_grad.View(ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU());
 
     // Collect all leaf nodes from the first partitioner
     std::vector<bst_node_t> leaves_idx;
@@ -650,12 +650,13 @@ class HistUpdater {
   }
 
   void LeafPartition(RegTree const &tree, linalg::MatrixView<GradientPair const> gpair,
-                     std::vector<bst_node_t> *p_out_position) {
+                     HostDeviceVector<bst_node_t> *p_out_position) {
     monitor_->Start(__func__);
-    p_out_position->resize(gpair.Shape(0));
+    p_out_position->SetDevice(ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU());
+    p_out_position->Resize(gpair.Shape(0));
+    auto positions = ctx_->IsMPS() ? p_out_position->DeviceSpan() : p_out_position->HostSpan();
     for (auto const &part : partitioner_) {
-      part.LeafPartition(ctx_, tree.HostScView(), gpair,
-                         common::Span{p_out_position->data(), p_out_position->size()});
+      part.LeafPartition(ctx_, tree.HostScView(), gpair, positions);
     }
     monitor_->Stop(__func__);
   }
@@ -705,17 +706,18 @@ class QuantileHistMaker : public TreeUpdater {
 
     bst_target_t n_targets = trees.front()->NumTargets();
     // Use split gradient for tree building
-    auto h_gpair = in_gpair->Grad()->HostView();
+    auto device = ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU();
+    auto gradients = in_gpair->Grad()->View(device);
 
     linalg::Matrix<GradientPair> sample_out;
-    auto h_sample_out = h_gpair;
+    auto sample_view = gradients;
     auto need_copy = [&] {
       return trees.size() > 1 || n_targets > 1 || in_gpair->HasValueGrad();
     };
     if (need_copy()) {
       // allocate buffer
-      sample_out = decltype(sample_out){h_gpair.Shape(), ctx_->Device(), linalg::Order::kF};
-      h_sample_out = sample_out.HostView();
+      sample_out = decltype(sample_out){gradients.Shape(), device, linalg::Order::kF};
+      sample_view = sample_out.View(device);
     }
 
     cpu_impl::Sampler sampler{*param};
@@ -724,14 +726,14 @@ class QuantileHistMaker : public TreeUpdater {
         // Copy gradient into buffer for sampling. This converts C-order to F-order.
 #if defined(XGBOOST_USE_METAL)
         if (ctx_->IsMPS()) {
-          common::metal::CopyGradients(h_gpair, h_sample_out);
+          common::metal::CopyGradients(gradients, sample_view);
         } else
 #endif
         {
-          std::copy(linalg::cbegin(h_gpair), linalg::cend(h_gpair), linalg::begin(h_sample_out));
+          std::copy(linalg::cbegin(gradients), linalg::cend(gradients), linalg::begin(sample_view));
         }
       }
-      sampler.Sample(ctx_, h_sample_out);
+      sampler.Sample(ctx_, sample_view);
 #if defined(XGBOOST_USE_METAL)
       if (ctx_->IsMPS()) {
         if ((*tree_it)->IsMultiTarget())
@@ -740,27 +742,26 @@ class QuantileHistMaker : public TreeUpdater {
           p_impl_->SetQuantized(sampler.Quantized());
       }
 #endif
-      auto *h_out_position = &out_position[tree_it - trees.begin()];
+      auto *out_position_ptr = &out_position[tree_it - trees.begin()];
       if ((*tree_it)->IsMultiTarget()) {
         linalg::Matrix<GradientPair> value_grad;
         auto prepare_value = [&] {
-          value_grad = linalg::Empty<GradientPair>(ctx_, in_gpair->value_gpair.Shape(0),
-                                                   in_gpair->value_gpair.Shape(1));
-          auto h_value_grad = value_grad.HostView();
-          auto h_value_grad_in = in_gpair->value_gpair.HostView();
+          value_grad = linalg::Matrix<GradientPair>{in_gpair->value_gpair.Shape(), device};
+          auto sampled_value_grad = value_grad.View(device);
+          auto original_value_grad = std::as_const(in_gpair->value_gpair).View(device);
 #if defined(XGBOOST_USE_METAL)
           if (ctx_->IsMPS()) {
-            common::metal::CopyGradients(h_value_grad_in, h_value_grad);
+            common::metal::CopyGradients(original_value_grad, sampled_value_grad);
             // CUDA constructs original value scales and replays float sampling
             // before tree growth. Leaf sums later use these original scales.
-            p_mtimpl_->SetValueQuantizer(common::metal::MakeGradientQuantizer(h_value_grad_in));
+            p_mtimpl_->SetValueQuantizer(common::metal::MakeGradientQuantizer(original_value_grad));
           } else
 #endif
           {
-            std::copy(linalg::cbegin(h_value_grad_in), linalg::cend(h_value_grad_in),
-                      linalg::begin(h_value_grad));
+            std::copy(linalg::cbegin(original_value_grad), linalg::cend(original_value_grad),
+                      linalg::begin(sampled_value_grad));
           }
-          sampler.ApplySampling(ctx_, h_gpair, &value_grad);
+          sampler.ApplySampling(ctx_, gradients, &value_grad);
         };
         bool value_prepared = false;
 #if defined(XGBOOST_USE_METAL)
@@ -769,8 +770,8 @@ class QuantileHistMaker : public TreeUpdater {
           value_prepared = true;
         }
 #endif
-        UpdateTree<MultiExpandEntry>(&monitor_, h_sample_out, p_mtimpl_.get(), p_fmat, param,
-                                     h_out_position, *tree_it);
+        UpdateTree<MultiExpandEntry>(&monitor_, sample_view, p_mtimpl_.get(), p_fmat, param,
+                                     out_position_ptr, *tree_it);
         if (in_gpair->HasValueGrad()) {
           if (!value_prepared) prepare_value();
           // Refresh the leaf weights.
@@ -779,8 +780,8 @@ class QuantileHistMaker : public TreeUpdater {
           (*tree_it)->GetMultiTargetTree()->SetLeaves();
         }
       } else {
-        UpdateTree<CPUExpandEntry>(&monitor_, h_sample_out, p_impl_.get(), p_fmat, param,
-                                   h_out_position, *tree_it);
+        UpdateTree<CPUExpandEntry>(&monitor_, sample_view, p_impl_.get(), p_fmat, param,
+                                   out_position_ptr, *tree_it);
       }
 
       hist_param_.CheckTreesSynchronized(ctx_, *tree_it);

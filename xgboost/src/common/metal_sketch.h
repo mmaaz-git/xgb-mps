@@ -20,6 +20,9 @@ std::vector<WQSummaryContainer> FinalizeSketches(Span<SketchFinalization const> 
 // present, map row IDs to group weights; absent Hessians/weights mean one.
 std::vector<float> MakeSketchWeights(std::size_t rows, Span<float const> hessians,
                                      Span<float const> weights, Span<bst_group_t const> groups);
+// Resident output variant. Overlapping inputs are read before result publication.
+void MakeSketchWeights(std::size_t rows, Span<float const> hessians, Span<float const> weights,
+                       Span<bst_group_t const> groups, Span<float> output);
 struct SortedSketchColumn {
   Span<::xgboost::Entry const> entries;
   std::size_t budget;

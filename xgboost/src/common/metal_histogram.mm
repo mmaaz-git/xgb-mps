@@ -601,6 +601,19 @@ id<MTLBuffer> Upload(Runtime const& rt, void const* data, std::size_t bytes) {
   return buffer;
 }
 
+BorrowedMemory BindGradientStateInput(Runtime const& rt, void const* data, std::size_t bytes,
+                                      std::size_t alignment, bool* shared = nullptr) {
+  auto input = TryBorrowMemory(rt.device, data, bytes, alignment);
+  if (shared) *shared = input.buffer != nil;
+  if (input.buffer) {
+    gradient_state_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  } else {
+    input = {Upload(rt, data, bytes), 0};
+    gradient_state_staging_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  }
+  return input;
+}
+
 // A synchronous view: callers keep their sparse-page allocations alive until
 // all dependent commands complete and the enclosing autorelease pool drains.
 BorrowedMemory BindCSRInput(Runtime const& rt, void const* data, std::size_t bytes) {
@@ -1310,35 +1323,38 @@ std::vector<std::unique_ptr<MetalQuantizedColumn>> MakeGradientColumns(
   linalg::Matrix<GradientPair> contiguous;
   if (gradients.Stride(0) != 1) {
     contiguous =
-        linalg::Matrix<GradientPair>{gradients.Shape(), DeviceOrd::CPU(), linalg::Order::kF};
-    CopyGradients(gradients, contiguous.HostView());
-    gradients = contiguous.HostView();
+        linalg::Matrix<GradientPair>{gradients.Shape(), DeviceOrd::MPS(), linalg::Order::kF};
+    CopyGradients(gradients, contiguous.View(DeviceOrd::MPS()));
+    gradients = std::as_const(contiguous).View(DeviceOrd::MPS());
   }
-  auto command = [rt.queue commandBuffer];
-  CHECK(command);
-  std::size_t shared_bytes = 0;
-  for (std::size_t t = 0; t < gradients.Shape(1); ++t) {
-    auto column = std::make_unique<MetalQuantizedColumn>(rt);
-    shared_bytes += column->Encode(gradients.Slice(linalg::All(), t).Values().subspan(0, rows),
-                                   command, quantize);
-    columns.push_back(std::move(column));
+  // Release command-held borrowed buffers before the owning layout tensor dies.
+  @autoreleasepool {
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    std::size_t shared_bytes = 0;
+    for (std::size_t t = 0; t < gradients.Shape(1); ++t) {
+      auto column = std::make_unique<MetalQuantizedColumn>(rt);
+      shared_bytes += column->Encode(gradients.Slice(linalg::All(), t).Values().subspan(0, rows),
+                                     command, quantize);
+      columns.push_back(std::move(column));
+    }
+    [command commit];
+    [command waitUntilCompleted];
+    CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+    for (auto const& column : columns) {
+      CHECK(static_cast<GradientScale const*>(column->gradient_scale_.contents)->valid)
+          << "Metal quantization requires finite gradients and Hessians.";
+      column->ReleaseScratch();
+    }
+    gradient_bound_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
+    if (quantize) quantization_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
+    (quantize ? histogram_shared_gradient_bytes : leaf_shared_gradient_bytes)
+        .fetch_add(shared_bytes, std::memory_order_relaxed);
+    if (!quantize && command.GPUEndTime > command.GPUStartTime)
+      leaf_fitting_gpu_time_ns.fetch_add(
+          static_cast<std::uint64_t>((command.GPUEndTime - command.GPUStartTime) * 1e9),
+          std::memory_order_relaxed);
   }
-  [command commit];
-  [command waitUntilCompleted];
-  CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-  for (auto const& column : columns) {
-    CHECK(static_cast<GradientScale const*>(column->gradient_scale_.contents)->valid)
-        << "Metal quantization requires finite gradients and Hessians.";
-    column->ReleaseScratch();
-  }
-  gradient_bound_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
-  if (quantize) quantization_dispatches.fetch_add(columns.size(), std::memory_order_relaxed);
-  (quantize ? histogram_shared_gradient_bytes : leaf_shared_gradient_bytes)
-      .fetch_add(shared_bytes, std::memory_order_relaxed);
-  if (!quantize && command.GPUEndTime > command.GPUStartTime)
-    leaf_fitting_gpu_time_ns.fetch_add(
-        static_cast<std::uint64_t>((command.GPUEndTime - command.GPUStartTime) * 1e9),
-        std::memory_order_relaxed);
   return columns;
 }
 class MetalGradientQuantizer final : public GradientQuantizer {
@@ -1503,9 +1519,11 @@ class MetalQuantizedGradients final : public QuantizedGradients {
     CheckGradientView(values, true);
     if (!rows_ || probability_ == 1.f) return;
     @autoreleasepool {
-      // Snapshot staging also preserves the caller's padding and offset guards.
+      // Each row owns disjoint output elements. Bind resident floats directly;
+      // unshareable output retains the previous staging/padding behavior.
       auto span = values.Values();
-      auto data = Upload(rt_, span.data(), span.size_bytes());
+      bool shared = false;
+      auto data = BindGradientStateInput(rt_, span.data(), span.size_bytes(), 8, &shared);
       CudaUniformParams p{rows_,
                           values.Stride(0),
                           values.Stride(1),
@@ -1519,7 +1537,7 @@ class MetalQuantizedGradients final : public QuantizedGradients {
       CHECK(e);
       [e setComputePipelineState:gradient_sampling_ ? rt_.cuda_mvs_replay_pipeline
                                                  : rt_.cuda_uniform_replay_pipeline];
-      [e setBuffer:data offset:0 atIndex:0];
+      [e setBuffer:data.buffer offset:data.offset atIndex:0];
       [e setBytes:&p length:sizeof(p) atIndex:1];
       if (gradient_sampling_) {
         [e setBuffer:norms_ offset:0 atIndex:2];
@@ -1530,7 +1548,9 @@ class MetalQuantizedGradients final : public QuantizedGradients {
       [command commit];
       [command waitUntilCompleted];
       CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-      std::memcpy(span.data(), data.contents, span.size_bytes());
+      if (!shared) std::memcpy(span.data(), data.buffer.contents, span.size_bytes());
+      (shared ? gradient_state_shared_output_bytes : gradient_state_staging_bytes)
+          .fetch_add(span.size_bytes(), std::memory_order_relaxed);
     }
   }
 };
@@ -5708,8 +5728,9 @@ std::vector<WQSummaryContainer> FinalizeSketches(Span<SketchFinalization const> 
   return result;
 }
 
-std::vector<float> MakeSketchWeights(std::size_t rows, Span<float const> hessians,
-                                     Span<float const> weights, Span<bst_group_t const> groups) {
+void MakeSketchWeights(std::size_t rows, Span<float const> hessians, Span<float const> weights,
+                        Span<bst_group_t const> groups, Span<float> result) {
+  CHECK_EQ(result.size(), rows);
   CHECK(hessians.empty() || hessians.size() == rows);
   if (!groups.empty()) {
     CHECK_GE(groups.size(), 2);
@@ -5722,14 +5743,19 @@ std::vector<float> MakeSketchWeights(std::size_t rows, Span<float const> hessian
   }
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
   CHECK_LE(groups.size(), std::numeric_limits<std::uint32_t>::max());
-  std::vector<float> result(rows);
-  if (!rows) return result;
+  if (!rows) return;
   @autoreleasepool {
     auto& rt = GetRuntime();
-    auto h = Upload(rt, hessians.data(), hessians.size_bytes());
-    auto w = Upload(rt, weights.data(), weights.size_bytes());
-    auto g = Upload(rt, groups.data(), groups.size_bytes());
-    auto out = Allocate(rt, rows * sizeof(float));
+    auto h = BindGradientStateInput(rt, hessians.data(), hessians.size_bytes(), 4);
+    auto w = BindGradientStateInput(rt, weights.data(), weights.size_bytes(), 4);
+    auto g = BindGradientStateInput(rt, groups.data(), groups.size_bytes(), 4);
+    auto destination = TryBorrowMemory(rt.device, result.data(), result.size_bytes(), 4);
+    bool alias =
+        MemoryRangesOverlap(hessians.data(), hessians.size_bytes(), result.data(), result.size_bytes()) ||
+        MemoryRangesOverlap(weights.data(), weights.size_bytes(), result.data(), result.size_bytes()) ||
+        MemoryRangesOverlap(groups.data(), groups.size_bytes(), result.data(), result.size_bytes());
+    auto out = destination.buffer && !alias ? destination
+                                           : BorrowedMemory{Allocate(rt, result.size_bytes()), 0};
     struct {
       std::uint32_t hessian, weighted, groups, padding;
     } p{!hessians.empty(), !weights.empty(), static_cast<std::uint32_t>(groups.size()), 0};
@@ -5738,16 +5764,31 @@ std::vector<float> MakeSketchWeights(std::size_t rows, Span<float const> hessian
     auto e = [command computeCommandEncoder];
     CHECK(e);
     [e setComputePipelineState:rt.sketch_weight_pipeline];
-    [e setBuffer:h offset:0 atIndex:0];
-    [e setBuffer:w offset:0 atIndex:1];
-    [e setBuffer:g offset:0 atIndex:2];
-    [e setBuffer:out offset:0 atIndex:3];
+    [e setBuffer:h.buffer offset:h.offset atIndex:0];
+    [e setBuffer:w.buffer offset:w.offset atIndex:1];
+    [e setBuffer:g.buffer offset:g.offset atIndex:2];
+    [e setBuffer:out.buffer offset:out.offset atIndex:3];
     [e setBytes:&p length:sizeof(p) atIndex:4];
     [e dispatchThreads:MTLSizeMake(rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
+    if (destination.buffer && alias) {
+      auto blit = [command blitCommandEncoder];
+      CHECK(blit);
+      [blit copyFromBuffer:out.buffer sourceOffset:out.offset toBuffer:destination.buffer
+        destinationOffset:destination.offset size:result.size_bytes()];
+      [blit endEncoding];
+    }
     CompleteOperation(command, &sketch_weight_dispatches, &sketch_ingest_gpu_time_ns);
-    std::memcpy(result.data(), out.contents, rows * sizeof(float));
+    if (!destination.buffer) std::memcpy(result.data(), out.buffer.contents, result.size_bytes());
+    (destination.buffer ? gradient_state_shared_output_bytes : gradient_state_staging_bytes)
+        .fetch_add(result.size_bytes(), std::memory_order_relaxed);
   }
+}
+
+std::vector<float> MakeSketchWeights(std::size_t rows, Span<float const> hessians,
+                                     Span<float const> weights, Span<bst_group_t const> groups) {
+  std::vector<float> result(rows);
+  MakeSketchWeights(rows, hessians, weights, groups, result);
   return result;
 }
 
@@ -9802,13 +9843,26 @@ class MetalCudaSketch final : public CudaSketch {
     std::vector<FeatureType> numerical(types.empty() ? columns : 0, FeatureType::kNumerical);
     types_ = types.empty() ? Upload(rt_, numerical.data(), numerical.size())
                            : Upload(rt_, types.data(), types.size_bytes());
-    weights_ = Upload(rt_, weights.data(), weights.size_bytes());
+    this->SetWeights(weights);
     std::vector<std::uint64_t> ptr(std::size_t{columns} + 1, 0);
     resident_ = {Allocate(rt_, 0), Upload(rt_, ptr.data(), ptr.size() * sizeof(std::uint64_t)), 0};
   }
   void SetWeights(Span<float const> weights) override {
     weight_count_ = weights.size();
-    weights_ = Upload(rt_, weights.data(), weights.size_bytes());
+    @autoreleasepool {
+      auto source = BindGradientStateInput(rt_, weights.data(), weights.size_bytes(), 4);
+      auto snapshot = Allocate(rt_, weights.size_bytes());
+      if (!weights.empty()) {
+        auto command = [rt_.queue commandBuffer];
+        auto blit = [command blitCommandEncoder];
+        CHECK(blit);
+        [blit copyFromBuffer:source.buffer sourceOffset:source.offset toBuffer:snapshot
+          destinationOffset:0 size:weights.size_bytes()];
+        [blit endEncoding];
+        CompleteOperation(command, nullptr, &cuda_sketch_gpu_time_ns);
+      }
+      weights_ = snapshot;
+    }
   }
   void Push(AdapterInput const& input) override {
     auto const* gpu = dynamic_cast<MetalAdapterInput const*>(&input);

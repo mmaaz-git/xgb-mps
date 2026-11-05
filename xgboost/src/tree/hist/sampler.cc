@@ -250,7 +250,7 @@ void Sampler::ApplySampling(Context const* ctx, linalg::MatrixView<GradientPair 
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
     CHECK(quantized_);
-    quantized_->ApplySampling(value_gpair->HostView());
+    quantized_->ApplySampling(value_gpair->View(DeviceOrd::MPS()));
     return;
   }
 #endif

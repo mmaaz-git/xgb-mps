@@ -14,7 +14,25 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **public prediction results retain Metal storage**. Legacy, DMatrix
+Latest step: **tree training retains Metal gradients and leaf positions**. Both
+`hist` and `approx` now keep sampling buffers on GPU, including per-class gradient
+selection, multi-target/reduced gradients, quantizer layout copies and float
+sampling replay. Approximate training also retains Hessians and sketch weights
+on Metal. CUDA's sampling order and quantization formulas are unchanged.
+
+New native validation passes **196 cases / 391,152 checks**, including production
+tree updaters, forests, CPU/MPS switches, padded/offset buffers, sampling replay,
+aliased sketch weights and weight snapshots surviving input reuse/destruction.
+All **94 native groups** pass; full regression passes **3,345 Python tests, one
+expected skip**, plus CPU-only build/API checks. After tightening the quantizer
+scratch lifetime, all five affected native groups and **223 focused Python tests**
+pass again. [Training storage validation](validation/cuda-metal-training-state-m3.txt).
+
+Persistent model/dictionary storage, remaining CUDA operation/arithmetic audits,
+GPU collective transport and cross-hardware validation remain open. This step
+adds no benchmark or measured NVIDIA equivalence claim.
+
+The preceding step: **public prediction results retain Metal storage**. Legacy, DMatrix
 and inplace result APIs now return the synchronized, CPU-addressable contents of
 an existing Metal result instead of constructing another host mirror. Native
 `MetalOutput` creation snapshots that result on GPU. NumPy still receives an
@@ -27,8 +45,9 @@ threads and the model. GPU result publication requires no vector readback.
 Full regression passes **3,345 Python tests, one expected skip**, and the CPU-only
 build/API checks. [Public result validation](validation/cuda-metal-prediction-result-m3.txt).
 
-Training gradient/updater state, persistent model/dictionary storage, remaining
-CUDA audits and GPU collective transport remain open. This step changes no
+At that checkpoint, training gradient/updater state was still pending; the latest
+step addresses it. Persistent model/dictionary storage, remaining CUDA audits and
+GPU collective transport remain open. The result-publication step changes no
 prediction arithmetic or ABI; no benchmark or NVIDIA execution comparison was run.
 
 The preceding step added **resident prediction caches and outputs**. Tree prediction
@@ -51,8 +70,8 @@ arithmetic or cache-version rules changed.
 [Prediction storage validation](validation/cuda-metal-prediction-state-m3.txt).
 
 At that checkpoint, the public result API still requested a host mirror before
-Python created a `MetalOutput`; the latest step addresses it. Training
-gradient/updater state, persistent dictionaries, remaining
+Python created a `MetalOutput`; the result-publication step addresses it. At that
+checkpoint, training gradient/updater state, persistent dictionaries, remaining
 CUDA audits and GPU collective transport also remain open. No benchmark or NVIDIA
 execution comparison was run for this step.
 

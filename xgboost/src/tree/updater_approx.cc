@@ -113,7 +113,7 @@ class GlobalApproxBuilder {
     monitor_->Stop(__func__);
   }
 
-  CPUExpandEntry InitRoot(DMatrix *p_fmat, std::vector<GradientPair> const &gpair,
+  CPUExpandEntry InitRoot(DMatrix *p_fmat, linalg::MatrixView<GradientPair const> gpair,
                           common::Span<float> hess, RegTree *p_tree) {
     monitor_->Start(__func__);
     CPUExpandEntry best;
@@ -129,16 +129,15 @@ class GlobalApproxBuilder {
     } else
 #endif
     {
-      for (auto const& g : gpair) root_sum.Add(g);
+      for (auto const &g : gpair.Values()) root_sum.Add(g);
     }
     auto rc =
         collective::GlobalSum(ctx_, linalg::MakeVec(reinterpret_cast<double *>(&root_sum), 2));
     collective::SafeColl(rc);
 
     std::vector<CPUExpandEntry> nodes{best};
-    this->histogram_builder_.BuildRootHist(p_fmat, p_tree->HostScView(), partitioner_,
-                                           linalg::MakeTensorView(ctx_, gpair, gpair.size(), 1),
-                                           best, BatchSpec(*param_, hess));
+    this->histogram_builder_.BuildRootHist(p_fmat, p_tree->HostScView(), partitioner_, gpair, best,
+                                           BatchSpec(*param_, hess));
 
     auto weight = evaluator_.InitRoot(root_sum, &quantized_root);
     p_tree->Stat(RegTree::kRoot).sum_hess = root_sum.GetHess();
@@ -155,11 +154,10 @@ class GlobalApproxBuilder {
 
   void BuildHistogram(DMatrix *p_fmat, RegTree *p_tree,
                       std::vector<CPUExpandEntry> const &valid_candidates,
-                      std::vector<GradientPair> const &gpair, common::Span<float> hess) {
+                      linalg::MatrixView<GradientPair const> gpair, common::Span<float> hess) {
     monitor_->Start(__func__);
-    this->histogram_builder_.BuildHistLeftRight(
-        ctx_, p_fmat, p_tree->HostScView(), partitioner_, valid_candidates,
-        linalg::MakeTensorView(ctx_, gpair, gpair.size(), 1), BatchSpec(*param_, hess));
+    this->histogram_builder_.BuildHistLeftRight(ctx_, p_fmat, p_tree->HostScView(), partitioner_,
+                                                valid_candidates, gpair, BatchSpec(*param_, hess));
     monitor_->Stop(__func__);
   }
 
@@ -187,9 +185,9 @@ class GlobalApproxBuilder {
         task_{task},
         monitor_{monitor} {}
 
-  void UpdateTree(DMatrix* p_fmat, std::vector<GradientPair> const& gpair, common::Span<float> hess,
-                  RegTree* p_tree, HostDeviceVector<bst_node_t>* p_out_position,
-                  bool regenerate = true) {
+  void UpdateTree(DMatrix *p_fmat, linalg::MatrixView<GradientPair const> gpair,
+                  common::Span<float> hess, RegTree *p_tree,
+                  HostDeviceVector<bst_node_t> *p_out_position, bool regenerate = true) {
     CHECK(!p_tree->IsMultiTarget()) << "approx" << MTNotImplemented();
     p_last_tree_ = p_tree;
     this->InitData(p_fmat, p_tree, hess, regenerate);
@@ -252,17 +250,19 @@ class GlobalApproxBuilder {
       expand_set = driver.Pop();
     }
 
-    auto &h_position = p_out_position->HostVector();
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      h_position.resize(gpair.size());
-      auto gradients = linalg::MakeTensorView(ctx_, gpair, gpair.size(), 1);
+      p_out_position->SetDevice(DeviceOrd::MPS());
+      p_out_position->Resize(gpair.Shape(0));
+      auto positions = p_out_position->DeviceSpan();
       for (auto const& part : partitioner_) {
-        part.LeafPartition(ctx_, tree.HostScView(), gradients, common::Span{h_position});
+        part.LeafPartition(ctx_, tree.HostScView(), gpair, positions);
       }
     } else
 #endif
     {
+      p_out_position->SetDevice(DeviceOrd::CPU());
+      auto &h_position = p_out_position->HostVector();
       this->LeafPartition(tree, hess, &h_position);
     }
   }
@@ -301,16 +301,8 @@ class GlobalApproxUpdater : public TreeUpdater {
   void InitData(TrainParam const &param, linalg::Matrix<GradientPair> const *gpair,
                 linalg::Matrix<GradientPair> *sampled) {
     *sampled = linalg::Empty<GradientPair>(ctx_, gpair->Size(), 1);
-#if defined(XGBOOST_USE_METAL)
-    if (ctx_->IsMPS()) {
-      CHECK_EQ(gpair->Shape(1), 1);
-      common::metal::CopyGradients(gpair->HostView(), sampled->HostView());
-    } else
-#endif
-    {
-      auto in = gpair->HostView().Values();
-      std::copy(in.data(), in.data() + in.size(), sampled->HostView().Values().data());
-    }
+    auto in = gpair->HostView().Values();
+    std::copy(in.data(), in.data() + in.size(), sampled->HostView().Values().data());
     cpu_impl::Sampler sampler{param};
     sampler.Sample(ctx_, sampled->HostView());
   }
@@ -326,9 +318,11 @@ class GlobalApproxUpdater : public TreeUpdater {
     if (ctx_->IsMPS()) {
       // Match GPUGlobalApproxMaker::Update: cuts use the original Hessians, before
       // any sampling, and are regenerated at most once per updater invocation.
-      std::vector<float> hess(gpair->Size());
-      common::metal::ExtractHessians(gpair->HostView(),
-                                     linalg::MakeTensorView(ctx_, hess, hess.size(), 1));
+      auto gradients = std::as_const(*gpair).View(DeviceOrd::MPS());
+      linalg::Matrix<float> hessian{{gpair->Size(), std::size_t{1}}, DeviceOrd::MPS()};
+      auto hessian_view = hessian.View(DeviceOrd::MPS());
+      common::metal::ExtractHessians(gradients, hessian_view);
+      auto hess = hessian_view.Values();
       for (auto const& page :
            m->GetBatches<GHistIndexMatrix>(ctx_, BatchSpec(*param, hess, *task_))) {
         (void)page;  // Consume all external-memory pages before resetting the iterator.
@@ -337,16 +331,15 @@ class GlobalApproxUpdater : public TreeUpdater {
       for (std::size_t t = 0; t < trees.size(); ++t) {
         // GPUHistMakerDevice::Reset samples and initializes column sampling for
         // EACH tree, in that order. CPU approx shares both across a forest.
-        // Weighted sketch and gradient-based sampling still need CUDA alignment.
-        auto sampled = linalg::Empty<GradientPair>(ctx_, gpair->Size(), 1);
-        common::metal::CopyGradients(gpair->HostView(), sampled.HostView());
+        linalg::Matrix<GradientPair> sampled{{gpair->Size(), std::size_t{1}}, DeviceOrd::MPS()};
+        auto sample_view = sampled.View(DeviceOrd::MPS());
+        common::metal::CopyGradients(gradients, sample_view);
         cpu_impl::Sampler sampler{*param};
-        sampler.Sample(ctx_, sampled.HostView());
+        sampler.Sample(ctx_, sample_view);
         pimpl_ = std::make_unique<GlobalApproxBuilder>(param, &hist_param_, m->Info(), ctx_,
                                                        column_sampler_, task_, &monitor_);
         pimpl_->SetQuantized(sampler.Quantized());
-        pimpl_->UpdateTree(m, sampled.Data()->ConstHostVector(), hess, trees[t], &out_position[t],
-                           false);
+        pimpl_->UpdateTree(m, sample_view, hess, trees[t], &out_position[t], false);
         hist_param_.CheckTreesSynchronized(ctx_, trees[t]);
       }
       return;
@@ -366,7 +359,8 @@ class GlobalApproxUpdater : public TreeUpdater {
 
     std::size_t t_idx = 0;
     for (auto p_tree : trees) {
-      this->pimpl_->UpdateTree(m, s_gpair, hess, p_tree, &out_position[t_idx]);
+      this->pimpl_->UpdateTree(m, std::as_const(h_gpair).HostView(), hess, p_tree,
+                               &out_position[t_idx]);
       hist_param_.CheckTreesSynchronized(ctx_, p_tree);
       ++t_idx;
     }

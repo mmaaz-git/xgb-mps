@@ -3869,3 +3869,69 @@ followed the final build and focused checks.
 Training gradient/updater arrays, persistent model/dictionary storage, remaining
 CUDA arithmetic audits, GPU collective transport and cross-hardware validation
 remain open. No benchmark or NVIDIA execution comparison was run.
+
+
+### Tree-training gradient, sampling and leaf-position storage
+
+CUDA authority: `gbm/gbtree.cu` group extraction, the per-tree gradient and sampling
+lifecycle in `tree/updater_gpu_hist.cu`, and `GPUGlobalApproxMaker::Update` for
+original-Hessian sketching before per-tree sampling. This change preserves those
+already-ported algorithms and moves their payloads into owned Metal storage.
+
+`GBTree::CopyGradient` and its scalar-group scratch now select MPS explicitly.
+The hist updater consumes device views, allocates its F-order forest/multi-target
+sampling buffer on Metal, and preserves the original value-gradient quantizer
+before replay for reduced-gradient leaf fitting. Quantizer layout conversion also
+uses a Metal tensor. `Sampler::ApplySampling` no longer requests a host mirror.
+Float replay binds disjoint resident output elements directly; unshareable views
+retain staged read/modify/write semantics, including padding and guards.
+
+Both scalar and vector hist leaf-position arrays are Metal-owned. Approximate
+training likewise extracts original Hessians into a Metal tensor, samples an
+independent Metal gradient buffer per tree and publishes leaf positions on GPU.
+Its builder consumes a matrix view instead of a host vector. The CPU path retains
+its original gradient/Hessian handling and explicitly restores CPU positions on
+a device handoff; an unreachable Metal branch in the CPU-only initialization
+helper was removed.
+
+Approximate sketching combines Hessians and row/query weights into a resident
+output span. Overlapping input/output ranges compute into scratch and publish by
+GPU blit only after reads complete. The sketch retains an independent GPU weight
+snapshot, including `SetWeights`, so reuse/destruction of the caller's storage
+cannot corrupt later input windows. The existing host-returning weight overload
+remains for other callers. Empty, unweighted input stays unweighted.
+
+The existing gradient-state byte counters now include sampling replay, unified
+sketch weights and sketch-weight input snapshots; there is no statistics ABI
+change. Source-defined scalar root statistics, host model orchestration, sketch
+finalization and input metadata remain. This is not a claim that tree training
+has no CPU work or that every host call should be removed. `Context::Device()`
+still defaults to CPU for generic MPS consumers until their audit is complete.
+
+`tests/metal_training_state_api.cc` passes **196 cases / 391,152 checks** with the
+Metal debug layer. It checks actual hist/approx updater gradient/value-gradient
+and leaf-position ownership, scalar/vector/reduced gradients, one/three-tree
+forests, both samplers, missing values and repeated CPU/MPS handoffs. Leaf IDs
+are checked by independently walking the finished public model on CPU. Group
+extraction, quantizer layout scratch, replay and weight bindings require no
+payload staging or vector transfers for resident arrays. C/F/padded replay
+matches staged replay bit-for-bit, including guards; existing independent
+CUDA-source oracles separately validate its arithmetic. Weight tests check
+input/output aliases, read-only inputs, unaligned outputs, exact fallback byte
+counts and snapshots surviving input GPU writes and allocation destruction.
+
+Full regression completed **2026-11-05 00:42:43–00:50:37 UTC** (7m54s): all
+93 existing native groups were rebuilt and passed, in addition to the new group;
+**3,345 Python tests passed, one expected skip** (623 warnings, 189.59s), and the
+CPU-only incremental build/API/device/cache checks passed. The runner now has
+94 native groups. Review added a final autorelease scope to destroy command-held
+borrowed buffers before the owning quantizer scratch tensor. After rebuilding,
+the five affected native groups (training state, quantized state, CUDA gradient
+sampling, gradient copies/Hessian extraction and integer leaf fitting) passed,
+as did **223 approx/sampling Python tests** (one warning, 23.95s). This final
+validation ran **00:50:41–00:51:19 UTC**, exit 0. No production/test edits followed.
+[Validation record](../validation/cuda-metal-training-state-m3.txt).
+
+Persistent model/dictionaries, remaining CUDA operation/arithmetic audits, GPU
+collective transport and cross-hardware validation remain open. No benchmark or
+NVIDIA execution comparison was run; full CUDA parity is incomplete.

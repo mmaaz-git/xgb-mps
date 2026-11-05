@@ -9,6 +9,7 @@
 #include "categorical.h"
 #include "hist_util.h"
 #include "metal_sketch.h"
+#include "metal_vector.h"
 
 namespace xgboost::common::metal {
 HistogramCuts CudaSketchOnDMatrix(Context const*, DMatrix* data, bst_bin_t max_bin,
@@ -16,15 +17,18 @@ HistogramCuts CudaSketchOnDMatrix(Context const*, DMatrix* data, bst_bin_t max_b
   CHECK_EQ(collective::GetWorldSize(), 1) << "Distributed Metal sketching is not implemented.";
   auto const& info = data->Info();
   auto types = info.feature_types.ConstHostSpan();
-  auto weights = info.weights_.ConstHostSpan();
-  std::vector<float> unified;
+  auto weights = ConstDeviceSpan(info.weights_);
+  HostDeviceVector<float> unified;
   // Unweighted input must stay unweighted: CUDA uses integer sample positions,
   // not a scan of FP32 ones. The existing kernel uses the same UnifyWeight formula.
   if (!hessian.empty() || (info.IsRanking() && !weights.empty())) {
-    unified = MakeSketchWeights(
+    unified.SetDevice(DeviceOrd::MPS());
+    unified.Resize(info.num_row_);
+    MakeSketchWeights(
         info.num_row_, hessian, weights,
-        info.IsRanking() ? Span<bst_group_t const>{info.group_ptr_} : Span<bst_group_t const>{});
-    weights = unified;
+        info.IsRanking() ? Span<bst_group_t const>{info.group_ptr_} : Span<bst_group_t const>{},
+        unified.DeviceSpan());
+    weights = unified.ConstDeviceSpan();
   }
   auto sketch = MakeCudaSketch(info.num_col_, max_bin, types, weights);
   constexpr std::size_t kWindow = 1 << 26;  // hist_util.cuh::kSketchBatchNumElements
