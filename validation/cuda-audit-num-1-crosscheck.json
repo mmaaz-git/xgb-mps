@@ -1,0 +1,66 @@
+{
+  "finding": "NUM-1",
+  "reviewer": "audit_training",
+  "result": "confirmed",
+  "scope": "Independent static caller/comparator trace plus arithmetic source replay; no new GPU run or build.",
+  "authority": [
+    "xgboost/src/common/stats.cuh:120",
+    "xgboost/src/common/stats.cuh:124",
+    "xgboost/src/common/quantile_loss_utils.h:15"
+  ],
+  "caller": [
+    "xgboost/src/objective/quantile_obj.cu:235",
+    "xgboost/src/common/metal_histogram.mm:5940",
+    "xgboost/src/common/metal_histogram.mm:5990",
+    "xgboost/src/common/metal_histogram.metal:2175"
+  ],
+  "reason": "CUDA double threshold is preserved through transparent default Thrust comparator. Metal explicitly casts product to float before binary search. This is not merely a source variable-type difference masked by comparator conversion.",
+  "independent_replay": {
+    "alpha_float32": 0.10000000149011612,
+    "cdf": [
+      1.0,
+      10.0
+    ],
+    "cuda_threshold_double": 1.0000000149011612,
+    "cuda_selected_index": 1,
+    "metal_threshold_float32": 1.0,
+    "metal_selected_index": 0
+  },
+  "oracle_gap": "tests/metal_quantile.mm:166 uses float threshold, mirroring the implementation defect.",
+  "gpu_evidence": "validation/cuda-audit-num-1-repro.json records production MPS base_score 0 and quantile dispatch counter increment with existing local library. Reviewed, not rerun.",
+  "limits": "CUDA side is source-derived, not NVIDIA execution. The local-library artifact is not itself a fresh build/provenance attestation for the frozen source commit; direct static mismatch is independently conclusive. Cached CCCL scope is the existing pinned source archive documented in validation/cuda-column-sampling-m3.txt.",
+  "external_authority": [
+    {
+      "repository": "NVIDIA/cccl",
+      "revision": "3d0d040ac0dc5907daf2a0731edb378e5562099d",
+      "path": "thrust/thrust/system/detail/generic/binary_search.inl",
+      "line": 186,
+      "url": "https://github.com/NVIDIA/cccl/blob/3d0d040ac0dc5907daf2a0731edb378e5562099d/thrust/thrust/system/detail/generic/binary_search.inl#L186",
+      "sha256": "508c16733c67add064d416b9f7d8bae12448f7dc7b9ca52d2ea14bc9f0018b4e"
+    },
+    {
+      "repository": "NVIDIA/cccl",
+      "revision": "3d0d040ac0dc5907daf2a0731edb378e5562099d",
+      "path": "thrust/thrust/system/detail/sequential/binary_search.h",
+      "line": 53,
+      "url": "https://github.com/NVIDIA/cccl/blob/3d0d040ac0dc5907daf2a0731edb378e5562099d/thrust/thrust/system/detail/sequential/binary_search.h#L53",
+      "sha256": "7a8d9c7f601aeb981f05dbce7f317916baa4c57058ff0953b46c3c218c72552c"
+    },
+    {
+      "repository": "NVIDIA/cccl",
+      "revision": "3d0d040ac0dc5907daf2a0731edb378e5562099d",
+      "path": "libcudacxx/include/cuda/std/__functional/operations.h",
+      "line": 363,
+      "url": "https://github.com/NVIDIA/cccl/blob/3d0d040ac0dc5907daf2a0731edb378e5562099d/libcudacxx/include/cuda/std/__functional/operations.h#L363",
+      "sha256": "07f4a462f67b0d19905cbca853c008f0d250d3215aebd0d778be770ec94042cb"
+    },
+    {
+      "repository": "NVIDIA/cccl",
+      "revision": "3d0d040ac0dc5907daf2a0731edb378e5562099d",
+      "path": "thrust/thrust/detail/function.h",
+      "line": 29,
+      "url": "https://github.com/NVIDIA/cccl/blob/3d0d040ac0dc5907daf2a0731edb378e5562099d/thrust/thrust/detail/function.h#L29",
+      "sha256": "f79db408b493fd39dabf940eb2ec4d22e8c771d69ab727fa9ff1a921f572c28f"
+    }
+  ]
+}

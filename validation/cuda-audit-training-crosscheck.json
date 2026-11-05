@@ -1,0 +1,66 @@
+{
+  "revision": "382f78ce867bfa248cd85088c70322edca8805fb",
+  "scope": "Independent bounded source crosscheck of training audit PORT-9 and PORT-10; no additional implementation scope.",
+  "checks": [
+    {
+      "task": "PORT-9",
+      "disposition": "confirmed",
+      "finding": "Active MPS vector finalization infers row validity from whether all float Hessians are zero; CUDA vector finalization replays the sampler decision.",
+      "production_path": [
+        "xgboost/src/tree/updater_quantile_hist.cc:739",
+        "xgboost/src/tree/updater_quantile_hist.cc:777",
+        "xgboost/src/tree/updater_quantile_hist.cc:155",
+        "xgboost/src/tree/updater_quantile_hist.cc:331",
+        "xgboost/src/tree/common_row_partitioner.h:279",
+        "xgboost/src/common/metal_histogram.mm:1196",
+        "xgboost/src/common/metal_histogram.metal:658"
+      ],
+      "cuda_authority": [
+        "xgboost/src/tree/updater_gpu_hist.cuh:694",
+        "xgboost/src/tree/updater_gpu_hist.cuh:625",
+        "xgboost/src/tree/updater_gpu_hist.cuh:634",
+        "xgboost/src/tree/gpu_hist/sampler.cuh:53",
+        "xgboost/src/tree/gpu_hist/sampler.cuh:64"
+      ],
+      "exact_source_witness": "A vector-tree row with subsample=1 and Hessians[0,0] is selected by CUDA SamplingInfo::kNone (probability1); MPS xgb_leaf_positions marks it invalid and writes ~node.",
+      "required_narrowing": "Keep vector final-position validity separate from scalar validity. CUDA scalar EncodeOp deliberately tests quantized Hessian!=0 (updater_gpu_hist.cuh:51-56); do not replace that scalar policy with vector sampling semantics.",
+      "acceptance_focus": "No-sampling, uniform and gradient-based vector sampler decisions, including selected zero-Hessian rows and reduced split/value gradients; GPU positions must preserve exact sampler membership.",
+      "limits": "Static deterministic source witness and active dispatch trace; no fresh device test, build, suite or NVIDIA execution in this crosscheck."
+    },
+    {
+      "task": "PORT-10",
+      "disposition": "confirmed-with-scope-correction",
+      "finding": "Numeric selected cut lookup and first-bin -infinity materialization occur in CUDA kernels but in the MPS host evaluator. The categorical OHE lookup/bit operation already has a GPU implementation.",
+      "cuda_numeric_authority": [
+        "xgboost/src/tree/gpu_hist/evaluate_splits.cu:129",
+        "xgboost/src/tree/gpu_hist/multi_evaluate_splits.cu:269"
+      ],
+      "metal_numeric_host_work": [
+        "xgboost/src/tree/hist/evaluate_splits.h:383",
+        "xgboost/src/tree/hist/evaluate_splits.h:930",
+        "xgboost/src/common/hist_util.h:170"
+      ],
+      "categorical_counterevidence": [
+        "xgboost/src/tree/hist/evaluate_splits.h:374",
+        "xgboost/src/tree/hist/evaluate_splits.h:918",
+        "xgboost/src/common/metal_histogram.metal:6971",
+        "xgboost/src/common/metal_histogram.metal:6976",
+        "xgboost/src/common/metal_histogram.metal:6988",
+        "xgboost/src/tree/updater_gpu_common.cuh:63",
+        "xgboost/src/tree/hist/evaluate_splits.h:495",
+        "xgboost/src/tree/multi_target_tree_model.cc:237"
+      ],
+      "categorical_reason": "BuildSplitCategories already reads the selected cut, converts its category ID and sets the bit on GPU. Scalar CUDA UpdateCat sets fvalue=NaN; scalar ExpandCategorical does not consume MPS split_value. Shared vector model expansion discards batch.conds for categorical nodes and writes DftBadValue on host for both CUDA and MPS. Thus the additional host OHE split_value/partition NaN is redundant control metadata, not a missing categorical lookup kernel.",
+      "required_narrowing": "Rename/scope PORT-10 to selected numeric threshold materialization. Preserve categorical regression guards but remove the missing-OHE-category-operation claim. Persistent selected category payload storage remains PORT-2.",
+      "acceptance_focus": "GPU-selected numeric threshold matches source cut/previous-cut/-infinity semantics for scalar/vector missing directions, first bins, ties and invalid candidates. Host launch descriptors and source-defined selected metadata publication remain allowed.",
+      "limits": "Source-only location/consumer check; no numerical regression or NVIDIA runtime claim. This correction does not close the separate numeric GPU placement gap."
+    }
+  ],
+  "execution": {
+    "new_investigation_for_this_write": false,
+    "builds": false,
+    "test_suites": false,
+    "device_runs": false,
+    "source_edits": false
+  }
+}

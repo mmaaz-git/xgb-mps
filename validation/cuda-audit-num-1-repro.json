@@ -1,0 +1,37 @@
+{
+  "revision": "382f78ce867bfa248cd85088c70322edca8805fb",
+  "diagnostic": "NUM-1 two-row production quantile initialization; no rebuild; source replay is not NVIDIA execution",
+  "python_package": "/Users/maaz/Documents/xgb-mps/xgboost/python-package/xgboost/__init__.py",
+  "loaded_library": "/Users/maaz/Documents/xgb-mps/xgboost/python-package/xgboost/../../lib/libxgboost.dylib",
+  "labels": [
+    0.0,
+    1.0
+  ],
+  "weights": [
+    1.0,
+    9.0
+  ],
+  "alpha_float32": 0.10000000149011612,
+  "cuda_source_replay": {
+    "threshold_binary64": 1.0000000149011612,
+    "selected_index": 1,
+    "value": 1.0
+  },
+  "metal_shader_replay": {
+    "threshold_float32": 1.0,
+    "selected_index": 0,
+    "value": 0.0
+  },
+  "production_mps": {
+    "base_score": [
+      0.0
+    ],
+    "predictions": [
+      0.0,
+      0.0
+    ],
+    "quantile_dispatches_delta": 1,
+    "vector_arithmetic_dispatches_delta": 1
+  },
+  "confirmed_mismatch": true
+}

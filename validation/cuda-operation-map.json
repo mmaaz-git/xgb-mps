@@ -2,7 +2,7 @@
   "schema_version": 1,
   "upstream_version": "3.4.2",
   "upstream_import": "22a84e0538e8c8db8d517c610b393bd5799a05d5",
-  "audit_revision": "dd448291300f4256e14b23fd79e3d25217cd700b",
+  "audit_revision": "382f78ce867bfa248cd85088c70322edca8805fb",
   "scope": "CUDA translation units and headers under vendored src and plugin, grouped by operations and consumers; not an exhaustive symbol/branch proof.",
   "completeness": "not_proven",
   "source_files": 109,
@@ -31,7 +31,14 @@
         "tests/test_metal_updater.py"
       ],
       "status": "mapped",
-      "limits": "Native Metal descriptors replace CUDA array-interface pointers. Native custom gradients retain device-authoritative Metal output even for CPU learners; host gradient arrays retain upstream CPU packing. CUDA device-selection guards are backend-specific; Metal ordinal validation is in Context."
+      "limits": "Native Metal descriptors replace CUDA array-interface pointers. Native custom gradients retain device-authoritative Metal output even for CPU learners; host gradient arrays retain upstream CPU packing. CUDA device-selection guards are backend-specific; Metal ordinal validation is in Context.",
+      "audited_operations": [
+        "DATA-01",
+        "DATA-02",
+        "DATA-03",
+        "DATA-04"
+      ],
+      "open_tasks": []
     },
     {
       "id": "tensor-adapters",
@@ -56,7 +63,14 @@
         "tests/test_metal_columnar.py"
       ],
       "status": "mapped-with-scheduling-difference",
-      "limits": "Torch/MLX producers are synchronized; raw producers must provide completed buffers. CUDA stream events have no portable Metal stream-pointer counterpart. Scheduling is synchronous, not CUDA-equivalent."
+      "limits": "Torch/MLX producers are synchronized; raw producers must provide completed buffers. CUDA stream events have no portable Metal stream-pointer counterpart. Scheduling is synchronous, not CUDA-equivalent.",
+      "audited_operations": [
+        "DATA-05",
+        "DATA-06",
+        "DATA-07",
+        "DATA-08"
+      ],
+      "open_tasks": []
     },
     {
       "id": "ordinary-import",
@@ -78,7 +92,12 @@
         "tests/metal_ordinary_ellpack_api.cc"
       ],
       "status": "mapped",
-      "limits": "Native entries retain Metal device authority through import, sketch and compressed-page consumers. Row offsets publish a host view for sizing/window selection, as in CUDA. Explicit CPU matrix access and external cache serialization can read payloads back."
+      "limits": "Native entries retain Metal device authority through import, sketch and compressed-page consumers. Row offsets publish a host view for sizing/window selection, as in CUDA. Explicit CPU matrix access and external cache serialization can read payloads back.",
+      "audited_operations": [
+        "DATA-09",
+        "DATA-24"
+      ],
+      "open_tasks": []
     },
     {
       "id": "metadata",
@@ -98,8 +117,18 @@
         "tests/test_metal_metadata.py",
         "tests/test_metal_vector_state.py"
       ],
-      "status": "mapped",
-      "limits": "Public ordinary DMatrix row slicing uses the host SparsePage path upstream too. Internal metadata gather is GPU tested; host group-size prefix and serialization are intentional."
+      "status": "audited-with-open-tasks",
+      "limits": "Public ordinary DMatrix row slicing uses the host SparsePage path upstream too. Internal metadata gather is GPU tested; host group-size prefix and serialization are intentional. Confirmed audit tasks: PORT-7; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "DATA-10",
+        "DATA-11",
+        "DATA-12",
+        "DATA-13",
+        "DATA-18"
+      ],
+      "open_tasks": [
+        "PORT-7"
+      ]
     },
     {
       "id": "category-dictionaries",
@@ -121,7 +150,13 @@
         "tests/test_metal_columnar.py"
       ],
       "status": "mapped",
-      "limits": ""
+      "limits": "",
+      "audited_operations": [
+        "DATA-08",
+        "DATA-14",
+        "DATA-15"
+      ],
+      "open_tasks": []
     },
     {
       "id": "quantile-frontends",
@@ -143,8 +178,18 @@
         "tests/test_metal_input.py",
         "tests/test_metal_disk_ellpack.py"
       ],
-      "status": "mapped",
-      "limits": "Input-device inference and explicit fork construction options differ; CuPy CSR/CSC is unsupported in upstream Python and is not a missing native Metal interface."
+      "status": "audited-with-open-tasks",
+      "limits": "Input-device inference and explicit fork construction options differ; CuPy CSR/CSC is unsupported in upstream Python and is not a missing native Metal interface. Confirmed audit tasks: PORT-7; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "DATA-07",
+        "DATA-16",
+        "DATA-17",
+        "DATA-18",
+        "DATA-25"
+      ],
+      "open_tasks": [
+        "PORT-7"
+      ]
     },
     {
       "id": "sketches",
@@ -166,8 +211,22 @@
         "tests/metal_sketch_collective_api.cc",
         "tests/test_metal_sketch.py"
       ],
-      "status": "mapped",
-      "limits": "GPU summary operations and CUDA-derived rank rules are covered. Scan association, sorting ties and rank repair remain documented numerical audit boundaries; final host cut publication matches CUDA."
+      "status": "audited-with-open-tasks",
+      "limits": "GPU summary operations and CUDA-derived rank rules are covered. Scan association, sorting ties and rank repair remain documented numerical audit boundaries; final host cut publication matches CUDA. Confirmed audit tasks: PORT-11, PORT-7; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "DATA-18",
+        "DATA-19",
+        "DATA-20",
+        "DATA-21",
+        "DATA-22",
+        "DATA-41",
+        "DATA-44",
+        "DATA-45"
+      ],
+      "open_tasks": [
+        "PORT-11",
+        "PORT-7"
+      ]
     },
     {
       "id": "ellpack",
@@ -189,7 +248,18 @@
         "tests/test_metal_inmemory_ellpack.py"
       ],
       "status": "mapped",
-      "limits": ""
+      "limits": "",
+      "audited_operations": [
+        "DATA-17",
+        "DATA-23",
+        "DATA-24",
+        "DATA-25",
+        "DATA-26",
+        "DATA-27",
+        "DATA-28",
+        "DATA-32"
+      ],
+      "open_tasks": []
     },
     {
       "id": "external-cache",
@@ -213,7 +283,14 @@
         "tests/test_metal_external_host.py"
       ],
       "status": "mapped",
-      "limits": "Host/private Metal cache policies implement the data lifecycle; CUDA mmap advice/VMM/preload scheduling are not reproduced as CUDA APIs. External staging performance remains open."
+      "limits": "Host/private Metal cache policies implement the data lifecycle; CUDA mmap advice/VMM/preload scheduling are not reproduced as CUDA APIs. External staging performance remains open.",
+      "audited_operations": [
+        "DATA-29",
+        "DATA-30",
+        "DATA-31",
+        "DATA-32"
+      ],
+      "open_tasks": []
     },
     {
       "id": "snappy",
@@ -230,7 +307,12 @@
         "tests/metal_snappy_api.cc"
       ],
       "status": "mapped",
-      "limits": "Metal compute replaces nvCOMP and NVIDIA decompression-engine APIs. Internal block layout is port-specific; decoded payloads and rejection behavior are checked."
+      "limits": "Metal compute replaces nvCOMP and NVIDIA decompression-engine APIs. Internal block layout is port-specific; decoded payloads and rejection behavior are checked.",
+      "audited_operations": [
+        "DATA-33",
+        "DATA-34"
+      ],
+      "open_tasks": []
     },
     {
       "id": "vector-storage",
@@ -247,7 +329,12 @@
         "tests/test_metal_vector_state.py"
       ],
       "status": "mapped",
-      "limits": "Typed bit-preserving storage is covered. A storage implementation existing does not prove every consumer uses it; vector-tree model buffers and their weight producers remain confirmed gaps. Ordinary native entries now retain Metal storage through sketch/compression."
+      "limits": "Typed bit-preserving storage is covered. A storage implementation existing does not prove every consumer uses it; vector-tree model buffers and their weight producers remain confirmed gaps. Ordinary native entries now retain Metal storage through sketch/compression.",
+      "audited_operations": [
+        "DATA-35",
+        "DATA-36"
+      ],
+      "open_tasks": []
     },
     {
       "id": "resources",
@@ -272,7 +359,13 @@
         "tests/metal_ellpack_io_api.cc"
       ],
       "status": "backend-adapted",
-      "limits": "Metal shared/private buffers and retained owners replace CUDA allocators, VMM and managed-memory advice. Resource/copy/lifetime consumers are tested; reservation and migration scheduling differ. RMM itself is CUDA-specific, not a Metal allocator."
+      "limits": "Metal shared/private buffers and retained owners replace CUDA allocators, VMM and managed-memory advice. Resource/copy/lifetime consumers are tested; reservation and migration scheduling differ. RMM itself is CUDA-specific, not a Metal allocator.",
+      "audited_operations": [
+        "DATA-30",
+        "DATA-36",
+        "DATA-37"
+      ],
+      "open_tasks": []
     },
     {
       "id": "runtime",
@@ -297,7 +390,16 @@
         "tests/test_metal.py"
       ],
       "status": "backend-adapted",
-      "limits": "CUDA runtime and debug helpers are backend support, not separate public learning operations. Metal uses command buffers and synchronous completion. Exhaustive helper-caller auditing remains necessary."
+      "limits": "CUDA runtime and debug helpers are backend support, not separate public learning operations. Metal uses command buffers and synchronous completion. Frozen helper/caller classification is published; unlisted branches are not proven correct.",
+      "audited_operations": [
+        "DATA-04",
+        "DATA-06",
+        "DATA-34",
+        "DATA-38",
+        "DATA-40",
+        "DATA-43"
+      ],
+      "open_tasks": []
     },
     {
       "id": "sort-scan-primitives",
@@ -318,8 +420,24 @@
         "tests/metal_linalg_api.cc",
         "tests/metal_metadata_api.mm"
       ],
-      "status": "caller-audit-open",
-      "limits": "Consumer-specific Metal kernels replace Thrust/CUB templates. This maps tested ranking/sketch/metadata/class-prior consumers, not a general replacement CUDA STL API. All template call sites still need reconciliation."
+      "status": "classified-consumers",
+      "limits": "Frozen consumer/helper rows are classified in validation/cuda-caller-audit.json. Specialized Metal kernels replace templates; unused key-only sort is not a missing operation. Pair-index inverse uses an explicit integer mapping adaptation; extreme-index NVIDIA behavior is unverified. Classification is not universal semantic equivalence.",
+      "audited_operations": [
+        "ROOT-01",
+        "ROOT-02",
+        "ROOT-03",
+        "ROOT-04",
+        "ROOT-05",
+        "ROOT-06",
+        "ROOT-07",
+        "ROOT-08",
+        "ROOT-09",
+        "ROOT-10",
+        "ROOT-11",
+        "ROOT-12",
+        "ROOT-13"
+      ],
+      "open_tasks": []
     },
     {
       "id": "random",
@@ -338,8 +456,19 @@
         "tests/test_metal_column_sampling.py",
         "tests/test_metal_sampling.py"
       ],
-      "status": "mapped",
-      "limits": "Targets modern CUDA Philox4x64; the old Thrust fallback is a different stream. Unweighted column shuffle uses its separate Thrust-derived stream."
+      "status": "audited-with-open-tasks",
+      "limits": "Targets modern CUDA Philox4x64; the old Thrust fallback is a different stream. Unweighted column shuffle uses its separate Thrust-derived stream. Confirmed audit tasks: PORT-6; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "training-allowed-feature-storage",
+        "training-uniform-sample",
+        "training-column-iota",
+        "training-column-weighted",
+        "training-column-unweighted",
+        "training-column-storage"
+      ],
+      "open_tasks": [
+        "PORT-6"
+      ]
     },
     {
       "id": "generic-reductions",
@@ -361,8 +490,23 @@
         "tests/metal_initialization_state_api.cc",
         "tests/metal_global_quantizer_api.cc"
       ],
-      "status": "mapped",
-      "limits": "Host scalar publication/global denominators follow source. Parallel association and independent transcendental libraries are not NVIDIA bitwise guarantees."
+      "status": "audited-with-open-tasks",
+      "limits": "Host scalar publication/global denominators follow source. Parallel association and independent transcendental libraries are not NVIDIA bitwise guarantees. Confirmed audit tasks: NUM-1; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "NUM-OP-01",
+        "NUM-OP-02",
+        "NUM-OP-03",
+        "NUM-OP-04",
+        "NUM-OP-05",
+        "NUM-OP-06",
+        "NUM-OP-07",
+        "NUM-OP-08",
+        "NUM-OP-09",
+        "NUM-OP-10"
+      ],
+      "open_tasks": [
+        "NUM-1"
+      ]
     },
     {
       "id": "linalg",
@@ -382,7 +526,13 @@
         "tests/metal_objective_state_api.cc"
       ],
       "status": "mapped",
-      "limits": "Production Transform/ElementWiseKernel/TransformKernel callers are reconciled in validation/cuda-metal-transform-callers.txt. Specialized Metal operations replace CUDA C++ lambda launchers; this does not certify every Thrust/CUB helper or numerical equality."
+      "limits": "Production Transform/ElementWiseKernel/TransformKernel callers are reconciled in validation/cuda-metal-transform-callers.txt. Specialized Metal operations replace CUDA C++ lambda launchers; this does not certify every Thrust/CUB helper or numerical equality.",
+      "audited_operations": [
+        "NUM-OP-11",
+        "NUM-OP-12",
+        "NUM-OP-13"
+      ],
+      "open_tasks": []
     },
     {
       "id": "regression-objectives",
@@ -402,7 +552,18 @@
         "tests/metal_objective_state_api.cc"
       ],
       "status": "mapped",
-      "limits": "Cox gradient and prediction exponential are host code upstream; its base-score log-margin converter dispatches Metal. Absolute/expectile host finalizers are intentional. Objective arithmetic is detailed in CUDA_PARITY.md."
+      "limits": "Cox gradient and prediction exponential are host code upstream; its base-score log-margin converter dispatches Metal. Absolute/expectile host finalizers are intentional. Objective arithmetic is detailed in CUDA_PARITY.md.",
+      "audited_operations": [
+        "NUM-OP-14",
+        "NUM-OP-15",
+        "NUM-OP-16",
+        "NUM-OP-17",
+        "NUM-OP-18",
+        "NUM-OP-19",
+        "NUM-OP-20",
+        "NUM-OP-21"
+      ],
+      "open_tasks": []
     },
     {
       "id": "hinge-multiclass",
@@ -423,7 +584,15 @@
         "tests/metal_objective_state_api.cc"
       ],
       "status": "mapped",
-      "limits": ""
+      "limits": "",
+      "audited_operations": [
+        "NUM-OP-11",
+        "NUM-OP-15",
+        "NUM-OP-22",
+        "NUM-OP-23",
+        "NUM-OP-24"
+      ],
+      "open_tasks": []
     },
     {
       "id": "quantile-objective",
@@ -442,8 +611,19 @@
         "tests/metal_initialization_state_api.cc",
         "tests/test_metal_quantiles.py"
       ],
-      "status": "mapped",
-      "limits": ""
+      "status": "audited-with-open-tasks",
+      "limits": " Confirmed audit tasks: NUM-1; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "NUM-OP-08",
+        "NUM-OP-09",
+        "NUM-OP-10",
+        "NUM-OP-20",
+        "NUM-OP-21",
+        "NUM-OP-25"
+      ],
+      "open_tasks": [
+        "NUM-1"
+      ]
     },
     {
       "id": "aft",
@@ -462,7 +642,14 @@
         "tests/test_metal_survival.py"
       ],
       "status": "mapped-with-numerical-differences",
-      "limits": "All rows run on GPU, but sensitive-tail CPU numerical equivalence fails for part of the retained corpus (see cuda-aft-device-m3.txt). Expression/primitive checks are separate evidence, not an all-rows CPU equivalence claim."
+      "limits": "All rows run on GPU, but sensitive-tail CPU numerical equivalence fails for part of the retained corpus (see cuda-aft-device-m3.txt). Expression/primitive checks are separate evidence, not an all-rows CPU equivalence claim.",
+      "audited_operations": [
+        "NUM-OP-26",
+        "NUM-OP-27",
+        "NUM-OP-38",
+        "NUM-OP-48"
+      ],
+      "open_tasks": []
     },
     {
       "id": "ranking",
@@ -486,7 +673,18 @@
         "tests/metal_ranking_gradient_state_api.cc"
       ],
       "status": "mapped-with-numerical-differences",
-      "limits": "Source cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Compiler contraction, scan/reduction association and long-run model differences remain documented limits."
+      "limits": "Source cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Compiler contraction, scan/reduction association and long-run model differences remain documented limits.",
+      "audited_operations": [
+        "NUM-OP-28",
+        "NUM-OP-29",
+        "NUM-OP-30",
+        "NUM-OP-31",
+        "NUM-OP-32",
+        "NUM-OP-33",
+        "NUM-OP-34",
+        "NUM-OP-48"
+      ],
+      "open_tasks": []
     },
     {
       "id": "metrics",
@@ -508,7 +706,16 @@
         "tests/test_metal_quantile_metrics.py"
       ],
       "status": "mapped",
-      "limits": ""
+      "limits": "",
+      "audited_operations": [
+        "NUM-OP-35",
+        "NUM-OP-36",
+        "NUM-OP-37",
+        "NUM-OP-38",
+        "NUM-OP-39",
+        "NUM-OP-48"
+      ],
+      "open_tasks": []
     },
     {
       "id": "ranking-metrics",
@@ -525,7 +732,16 @@
         "tests/metal_ranking_metric_state_api.cc"
       ],
       "status": "mapped",
-      "limits": "Source arithmetic and degenerate queries are covered; reduction/scan association is architecture-dependent."
+      "limits": "Source arithmetic and degenerate queries are covered; reduction/scan association is architecture-dependent.",
+      "audited_operations": [
+        "NUM-OP-29",
+        "NUM-OP-30",
+        "NUM-OP-39",
+        "NUM-OP-40",
+        "NUM-OP-41",
+        "NUM-OP-42"
+      ],
+      "open_tasks": []
     },
     {
       "id": "auc",
@@ -544,7 +760,17 @@
         "tests/metal_ranking_roc_api.cc"
       ],
       "status": "mapped-with-numerical-differences",
-      "limits": "Grouped ROC uses count-based accumulation rather than CUDA pair-scan association. Source pair terms and edge behavior are checked; cross-architecture floating-point equality is not established."
+      "limits": "Grouped ROC uses count-based accumulation rather than CUDA pair-scan association. Source pair terms and edge behavior are checked; cross-architecture floating-point equality is not established.",
+      "audited_operations": [
+        "NUM-OP-39",
+        "NUM-OP-43",
+        "NUM-OP-44",
+        "NUM-OP-45",
+        "NUM-OP-46",
+        "NUM-OP-47",
+        "NUM-OP-48"
+      ],
+      "open_tasks": []
     },
     {
       "id": "gbtree",
@@ -563,7 +789,12 @@
         "tests/test_metal_updater.py"
       ],
       "status": "mapped",
-      "limits": ""
+      "limits": "",
+      "audited_operations": [
+        "training-gradient-column",
+        "training-dart-weighted"
+      ],
+      "open_tasks": []
     },
     {
       "id": "prediction",
@@ -586,8 +817,21 @@
         "tests/metal_prediction_result_api.cc",
         "tests/test_metal_prediction.py"
       ],
-      "status": "mapped",
-      "limits": ""
+      "status": "audited-with-open-tasks",
+      "limits": " Confirmed audit tasks: PORT-1; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "training-dart-weighted",
+        "training-prediction-init",
+        "training-model-pack",
+        "training-batch-traverse",
+        "training-inplace-traverse",
+        "training-leaf-traverse",
+        "training-leaf-cache-scalar",
+        "training-leaf-cache-vector"
+      ],
+      "open_tasks": [
+        "PORT-1"
+      ]
     },
     {
       "id": "shap",
@@ -604,7 +848,15 @@
         "tests/test_metal_shap.py"
       ],
       "status": "mapped",
-      "limits": "Source expression order and eight-point sums are checked. Cross-tree atomics and NVIDIA compiler behavior are unverified. Approximate SHAP and source host compression retain CPU execution."
+      "limits": "Source expression order and eight-point sums are checked. Cross-tree atomics and NVIDIA compiler behavior are unverified. Approximate SHAP and source host compression retain CPU execution.",
+      "audited_operations": [
+        "training-shap-host-model",
+        "training-shap-contributions",
+        "training-shap-interactions",
+        "training-shap-bias",
+        "training-shap-approx"
+      ],
+      "open_tasks": []
     },
     {
       "id": "linear",
@@ -621,7 +873,13 @@
         "tests/test_metal_linear.py"
       ],
       "status": "mapped",
-      "limits": "FP32 arithmetic follows CUDA; CUB association/contraction remains a limit. Selectors, scalar weight updates, CSC preparation and linear prediction remain host upstream."
+      "limits": "FP32 arithmetic follows CUDA; CUB association/contraction remains a limit. Selectors, scalar weight updates, CSC preparation and linear prediction remain host upstream.",
+      "audited_operations": [
+        "training-linear-host",
+        "training-linear-bias",
+        "training-linear-feature"
+      ],
+      "open_tasks": []
     },
     {
       "id": "constraints",
@@ -640,8 +898,20 @@
         "tests/metal_bound_state_api.cc",
         "tests/test_metal_interaction_constraints.py"
       ],
-      "status": "mapped",
-      "limits": ""
+      "status": "audited-with-open-tasks",
+      "limits": " Confirmed audit tasks: PORT-6, PORT-8; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "training-constraint-config",
+        "training-constraint-state",
+        "training-constraint-filter",
+        "training-allowed-feature-storage",
+        "training-bounds-update",
+        "training-bounds-consumers"
+      ],
+      "open_tasks": [
+        "PORT-6",
+        "PORT-8"
+      ]
     },
     {
       "id": "stumps",
@@ -658,7 +928,12 @@
         "tests/metal_global_quantizer_api.cc"
       ],
       "status": "mapped",
-      "limits": ""
+      "limits": "",
+      "audited_operations": [
+        "training-stump-reduce",
+        "training-stump-weight"
+      ],
+      "open_tasks": []
     },
     {
       "id": "quantization-sampling",
@@ -680,8 +955,25 @@
         "tests/metal_global_quantizer_api.cc",
         "tests/test_metal_sampling.py"
       ],
-      "status": "mapped",
-      "limits": "Modern Philox target; global scales are source-defined. Reduction association and nonfinite policies are recorded in the detailed ledger."
+      "status": "audited-with-open-tasks",
+      "limits": "Modern Philox target; global scales are source-defined. Reduction association and nonfinite policies are recorded in the detailed ledger. Confirmed audit tasks: PORT-3, PORT-9; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "training-quantizer-bounds",
+        "training-quantizer-control",
+        "training-quantizer-convert",
+        "training-uniform-sample",
+        "training-mvs-norm",
+        "training-mvs-threshold",
+        "training-mvs-rescale",
+        "training-sampling-replay",
+        "training-vector-root-sum",
+        "training-scalar-root-sum",
+        "training-partition-sample-flags"
+      ],
+      "open_tasks": [
+        "PORT-3",
+        "PORT-9"
+      ]
     },
     {
       "id": "histograms",
@@ -703,7 +995,14 @@
         "tests/test_metal_storage.py"
       ],
       "status": "mapped",
-      "limits": "Metal launch tiling replaces CUDA feature grouping. Integer totals/cache semantics are checked; scheduling and throughput are not identical."
+      "limits": "Metal launch tiling replaces CUDA feature grouping. Integer totals/cache semantics are checked; scheduling and throughput are not identical.",
+      "audited_operations": [
+        "training-hist-accumulate",
+        "training-hist-scheduling",
+        "training-hist-cache",
+        "training-hist-subtract"
+      ],
+      "open_tasks": []
     },
     {
       "id": "scalar-splits",
@@ -725,8 +1024,24 @@
         "tests/test_metal_split_categories.py",
         "tests/test_metal_split_finalize.py"
       ],
-      "status": "mapped",
-      "limits": "Integer scans and CUDA-derived candidate ordering have independent source oracles; expansion metadata is host orchestration."
+      "status": "audited-with-open-tasks",
+      "limits": "Integer scans and CUDA-derived candidate ordering have independent source oracles; expansion metadata is host orchestration. Confirmed audit tasks: PORT-10, PORT-6, PORT-8; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "training-allowed-feature-storage",
+        "training-bounds-consumers",
+        "training-column-storage",
+        "training-scalar-evaluate",
+        "training-scalar-finalize",
+        "training-scalar-categories",
+        "training-scalar-host-expansion",
+        "training-selected-record",
+        "training-debug-print"
+      ],
+      "open_tasks": [
+        "PORT-10",
+        "PORT-6",
+        "PORT-8"
+      ]
     },
     {
       "id": "vector-splits",
@@ -744,8 +1059,30 @@
         "tests/test_metal_split_categories.py",
         "tests/test_metal_split_finalize.py"
       ],
-      "status": "partial-host-payloads",
-      "limits": "Confirmed host payloads: root/child weights, selected vector category bitsets, and exact node/child sums. CUDA retains device node_weights_, split_cats_, node_sums_ and split_sums_. Root eta also runs on CPU. See PORT-1/2/3 in docs/PLAN.md; the local quarantined weight draft does not close these gaps."
+      "status": "audited-with-open-tasks",
+      "limits": "Confirmed host payloads: root/child weights, selected vector category bitsets, and exact node/child sums. CUDA retains device node_weights_, split_cats_, node_sums_ and split_sums_. Root eta also runs on CPU. See PORT-1/2/3 in docs/PLAN.md; the local quarantined weight draft does not close these gaps. Confirmed audit tasks: PORT-1, PORT-10, PORT-2, PORT-3, PORT-6, PORT-8; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "training-allowed-feature-storage",
+        "training-bounds-consumers",
+        "training-column-storage",
+        "training-selected-record",
+        "training-vector-evaluate",
+        "training-vector-finalize",
+        "training-vector-weight-persistence",
+        "training-vector-root-scale",
+        "training-vector-categories",
+        "training-vector-root-sum",
+        "training-vector-child-sums",
+        "training-debug-print"
+      ],
+      "open_tasks": [
+        "PORT-1",
+        "PORT-10",
+        "PORT-2",
+        "PORT-3",
+        "PORT-6",
+        "PORT-8"
+      ]
     },
     {
       "id": "partition",
@@ -762,8 +1099,19 @@
         "tests/metal_training_state_api.cc",
         "tests/metal_compressed_consumers_api.cc"
       ],
-      "status": "mapped",
-      "limits": ""
+      "status": "audited-with-open-tasks",
+      "limits": " Confirmed audit tasks: PORT-2, PORT-9; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "training-vector-categories",
+        "training-partition-init",
+        "training-partition-sort",
+        "training-partition-leaf-traverse",
+        "training-partition-sample-flags"
+      ],
+      "open_tasks": [
+        "PORT-2",
+        "PORT-9"
+      ]
     },
     {
       "id": "leaf-refit",
@@ -782,7 +1130,14 @@
         "tests/test_metal_leaf_fitting.py"
       ],
       "status": "mapped",
-      "limits": ""
+      "limits": "",
+      "audited_operations": [
+        "training-sampling-replay",
+        "training-leaf-integer-sums",
+        "training-leaf-weights",
+        "training-leaf-publish"
+      ],
+      "open_tasks": []
     },
     {
       "id": "vector-model",
@@ -798,8 +1153,22 @@
         "tests/metal_model_state_api.cc",
         "tests/test_metal_model_state.py"
       ],
-      "status": "partial-host-storage",
-      "limits": "CONFIRMED GAP: MPS CopyBatch/ApplyLearningRate use HostSpan/ConstHostSpan and host alias snapshots. CUDA selects DeviceSpan and device-to-device copies. SetRoot tests only IsCUDA. GPU arithmetic tests do not establish persistent Metal model storage. The root updater caller also multiplies eta on CPU, and root/child weight gathering uses host vectors; port the producing pipeline together with the final containers."
+      "status": "audited-with-open-tasks",
+      "limits": "CONFIRMED GAP: MPS CopyBatch/ApplyLearningRate use HostSpan/ConstHostSpan and host alias snapshots. CUDA selects DeviceSpan and device-to-device copies. SetRoot tests only IsCUDA. GPU arithmetic tests do not establish persistent Metal model storage. The root updater caller also multiplies eta on CPU, and root/child weight gathering uses host vectors; port the producing pipeline together with the final containers. Confirmed audit tasks: PORT-1, PORT-2; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "training-leaf-cache-vector",
+        "training-vector-weight-persistence",
+        "training-vector-root-scale",
+        "training-vector-categories",
+        "training-model-copy-weight",
+        "training-model-copy-categories",
+        "training-model-host-topology",
+        "training-leaf-publish"
+      ],
+      "open_tasks": [
+        "PORT-1",
+        "PORT-2"
+      ]
     },
     {
       "id": "tree-updaters",
@@ -819,8 +1188,22 @@
         "tests/test_metal_updater.py",
         "tests/test_metal_distributed_training.py"
       ],
-      "status": "mapped",
-      "limits": "Common updater classes dispatch Metal. Manual names and configuration lifetime are covered. Pipeline completeness still depends on the open vector-model storage and caller audits."
+      "status": "audited-with-open-tasks",
+      "limits": "Common updater classes dispatch Metal. Manual names and configuration lifetime are covered. Pipeline completeness still depends on the explicit open implementation tasks from the caller audit. Confirmed audit tasks: PORT-1, PORT-9; see validation/cuda-caller-audit.json for source/acceptance.",
+      "audited_operations": [
+        "training-leaf-cache-scalar",
+        "training-scalar-host-expansion",
+        "training-vector-root-scale",
+        "training-scalar-root-sum",
+        "training-partition-sample-flags",
+        "training-updater-orchestrate",
+        "training-updater-manual",
+        "training-approx-hessian"
+      ],
+      "open_tasks": [
+        "PORT-1",
+        "PORT-9"
+      ]
     },
     {
       "id": "fixed-collectives",
@@ -842,7 +1225,13 @@
         "tests/test_metal_distributed_training.py"
       ],
       "status": "mapped",
-      "limits": "Shared Metal payloads use TCP transport and GPU local arithmetic, replacing NCCL transport. Multiple local workers are tested; cross-machine and NVIDIA comparisons are not."
+      "limits": "Shared Metal payloads use TCP transport and GPU local arithmetic, replacing NCCL transport. Multiple local workers are tested; cross-machine and NVIDIA comparisons are not.",
+      "audited_operations": [
+        "DATA-39",
+        "DATA-40",
+        "DATA-42"
+      ],
+      "open_tasks": []
     },
     {
       "id": "variable-collectives",
@@ -859,7 +1248,12 @@
         "tests/test_metal_distributed_sketch.py"
       ],
       "status": "mapped",
-      "limits": "TCP tree order and federated ascending host-fallback order are tested separately with non-associative witnesses."
+      "limits": "TCP tree order and federated ascending host-fallback order are tested separately with non-associative witnesses.",
+      "audited_operations": [
+        "DATA-41",
+        "DATA-44"
+      ],
+      "open_tasks": []
     },
     {
       "id": "federated",
@@ -880,12 +1274,21 @@
         "tests/test_metal_distributed_training.py"
       ],
       "status": "mapped",
-      "limits": "Fixed arithmetic executes on the server as with CUDA. Server type/operator restrictions are preserved; local-process and TLS tests are not cross-machine fault-tolerance evidence."
+      "limits": "Fixed arithmetic executes on the server as with CUDA. Server type/operator restrictions are preserved; local-process and TLS tests are not cross-machine fault-tolerance evidence.",
+      "audited_operations": [
+        "DATA-42",
+        "DATA-43",
+        "DATA-44"
+      ],
+      "open_tasks": []
     }
   ],
   "caller_audit_records": [
-    "validation/cuda-metal-transform-callers.txt"
+    "validation/cuda-metal-transform-callers.txt",
+    "validation/cuda-caller-audit.json",
+    "validation/cuda-calls-inventory.json"
   ],
   "review_record": "docs/REVIEW.md",
-  "completion_plan": "docs/PLAN.md"
+  "completion_plan": "docs/PLAN.md",
+  "caller_audit_summary": "docs/CUDA_AUDIT.md"
 }

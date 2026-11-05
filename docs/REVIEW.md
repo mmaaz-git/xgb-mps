@@ -75,9 +75,11 @@ Independent notes retain source locations, reasoning and limitations:
 [documentation](reviews/2026-11-05-docs.md),
 [public API](reviews/2026-11-05-public-api.md).
 
-## Next decision
+## Follow-up audit
 
-First publish the finite remaining caller table and numerical classifications.
-Then follow [PORT-1](PLAN.md#port-1-is-a-bounded-change), the two remaining vector
-payload tasks, and explicitly enumerated discoveries. Feature work stays paused until resumed;
-this review does not silently restart the unbounded porting loop.
+The subsequent [caller/numerical audit](CUDA_AUDIT.md) is now published at frozen
+revision `382f78c`: 174 logical operations and 1,078 classified lexical sites,
+with ten implementation tasks. It found two correctness defects and additional
+GPU-placement gaps. The [updated plan](PLAN.md) puts those correctness fixes
+before vector state work. Feature work stays paused; the bounded audit did not
+silently restart the unbounded porting loop.

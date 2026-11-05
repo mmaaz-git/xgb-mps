@@ -12,7 +12,7 @@ CUDA operation has an equivalent Metal path. CUDA source defines the intended
 behavior; CPU comparisons apply where the algorithms agree. No NVIDIA GPU
 runtime comparison has been performed.
 
-Start with the [review findings](docs/REVIEW.md) and
+Start with the [caller audit](docs/CUDA_AUDIT.md), [review findings](docs/REVIEW.md) and
 [implementation plan](docs/PLAN.md). Correctness and operation coverage take
 priority over further performance tuning.
 
@@ -29,11 +29,13 @@ This is the tested hardware, not a claim of validation across Apple devices.
 | Data | Ordinary/quantile matrices, native Metal tensor and columnar inputs, metadata, and host/disk external-memory caches |
 | Other training | Linear coordinate descent, TCP distributed trees, and optional federated gRPC trees |
 
-Known unfinished areas include vector-tree weight/category state and their
-producers, remaining CUDA helper callers, numerical edge cases, and asynchronous
-scheduling. The [current parity ledger](docs/CUDA_PARITY.md) and
-[operation map](docs/CUDA_OPERATION_MAP.md) identify the boundaries. The map's
-42 families / 109 CUDA files are an inventory, **not a completion percentage**.
+The audit at `382f78c` identified **10 implementation tasks**, including weighted-
+quantile precision and vector-row validity bugs, plus GPU state/data-placement
+gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
+**not a completion percentage or proof of parity**. See the
+[findings and evidence](docs/CUDA_AUDIT.md) and [ordered plan](docs/PLAN.md).
+Numerical, scheduling and external-hardware limits remain explicit in the
+[parity ledger](docs/CUDA_PARITY.md).
 
 `tree_method="exact"` is unsupported on MPS. For linear GPU training, use
 `booster="gblinear", updater="coord_descent"`; the default `shotgun` updater
@@ -118,6 +120,7 @@ current HEAD. Raw reports are retained under [validation/](validation/).
 ## Repository guide
 
 - [Review](docs/REVIEW.md): concrete findings, risks, and cleanup decisions.
+- [Caller audit](docs/CUDA_AUDIT.md): classified scope, two correctness findings, and ten implementation tasks.
 - [Plan](docs/PLAN.md): prioritized work and acceptance criteria.
 - [Implementation guide](docs/ARCHITECTURE.md): entry points, storage and module boundaries.
 - [Parity ledger](docs/CUDA_PARITY.md): current behavior and known differences.

@@ -31,8 +31,19 @@ not every branch's behavior.
 | PORT-1 | Vector weight producers, root learning-rate multiplication, model growth and alias snapshots still use host views/copies in baseline main. Quarantined draft is unvalidated and contains an unsafe non-MPS branch. |
 | PORT-2 | Selected vector categorical bitsets return to host candidates before model copying; CUDA retains device category storage. |
 | PORT-3 | Exact vector node/selected-child sums move through host containers; CUDA retains device node/split sums. |
-| PORT-4 | Remaining generic sort/scan/helper callers need explicit disposition. Existing transform/linalg caller evidence should not be redone. |
-| PORT-5 | Numerical and scheduling boundaries need final operation-specific acceptance dispositions. |
+| NUM-1 | Weighted-quantile threshold narrows CUDA's binary64 comparison to FP32; a two-row production diagnostic selects the wrong value. |
+| PORT-9 | Vector leaf validity incorrectly uses zero Hessians instead of the actual sampler mask. |
+| PORT-6 | Sampled/allowed feature-ID payloads and consumers still use CPU arrays. |
+| PORT-7 | Native quantile row/group weights pass through host expansion/readback. |
+| PORT-8 | Active scalar/vector split evaluators gather GPU monotonic bounds on CPU. |
+| PORT-10 | Selected numeric cut/−∞ threshold materialization runs on CPU; categorical bit construction already runs on GPU. |
+| PORT-11 | Sketch categorical detection and pointer initialization still perform CUDA GPU work on CPU. |
+
+PORT-4/5 classification is complete for the frozen [audit](CUDA_AUDIT.md):
+174 logical operations, 1,078 assigned lexical sites, 17 numerical contracts.
+Sixteen missing/defective rows map to the ten tasks above. This is a finite
+implementation queue, not proof that no unlisted defects remain. Numerical
+acceptance fixtures and NVIDIA comparisons remain separate verification work.
 
 Scalar control fields, topology, serialization and finalizers that CUDA itself
 runs on the host are not missing kernels merely because they access host memory.
@@ -71,7 +82,8 @@ build/API checks and optional federated learners.
 [Configuration and results](../validation/cuda-metal-native-csr-storage-m3.txt).
 Cleanup has separate [validation evidence](../validation/repo-review-2026-11-05.txt).
 
-CUDA compile CI passed at `b8ad69d`, `ce63cab` and `2eaad4d`. It compiles/links on
+CUDA compile CI also passed at audit baseline `382f78c`
+([run 41987882440](https://github.com/mmaaz-git/xgb-mps/actions/runs/41987882440)). It compiles/links on
 a CPU runner. **No NVIDIA runtime comparison has been performed.** Other Apple
 hardware is also untested. [Historical benchmarks](PUBLISHED_BENCHMARKS.md)
 predate subsequent correctness changes and are not current-HEAD measurements.
