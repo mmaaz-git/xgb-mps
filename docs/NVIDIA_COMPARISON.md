@@ -1062,6 +1062,63 @@ MTL_DEBUG_LAYER=1 results/metal_integer_leaf_api_test --report-prefix results/ne
 python3 scripts/compare_integer_leaf_contracts.py validate-metal results/new-integer-leaf.metal.bin
 ```
 
+## Integer histogram-cache lifecycle
+
+The `--integer-cache` mode preserves all 48 cases in
+`metal_integer_cache_api.cc`: both gradient-index layouts, all three index widths,
+four gradient exponents and one/two bins. It retains all original dispatch
+assertions and checks growth, integer subtraction, cancellation, empty subsequent
+pages, an empty first page when reusing a slot, untouched guards/source gradients,
+and a new tree with a new quantizer. The
+[record](../validation/integer-cache-contract-m3-run.json) contains source hashes,
+Metal evidence and full portable inputs/observations.
+
+CUDA constructs the actual ELLPACK page from the original gradient index, then
+calls `DeviceHistogramBuilder`, its cache allocator and `SubtractionTrick`.
+The caller clears a slot for its first page because the CUDA builder adds to
+caller-owned storage; Metal's wrapper performs that reset internally. CUDA's
+root diagnostic applies its production integer reduction and quantizer to the
+actual histogram bins. It does not expose the updater's private root call,
+which normally reduces gradient rows.
+
+Across backends, compare 1,584 converted binary64 values and 192 decoded bin
+IDs. CUDA also records 1,584 actual integer diagnostics. Metal does not expose
+its private integer storage. Growth prefixes and guards are checked independently:
+Metal uses materialized double pairs, while CUDA uses integer node histograms.
+The original Metal 16-to-257-pair growth maps to 16-to-257 CUDA node slots; this
+does not claim physical CUDA reallocation, since its cache reserves capacity.
+There are 4,032 Metal and 6,048 CUDA storage fields to check.
+
+The comparator reconstructs every original input bit and quantizer, accumulates
+integer bins before converting, and independently validates all snapshots, roots,
+prefixes and guards. Identical wrong outputs cannot pass. Original numerical
+double equality remains; cross-backend bit differences still require review.
+Exit codes are 0 for identical outputs with all reference checks passing, 2 for
+differences requiring review, and 1 for malformed inputs or failed checks.
+
+```sh
+python3 scripts/compare_integer_cache_contracts.py unpack \
+  validation/integer-cache-contract-inputs-m3.bin.xz results/integer-cache-inputs.bin
+results/cuda-comparison-build/cmake/cuda_numerical_contracts --integer-cache \
+  results/integer-cache-inputs.bin results/integer-cache-cuda.bin
+python3 scripts/compare_integer_cache_contracts.py compare \
+  validation/integer-cache-contract-metal-m3.bin.xz results/integer-cache-cuda.bin \
+  --output results/integer-cache-comparison.json
+```
+
+To produce new Metal observations, use a new output prefix:
+
+```sh
+bash scripts/test.sh --native metal_integer_cache_api
+MTL_DEBUG_LAYER=1 results/metal_integer_cache_api_test --report-prefix results/new-integer-cache
+python3 scripts/compare_integer_cache_contracts.py validate-metal results/new-integer-cache.metal.bin
+```
+
+Both Metal modes, the independent checker, 16 synthetic report tests and the C++
+input round trip pass. CUDA compilation and execution remain pending. This is a
+single-worker API replay; it does not validate the full external-memory scheduler
+or establish complete training-reduction parity.
+
 Preserve runtime `.json` metadata, logs and compiler `build.json`. The `XGBILF1\0`
 format checks fixed case identities, full source/sample backing storage,
 backend-specific statuses, observations/references, `ILFE` plus the count and

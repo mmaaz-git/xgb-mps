@@ -70,7 +70,12 @@ def test_six_binaries_complete_hashes_and_host_only_isolation_gate(build):
     assert not any("--metric-registry" in c for c in state["calls"])
     record=run("link")
     assert record["status"]=="passed-compile-link" and not record["gpu_execution"]
-    assert len(record["binaries"])==6 and len(record["inputs"])==49
+    assert len(record["binaries"])==6 and len(record["inputs"])==59
+    assert {'tests/integer_cache_contract_io.h','tests/cuda_integer_cache_contracts.cuh',
+            'xgboost/src/tree/gpu_hist/histogram.cu','xgboost/src/tree/gpu_hist/histogram.cuh',
+            'xgboost/src/tree/gpu_hist/feature_groups.cu','xgboost/src/tree/gpu_hist/feature_groups.cuh',
+            'xgboost/src/data/ellpack_page.cu','xgboost/src/data/ellpack_page.cuh',
+            'xgboost/src/data/gradient_index.cc','xgboost/src/data/gradient_index.h'} <= set(record['inputs'])
     assert {'tests/integer_leaf_contract_io.h','tests/cuda_integer_leaf_contracts.cuh',
             'xgboost/src/tree/gpu_hist/leaf_sum.cu','xgboost/src/tree/gpu_hist/leaf_sum.cuh',
             'xgboost/src/tree/param.h','xgboost/src/tree/split_evaluator.h'} <= set(record['inputs'])

@@ -68,10 +68,12 @@ observations and reference checks pass; eight undefined CUDA conversion cases
 are explicit exclusions. Its [CUDA build](https://github.com/mmaaz-git/xgb-mps/actions/runs/42103889374)
 is running; NVIDIA execution remains pending. See
 the [sampling record](validation/sampling-contract-m3-run.json).
-The integer leaf extension preserves all 256 existing records, including paged
-cancellation and original-scale guards. Metal outputs and independently
-reconstructed integer references pass; its CUDA compiler/runtime checks are
-pending. See the [leaf record](validation/integer-leaf-contract-m3-run.json).
+The integer leaf and histogram-cache extensions preserve all 256 leaf records
+and 48 cache cases, including paged cancellation, growth, subtraction and tree
+reuse. Metal outputs and independent reference checks pass; their CUDA
+compiler/runtime checks are pending. See the
+[leaf record](validation/integer-leaf-contract-m3-run.json) and
+[cache record](validation/integer-cache-contract-m3-run.json).
 Production pipeline comparisons also cover eight
 fixtures and full-size HIGGS quantile construction. Six contracts still lack
 dedicated runners, broader caller coverage remains, and **none of these runners

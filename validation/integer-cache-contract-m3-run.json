@@ -1,0 +1,258 @@
+{
+  "status": "Full Metal cache corpus and independent reference/integrity checks passed; CUDA compilation and NVIDIA execution pending",
+  "suite": "integer-cache-v1",
+  "recorded_utc": "2026-11-05T20:47:07.151094+00:00",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T203826Z",
+    "revision": "535b48db8b398848e958bc696f71f8db29741ac8",
+    "working_tree": "M tests/metal_integer_cache_api.cc\n?? tests/integer_cache_contract_io.h",
+    "diff_sha256": "dccbb157bead072afa21296af02d7c80dcc9040471505433b9d8e57cb28a2684",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/integer_cache_contract_io.h": "345c9634d3cf56888d713d26d347a10c2a9c3585da0b39b7907c56269d964f73"
+    },
+    "native_groups": [
+      "metal_integer_cache_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.6796475001610816
+      },
+      {
+        "name": "compile-metal_integer_cache_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_integer_cache_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_integer_cache_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_integer_cache_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.3605850001331419
+      },
+      {
+        "name": "metal_integer_cache_api",
+        "command": [
+          "results/metal_integer_cache_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_integer_cache_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.090586083009839
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T20:38:30.072360+00:00"
+  },
+  "native_source_proof": {
+    "native_run_summary": "results/verify2-integer-cache-native/summary.json",
+    "base_revision": "535b48db8b398848e958bc696f71f8db29741ac8",
+    "native_diff_sha256": "dccbb157bead072afa21296af02d7c80dcc9040471505433b9d8e57cb28a2684",
+    "shared_header_sha256": "345c9634d3cf56888d713d26d347a10c2a9c3585da0b39b7907c56269d964f73",
+    "source_identity_verified": true,
+    "normal_and_export_exit_code": 0,
+    "log": "results/verify2-integer-cache.log",
+    "nvidia_execution": false
+  },
+  "export_run": {
+    "status": "passed",
+    "command": [
+      "results/metal_integer_cache_api_test",
+      "--report-prefix",
+      "results/verify2-integer-cache"
+    ],
+    "environment": {
+      "MTL_DEBUG_LAYER": "1"
+    },
+    "log": "results/verify2-integer-cache.log"
+  },
+  "counts": {
+    "records": 48,
+    "dense_flags": 2,
+    "max_bin_width_settings": [
+      16,
+      512,
+      65537
+    ],
+    "gradient_exponents": [
+      -80,
+      0,
+      54,
+      100
+    ],
+    "bin_counts": [
+      1,
+      2
+    ],
+    "input_fp32_words": 1032,
+    "actual_converted_fields_per_backend": 1584,
+    "actual_bin_ids_per_backend": 192,
+    "cross_backend_actual_fields": 1776,
+    "cuda_actual_integer_fields": 1584,
+    "metal_storage_fields": 4032,
+    "cuda_storage_fields": 6048,
+    "histogram_snapshots_per_case": 9,
+    "root_diagnostics_per_case": 3
+  },
+  "original_dispatch_assertions_per_case": {
+    "stores": 8,
+    "page_accumulations": 4,
+    "subtractions": 1,
+    "integer_sums": 3
+  },
+  "original_checks": {
+    "values": "Binary64 numerical equality, cancellation recovered through integer subtraction/root reduction, empty first/subsequent pages and new tree quantizer retained",
+    "prefix": "Growth preserves complete original 16-pair materialized prefix bit-for-bit; independent expected prefixes also checked",
+    "guards": "Ten original materialized guard pairs unchanged; raw gradient backing unchanged",
+    "independent_reference": "Exact original input generator; source cut search; positive/negative bounds and quantizer scales; int64 truncation/positive-Hessian floor; modulo integer bins/subtraction/root reduction; original conversion; backend-specific prefix/guard values"
+  },
+  "artifacts": {
+    "inputs": {
+      "path": "validation/integer-cache-contract-inputs-m3.bin.xz",
+      "bytes": 344,
+      "sha256": "7fd3441e1fb281743aba1af31766f19a76193d1cfda8912d97e94ba047a2c066",
+      "raw_bytes": 5112,
+      "raw_sha256": "f07ca0505b19a696733fd96c58c76a04b0829ab4d1c5460757174de262aa58db",
+      "compression": "xz"
+    },
+    "metal": {
+      "path": "validation/integer-cache-contract-metal-m3.bin.xz",
+      "bytes": 744,
+      "sha256": "8d135451349d6bbb66a8cc85f798915f7b4f4de362d52feb779ee06dbeecaf8b",
+      "raw_bytes": 50808,
+      "raw_sha256": "956de6144408356891b7a5794c09f748bef3bbd595b7ff8932ee416195835854",
+      "compression": "xz"
+    }
+  },
+  "full_export_validation": {
+    "status": "passed",
+    "records": 48,
+    "input_fp32_words": 1032,
+    "actual_values": 1584,
+    "actual_bins": 192,
+    "metal_storage_checks": 4032,
+    "input_matching": "every FP32 word bit-exact; original generator independently reconstructed",
+    "cuda_execution": false
+  },
+  "source_sha256": {
+    "tests/metal_integer_cache_api.cc": "7598343cbb1d104277e7d31f4d59f3390be54c6bc6aa46f9d9826d2efff8cfe4",
+    "tests/integer_cache_contract_io.h": "345c9634d3cf56888d713d26d347a10c2a9c3585da0b39b7907c56269d964f73",
+    "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+    "tests/cuda_integer_cache_contracts.cuh": "eea5533607bb84145e65a7f085e11e36f989cf4048366833144eabd5ce19885c",
+    "tests/cuda_numerical_contracts.cu": "f31db4a66553198a542a99e3b8fabcc9116fdd99ef24f27dde29093a0a6dc2bb",
+    "scripts/compare_integer_cache_contracts.py": "34952d8be67fcd2fb14e2439f527db728d774ee645b2ac1a8c8673a4cf0cefb7",
+    "tests/test_integer_cache_contract_reports.py": "6887258af9ef033cd4610fe9ae15e0527d3327e06a10f62d55586393d522f536",
+    "tests/test_cuda_metric_build.py": "cc2781e8888e6e01b8044aea288ca2be72d7b751f72806fcd8e337744928211e",
+    "scripts/build_cuda_comparison.py": "81289a49ae3e6745e057aa716f6d0511f6ba9fcfb6a3ec8ed0b1914ef6979db2",
+    ".github/workflows/cuda-compile.yml": "699451795a9f5cbd2b6f4caba199fc5ce68ef3bd899f5a261fdcb47275788775",
+    "xgboost/src/tree/gpu_hist/histogram.cu": "1bfb76fa5e40cf383f8ceccf760251377e16f00bca92546b88acc4c885c4324f",
+    "xgboost/src/tree/gpu_hist/histogram.cuh": "628807552aea5bc0958adb7ce267b765e6edec4976c45eb810f0c40bea770a6a",
+    "xgboost/src/tree/gpu_hist/feature_groups.cu": "f0a766669ee72e6aed5b15ec5af529f61354d041de3ca77df869679c593f79b6",
+    "xgboost/src/tree/gpu_hist/feature_groups.cuh": "eca3e548cf11aeb200c38a936d83dc49b9bff76fa88577551b89aa6af39fc65d",
+    "xgboost/src/tree/gpu_hist/quantiser.cu": "11e4c878f954d15c1c716823f747776128136a9604266c6339cffa0628b804f1",
+    "xgboost/src/tree/gpu_hist/quantiser.cuh": "c5ce3cf3abd8942028cc6d20279c66068395447fdc31868b82fa74ae4d7a65e4",
+    "xgboost/src/data/ellpack_page.cu": "7d49f145a993fb2b52d7529587b545a7d1149a728fe4e6aff6c7153c98201143",
+    "xgboost/src/data/ellpack_page.cuh": "62beed5517191378c68f392a10885bbf28e8bc8561efbe20fa683b14f72cdd72",
+    "xgboost/src/data/gradient_index.cc": "44e51135f21c37ec2f583ff48656f142342e64f1fc2b6b620d08dd2e2ebf438a",
+    "xgboost/src/data/gradient_index.h": "3627e057f41b9f29a2da77072f5a95c2ab3c5c9ab2d5ff17a4ddc165828482c0"
+  },
+  "log_sha256": {
+    "results/verify2-integer-cache.log": "81f42c8eeeb54a9970cd5885ff8e62492b9ea778fda5a3522412bff678f8b4aa",
+    "results/verify2-integer-cache-native/summary.json": "e24995ca1e19d04d254b30337964e124a2c8f8a0c91a1422827f0be4d89ac3b8",
+    "results/verify2-integer-cache-native-source.json": "2d99282cf3f7c21ffd34eb66f1ccdbcf6dd7117d3e585b995c6afb9bdf11c7b5",
+    "results/verify2-integer-cache-report-tests.log": "69cb1b3738b119203d4b928e42794ee9091487ac070a06b004ce03529c6f5d70",
+    "results/verify2-integer-cache-checks.log": "0ab4de049d11005d858ccab1e16528312a621558d672b00ea1c5cc2ad058297c",
+    "results/verify2-integer-cache-final-checks.json": "870af2ac5bbade41c7e488576c20f68ad03c64bdc9a8dbba496e1fb0cde958fc",
+    "results/verify2-integer-cache-io.cc": "7e438d82653013bde2a01640dbe54ab795bfcbb77a5e28bc7e6a45c639176742",
+    "results/run-verify2-integer-cache-checks.py": "764cb5d88939924376f1ec8e6735edca957e23e8b53201c26a878154f022aae4"
+  },
+  "integrity_tests": {
+    "status": "passed",
+    "count": 16,
+    "log": "results/verify2-integer-cache-report-tests.log",
+    "gpu_execution": false
+  },
+  "build_driver_tests": {
+    "status": "passed",
+    "count": 9,
+    "inputs_hashed": 59,
+    "binaries": 6,
+    "log": "results/verify2-integer-cache-report-tests.log",
+    "gpu_execution": false,
+    "scope": "Mocked build lifecycle/source/isolation/loader/RNG gates; not compilation"
+  },
+  "codec_check": {
+    "status": "passed",
+    "log": "results/verify2-integer-cache-checks.log",
+    "complete_input_roundtrip": "byte-exact",
+    "reject_observations_before_output_creation": true,
+    "gpu_execution": false
+  },
+  "cuda_compile": {
+    "status": "not_started",
+    "gpu_execution": false,
+    "reason": "Waiting for corrected sampling run42103889374 before pushing build-triggering leaf/cache commits"
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "results/cuda-comparison-build/cmake/cuda_numerical_contracts --integer-cache results/integer-cache-inputs.bin results/integer-cache-cuda.bin"
+  },
+  "limits": [
+    "No NVIDIA execution; this CUDA consumer has not compiled yet.",
+    "Metal materialized storage contains doubles; private integer storage is not exposed or fabricated.",
+    "CUDA calls actual GHistIndex-to-ELLPACK conversion, DeviceHistogramBuilder/cache allocator/SubtractionTrick; first-page clearing is explicit caller orchestration.",
+    "CUDA root diagnostic reduces actual histogram bins using production reduction/finalizer primitives; it is not the private updater root API, which normally reduces gradient rows.",
+    "Metal16->257 materialized pairs maps to CUDA16->257 node slots. CUDA reserves capacity, so this corpus does not claim physical allocation relocation.",
+    "Prefix/guard checks are backend-specific; Metal guards17.5/-23.25 and CUDA integer guards17/-23 are independent domains.",
+    "Single-worker API replay, not full updater/external-memory scheduler or complete training-reduction contract coverage."
+  ]
+}
