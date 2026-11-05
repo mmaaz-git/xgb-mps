@@ -1,5 +1,5 @@
 {
-  "status": "Full Metal linear corpus, independent reference/input checks, codec and integrity tests passed; CUDA compilation and execution pending",
+  "status": "Full Metal linear corpus and all local checks passed; CUDA compile run42113854537 active, NVIDIA execution pending",
   "suite": "linear-v1",
   "recorded_utc": "2026-11-05T21:32:31.558814+00:00",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -270,9 +270,13 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "not_started",
+    "status": "in_progress",
+    "run_id": 42113854537,
+    "head": "3943d6a03069af187db714dc6cbfec81d2a3cda8",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537",
     "gpu_execution": false,
-    "reason": "Leaf/cache compiler run42108648407 passed; this linear batch awaits its first compiler run"
+    "inputs": 67,
+    "binaries": 7
   },
   "cuda_runtime": {
     "status": "not_run",
