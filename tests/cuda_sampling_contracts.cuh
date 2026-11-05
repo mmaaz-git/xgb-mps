@@ -62,7 +62,7 @@ inline std::vector<GradientPair> Replay(Context const* ctx,impl::Sampler* sample
   unsigned offset=s.family==0?4:0;
   // The CUDA public replay takes an owning contiguous matrix. Project the
   // original padded view on GPU, then scatter only logical elements back.
-  dh::LaunchN(s.rows*shape.replay_targets,ctx->CUDACtx()->Stream(),[=] XGBOOST_DEVICE(std::size_t i){
+  dh::LaunchN(s.rows*shape.replay_targets,ctx->CUDACtx()->Stream(),[=] XGBOOST_DEVICE(std::size_t i) mutable {
     auto r=i/shape.replay_targets,t=i%shape.replay_targets;values(r,t)=input[offset+r*shape.replay_stride+t];
   });
   sampler->ApplySampling(ctx,&dense);

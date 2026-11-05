@@ -260,3 +260,14 @@ VERIFY-2 metric/stump and nvCOMP loader correction (terminal success):
   Build record SHA256: 5b63a6a342cd5f71faf2303364b8e438092642bd5c77c2a33f1ed804c1cb1c67
   Library SHA256: 0512059347632844c568d050e7e5ef7e28a458b25e663162d39496d4d9a8aca5
   This predates sampling; no NVIDIA kernels executed.
+
+VERIFY-2 sampling initial consumer build (terminal object-compile failure):
+  6b9231280768dcc17cb7ee302a020725aa511e86:42103165520
+  https://github.com/mmaaz-git/xgb-mps/actions/runs/42103165520
+  All43 declared input hashes verified against the exact CI revision.
+  Numerical object failed: duplicate GlobalSum template from aggregator.h/.cuh,
+  and assignment through a tensor view captured by a non-mutable lambda.
+  Production build and final executable links were not reached.
+  Log SHA256: 920da21381d92d753719d20f6be77c99bae207cd66b34157fecc42c553b4c52f
+  Fix: select common aggregator.h (same GlobalSum body), mutable gather lambda.
+  No NVIDIA kernel execution. Corrected compile verification pending.

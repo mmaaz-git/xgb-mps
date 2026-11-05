@@ -1,5 +1,5 @@
 {
-  "status": "Complete current Metal sampling corpus and reference/integrity checks passed; CUDA compilation and NVIDIA execution pending",
+  "status": "Complete Metal sampling/reference checks passed; initial CUDA object compilation failed, corrected source awaits CI; NVIDIA execution pending",
   "suite": "sampling-v1",
   "recorded_utc": "2026-11-05T20:18:09.859519+00:00",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -194,7 +194,7 @@
     "tests/cuda_gradient_reference.h": "0391941d3e85ea26919972f03a51c300e86111e02adead836f204986997dd65f",
     "tests/cuda_philox_reference.h": "6bf3ca2a23896947913c6a04a08102c60115a1335638a1141384ad7bd4f66d1e",
     "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
-    "tests/cuda_sampling_contracts.cuh": "832f6817825bbf33662f71101c73ee04e9b72e9467516a9c30a82c178d5065f7",
+    "tests/cuda_sampling_contracts.cuh": "fd7feae21d58d200e2d093fcc7a8cb5251457decd5fef8b16dea19e269517620",
     "tests/cuda_numerical_contracts.cu": "aa378416f3da81d021a3d863a99fe329df42ad520098c5cf4919dd4bd0254f28",
     "scripts/compare_sampling_contracts.py": "ffd14b44bdb4a0c4fcbb7bdfc3cd1f557f28c7a1d5f21d7c303f12d96ad1b108",
     "tests/test_sampling_contract_reports.py": "20a9c983f0863746174b51aa07da3702d6d3a16c31f85c57338b19e605eedbdf",
@@ -206,7 +206,8 @@
     "xgboost/src/tree/gpu_hist/quantiser.cu": "11e4c878f954d15c1c716823f747776128136a9604266c6339cffa0628b804f1",
     "xgboost/src/tree/gpu_hist/quantiser.cuh": "c5ce3cf3abd8942028cc6d20279c66068395447fdc31868b82fa74ae4d7a65e4",
     "xgboost/src/tree/updater_gpu_hist.cuh": "8f6cc320b808a8c0315868f08712c4e7ac3369a9c46e4dd62f53c763402c1880",
-    "xgboost/src/tree/updater_gpu_hist.cu": "0624991e85efbaca5cecd3dcac2abc5762f8f0d24f0e0e11e79bd0383d398560"
+    "xgboost/src/tree/updater_gpu_hist.cu": "0624991e85efbaca5cecd3dcac2abc5762f8f0d24f0e0e11e79bd0383d398560",
+    "tests/cuda_stump_contracts.cuh": "2ce073212df12cd76ce2a5c401cb41fd64096e212b04d7f69cbcf8901f1b0872"
   },
   "log_sha256": {
     "results/verify2-sampling.log": "4f7d906edb9d1f955ab1946f043d6bd8e31c210c6f3493b337bf33e50789acb9",
@@ -283,11 +284,8 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "in_progress",
-    "gpu_execution": false,
-    "run_id": 42103165520,
-    "head": "6b9231280768dcc17cb7ee302a020725aa511e86",
-    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42103165520"
+    "status": "correction-awaiting-CI",
+    "gpu_execution": false
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -304,5 +302,23 @@
     "Integer leaf/cache/linear reductions and broader training caller combinations remain separate work.",
     "Only Apple M3 GPU execution; host/mock/codec checks do not constitute NVIDIA evidence."
   ],
-  "harness_commit": "33ca04bd0c8f688650048b96384fbd75f689a8fe"
+  "harness_commit": "33ca04bd0c8f688650048b96384fbd75f689a8fe",
+  "previous_cuda_attempts": [
+    {
+      "run_id": 42103165520,
+      "head": "6b9231280768dcc17cb7ee302a020725aa511e86",
+      "status": "failed-object-compilation",
+      "gpu_execution": false,
+      "verified_input_hashes": 43,
+      "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42103165520",
+      "log_sha256": "920da21381d92d753719d20f6be77c99bae207cd66b34157fecc42c553b4c52f",
+      "build_record_sha256": "1c9476a7f5330a7e13c49a6e8cdf6e5d2bc7aa598cf5f33b74d3c0b03dfcabcd",
+      "errors": [
+        "Duplicate GlobalSum template from including both aggregator.cuh and aggregator.h",
+        "CUDA gather lambda captured tensor view as const, preventing assignment"
+      ],
+      "production_build_reached": false,
+      "fix": "Use the common aggregator.h whose GlobalSum body is identical; make the gather lambda mutable. NVIDIA execution remains pending."
+    }
+  ]
 }

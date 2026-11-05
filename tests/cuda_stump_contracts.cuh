@@ -2,7 +2,7 @@
 // The trace observes its own sums; it does not capture the API's private buffer.
 #pragma once
 #include <thrust/reduce.h>
-#include "../xgboost/src/collective/aggregator.cuh"
+#include "../xgboost/src/collective/aggregator.h"
 #include "../xgboost/src/tree/fit_stump.h"
 #include "stump_contract_io.h"
 
