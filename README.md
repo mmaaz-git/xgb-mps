@@ -6,9 +6,9 @@ An experimental Apple GPU backend for XGBoost 3.4.2. It uses custom Metal
 compute kernels behind `device="mps"`; it is an independent fork, not an upstream
 XGBoost release.
 
-**Training and prediction work. Full CUDA parity is not established.** Some
-stages still use CPU code, and a passing test suite does not prove that every
-CUDA operation has an equivalent Metal path. CUDA source defines the intended
+**Training and prediction work. Full CUDA parity is not established.** A passing
+test suite does not prove that every CUDA operation has an equivalent Metal
+path. CUDA source defines the intended
 behavior; CPU comparisons apply where the algorithms agree. No NVIDIA GPU
 runtime comparison has been performed.
 
@@ -34,19 +34,20 @@ quantile precision and vector-row validity bugs, plus GPU state/data-placement
 gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
 **not a completion percentage or proof of parity**. See the
 [findings and evidence](docs/CUDA_AUDIT.md) and [ordered plan](docs/PLAN.md).
-Nine tasks are locally complete: [quantile precision](validation/cuda-num1-m3.txt),
+All ten tasks are locally complete: [quantile precision](validation/cuda-num1-m3.txt),
 [vector sampling validity](validation/cuda-port9-m3.txt),
 [resident vector weights](validation/cuda-port1-m3.txt),
 [resident categorical state](validation/cuda-port2-m3.txt),
 [exact vector sums](validation/cuda-port3-m3.txt),
 [resident feature selection](validation/cuda-port6-m3.txt),
 [resident quantile weights](validation/cuda-port7-m3.txt),
-[GPU split-bound gathers](validation/cuda-port8-m3.txt), and
-[GPU split thresholds](validation/cuda-port10-m3.txt).
-The latest change (`30639c6`) resolves selected numeric thresholds on the GPU and
-keeps cut values resident through scalar/vector winner and category handling.
-**One audited implementation task remains:** sketch initialization. Integration
-and external-hardware verification follow it.
+[GPU split-bound gathers](validation/cuda-port8-m3.txt),
+[GPU split thresholds](validation/cuda-port10-m3.txt), and
+[GPU sketch initialization](validation/cuda-port11-m3.txt).
+The latest change (`68c800e`) initializes sketch pointers and checks categorical
+types on GPU, preserving owned type snapshots through later batches.
+**Next: numerical-contract verification**, then actual NVIDIA comparisons and
+performance work. Closing the audit's implementation tasks is not proof of full parity.
 Numerical, scheduling and external-hardware limits remain explicit in the
 [parity ledger](docs/CUDA_PARITY.md).
 
@@ -109,12 +110,12 @@ check GPU execution. PyTorch and MLX are additional dependencies for their
 native-tensor tests. Optional federated tests require `brew install grpc protobuf`
 and run with `bash scripts/test_federated.sh` in separate build directories.
 
-Latest full regression covers `30639c6`: **103 native groups and 3,647 Python
+Latest full regression covers `68c800e`: **103 native groups and 3,647 Python
 tests passed, with one expected skip**, plus CPU build/API/schema and nine updater
 checks. PyTorch and MLX GPU interop tests ran. The
-[record](validation/cuda-port10-m3.txt) includes commands, source hashes and limits.
-Optional federated checks were last run at `dd44829`, as recorded
-[here](validation/cuda-metal-native-csr-storage-m3.txt).
+[record](validation/cuda-port11-m3.txt) includes commands, source hashes and limits.
+The optional federated suite also passed at this revision: 14 transport, sketch,
+and learner groups, including TLS, with all workers on the same M3.
 
 The [CUDA CI workflow](.github/workflows/cuda-compile.yml) separately checks that
 shared-code changes still compile with NVIDIA dependencies. Successful compilation

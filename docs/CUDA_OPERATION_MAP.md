@@ -28,7 +28,10 @@ PORT-9 at `1034657` ([evidence](../validation/cuda-port9-m3.txt)), and PORT-1 at
 `2bfb914` ([evidence](../validation/cuda-port6-m3.txt)), and PORT-7 at `796e9fa`
 ([evidence](../validation/cuda-port7-m3.txt)), and PORT-8 at `ed5afcf`
 ([evidence](../validation/cuda-port8-m3.txt)), and PORT-10 at `30639c6`
-([evidence](../validation/cuda-port10-m3.txt)); one audited implementation task remains.
+([evidence](../validation/cuda-port10-m3.txt)), and PORT-11 at `68c800e`
+([evidence](../validation/cuda-port11-m3.txt)). All ten original implementation
+tasks are locally complete; numerical verification, NVIDIA execution and
+performance work remain. The JSON's current progress section records these fixes.
 The frozen audit retains its original findings. PORT-4/5 classification
 is complete for that ledger; full parity remains unproven.
 
@@ -42,7 +45,7 @@ CUDA compilation/linking also passed at audit baseline `382f78c`
 ([run 41987882440](https://github.com/mmaaz-git/xgb-mps/actions/runs/41987882440)), including
 NCCL, nvCOMP and federated consumers. See [compiler evidence](../validation/cuda-compile-ci-13.4.txt).
 The latest successful compile covers `0409c7f`, including PORT-6/7/8;
-PORT-10 needs its own completed compile result.
+PORT-10/11 need their own completed compile result.
 Compilation is not runtime or numerical equivalence. Performance follows
 operation/storage correctness; historical timings are not current measurements.
 
@@ -50,11 +53,13 @@ operation/storage correctness; historical timings are not current measurements.
 
 “Mapped” means implementation and test entry points were located, **not complete**.
 “Backend adapted” identifies CUDA runtime/allocator mechanisms replaced by Metal
-mechanisms. “Audited with open tasks” links confirmed gaps in the JSON;
-“classified consumers” closes only the frozen inventory classification. The JSON
+mechanisms. Classifications below describe the frozen audit revision.
+“Audited with open tasks” links gaps found at that revision; their current
+resolutions appear above and in the JSON's `resolved_after_audit` section.
+"Classified consumers" closes only the frozen inventory classification. The JSON
 contains full source lists, audited operation IDs and task references for each row.
 
-| Family and operations | Status | Metal interfaces/dispatch | Existing checks |
+| Family and operations | Audit classification | Metal interfaces/dispatch | Existing checks |
 |---|---|---|---|
 | native-api: Native dense/columnar matrices; custom gradient pairs; native prediction placement; build information | mapped | [c_api.cc](../xgboost/src/c_api/c_api.cc); [metal_gradient.h](../xgboost/src/common/metal_gradient.h); [metal_output.h](../xgboost/src/common/metal_output.h) | [metal_gradient_import_api.mm](../tests/metal_gradient_import_api.mm); [metal_prediction_result_api.cc](../tests/metal_prediction_result_api.cc); [test_metal_output.py](../tests/test_metal_output.py); [test_metal_updater.py](../tests/test_metal_updater.py) |
 | tensor-adapters: Typed/strided tensors, masks, categorical columns, proxy setup and producer completion | mapped-with-scheduling-difference | [proxy_dmatrix.cc](../xgboost/src/data/proxy_dmatrix.cc); [metal_tensor.h](../xgboost/src/common/metal_tensor.h); [metal_adapter.h](../xgboost/src/common/metal_adapter.h); [_metal.py](../xgboost/python-package/xgboost/_metal.py) | [metal_tensor_api.mm](../tests/metal_tensor_api.mm); [metal_columnar_api.mm](../tests/metal_columnar_api.mm); [test_metal_tensor.py](../tests/test_metal_tensor.py); [test_metal_columnar.py](../tests/test_metal_columnar.py) |

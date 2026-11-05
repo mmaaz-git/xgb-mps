@@ -24,11 +24,10 @@ Track three separate claims:
 
 The audit classified 174 logical operations and all 1,078 listed lexical sites
 across 42 families / 109 CUDA roots at `382f78c`. Sixteen missing/defective rows
-map to **10 implementation tasks** below; NUM-1, PORT-9 and PORT-1/2/3/6/7/8/10 are locally fixed,
-and one remains.
+map to **10 implementation tasks** below; all ten are locally fixed and validated.
 These unequal-sized rows are not a
 completion percentage, and this bounded audit cannot prove the absence of
-unlisted defects. **Next: PORT-11 sketch initialization.** No new kernels were added during
+unlisted defects. **Next: VERIFY-1 numerical contracts and final integration evidence.** No new kernels were added during
 classification.
 
 ## Ordered work queue
@@ -47,35 +46,36 @@ classification.
 | PORT-7 | Resident native quantile weights | Locally complete at `796e9fa`; CUDA compile passed at `0409c7f` | Native row/group weights and expansion stay GPU-owned through quantile and host/disk constructors; six native groups, 820 Python passes and CPU checks; [evidence](../validation/cuda-port7-m3.txt) |
 | PORT-8 | GPU split-bound gathers | Locally complete at `ed5afcf`; CUDA compile passed at `0409c7f` | GPU gather/snapshot/feature/finalizer chain and root consumers; 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port8-m3.txt). Unsupported reduced-gradient/monotone refit restriction unchanged |
 | PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA CI pending | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
-| PORT-11 | GPU sketch initialization | Next | GPU categorical-type reduction and pointer-payload clear; numeric/categorical/mixed/empty and subsequent-batch fixtures |
-| VERIFY-1 | Integration at a fixed revision | After required implementation tasks | Full native/Python run, CPU build/API + updater checks, optional federated checks, CUDA compile; complete required numerical divergence fixtures; record dependencies/skips and no unexplained required-operation gaps |
+| PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA CI pending | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
+| VERIFY-1 | Integration at a fixed revision | In progress; local suites refreshed at `68c800e` | Full native/Python run, CPU build/API + updater checks, optional federated checks, CUDA compile; complete required numerical divergence fixtures; record dependencies/skips and no unexplained required-operation gaps |
 | VERIFY-2 | NVIDIA execution comparison | External hardware required | Shared fixtures run against vendored CUDA on NVIDIA; publish numerical contracts and failures, not just compiler success |
 | PERF-1 | Profile/optimize a frozen benchmark matrix | After local coverage/correctness milestone | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
 
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
 while hardware is unavailable. Cross-Apple-hardware claims also require actual runs.
 
-## Next bounded change: PORT-11
+## Next bounded work: VERIFY-1
 
-Move sketch categorical detection and initial column-pointer clearing to GPU
-execution. CUDA's `SketchContainer` constructor performs a device `any_of` and
-initializes device pointer arrays; `MetalCudaSketch` currently reduces types and
-creates the initial zero pointer payload on CPU.
+The full Metal, CPU and optional federated suites passed on the unchanged
+`68c800e` source. Reuse that evidence where applicable; repeat suites only when
+new changes or failures justify it. Completion of this gate still requires:
 
-- Reduce resident feature types on GPU and publish the categorical flag used by
-  host scheduling, as CUDA does. Preserve the owned feature-type snapshot.
-- Clear initial resident column pointers on GPU, including the zero-column case.
-- Check numeric, categorical, mixed and empty types, threadgroup boundaries,
-  input lifetime/mutation, empty batches and subsequent nonempty batches against
-  the existing independent sketch oracle.
-- Preserve merge/prune, row counts and CUDA-defined host final-cut generation.
-  This task does not require a sketch rewrite or performance changes.
+- Reconcile all seventeen numerical contracts with concrete current fixtures.
+  Check explicit scan/CDF selection and sketch neighbor-repair divergence cases,
+  especially P5-N08/13/14. Add missing witnesses without widening ordinary
+  tolerances or assuming an unmeasured NVIDIA summation order.
+- Check that every original required gap maps to its implemented caller path
+  and current acceptance evidence. Preserve the frozen audit and record current
+  resolution separately; a test count alone is not sufficient.
+- Obtain completed CUDA compile evidence for the final source. Poll the existing
+  job instead of restarting it. Compiler success remains separate from execution.
+- Publish the local acceptance result with dependencies, skips, numerical limits
+  and the remaining NVIDIA comparisons. VERIFY-2 and performance remain open.
 
-[PORT-10](../validation/cuda-port10-m3.txt) now resolves scalar exclusive and
-vector forward/backward thresholds on GPU. Exact metadata bits, resident cut
-consumers, category regressions and complete-tree checks pass. The first shader
-compile failed on a field-name mismatch; the corrected focused and full runs
-pass and retain that failed attempt in the evidence.
+[PORT-11](../validation/cuda-port11-m3.txt) now clears resident sketch pointers,
+snapshots feature types and reduces categorical presence on GPU. Empty schemas,
+input lifetime and subsequent batches pass the CUDA-source oracle. No merge,
+prune, rank, scan or final-cut arithmetic was changed.
 
 ## PORT-4 audit boundary
 

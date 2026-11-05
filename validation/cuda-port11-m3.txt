@@ -1,0 +1,89 @@
+PORT-11: GPU sketch initialization
+Date: 2026-11-05
+Source commit: 68c800e91cccfce0d44bee02bd1880358e213ee2
+Base: a9960f207aa86f0a4807d8dc0ba982613fe6b4f2
+
+Change and source contract:
+  CUDA common/quantile.cuh:93-108 initializes device column pointers, snapshots
+  feature types and uses device any_of to determine categorical presence.
+  MetalCudaSketch now clears its initial resident column-pointer payload with
+  a GPU blit, including the single pointer for zero columns. Implicit numerical
+  types are also cleared on GPU. Supplied types feed an owned GPU snapshot;
+  native inputs bind directly, including unaligned byte subspans. Host metadata
+  inputs retain the existing borrowed-memory/staging fallback contract.
+  xgb_cs_has_categories performs a SIMD any-reduction followed by atomic OR.
+  Its GPU-cleared flag is read only after completion, as host scheduling metadata.
+  CPU std::find and CPU zero-vector construction/upload were removed.
+  Temporary pointer arrays remain allocated and populated by the existing GPU
+  operations when needed. Merge, prune, ranks, scans, weights, source-defined
+  host final cuts, validation rules and numerical tolerances are unchanged.
+  The existing cuda_sketch_dispatches counter includes the completed constructor
+  command; input batch counts do not change. No diagnostic fields were added.
+
+Acceptance checks:
+  Added 72 constructor/snapshot cases: 0/1/31/32/33/255/256/257/513 columns,
+  implicit/explicit numerical types, all categorical, and a sole category at
+  the final lane. Tests cover host and native inputs, byte offset three, guards,
+  no native host mirror or staging copy, and mutation/destruction of original
+  input before subsequent GPU consumers. Initial empty pointers, empty batches
+  and two nonempty batches are checked against the independent CUDA-source oracle.
+  Invalid bin count, type shape and column count reject before initialization.
+  Complete native sketch result: 136 cases / 404 pushes / 2075570 input entries /
+  493208 exact fields, including the prior weighted and exceptional-value corpus.
+  Counter checks support the source trace; they are not a general detector of
+  arbitrary CPU dereferences of unified memory.
+
+Focused run:
+  bash scripts/test.sh --native metal_cuda_sketch_api metal_sketch_ingest_api
+    metal_sketch_collective_api metal_quantile_weights_api --python
+    tests/test_metal_sketch.py tests/test_metal_external_host.py
+    --log-dir results/port11-focused
+  PASS all 11 stages: four native groups and 52 Python tests, one warning in 4.84s.
+
+Full and separate gates:
+  bash scripts/test.sh --full --log-dir results/port11-integration
+  Session xgb-port11-integration, driver results/port11-integration.log.
+  PASS all 209 stages: 103 freshly compiled native groups, independent linear
+  reference and 3647 Python tests, one expected skip, 672 warnings in 308.03s.
+  The no-GPU-only fallback test is inapplicable on this M3. Torch/MLX interop ran.
+  Finished 2026-11-05T12:26:53.482712 UTC. Source and library hashes were unchanged
+  during validation and match the source commit. Commands, timings and log hashes
+  are retained in cuda-port11-m3-run.json.
+
+  CPU: bash results/port11-cpu.sh, log results/port11-cpu-fixed.log.
+  Rebuilt build-cpu; scripts/check_cpu_build.py passed disabled API/cache/schema
+  checks (305 fields). Isolated CPU updater selection passed nine tests,
+  72 deselected, 11 warnings in 0.18s, using the non-Metal build-cpu library.
+  The initial launcher did not start tests because its temporary wrapper file
+  was missing; results/port11-cpu.log retains that setup failure. The wrapper was
+  created before the final CPU gate. No code or numerical test failed.
+
+  Federated: bash scripts/test_federated.sh, isolated build-metal-federated and
+  Python package; session xgb-port11-federated, log results/port11-federated.log.
+  PASS 14 stage/world groups: transport and sketches with 1/2/3/5 workers,
+  learners with 1/2/3 workers, and all three stages with two TLS workers.
+  All workers ran on this M3; this is not multi-host or NVIDIA evidence.
+
+Environment and hashes:
+  Apple M3, 10-core GPU, 16 GiB; macOS 26.6.2 arm64.
+  numpy 2.5.4, scipy 1.18.1, pytest 9.2.0, torch 2.15.0, mlx 0.32.4,
+  scikit-learn 1.9.1, pandas 3.1.0. Applicable native tests used Metal validation.
+  CPU: 8eb723443475365a183050a9c7017c980047f2bb6b7f22f809d6374c3da82171
+  Metal: 23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90
+  Federated: b1a70d231999be8c71c6062bc4fbc78126c66883fbfec24a063eb80631d1f1a9
+  Patch: a8e85887c4191f602357a98b62e848e93ff4659ed2031c52b2b908a733428b5c
+  Manifest: 99e0ae1efd47158ae181170229b8bcf3efedba7c4b81e43a9474cd10ad8bee5b
+
+Limits and next work:
+  All ten original audit implementation tasks are locally complete. This does
+  not prove full CUDA parity or exclude unlisted defects. VERIFY-1 still needs
+  numerical-contract/fixture reconciliation and completed CUDA compilation for
+  the final source; VERIFY-2 requires actual NVIDIA execution. Performance work
+  follows the local coverage/correctness milestone. No new benchmark is claimed.
+  The audit remains frozen: 42 families / 109 roots / 1078 sites / 174 operations /
+  10 original tasks / 17 numerical contracts / 2119 references. Structural audit
+  and coverage checks pass. The operation map's current progress section is
+  refreshed separately; original family classifications remain baseline evidence.
+  Previous CUDA job 42024506701 for a9960f2 was still compiling at the last poll.
+  Last successful recorded compile covers 0409c7f (42020760438). This source needs
+  its own completed compile evidence. Compilation does not execute CUDA kernels.

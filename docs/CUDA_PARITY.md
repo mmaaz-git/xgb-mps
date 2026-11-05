@@ -6,8 +6,8 @@ describe different revisions and must not be read as current status.
 
 The target is CUDA-accelerated behavior in vendored XGBoost 3.4.2. `device="mps"`
 selects custom **Metal compute kernels**; Apple's MPS library does not replace
-XGBoost's CUDA kernels. **Full coverage remains unproven and known GPU-state gaps
-remain.** See the [ordered plan](PLAN.md).
+XGBoost's CUDA kernels. **Full coverage remains unproven; verification work
+remains after the audit's ten implementation fixes.** See the [ordered plan](PLAN.md).
 
 ## What exists
 
@@ -28,7 +28,9 @@ not every branch's behavior.
 
 | Plan ID | Remaining CUDA behavior or evidence |
 | --- | --- |
-| PORT-11 | Sketch categorical detection and pointer initialization still perform CUDA GPU work on CPU. |
+| VERIFY-1 | Numerical-contract/fixture reconciliation and completed CUDA compile evidence for the final source. |
+| VERIFY-2 | Shared fixtures executed on actual NVIDIA hardware; local source oracles are insufficient. |
+| PERF-1 | Current-revision large-workload timings and optimization after local correctness acceptance. |
 
 PORT-4/5 classification is complete for the frozen [audit](CUDA_AUDIT.md):
 174 logical operations, 1,078 assigned lexical sites, 17 numerical contracts.
@@ -58,7 +60,11 @@ root finalization; growth, aliases, lifetimes and complete-tree checks pass
 ([evidence](../validation/cuda-port8-m3.txt)). PORT-10 is locally fixed at `30639c6`:
 selected thresholds resolve on GPU, with resident cuts through winner/category
 consumers; exact metadata and complete-tree checks pass
-([evidence](../validation/cuda-port10-m3.txt)). One audited implementation task remains.
+([evidence](../validation/cuda-port10-m3.txt)). PORT-11 is locally fixed at `68c800e`:
+GPU pointer initialization, categorical reduction and owned type snapshots pass
+constructor/lifetime, subsequent-batch and federated checks
+([evidence](../validation/cuda-port11-m3.txt)). All ten audited implementation tasks
+are locally complete; the verification gates above remain open.
 The frozen audit retains its original findings. This is a finite
 implementation queue, not proof that no unlisted defects remain. Numerical
 acceptance fixtures and NVIDIA comparisons remain separate verification work.
@@ -94,17 +100,17 @@ reproduced defects, confirmed gaps and architecture risks.
 
 ## Evidence boundary
 
-Latest full local regression covers `30639c6`: **103 native groups and 3,647
+Latest full local regression covers `68c800e`: **103 native groups and 3,647
 Python passes, one expected skip**, plus CPU build/API/schema and nine updater
 tests. Both PyTorch and MLX GPU interop tests ran.
-[Configuration, source hashes and results](../validation/cuda-port10-m3.txt).
-Optional federated learners were last tested at `dd44829`
-([record](../validation/cuda-metal-native-csr-storage-m3.txt)). Earlier validation
-records retain their original scope and failures.
+[Configuration, source hashes and results](../validation/cuda-port11-m3.txt).
+Optional federated transport, sketches and learners also passed at this revision:
+14 stage/world groups including TLS, with all workers on the same M3. Earlier
+validation records retain their original scope and failures.
 
 CUDA compile CI passed at `0409c7f`, including PORT-6/7/8
 ([run 42020760438](https://github.com/mmaaz-git/xgb-mps/actions/runs/42020760438)).
-The subsequent PORT-10 source still needs completed CI evidence. CI compiles/links on
+The subsequent PORT-10/11 sources still need completed CI evidence. CI compiles/links on
 a CPU runner. **No NVIDIA runtime comparison has been performed.** Other Apple
 hardware is also untested. [Historical benchmarks](PUBLISHED_BENCHMARKS.md)
 predate subsequent correctness changes and are not current-HEAD measurements.
