@@ -14,7 +14,28 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **Metal has a collective backend for multiple workers**. Numeric
+Latest step: **distributed feature sketches now run on Metal**. Variable-size
+reductions preserve CUDA's binomial-tree merge/prune order. Ordinary matrices and
+in-memory/external quantile constructors share the resulting global cuts,
+including empty workers and native Metal tensor inputs. Summary arithmetic and
+payload copies stay on GPU; row counts, schema control and final cut materialization
+remain on host, as in CUDA.
+
+The new native suite passes **2,343 cases / 1,522,823 checked fields across
+1/2/3/5 local workers**. Public constructor tests pass **384 cases**, each with
+an additional reference-cut reuse check, across 1/2/3 workers. Separate child/root
+disconnection tests pass after fixing a shared TCP event-loop error-publication
+race. Resident payload tests require zero vector readbacks and zero staging.
+Full regression passes **98 native groups**, **3,429 Python tests with one
+expected skip**, and the CPU-only build/API checks.
+[Distributed sketch validation](validation/cuda-metal-distributed-sketch-m3.txt).
+
+**Distributed MPS training remains disabled.** Global quantizer scales and
+histogram/root/leaf reductions, initialization and other collective consumers
+still need integration. Federated MPS and asynchronous streams also remain open.
+No new performance or NVIDIA execution-equivalence claim is made.
+
+Previous step: **Metal has a collective backend for multiple workers**. Numeric
 sum/min/max reductions and bytewise AND/OR/XOR run on GPU; broadcast, allgather
 and variable-size allgather use shared Metal buffers with the existing TCP
 transport. Local copies run on Metal. CPU control values keep their CPU backend.
@@ -28,13 +49,13 @@ resident payloads. Full regression passes **97 native groups**, **3,426 Python
 tests with one expected skip**, and the CPU-only build/API checks.
 [Collective validation](validation/cuda-metal-collectives-m3.txt).
 
-**Distributed MPS training remains disabled.** Variable-size sketch reduction,
-global quantization, histogram/root/leaf reductions and other collective
-consumers still need integration. Federated MPS communication and asynchronous
+At that checkpoint, variable-size sketch reduction and training consumers were
+still open. The latest step above adds the sketch path; global quantization,
+histogram/root/leaf reductions and other training consumers remain open. Federated MPS communication and asynchronous
 stream support also remain open. This uses host networking, not NCCL/GPU-direct
 transport, and makes no new speedup or NVIDIA execution-equivalence claim.
 
-Previous step: **SHAP arithmetic follows CUDA's recurrence and operation order**.
+Earlier step: **SHAP arithmetic follows CUDA's recurrence and operation order**.
 Tree weights are applied to leaf payloads before traversal. Branch probabilities
 now enter each quadrature basis, edge extraction follows the CUDA expressions,
 and the eight-point reduction uses CUDA's 4/2/1 association. Contributions and
@@ -867,7 +888,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Vector model storage | Bit-preserving GPU copies for parent/child weights and category words, with GPU FP32 learning-rate scaling of new child weights; allocation/growth and metadata remain host |
 | Row partitioning | Stable GPU partitions, numeric/categorical/missing values, GPU leaf assignment, resident row indices |
 | Bin assignment | GPU numeric/categorical cut search and hit counts for SparsePage-backed matrices; dense 8/16/32-bit compression; explicit MPS quantile adapters also bin on GPU; ordinary in-memory and quantile matrices plus external compressed caches create quantized host mirrors only for explicit CPU batch access; disk-backed ordinary pages retain host bins |
-| Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Host dense/columnar and native Metal quantile inputs feed resident sketches; distributed sketches remain open |
+| Feature sketches | Ordinary CSR matrices: GPU row-weight gathering, sorting, FP32 scans, category deduplication, resident summary pruning/merging and ordered rank repair; final cuts materialized on host as in CUDA. Host dense/columnar and native Metal quantile inputs feed resident sketches; ordered variable-size GPU reduction shares global cuts across workers, including empty inputs |
 | Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Row-code mapping and native dictionary gathers run on GPU. Model dictionary copies and persistent storage remain host |
 | Quantized data cache | Ordinary in-memory DMatrix pages use raw CSR-to-ELLPACK compression. Quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly; CPU access explicitly materializes host mirrors. Compressed disk storage, internal ELLPACK save/load and optional native Snappy compression are implemented |
 | Native Apple feature tensors | Metal DLPack inputs for ordinary and quantile matrices, external iterators and inplace prediction/CPU fallback; GPU sparse entry packing, strided snapshots, half decoding and PyTorch/MLX synchronization. Native columnar masks and integer/string dictionaries use the same consumers; persistent dictionary ownership remains open |
@@ -1489,7 +1510,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port multiclass class-prior initialization, shared vector arithmetic and scalar FP32 mean accumulation.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
 - [x] Add Metal fixed reductions, broadcast and fixed/variable allgather with local-worker tests.
-- [ ] Port variable-size sketch reduction and integrate distributed GPU training consumers.
+- [x] Port ordered variable-size GPU reductions and distributed sketch construction.
+- [ ] Integrate global quantization, histogram/root/leaf reductions and other distributed training consumers.
 - [ ] Complete federated communication and asynchronous stream interoperability.
 - [ ] Validate across Apple GPU generations and broader real datasets.
 - [ ] Reach complete CUDA-operation coverage and competitive training performance.

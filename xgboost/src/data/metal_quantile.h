@@ -17,6 +17,18 @@
 #include "quantile_dmatrix.h"
 
 namespace xgboost::data::metal_impl {
+inline void CheckBatchColumns(DMatrixProxy const* proxy, bst_feature_t columns) {
+  auto actual = BatchColumns(proxy);
+  // An empty worker can learn its schema from the collective. An empty input
+  // has no entries to encode and need not manufacture columns in its adapter.
+  if (actual == 0 && BatchSamples(proxy) == 0) return;
+  CHECK_EQ(actual, columns) << "Inconsistent number of columns.";
+}
+inline void InheritEmptyFeatureTypes(DMatrixProxy* proxy, common::Span<FeatureType const> types) {
+  if (BatchSamples(proxy) == 0 && proxy->Info().feature_types.Empty()) {
+    proxy->Info().feature_types.HostVector().assign(types.begin(), types.end());
+  }
+}
 // The CUDA adapter frontend uses raw flattened 2^26-slot windows, including
 // missing values and partial boundary rows. Preserve those pruning boundaries.
 template <class Fn>
@@ -39,6 +51,7 @@ void AdapterWindows(Context const* ctx, DMatrixProxy const* proxy, float missing
       }
       auto cols = adapter->NumColumns();
       auto rows = adapter->NumRows();
+      if (!rows) return;
       CHECK_GT(cols, 0);
       CHECK_LE(rows, std::numeric_limits<bst_idx_t>::max() / cols);
       bst_idx_t total = rows * cols;

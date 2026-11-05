@@ -144,7 +144,7 @@ def query(a, bins):
     return out
 
 
-def cuts(data, bins, hessian=None, page_rows=None, csr=None, adapter=False):
+def cuts(data, bins, hessian=None, page_rows=None, csr=None, adapter=False, return_summary=False):
     csr = data.get_data() if csr is None else csr
     types = data.feature_types or ["q"] * data.num_col()
     weights = data.get_weight()
@@ -203,6 +203,8 @@ def cuts(data, bins, hessian=None, page_rows=None, csr=None, adapter=False):
                 incoming = normalize_input(prune(incoming, min(rows, budget(rows, bins)), categorical))
                 columns[f] = unique(prune(merge(columns[f], incoming), budget(seen, bins), categorical, index_unique=True))
         base += nrows
+    if return_summary:
+        return columns, seen
     ptr, values = [0], []
     for f, column in enumerate(columns):
         if types[f] != "c":

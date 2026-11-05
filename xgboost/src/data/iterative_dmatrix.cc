@@ -85,7 +85,7 @@ void IterativeDMatrix::InitFromMPS(
     CHECK_LT(batch, ext.n_batches) << "Different number of batches returned between 2 iterations";
     auto rows = BatchSamples(proxy);
     CHECK_EQ(rows, ext.base_rowids[batch + 1] - ext.base_rowids[batch]);
-    CHECK_EQ(BatchColumns(proxy), ext.n_features);
+    metal_impl::CheckBatchColumns(proxy, ext.n_features);
     auto input_page = common::metal::MakeCompressedPage(layout, rows, row_base);
     input_page->BeginAdapter(cuts, types);
     auto first = entry_offset;
@@ -100,6 +100,7 @@ void IterativeDMatrix::InitFromMPS(
     proxy->Info().num_row_ = rows;
     proxy->Info().num_col_ = ext.n_features;
     proxy->Info().num_nonzero_ = ext.batch_nnz[batch];
+    metal_impl::InheritEmptyFeatureTypes(proxy, types);
     if (ext.n_batches != 1) info_.Extend(std::move(proxy->Info()), false, true);
     row_base += rows;
     ++batch;

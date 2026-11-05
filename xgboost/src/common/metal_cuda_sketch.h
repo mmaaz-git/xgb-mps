@@ -25,6 +25,8 @@ class CudaSketch {
                     std::size_t begin, bst_idx_t base_rowid, bst_idx_t rows_in_window) = 0;
   virtual void SetWeights(Span<float const> weights) = 0;
   virtual void Push(AdapterInput const& input) = 0;
+  // CUDA's bounded binomial-tree summary reduction, before final host cuts.
+  virtual void AllReduce(Context const* ctx) = 0;
   virtual CudaSketchSummary Read() const = 0;
 };
 std::unique_ptr<CudaSketch> MakeCudaSketch(bst_feature_t columns, bst_bin_t max_bin,

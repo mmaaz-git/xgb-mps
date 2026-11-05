@@ -23,8 +23,10 @@
 namespace xgboost::collective {
 Result Loop::ProcessQueue(std::queue<Op>* p_queue) const {
   timer_.Start(__func__);
-  auto error = [this](Op op) {
-    op.pr->set_value();
+  auto error = [this, p_queue](Op op) {
+    // Keep the failed operation's promise alive until Process() publishes rc_.
+    // Waking Block() here can let it return success before the error is stored.
+    p_queue->push(std::move(op));
     timer_.Stop(__func__);
   };
 

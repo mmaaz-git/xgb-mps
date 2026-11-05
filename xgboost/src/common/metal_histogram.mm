@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "../collective/aggregator.h"
+#include "../collective/allreduce_v_metal.h"
 #include "../data/adapter.h"
 #include "../data/columnar.h"
 #include "../data/gradient_index.h"
@@ -10333,6 +10334,69 @@ class MetalCudaSketch final : public CudaSketch {
                         SketchSummaryBudget(max_bin_, std::max<bst_idx_t>(1, rows_seen_)), false);
       cuda_sketch_batches.fetch_add(1, std::memory_order_relaxed);
       cuda_sketch_input_entries.fetch_add(count, std::memory_order_relaxed);
+    }
+  }
+  void AllReduce(Context const* ctx) override {
+    if (!collective::GlobalCommGroup()->IsDistributed()) return;
+    CHECK(ctx);
+    // quantile.cu::SketchContainer::AllReduce intentionally exchanges these
+    // control scalars on the host. Summary arithmetic and payload copies stay GPU.
+    std::uint64_t rows = rows_seen_;
+    collective::SafeColl(collective::Allreduce(ctx, &rows, collective::Op::kSum));
+    auto budget = SketchSummaryBudget(max_bin_, rows);
+    @autoreleasepool {
+      resident_ = Prune(resident_, budget, false);
+      std::uint64_t columns = std::uint64_t{columns_} + 1;
+      collective::SafeColl(collective::Allreduce(ctx, &columns, collective::Op::kMax));
+      CHECK_EQ(columns, std::size_t{columns_} + 1) << "Number of columns differs across workers";
+      auto columns_bytes = columns * sizeof(std::uint64_t);
+      using Entry = WQSummary<>::Entry;
+      auto entries_offset = ((columns_bytes + alignof(Entry) - 1) / alignof(Entry)) * alignof(Entry);
+      auto payload_bytes = [&](std::size_t entries) {
+        CHECK_LE(entries, (std::numeric_limits<std::size_t>::max() - entries_offset) / sizeof(Entry));
+        return entries_offset + entries * sizeof(Entry);
+      };
+      auto span = [](void* ptr, std::size_t size) {
+        return Span<std::int8_t>{static_cast<std::int8_t*>(ptr), size};
+      };
+      auto pack = [&](VectorBuffer* out) {
+        out->Resize(payload_bytes(resident_.size));
+        auto bytes = span(out->Data(), out->SizeBytes());
+        CollectiveCopy(span(resident_.ptr.contents, columns_bytes), bytes.first(columns_bytes));
+        CollectiveCopy(span(resident_.entries.contents, resident_.size * sizeof(Entry)),
+                       bytes.subspan(entries_offset));
+      };
+      auto parse = [&](VectorBuffer const& in) {
+        CHECK_GE(in.SizeBytes(), entries_offset);
+        auto entries_bytes = in.SizeBytes() - entries_offset;
+        CHECK_EQ(entries_bytes % sizeof(Entry), 0) << "Invalid sketch payload size.";
+        // Metal kernels bind float4 entries, requiring 16-byte alignment. CUDA's
+        // serialized offset is only alignof(Entry), so load into aligned owned
+        // buffers with GPU copies rather than casting an unaligned payload.
+        CSDeviceSummary result{Allocate(rt_, entries_bytes), Allocate(rt_, columns_bytes),
+                               entries_bytes / sizeof(Entry)};
+        auto bytes = span(in.Data(), in.SizeBytes());
+        CollectiveCopy(bytes.first(columns_bytes), span(result.ptr.contents, columns_bytes));
+        CollectiveCopy(bytes.subspan(entries_offset), span(result.entries.contents, entries_bytes));
+        CHECK_EQ(Total(result.ptr), result.size);
+        return result;
+      };
+      auto payload = MakeVectorBuffer();
+      collective::metal_impl::AllreduceVScratch scratch;
+      CHECK(!columns_ || budget <= std::numeric_limits<std::size_t>::max() / columns_);
+      auto reserve = payload_bytes(budget * columns_);
+      payload->Resize(reserve);
+      payload->Resize(0);
+      scratch.Reserve(reserve);
+      pack(payload.get());
+      collective::SafeColl(collective::metal_impl::AllreduceV(
+          ctx, &payload, &scratch,
+          [&](VectorBuffer const&, VectorBuffer const& rhs, VectorBuffer* next) {
+            Merge(parse(rhs));
+            resident_ = Prune(resident_, budget, false);
+            pack(next);
+          }));
+      resident_ = parse(*payload);
     }
   }
   CudaSketchSummary Read() const override {

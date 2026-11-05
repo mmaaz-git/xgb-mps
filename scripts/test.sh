@@ -15,6 +15,15 @@ clang++ -O2 -std=c++17 -ffp-contract=off \
   -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_collective_api_test
 MTL_DEBUG_LAYER=1 PYTHONPATH="$PWD/xgboost/python-package${PYTHONPATH:+:$PYTHONPATH}" \
   .venv/bin/python tests/run_metal_collective.py
+echo "Checking ordered variable Metal payloads and distributed sketch consumers"
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_sketch_collective_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_sketch_collective_api_test
+MTL_DEBUG_LAYER=1 PYTHONPATH="$PWD/xgboost/python-package${PYTHONPATH:+:$PYTHONPATH}" \
+  .venv/bin/python tests/run_sketch_collective.py
 echo "Checking prediction model GPU packing, mirrors, mutations, snapshots and readers"
 clang++ -O2 -std=c++17 -ffp-contract=off -pthread \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

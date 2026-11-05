@@ -128,7 +128,7 @@ void ExtMemQuantileDMatrix::InitFromMPS(
       CHECK_LT(batch, ext.n_batches) << "Different number of batches returned between iterations";
       auto rows = ext.base_rowids[batch + 1] - ext.base_rowids[batch];
       CHECK_EQ(BatchSamples(proxy), rows);
-      CHECK_EQ(BatchColumns(proxy), ext.n_features);
+      metal_impl::CheckBatchColumns(proxy, ext.n_features);
       auto compressed = common::metal::MakeCompressedPage(layout, rows, ext.base_rowids[batch]);
       compressed->BeginAdapter(cuts, types);
       bst_idx_t nnz = 0;
@@ -141,6 +141,7 @@ void ExtMemQuantileDMatrix::InitFromMPS(
       proxy->Info().num_row_ = rows;
       proxy->Info().num_col_ = ext.n_features;
       proxy->Info().num_nonzero_ = nnz;
+      metal_impl::InheritEmptyFeatureTypes(proxy, types);
       info_.Extend(proxy->Info(), false, true);
       metal_disk_source_->Append(*compressed);
       ++batch;

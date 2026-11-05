@@ -12,9 +12,8 @@
 #include "metal_vector.h"
 
 namespace xgboost::common::metal {
-HistogramCuts CudaSketchOnDMatrix(Context const*, DMatrix* data, bst_bin_t max_bin,
+HistogramCuts CudaSketchOnDMatrix(Context const* ctx, DMatrix* data, bst_bin_t max_bin,
                                   Span<float const> hessian) {
-  CHECK_EQ(collective::GetWorldSize(), 1) << "Distributed Metal sketching is not implemented.";
   auto const& info = data->Info();
   auto types = info.feature_types.ConstHostSpan();
   auto weights = ConstDeviceSpan(info.weights_);
@@ -44,6 +43,7 @@ HistogramCuts CudaSketchOnDMatrix(Context const*, DMatrix* data, bst_bin_t max_b
     }
   }
   // CUDA SketchContainer::MakeCuts also materializes the final cuts on the host.
+  sketch->AllReduce(ctx);
   auto summary = sketch->Read();
   return MakeCudaCuts(summary, info.num_col_, max_bin, types);
 }

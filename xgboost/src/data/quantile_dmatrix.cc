@@ -83,24 +83,26 @@ void MakeSketches(Context const* ctx,
                   DMatrixProxy* proxy, std::shared_ptr<DMatrix> ref, BatchParam const& p,
                   float missing, common::HistogramCuts* cuts, ExternalDataInfo* p_ext,
                   std::vector<FeatureType>* p_types) {
-  CHECK_EQ(collective::GetWorldSize(), 1) << "Distributed Metal sketching is not implemented.";
   auto& ext = *p_ext;
   auto& types = *p_types;
   std::unique_ptr<common::metal::CudaSketch> sketch;
   do {
     auto cols = BatchColumns(proxy);
     auto rows = BatchSamples(proxy);
-    CHECK_GE(cols, 1);
     auto cats = cpu_impl::BatchCats(proxy);
     if (!ext.n_batches) {
       ext.n_features = cols;
+      collective::SafeColl(collective::Allreduce(ctx, &ext.n_features, collective::Op::kMax));
+      CHECK_GE(ext.n_features, 1) << "Data must have at least 1 column.";
+      CheckBatchColumns(proxy, ext.n_features);
       ext.cats = std::make_shared<CatContainer>(ctx, cats, BatchCatsIsRef(proxy));
       types = ref ? ref->Info().feature_types.ConstHostVector()
                   : proxy->Info().feature_types.ConstHostVector();
-      CHECK(types.empty() || types.size() == cols);
-      if (!ref) sketch = common::metal::MakeCudaSketch(cols, p.max_bin, types, {});
+      cpu_impl::SyncFeatureType(ctx, &types);
+      CHECK(types.empty() || types.size() == ext.n_features);
+      if (!ref) sketch = common::metal::MakeCudaSketch(ext.n_features, p.max_bin, types, {});
     } else {
-      CHECK_EQ(cols, ext.n_features) << "Inconsistent number of columns.";
+      CheckBatchColumns(proxy, ext.n_features);
       CHECK_EQ(cats.n_total_cats, ext.cats->NumCatsTotal()) << error::InconsistentCategories();
     }
     if (sketch) {
@@ -127,10 +129,12 @@ void MakeSketches(Context const* ctx,
   } while (iter->Next());
   iter->Reset();
   ext.Validate();
-  if (ref)
+  if (ref) {
     GetCutsFromRef(ctx, ref, ext.n_features, p, cuts);
-  else
+  } else {
+    sketch->AllReduce(ctx);
     *cuts = common::metal::MakeCudaCuts(sketch->Read(), ext.n_features, p.max_bin, types);
+  }
   sketch.reset();
 }
 std::shared_ptr<GHistIndexMatrix> MakeIndexBatch(Context const* ctx, DMatrixProxy* proxy,
@@ -140,7 +144,7 @@ std::shared_ptr<GHistIndexMatrix> MakeIndexBatch(Context const* ctx, DMatrixProx
                                                  bst_idx_t base_row, bst_idx_t expected_nnz) {
   auto rows = BatchSamples(proxy);
   CHECK_EQ(rows, expected_rows);
-  CHECK_EQ(BatchColumns(proxy), info.num_col_);
+  CheckBatchColumns(proxy, info.num_col_);
   auto page = std::make_shared<GHistIndexMatrix>(rows, base_row, common::HistogramCuts{cuts},
                                                  p.max_bin, info.IsDense());
   page->ResizeIndex(ctx, expected_nnz, info.IsDense());
@@ -155,6 +159,7 @@ std::shared_ptr<GHistIndexMatrix> MakeIndexBatch(Context const* ctx, DMatrixProx
   proxy->Info().num_row_ = rows;
   proxy->Info().num_col_ = info.num_col_;
   proxy->Info().num_nonzero_ = offset;
+  InheritEmptyFeatureTypes(proxy, info.feature_types.ConstHostSpan());
   return page;
 }
 }  // namespace metal_impl
@@ -187,7 +192,7 @@ MetalPageSource::MetalPageSource(
   while (iter->Next()) {
     CHECK_LT(batch, ext.n_batches) << "Different number of batches returned between iterations";
     CHECK_EQ(BatchSamples(proxy), batch_rows[batch]);
-    CHECK_EQ(BatchColumns(proxy), ext.n_features);
+    metal_impl::CheckBatchColumns(proxy, ext.n_features);
     auto packed =
         common::metal::MakeCompressedPage(layout, batch_rows[batch], ext.base_rowids[batch]);
     packed->BeginAdapter(cuts, info->feature_types.ConstHostSpan());
@@ -201,6 +206,7 @@ MetalPageSource::MetalPageSource(
     proxy->Info().num_row_ = batch_rows[batch];
     proxy->Info().num_col_ = ext.n_features;
     proxy->Info().num_nonzero_ = nnz;
+    metal_impl::InheritEmptyFeatureTypes(proxy, info->feature_types.ConstHostSpan());
     info->Extend(proxy->Info(), false, true);
     auto target = plan.mapping[batch];
     if (target == metal_cache_->pages.size()) {
