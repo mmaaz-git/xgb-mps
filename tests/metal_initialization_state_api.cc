@@ -3,6 +3,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -460,6 +462,67 @@ void Bindings() {
   for (float value : output.ConstHostVector()) Near(value, -91, 0);
   ++cases;
 }
+void WeightedQuantileBoundaries() {
+  // CUDA stats.cuh::WeightedQuantileSegOp uses an FP32 CDF but a double
+  // threshold/comparator. Two rows isolate that precision from scan association.
+  double alpha = static_cast<double>(.1f);
+  std::vector<double> levels{0., std::nextafter(.1, 0.), .1, std::nextafter(.1, 1.),
+                             alpha, static_cast<double>(std::nextafter(.1f, 0.f)),
+                             static_cast<double>(std::nextafter(.1f, 1.f)), .5, .9, 1.};
+  std::vector<metal::QuantileRequest> requests;
+  for (auto level : levels)
+    for (std::uint32_t target : {0u, 1u}) requests.push_back({target, 0, level});
+  float tiny = std::numeric_limits<float>::denorm_min(), large = std::numeric_limits<float>::max();
+  std::vector<std::array<float, 2>> weight_cases{{1, 9}, {tiny, 9 * tiny}, {0, tiny},
+                                                {0, -0.f}, {large, large}};
+  for (std::size_t c = 0; c < weight_cases.size(); ++c) {
+    auto weights = weight_cases[c];
+    std::vector<float> expected;
+    for (auto request : requests) {
+      bool reverse = request.target == 1;
+      std::array<float, 2> cdf{weights[reverse ? 1 : 0], weights[0] + weights[1]};
+      double threshold = static_cast<double>(cdf.back()) * request.alpha;
+      auto index = std::lower_bound(cdf.begin(), cdf.end(), threshold) - cdf.begin();
+      expected.push_back(float(std::min<std::ptrdiff_t>(index, 1)) + (reverse ? 10.f : 0.f));
+    }
+    if (c == 0) {
+      Check(expected[8] == 1, "NUM-1 witness must select upper value");
+      Check(float(10. * alpha) == 1.f && 10. * alpha > 1., "Threshold witness lost precision");
+    }
+    // Exercise disjoint output and output aliasing either strided labels or
+    // weights. All payloads must stay on GPU until after counters are checked.
+    for (unsigned alias = 0; alias < 3; ++alias) {
+      current = "weighted quantile boundary/" + std::to_string(c) + "/alias" + std::to_string(alias);
+      std::vector<float> labels(requests.size() + 3, -91), weight_data(labels.size(), -91),
+          output_data(labels.size(), -91);
+      labels[1] = 0;
+      labels[2] = 11;
+      labels[4] = 1;
+      labels[5] = 10;
+      weight_data[1] = weights[0];
+      weight_data[2] = weights[1];
+      HostDeviceVector<float> values(labels, DeviceOrd::MPS()), w(weight_data, DeviceOrd::MPS()),
+          separate(output_data, DeviceOrd::MPS());
+      auto* destination = alias == 1 ? &values : alias == 2 ? &w : &separate;
+      auto matrix = Matrix(values.ConstDeviceSpan().subspan(1, 5), 2, 2, 3);
+      auto weight_span = w.ConstDeviceSpan().subspan(1, 2);
+      auto out = destination->DeviceSpan().subspan(1, requests.size());
+      auto before = metal::GetStatistics();
+      metal::Quantiles(matrix, weight_span, requests, out);
+      NoTransfers(before);
+      Check(metal::GetStatistics().quantile_dispatches == before.quantile_dispatches + 1,
+            "Weighted boundary did not execute on GPU");
+      auto* expected_buffer = alias == 1 ? &labels : alias == 2 ? &weight_data : &output_data;
+      std::copy(expected.begin(), expected.end(), expected_buffer->begin() + 1);
+      for (std::size_t i = 0; i < labels.size(); ++i) {
+        Near(values.ConstHostVector()[i], labels[i], 0);
+        Near(w.ConstHostVector()[i], weight_data[i], 0);
+        Near(separate.ConstHostVector()[i], output_data[i], 0);
+      }
+      ++cases;
+    }
+  }
+}
 void Fallbacks() {
   current = "readonly and offset inputs";
   std::size_t rows = 257, page = getpagesize();
@@ -555,6 +618,7 @@ int main(int argc, char** argv) {
         for (std::size_t targets : {1ul, 3ul}) Statistics(gpu, rows, targets);
       Objectives(gpu);
       Bindings();
+      WeightedQuantileBoundaries();
       Fallbacks();
     }
     DistributedObjectives(gpu, rank, world);

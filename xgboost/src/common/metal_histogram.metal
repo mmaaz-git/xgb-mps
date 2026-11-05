@@ -2172,11 +2172,13 @@ kernel void xgb_quantile_select(
   uint index;
   if (p.weighted) {
     XGBDouble total = xgb_dfrom_float(as_type<float>(cdf[base + p.rows - 1]));
-    uint threshold = as_type<uint>(xgb_dto_float(xgb_dmul(total, alpha)));
+    // WeightedQuantileSegOp compares the FP32 CDF against a binary64 threshold.
+    // Narrowing it can change which observation lower_bound selects.
+    XGBDouble threshold = xgb_dmul(total, alpha);
     uint lo = 0, hi = p.rows;
     while (lo < hi) {
       uint mid = lo + (hi - lo) / 2;
-      if (xgb_float_less(cdf[base + mid], threshold))
+      if (xgb_dlt(xgb_dfrom_float(as_type<float>(cdf[base + mid])), threshold))
         lo = mid + 1;
       else
         hi = mid;

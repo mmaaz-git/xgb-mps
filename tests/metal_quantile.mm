@@ -163,7 +163,9 @@ float Quantile(std::vector<float> const& values, std::vector<uint32_t> const& or
     cdf->resize(order.size());
     (*cdf)[0] = weights[order[0]];
     for (size_t i = 1; i < order.size(); ++i) (*cdf)[i] = (*cdf)[i - 1] + weights[order[i]];
-    float threshold = cdf->back() * request.alpha;
+    // CUDA WeightedQuantileSegOp keeps both the threshold and its comparison
+    // in binary64. The CPU WeightedQuantile helper instead narrows to float.
+    double threshold = cdf->back() * request.alpha;
     size_t i = std::lower_bound(cdf->begin(), cdf->end(), threshold) - cdf->begin();
     return val(std::min(i, order.size() - 1));
   }
