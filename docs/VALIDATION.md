@@ -15,7 +15,7 @@ bash scripts/test.sh --python tests/test_metal_metadata.py
 bash scripts/test.sh --full
 ```
 
-No selectors means the full standard run: 101 native groups, the independent
+No selectors means the full standard run: 102 native groups, the independent
 linear reference build, then pytest with `--require-metal`. The manifest is
 [tests/native_tests.json](../tests/native_tests.json). The runner validates its
 native-source inventory and recompiles selected test binaries. Optional federated
@@ -90,3 +90,7 @@ hardware, passed/skipped/failed scope and limitations. Keep full local logs in
 ignored `results/`. The latest pre-review full regression is
 [native CSR storage](../validation/cuda-metal-native-csr-storage-m3.txt); review
 fixes have [their own record](../validation/repo-review-2026-11-05.txt).
+
+Latest full local regression: [PORT-6](../validation/cuda-port6-m3.txt), source
+`2bfb914`, 102 native groups and 3,603 Python passes with one expected skip,
+plus the separate CPU build/API/schema and nine updater checks.

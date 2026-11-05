@@ -1,0 +1,104 @@
+PORT-6: resident sampled/allowed feature IDs through split consumers
+Date: 2026-11-05
+Source commit: 2bfb91489e063575628ed8f80207c618e351e1fc
+Base: a5316949e4c406f94e72ca305351a3b26cddc51b
+
+Scope and source contracts:
+  ColumnSampler explicitly uses DeviceOrd::MPS (Context::Device remains CPU for
+  generic storage). Iota, weighted feature gathers/Philox keys and unweighted
+  Thrust shuffle/sort retain GPU inputs/outputs across tree/level/node caches.
+  Source-defined host RNG setup and parent RNG consumption are unchanged.
+  Interaction QueryDevice/QueryNodeDevice return independent GPU snapshots;
+  root/disabled preserve order/duplicates, nonroot filtering is ascending/unique.
+  Only result count/error are read back. Old host diagnostic wrappers remain.
+  EvaluateFeatureSplits performs GPU feature/cut/type/monotone lookup, prefix
+  lengths, exact parent/bound replication, task assembly and histogram gathering.
+  Duplicate/reordered IDs and binless features have separate packed ranges.
+  Active scalar/vector evaluators publish only selected per-node control/scalar
+  data. Vector child sums, categories and weights stay GPU-owned through queues.
+  Private resident evaluator paths do not dereference GPU tasks on CPU. Public
+  diagnostic APIs retain host validation/publication. Sum metadata is shape-only.
+  PORT-8 bound gathers and PORT-10 numeric threshold materialization remain open;
+  no claim of those tasks being closed by this feature-path change.
+
+Environment:
+  Apple M3, 10-core GPU, 16 GiB; macOS 26.6.2 arm64.
+  Native Metal validation layer enabled for applicable API groups.
+  numpy 2.5.4, scipy 1.18.1, pytest 9.2.0, torch 2.15.0, mlx 0.32.4,
+  scikit-learn 1.9.1, pandas 3.1.0. PyTorch and MLX GPU interop ran.
+
+Final full run:
+  bash scripts/test.sh --full --log-dir results/port6-integration
+  Named session: xgb-port6-integration; driver results/port6-integration.log.
+  PASS all 207 stages: 102 fresh native groups, independent linear reference,
+  3603 Python passed, 1 expected skip, 670 warnings in 290.66s.
+  Skip: test_no_gpu_means_error_not_silent_cpu_fallback, inapplicable on this M3.
+  Raw manifest, commands, timings and hashes: cuda-port6-m3-run.json.
+
+Focused/acceptance evidence (also included in final full run):
+  Sampling: 550 cases / 3281095 selected IDs / 4610295 exact Philox draws /
+    1320896 permutation indices; 0 FP32 key ULP difference; 33 resident chains.
+    Includes tree/level/node weighted/unweighted caches, offsets, overlapping
+    feature/output and weight/key diagnostics, read-only fallback accounting,
+    invalid-input publication guards and empty results; GPU consumers precede
+    CPU oracle checks. Native source RNG/order oracle unchanged.
+  Interaction: 993 checks / 45 resident queries, including growth to node 512,
+    scratch reuse, reset, disabled/root/empty/duplicate/offset queries and
+    filter-to-query-to-sampler chains before CPU inspection.
+  Feature assembly: 48 cases / 5200 exact comparisons / 64 rejected inputs;
+    scalar/vector (1/3/33 targets), numeric/OHE/partition, monotonic constraints,
+    reordered/duplicate/binless/empty ranges, offset guards and growth to 257 IDs.
+    Compares GPU metadata assembly with explicit host descriptors using existing
+    split kernels, not an independent arithmetic oracle. Independent CUDA-source
+    arithmetic checks remain in the scalar/vector suites. Stored GPU weights are
+    consumed before CPU inspection and survive workspace reuse/destruction.
+  Training: 249 cases / 397296 checks. The global vector-readback bound for
+    categorical tree growth is unchanged; feature staging/readback guards added.
+    Existing vector sum storage: 8 chains / 9296 exact fields / 53 rejected calls.
+  Python column/interaction suites now assert zero feature payload staging and
+    readback plus GPU task dispatch before inspecting models. Source formulas
+    and tolerances were not changed to make tests pass.
+
+Separate CPU gate:
+  bash results/port6-cpu.sh (session xgb-port6-cpu, log results/port6-cpu.log)
+  cmake --build build-cpu -j4
+  DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib .venv/bin/python
+    scripts/check_cpu_build.py --metal-library xgboost/lib/libxgboost.dylib
+  PYTHONPATH=results/cpu-python .venv/bin/python -m pytest -q
+    tests/test_metal_updater.py -k cpu -o pythonpath=results/cpu-python
+  PASS disabled Metal APIs/schema/cache checks and 9 updater tests,
+    72 deselected, 11 warnings. Isolated learner package resolves to the rebuilt
+    build-cpu library and reports USE_METAL=false.
+  All 299 native statistics initializer positions match; C API schema: 301 fields.
+  Final CPU dry run requests only symlink recreation, no source compilation.
+  CPU library SHA256: f3d183e9adceb26377fa4ee907ad5f0d8f7c3a6fe9f32ccaf1b89fe443a54eae
+  Metal library SHA256: 64436c97a2521f6aa09c8ae6dfcd72f502c56eabb58ce5eb79a443a569e39b13
+  Tracked diff SHA256 against base (excluding then-untracked new test):
+    bc7283ae541177c249608f2fae4260333cb7abe555df99d3596e48334904792f
+  New tests/metal_feature_split_api.cc SHA256:
+    fc5fbc1db27d2432ac78cd43437646f8a594e7cb04e134c2c95920be96095aa1
+  Native manifest SHA256: 1b2343adddfd5f5f00b974a48e76fb8253153d754412563277099e260c9c5a61
+
+Development failures and resolutions:
+  port6-features-v1: initial resident sampler used ctx.Device()==CPU; hierarchy
+    returned zeros. Explicit MPS storage selection at initialization and cache
+    returns fixed the failure; no RNG/arithmetic change.
+  port6-features-training: sampler-only change exposed the old evaluator's
+    feature readback to the existing global category residency guard. The guard
+    was retained; completing GPU task construction/consumers resolved it.
+  port6-consumers-v1: compile rejected implicit signed TotalBins-to-uint32
+    narrowing; added explicit casts in the two full-node descriptors.
+  port6-feature-assembly-v1: new test named nonexistent cut_mins_ fixture field;
+    removed it. No production correction was needed for that fixture error.
+  Corrected focused runs: port6-features-v2/v3, port6-consumers-v2 (384 Python
+    passes), port6-feature-assembly-v2 (118 Python passes), then final full run.
+
+Boundaries:
+  Frozen audit structure still passes: 42 families, 109 roots, 1078 sites,
+    174 operations, 10 original tasks, 17 contracts, 2119 references.
+  Six audited tasks locally complete, four remain PORT-7/8/10/11. This task count
+    is not a completion percentage or proof of absence of unlisted defects.
+  Prior a531694 CUDA compile CI 42010137944 succeeded with NCCL/nvCOMP/federated;
+    its evidence is recorded separately. This source needs its own CI result.
+  No new benchmark, NVIDIA execution, optional federated runtime or cross-Apple
+    hardware run is claimed. VERIFY-1/2 and performance work remain in the plan.

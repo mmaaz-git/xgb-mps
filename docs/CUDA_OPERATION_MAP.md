@@ -24,7 +24,8 @@ locally fixed at `2404827` ([evidence](../validation/cuda-num1-m3.txt)), and
 PORT-9 at `1034657` ([evidence](../validation/cuda-port9-m3.txt)), and PORT-1 at
 `c78cb43` ([evidence](../validation/cuda-port1-m3.txt)). PORT-2 is locally fixed at
 `6a606e1` ([evidence](../validation/cuda-port2-m3.txt)), and PORT-3 at `ab87872`
-([evidence](../validation/cuda-port3-m3.txt)); five implementation tasks remain.
+([evidence](../validation/cuda-port3-m3.txt)). PORT-6 is locally fixed at
+`2bfb914` ([evidence](../validation/cuda-port6-m3.txt)); four implementation tasks remain.
 The frozen audit retains its original findings. PORT-4/5 classification
 is complete for that ledger; full parity remains unproven.
 

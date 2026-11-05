@@ -60,3 +60,12 @@ Subsequent successful runs of the same workflow before review cleanup:
     completed 2026-11-05T07:15:05Z.
     https://github.com/mmaaz-git/xgb-mps/actions/runs/41982974034
   These are compiler workflow results, not new GPU runtime measurements.
+
+PORT-3 shared-source compile validation:
+  a5316949e4c406f94e72ca305351a3b26cddc51b: 42010137944, success,
+    completed 2026-11-05T10:45:01Z (same CUDA/NCCL/nvCOMP/federated workflow).
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42010137944
+  Artifact cuda-compile-evidence, local log:
+    results/cuda-compile-42010137944/results/cuda-compile-ci.log
+  Log SHA256: ced8170e91055de618b32f9b0a429ce2f4023b8c050fdfcffa61faa904cd239f
+  All 197 compilation/link steps completed. No NVIDIA runtime test was run.
