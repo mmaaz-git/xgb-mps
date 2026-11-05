@@ -1,5 +1,5 @@
 {
-  "status": "Complete Metal linalg corpus and reference/integrity checks passed; CUDA compiler and NVIDIA execution pending",
+  "status": "Complete Metal linalg corpus and reference/integrity checks passed; CUDA compile in progress; NVIDIA execution absent",
   "suite": "linalg-v1",
   "recorded_utc": "2026-11-05T18:12:27.150279+00:00",
   "scope": "Complete existing metal_linalg_api corpus for P5-N07: 258 counted cases and two uncounted empty operations. Three invalid-input cases retained as Metal-only domain guards.",
@@ -193,10 +193,15 @@
     "scope": "Five-binary compile/link lifecycle and 23 source hashes; no compiler/GPU execution"
   },
   "cuda_compile": {
-    "status": "not_run",
+    "status": "in_progress",
     "gpu_execution": false,
     "previous_run": 42079045498,
-    "previous_run_includes_linalg": false
+    "previous_run_includes_linalg": false,
+    "run_id": 42083981584,
+    "job_id": 127444069696,
+    "head": "9fbea9f85d1e60f01eec5bd1a805da6d13924ff4",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42083981584",
+    "last_observed_utc": "2026-11-05T18:25:49.312378+00:00"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -217,5 +222,6 @@
     "Published long-double references were generated on Apple M3, where long double is binary64; sum/magnitude and original FP32 cast are explicitly serialized.",
     "Comparison returns 1 for malformed reports/reference failures, otherwise 2 for numerical/domain review; full bit reports retain differences beyond the 32 diagnostic examples per case/policy.",
     "This extends P5-N07 comparison coverage; it does not close a new contract or cover the remaining metric/training corpora."
-  ]
+  ],
+  "harness_commit": "5d0fbed804c0cfe82e1ded941fb88f0ee7f96194"
 }
