@@ -197,7 +197,7 @@ its contract until actual NVIDIA results have been reviewed.
 | Order | Remaining contract work | Required comparison |
 | --- | --- | --- |
 | 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
-| 2 | P5-N07 and training-reduction-association | Full statistics, linalg, metric and root/stump replays added; complete outstanding compiler/runtime gates. Next add current CUDA-derived sampling and integer leaf/cache/linear corpora under their declared term precision and association bounds. |
+| 2 | P5-N07 and training-reduction-association | Full statistics, linalg, metric, root/stump and current CUDA-derived sampling replays added; complete outstanding compiler/runtime gates. Next add integer leaf/cache/linear corpora under their declared term precision and association bounds. |
 | 3 | P5-N09/10/11: PR, ROC and ranking metrics | Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
 | Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |
@@ -210,6 +210,12 @@ The older 498-case `metal_gradient_sampling_api` corpus exercises a legacy
 CPU-derived API that production no longer uses. Retain its regression coverage;
 use `metal_cuda_gradient_api` and the production gradient-state tests for the
 CUDA sampling replay, rather than treating the two algorithms as interchangeable.
+The current sampling replay preserves all 143 low-level attempts, 54 lifecycle
+calls and two nonfinite-norm guards. Metal observations, exact input provenance,
+the C++ codec and 19 synthetic report checks pass. Eight undefined CUDA conversion
+cases are explicit exclusions, leaving 191 planned CUDA executions; no NVIDIA
+execution is claimed. Its compiler gate remains pending. See the
+[sampling record](../validation/sampling-contract-m3-run.json).
 
 PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
 Freeze the accepted source and workload parameters; inspect prior outputs before

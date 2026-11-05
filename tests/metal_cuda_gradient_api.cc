@@ -9,8 +9,19 @@
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/tree/hist/sampler.h"
 #include "cuda_gradient_reference.h"
+#include "sampling_contract_io.h"
 using namespace xgboost;
 namespace metal = common::metal;
+namespace sc = sampling_contracts;
+std::unique_ptr<sc::Exporter> report;
+std::vector<float> Flatten(std::vector<GradientPair> const& pairs) {
+  std::vector<float> values; values.reserve(2*pairs.size());
+  for (auto p:pairs) {values.push_back(p.GetGrad());values.push_back(p.GetHess());}
+  return values;
+}
+void Floats(sc::Words* out,std::vector<float> const& values) {
+  for(float value:values)out->push_back(sc::Bits<std::uint32_t>(value));
+}
 std::size_t cases = 0, pairs = 0, invalid_cases = 0;
 std::string current;
 void Check(bool ok, char const* message) {
@@ -22,15 +33,35 @@ void Same(float a, float b, char const* field, std::size_t row) {
   throw std::runtime_error("CUDA-formula mismatch");
 }
 void Roots(std::shared_ptr<metal::QuantizedGradients> state,
-           cuda_reference::GradientSampling const& ref) {
+           cuda_reference::GradientSampling const& ref,
+           sc::Words* observed=nullptr,sc::Words* references=nullptr) {
   std::vector<GradientPairPrecise> sums(ref.targets);
-  state->Sum(linalg::MakeVec(sums.data(), sums.size()));
+  std::vector<GradientPairInt64> integers(observed ? ref.targets : 0);
+  state->Sum(linalg::MakeVec(sums.data(), sums.size()), integers);
   for (std::size_t t = 0; t < ref.targets; ++t) {
     auto expected = ref.Sum(t);
     if (sums[t].GetGrad() != expected.first || sums[t].GetHess() != expected.second) {
       std::fprintf(stderr, "target %zu root (%a,%a) != (%a,%a)\n", t, sums[t].GetGrad(),
                    sums[t].GetHess(), expected.first, expected.second);
       throw std::runtime_error("Quantized root mismatch");
+    }
+    if (observed) {
+      observed->push_back(sc::Bits<std::uint64_t>(sums[t].GetGrad()));
+      observed->push_back(sc::Bits<std::uint64_t>(sums[t].GetHess()));
+      references->push_back(sc::Bits<std::uint64_t>(expected.first));
+      references->push_back(sc::Bits<std::uint64_t>(expected.second));
+    }
+  }
+  if (observed) {
+    for (std::size_t t=0;t<ref.targets;++t) {
+      observed->push_back(sc::Bits<std::uint64_t>(integers[t].GetQuantisedGrad()));
+      observed->push_back(sc::Bits<std::uint64_t>(integers[t].GetQuantisedHess()));
+      std::uint64_t g=0,h=0;
+      for (std::size_t r=0;r<ref.rows;++r) {
+        g+=std::uint64_t(ref.sampled[r*ref.targets+t].g);
+        h+=std::uint64_t(ref.sampled[r*ref.targets+t].h);
+      }
+      references->push_back(g);references->push_back(h);
     }
   }
 }
@@ -81,6 +112,10 @@ void Run(std::size_t n, std::size_t t, int layout, int mode, float fraction, std
     for (std::size_t c = 0; c < t; ++c)
       source[r * t + c] = {view(r, c).GetGrad(), view(r, c).GetHess()};
   cuda_reference::GradientSampling ref(source, n, t, fraction, seed);
+  sc::Input input{{unsigned(cases+invalid_cases),0,unsigned(n),unsigned(t),unsigned(layout),unsigned(mode),
+                   sc::Bits<std::uint32_t>(fraction),seed,0,0,0,unsigned(ref.invalid_rescale)}, {}, {}};
+  sc::Observation observed;
+  if (report) input.storage=Flatten(raw);
   auto original = raw;
   auto before = metal::GetStatistics();
   auto state = metal::MakeQuantizedGradients(view);
@@ -95,19 +130,26 @@ void Run(std::size_t n, std::size_t t, int layout, int mode, float fraction, std
   }
   Check(overflow == ref.invalid_rescale, "Rescaling domain differs from host oracle");
   if (overflow) {
+    if (report) {observed.status=1;report->Add(input,observed);}
     ++invalid_cases;
     return;
   }
   if (fraction < 1) {
     Same(threshold, ref.threshold, "threshold", 0);
     for (std::size_t r = 0; r < n; ++r) Same(norms[r], ref.norms[r], "norm", r);
+    if (report) {
+      Floats(&observed.actual,norms);Floats(&observed.reference,ref.norms);
+      observed.actual.push_back(sc::Bits<std::uint32_t>(threshold));
+      observed.reference.push_back(sc::Bits<std::uint32_t>(ref.threshold));
+    }
   }
-  Roots(state, ref);
+  Roots(state, ref, report ? &observed.actual : nullptr, report ? &observed.reference : nullptr);
   Check(!std::memcmp(raw.data(), original.data(), raw.size() * sizeof(GradientPair)),
         "Source mutated");
   // Replay onto a different target count and a padded view, using saved split norms.
   std::size_t rt = t == 1 ? 3 : 1;
   std::vector<GradientPair> replay(n * (rt + 2) + 8, {23, -41}), expected = replay;
+  if (report) input.replay=Flatten(replay);
   linalg::MatrixView<GradientPair> rv{
       {replay.data() + 4, n * (rt + 2)}, {n, rt}, {rt + 2, std::size_t{1}}, DeviceOrd::CPU()};
   for (std::size_t r = 0; r < n; ++r)
@@ -118,6 +160,7 @@ void Run(std::size_t n, std::size_t t, int layout, int mode, float fraction, std
   state->ApplySampling(rv);
   Check(!std::memcmp(replay.data(), expected.data(), replay.size() * sizeof(GradientPair)),
         "Float replay or guards differ");
+  if (report) {Floats(&observed.actual,Flatten(replay));Floats(&observed.reference,Flatten(expected));}
   auto after = metal::GetStatistics();
   Check(after.quantization_dispatches - before.quantization_dispatches == t,
         "Requantized after sampling");
@@ -125,7 +168,8 @@ void Run(std::size_t n, std::size_t t, int layout, int mode, float fraction, std
             std::uint64_t(n && fraction < 1),
         "Missing CUDA sampler dispatch");
   std::fill(raw.begin(), raw.end(), GradientPair{919, 313});
-  Roots(state, ref);
+  Roots(state, ref, report ? &observed.actual : nullptr, report ? &observed.reference : nullptr);
+  if (report) report->Add(input,observed);
   ++cases;
   pairs += n * t;
   if (cases % 25 == 0 || n > 4097) {
@@ -134,6 +178,7 @@ void Run(std::size_t n, std::size_t t, int layout, int mode, float fraction, std
   }
 }
 void Lifecycle() {
+  unsigned sequence=0;
   for (std::size_t n : {0, 1, 257})
     for (float fraction : {0.f, .6f, 1.f})
       for (int threads : {1, 3}) {
@@ -154,16 +199,23 @@ void Lifecycle() {
           }
           auto seed = fraction < 1 ? rng() : 0;
           cuda_reference::GradientSampling ref(source, n, 1, fraction, seed);
+          sc::Input input{{143+sequence*3+unsigned(tree),1,unsigned(n),1,0,0,sc::Bits<std::uint32_t>(fraction),
+                           701,unsigned(threads),sequence,unsigned(tree),0}, {}, {}};
+          sc::Observation observed;
+          if (report) input.storage=Flatten(actual.Data()->ConstHostVector());
           sampler.Sample(&ctx, actual.HostView());
-          Roots(sampler.Quantized(), ref);
+          Roots(sampler.Quantized(), ref, report ? &observed.actual : nullptr, report ? &observed.reference : nullptr);
+          if (report) Floats(&observed.actual,Flatten(actual.Data()->ConstHostVector()));
           for (std::size_t r = 0; r < n; ++r) {
             auto e = ref.Replay(r, source[r]);
             Same(actual.HostView()(r, 0).GetGrad(), e.g, "integrated g", r);
             Same(actual.HostView()(r, 0).GetHess(), e.h, "integrated h", r);
+            if (report) {observed.reference.push_back(sc::Bits<std::uint32_t>(e.g));observed.reference.push_back(sc::Bits<std::uint32_t>(e.h));}
           }
           linalg::Matrix<GradientPair> values({n, std::size_t{3}}, DeviceOrd::CPU());
           auto storage = values.HostView().Values();
           std::fill(storage.begin(), storage.end(), GradientPair{23, 41});
+          if (report) input.replay=Flatten(values.Data()->ConstHostVector());
           // Original split values intentionally unavailable: replay must use saved norms.
           sampler.ApplySampling(&ctx, actual.HostView(), &values);
           for (std::size_t r = 0; r < n; ++r)
@@ -171,9 +223,17 @@ void Lifecycle() {
               auto e = ref.Replay(r, {23, 41});
               Same(values.HostView()(r, t).GetGrad(), e.g, "reduced g", r);
               Same(values.HostView()(r, t).GetHess(), e.h, "reduced h", r);
+              if (report) {observed.reference.push_back(sc::Bits<std::uint32_t>(e.g));observed.reference.push_back(sc::Bits<std::uint32_t>(e.h));}
             }
+          if (report) {
+            Floats(&observed.actual,Flatten(values.Data()->ConstHostVector()));
+            auto actual_next=ctx.Rng(),reference_next=rng;
+            observed.actual.push_back(actual_next());observed.reference.push_back(reference_next());
+            report->Add(input,observed);
+          }
         }
         Check(ctx.Rng()() == rng(), "Seed consumption differs");
+        ++sequence;
       }
   std::puts("PASS 54 production Sampler calls, integer roots, replay and seed lifetime");
 }
@@ -189,10 +249,15 @@ void InvalidNorms() {
       failed = std::string(e.what()).find("finite FP32 norms") != std::string::npos;
     }
     Check(failed == (p > 0), "Nonfinite norm conversion domain not checked");
+    if (report) {
+      sc::Input input{{unsigned(197+(p>0)),2,4,1,0,0,sc::Bits<std::uint32_t>(p),1,0,0,0,unsigned(p>0)},Flatten(source),{}};
+      report->Add(input,sc::Observation{unsigned(failed),{}, {}});
+    }
   }
 }
-int main() {
+int main(int argc,char** argv) {
   try {
+    report=sc::ReportOption(argc,argv);
     for (std::size_t n : {0, 1, 2, 255, 256, 257, 1027})
       for (std::size_t t : {1, 3})
         for (int mode = 0; mode < 8; ++mode) {
@@ -205,6 +270,7 @@ int main() {
       for (std::size_t t : {1, 3}) Run(n, t, t == 1 ? 0 : 1, 0, .4f, 9939);
     Lifecycle();
     InvalidNorms();
+    if (report) report->Finish();
     std::printf(
         "PASS %zu CUDA-formula gradient sampling cases / %zu pairs / %zu rejected undefined "
         "rescalings\n",

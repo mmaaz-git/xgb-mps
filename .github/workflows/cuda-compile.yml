@@ -26,6 +26,8 @@ on:
       - "tests/linalg_contract_io.h"
       - "tests/stump_contract_io.h"
       - "tests/cuda_stump_contracts.cuh"
+      - "tests/sampling_contract_io.h"
+      - "tests/cuda_sampling_contracts.cuh"
       - "tests/metric_contract_io.h"
       - "tests/cuda_metric_source.h"
       - "tests/cuda_metric_contracts.cu"
@@ -59,6 +61,8 @@ on:
       - "tests/linalg_contract_io.h"
       - "tests/stump_contract_io.h"
       - "tests/cuda_stump_contracts.cuh"
+      - "tests/sampling_contract_io.h"
+      - "tests/cuda_sampling_contracts.cuh"
       - "tests/metric_contract_io.h"
       - "tests/cuda_metric_source.h"
       - "tests/cuda_metric_contracts.cu"
@@ -114,6 +118,7 @@ jobs:
             results/cuda-comparison-build/metric-registry-baseline.txt
             results/cuda-comparison-build/metric-registry-probe.txt
             results/cuda-comparison-build/metric-defined-dynamic-symbols.txt
+            results/cuda-comparison-build/sampling-rng-alignment.txt
             results/cuda-comparison-build/cmake/compile_commands.json
             results/cuda-comparison-build/cmake/CMakeCache.txt
             results/cuda-comparison-build/cmake/nvcomp-runtime-path.txt

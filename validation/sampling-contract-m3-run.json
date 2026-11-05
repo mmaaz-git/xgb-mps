@@ -1,0 +1,305 @@
+{
+  "status": "Complete current Metal sampling corpus and reference/integrity checks passed; CUDA compilation and NVIDIA execution pending",
+  "suite": "sampling-v1",
+  "recorded_utc": "2026-11-05T20:18:09.859519+00:00",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T194405Z",
+    "revision": "4b389b151b9c9a9f8e88f0e0bcecd794bda51049",
+    "working_tree": "M tests/metal_cuda_gradient_api.cc\n?? tests/sampling_contract_io.h",
+    "diff_sha256": "2440666d0a6b7ea1a08fc572cd00e195c72e306f8d91a349facf6fb6d9b0ad07",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/sampling_contract_io.h": "cb4ee3f17c20dbf74ade4e8d81112f30c44403a4bb80d168cc33372887f6a978"
+    },
+    "native_groups": [
+      "metal_cuda_gradient_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.7380397499073297
+      },
+      {
+        "name": "compile-metal_cuda_gradient_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_cuda_gradient_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_cuda_gradient_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_cuda_gradient_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.5245096669532359
+      },
+      {
+        "name": "metal_cuda_gradient_api",
+        "command": [
+          "results/metal_cuda_gradient_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_cuda_gradient_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 2.2932298751547933
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T19:44:10.412712+00:00"
+  },
+  "native_source_proof": {
+    "native_patch_matches_summary": true,
+    "diff_sha256": "2440666d0a6b7ea1a08fc572cd00e195c72e306f8d91a349facf6fb6d9b0ad07",
+    "source_sha256": {
+      "tests/metal_cuda_gradient_api.cc": "218d65f4b37c74d5d9816e165d3514757540b6c62476d2ad2c1639d8bbff9141",
+      "tests/sampling_contract_io.h": "cb4ee3f17c20dbf74ade4e8d81112f30c44403a4bb80d168cc33372887f6a978",
+      "tests/cuda_gradient_reference.h": "0391941d3e85ea26919972f03a51c300e86111e02adead836f204986997dd65f",
+      "tests/cuda_philox_reference.h": "6bf3ca2a23896947913c6a04a08102c60115a1335638a1141384ad7bd4f66d1e",
+      "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895"
+    }
+  },
+  "export_run": {
+    "status": "passed",
+    "command": [
+      "results/metal_cuda_gradient_api_test",
+      "--report-prefix",
+      "results/verify2-sampling"
+    ],
+    "environment": {
+      "MTL_DEBUG_LAYER": "1"
+    },
+    "log": "results/verify2-sampling.log"
+  },
+  "counts": {
+    "records": 199,
+    "low_level_attempts": 143,
+    "low_level_successes": 136,
+    "low_level_logical_pairs": 4499447,
+    "lifecycle_calls": 54,
+    "persistent_lifecycle_contexts": 18,
+    "norm_guards": 2,
+    "metal_rejections_cuda_domain_exclusions": 8,
+    "cuda_planned_executions": 191,
+    "input_fp32_words_including_backing_and_replay": 30820562,
+    "actual_observation_words_per_backend": 19522746,
+    "metal_only_reference_words": 19522746
+  },
+  "domain_exclusions": [
+    {
+      "case": 114,
+      "reason": "out-of-int64 rescaling",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    },
+    {
+      "case": 117,
+      "reason": "out-of-int64 rescaling",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    },
+    {
+      "case": 126,
+      "reason": "out-of-int64 rescaling",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    },
+    {
+      "case": 129,
+      "reason": "out-of-int64 rescaling",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    },
+    {
+      "case": 132,
+      "reason": "out-of-int64 rescaling",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    },
+    {
+      "case": 135,
+      "reason": "out-of-int64 rescaling",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    },
+    {
+      "case": 138,
+      "reason": "out-of-int64 rescaling",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    },
+    {
+      "case": 198,
+      "reason": "nonfinite-norm conversion",
+      "metal_status": "rejected",
+      "cuda_status": "not executed"
+    }
+  ],
+  "original_checks": {
+    "float": "Exact bits, with both-NaN equivalence only where original Same permits it; low-level floating replay remains byte-exact",
+    "roots": "Original binary64 numerical equality; additional exact uint64 integer diagnostics retain modulo representation",
+    "rng": "Exact next parent word and original parent-state consumption; lifecycle uses parent seed701",
+    "guards": "Original entire source unchanged, replay padding unchanged, stored integer state survives source overwrite",
+    "reference": "Original cuda_gradient_reference.h on CPU, Metal-only report fields; no reference outputs supplied to CUDA",
+    "additional_input_checks": "Replay padding, fraction1 identities, empty/zero-budget roots and zero-budget replay/threshold"
+  },
+  "source_sha256": {
+    "tests/metal_cuda_gradient_api.cc": "218d65f4b37c74d5d9816e165d3514757540b6c62476d2ad2c1639d8bbff9141",
+    "tests/sampling_contract_io.h": "cb4ee3f17c20dbf74ade4e8d81112f30c44403a4bb80d168cc33372887f6a978",
+    "tests/cuda_gradient_reference.h": "0391941d3e85ea26919972f03a51c300e86111e02adead836f204986997dd65f",
+    "tests/cuda_philox_reference.h": "6bf3ca2a23896947913c6a04a08102c60115a1335638a1141384ad7bd4f66d1e",
+    "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+    "tests/cuda_sampling_contracts.cuh": "832f6817825bbf33662f71101c73ee04e9b72e9467516a9c30a82c178d5065f7",
+    "tests/cuda_numerical_contracts.cu": "aa378416f3da81d021a3d863a99fe329df42ad520098c5cf4919dd4bd0254f28",
+    "scripts/compare_sampling_contracts.py": "ffd14b44bdb4a0c4fcbb7bdfc3cd1f557f28c7a1d5f21d7c303f12d96ad1b108",
+    "tests/test_sampling_contract_reports.py": "20a9c983f0863746174b51aa07da3702d6d3a16c31f85c57338b19e605eedbdf",
+    "tests/test_cuda_metric_build.py": "32bb46a4bb90870e3bc7d0d5089769b5a0bd7f054ab58da2e79d22b9f2bf6877",
+    "scripts/build_cuda_comparison.py": "9a1a68cf5bd0558d3cf9b939c3940b0fa75409936d9b0fdac3358998e5d74c2a",
+    ".github/workflows/cuda-compile.yml": "381bea6b7ea4816a1d3c3a5bd4beac09824616d4ea7ce27166f5b63bd5c6d75c",
+    "xgboost/src/tree/gpu_hist/sampler.cu": "c388457316c8e95e183173c792ef3a457836aff8388027491689becf210fe5e3",
+    "xgboost/src/tree/gpu_hist/sampler.cuh": "ac8a0c73a8fd49080d8c1c31755d780932546f02136efd0f2c5dfb264f30f17f",
+    "xgboost/src/tree/gpu_hist/quantiser.cu": "11e4c878f954d15c1c716823f747776128136a9604266c6339cffa0628b804f1",
+    "xgboost/src/tree/gpu_hist/quantiser.cuh": "c5ce3cf3abd8942028cc6d20279c66068395447fdc31868b82fa74ae4d7a65e4",
+    "xgboost/src/tree/updater_gpu_hist.cuh": "8f6cc320b808a8c0315868f08712c4e7ac3369a9c46e4dd62f53c763402c1880",
+    "xgboost/src/tree/updater_gpu_hist.cu": "0624991e85efbaca5cecd3dcac2abc5762f8f0d24f0e0e11e79bd0383d398560"
+  },
+  "log_sha256": {
+    "results/verify2-sampling.log": "4f7d906edb9d1f955ab1946f043d6bd8e31c210c6f3493b337bf33e50789acb9",
+    "results/verify2-sampling-native/summary.json": "2469ed218a0bb91ed6ed7621b2f79bfc5a6603ca125e41c9d3360cb18d224fed",
+    "results/verify2-sampling-comparator.log": "85d64d19960cba4c663062f2afefcbeb040d3d89bcb31465c2ad2fe26963e5af",
+    "results/verify2-sampling-final-checks.json": "b24138197c8a00bdec8cc617b2c5f5ee65bb4e2b570aaa6d263f99dc9c56363b",
+    "results/verify2-sampling-report-tests.log": "66cf5d92b91282dadbf9ad9fd20b0cde436d85089f6ec1c64b5836d3952445cc",
+    "results/verify2-sampling-codec-v2.log": "c7cf46984ed23ca9cd5eac8027598b732a1a3bbc15ac515d51c3cf4a1befaa3f",
+    "results/verify2-sampling-packaging.log": "2bff687e0f8d03093f96a964f8b4692386b0d402319b81872514a7eaf8d3f98d",
+    "results/verify2-sampling-shapes.log": "072ac6eae56b86d4dd958c99518edd18e3d4cc0571bc6514c2f38895fb335088",
+    "results/verify2-loader-linux/sampling-engine-clang.log": "d2e179a03e1956c677b0c56c5d4791795464b710d291c2f674c3c3876e4157ff",
+    "results/verify2-loader-linux/sampling-engine-gcc.log": "527799cb2cac12c72090e009420e39a922b23d33b809e413396c36a81217fb4b"
+  },
+  "artifacts": {
+    "inputs": {
+      "path": "validation/sampling-contract-inputs-m3.bin.xz",
+      "bytes": 15140272,
+      "compression": "xz",
+      "sha256": "3109e6dc8759c319bb9cc265debc74b1ad96e9b7ac37cbed67cb32f9d62e6a45",
+      "raw_bytes": 123291824,
+      "raw_sha256": "788484ac55d1587e8e2f5112672d49c331af676183b3b091cf75ac4fa0991960"
+    },
+    "metal": {
+      "path": "validation/sampling-contract-metal-m3.bin.xz",
+      "bytes": 43235928,
+      "compression": "xz",
+      "sha256": "c0b8bc27aac1d81a22de069283ed9ef0344bf71465dc3b390895326a0365ca0e",
+      "raw_bytes": 435656556,
+      "raw_sha256": "1a52d8fff2cbff95e7772c4abe994520f54966d97e4fced66c8a733115654ba3"
+    }
+  },
+  "full_export_validation": {
+    "status": "passed",
+    "original_primitive_identities": 143,
+    "metal_records": 199,
+    "actual_words": 19522746,
+    "input_identity": "bit-exact for every source and replay backing word",
+    "native_source_proof": "matches successful original/export run",
+    "reference_failures": [],
+    "cuda_execution": false,
+    "comparator_sha256": "ffd14b44bdb4a0c4fcbb7bdfc3cd1f557f28c7a1d5f21d7c303f12d96ad1b108"
+  },
+  "integrity_tests": {
+    "status": "passed",
+    "count": 19,
+    "log": "results/verify2-sampling-report-tests.log",
+    "gpu_execution": false
+  },
+  "build_driver_tests": {
+    "status": "passed",
+    "count": 9,
+    "inputs_hashed": 43,
+    "binaries": 6,
+    "log": "results/verify2-sampling-report-tests.log",
+    "gpu_execution": false,
+    "scope": "Mocked lifecycle, source/isolation/loader and new host sampling-RNG gate; not compilation"
+  },
+  "codec_check": {
+    "status": "passed",
+    "log": "results/verify2-sampling-codec-v2.log",
+    "complete_input_roundtrip": "byte-exact",
+    "reject_observations_before_creating_output": true,
+    "gpu_execution": false
+  },
+  "seed_alignment": {
+    "status": "passed host tests",
+    "cases_per_standard_library": 10005,
+    "libraries": [
+      "Apple Clang libc++",
+      "GCC14.2 libstdc++"
+    ],
+    "checksum": 106571259668376486,
+    "scope": "Actual shared RowSeedEngine; requested first word, engine advancement, serialization roundtrip",
+    "gpu_execution": false
+  },
+  "cuda_compile": {
+    "status": "not_started",
+    "gpu_execution": false,
+    "reason": "Waiting for existing run42100004279 before pushing build-triggering changes; that run predates sampling"
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "results/cuda-comparison-build/cmake/cuda_numerical_contracts --sampling results/sampling-inputs.bin results/sampling-cuda.bin"
+  },
+  "limits": [
+    "No NVIDIA kernel execution; CUDA consumer is not yet compiler-validated.",
+    "This covers the current CUDA-derived sampling corpus, not the legacy unused498-case CPU-derived sampler.",
+    "CUDA padded floating replay uses GPU gather/scatter around the actual owning-matrix API.",
+    "Root observations call scalar source primitives and actual vector CalcRootSum, not a complete tree updater; single-worker only.",
+    "SamplingInfo exposes norms/thresholds/seed; no private CDF capture is claimed.",
+    "Low-level explicit seeds use valid test-supplied MT19937 states; only lifecycle cases use ordinary seed initialization.",
+    "Eight undefined CUDA conversion cases are explicit exclusions, never successful CUDA rejection observations.",
+    "Integer leaf/cache/linear reductions and broader training caller combinations remain separate work.",
+    "Only Apple M3 GPU execution; host/mock/codec checks do not constitute NVIDIA evidence."
+  ]
+}

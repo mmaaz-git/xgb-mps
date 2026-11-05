@@ -10,7 +10,8 @@ math corpus. A fifth adds **P5-N04/05** observations from the full existing
 ranking-rounding, ranking-gradient, repeated unbiased-objective and primitive
 rounding boundary corpora. The numerical executable also has a **P5-N07** mode
 for the complete statistics API corpus, a separate linear-algebra mode, and a
-root/stump mode preserving all 405 existing reduction cases.
+root/stump mode preserving all 405 existing reduction cases, and a sampling
+mode preserving the complete current CUDA-derived sampling corpus.
 A sixth executable covers the complete metric-term/reduction corpus, including
 its previously uncounted math, label and empty-input checks.
 The other six numerical contracts and
@@ -920,3 +921,79 @@ Comparison exits 1 for malformed evidence or reference failures, 2 for bit
 differences requiring review, and 0 for observed identity in this corpus.
 It counts all 5,940 cross-backend fields, including CUDA API weights, plus
 1,485 API/trace weight comparisons; binary reports retain every value.
+
+## Current CUDA-derived gradient sampling
+
+The `--sampling` mode preserves the complete `metal_cuda_gradient_api.cc`
+corpus: **143 low-level attempts, 54 lifecycle calls and two norm guards**.
+The older 498-case `metal_gradient_sampling_api` tests a legacy CPU-derived
+algorithm that production no longer uses; it is not this replay's CUDA target.
+The [run record](../validation/sampling-contract-m3-run.json) contains exact
+source, input, observation and log hashes. The original Metal checks pass in
+ordinary and export modes. All **19,522,746 observation words** pass their
+reference checks, and 19 synthetic report-integrity tests pass. CUDA compilation
+and NVIDIA execution are pending.
+
+CUDA constructs the actual `GradientQuantiserGroup`, quantizes with
+`CalcQuantizedGpairs`, and calls `cuda_impl::Sampler::Sample` and `ApplySampling`.
+It records public `SamplingInfo` norms/thresholds, exact integer roots, converted
+roots, floating replay and parent RNG state. Scalar roots use the scalar
+updater's reduction/finalizer primitives; vector roots call its actual inline
+`CalcRootSum`. This does not execute an entire tree updater or capture the
+sampler's private CDF. The 18 lifecycle sequences keep each sampler and parent
+engine alive across all three original calls.
+
+Three details matter when interpreting these observations:
+
+- Low-level Metal cases supply a row seed directly, while CUDA draws it from
+  the parent MT19937 engine. The harness supplies a valid engine state whose
+  first draw is that exact row seed. It does **not** call `seed(row_seed)` and
+  assume the first draw matches. The host check covers 10,005 seeds; ordinary
+  lifecycle cases retain the original `seed(701)` sequence and consumption.
+- CUDA's floating replay API takes an owning matrix. Original padded replay
+  views are gathered into that matrix on GPU, sampled by the actual API, then
+  scattered back on GPU. All padding is checked unchanged. This adaptation
+  does not claim a strided CUDA replay API exists.
+- Seven cases exceed CUDA's int64 rescaling domain; a further positive-budget
+  case has nonfinite norms before conversion. Metal's rejection is recorded;
+  CUDA marks these eight cases **not executed**, without fabricated outputs.
+  The nonfinite-norm case with zero budget follows CUDA's defined early-return
+  path and remains among the **191 planned CUDA executions**.
+
+Each backend is independently checked against the original source-oracle
+references saved only in the Metal report. FP32 checks retain their original
+exact-bit or both-NaN rule; root doubles retain numerical equality, and integer
+and RNG words remain exact. Replay padding, unsampled identities and zero-budget
+results also have checks derived from the inputs. These references and hashes
+document the fixed native run; the file format alone cannot authenticate GPU
+execution. Every GPU-to-GPU bit difference remains visible, including signed
+zeros allowed by a numerical check. No tolerances were widened.
+
+After compiling on a CUDA host, use fresh paths:
+
+```sh
+python3 scripts/compare_sampling_contracts.py unpack \
+  validation/sampling-contract-inputs-m3.bin.xz results/sampling-inputs.bin
+results/cuda-comparison-build/cmake/cuda_numerical_contracts --sampling \
+  results/sampling-inputs.bin results/sampling-cuda.bin
+python3 scripts/compare_sampling_contracts.py compare \
+  validation/sampling-contract-metal-m3.bin.xz results/sampling-cuda.bin \
+  --output results/sampling-comparison.json
+```
+
+Preserve the CUDA output's `.json` metadata, runtime log and compiler `build.json`.
+The separate `--sampling-rng` command runs only the host seed-alignment check and
+does not initialize a GPU. To export fresh Metal observations:
+
+```sh
+bash scripts/test.sh --native metal_cuda_gradient_api
+MTL_DEBUG_LAYER=1 results/metal_cuda_gradient_api_test \
+  --report-prefix results/new-sampling
+python3 scripts/compare_sampling_contracts.py validate-metal results/new-sampling.metal.bin
+```
+
+The `XGBSMP1\0` interchange retains every source/replay backing word, all fixed
+case identities, backend-specific statuses and observations, a completion marker
+and exact EOF. Input-only files contain no expected outputs. Comparison exits 1
+for malformed records or reference failures and 2 for required review, including
+the eight exclusions even when all common-domain outputs are identical.

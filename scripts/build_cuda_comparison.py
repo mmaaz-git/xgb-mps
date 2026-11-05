@@ -28,6 +28,10 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "tests/stats_contract_io.h",
           "tests/linalg_contract_io.h",
           "tests/stump_contract_io.h", "tests/cuda_stump_contracts.cuh", "xgboost/src/tree/fit_stump.cu",
+          "tests/sampling_contract_io.h", "tests/cuda_sampling_contracts.cuh",
+          "xgboost/src/tree/gpu_hist/sampler.cu", "xgboost/src/tree/gpu_hist/sampler.cuh",
+          "xgboost/src/tree/gpu_hist/quantiser.cu", "xgboost/src/tree/gpu_hist/quantiser.cuh",
+          "xgboost/src/tree/updater_gpu_hist.cuh", "xgboost/src/tree/updater_gpu_hist.cu",
           "tests/metric_contract_io.h", "tests/cuda_metric_source.h",
           "tests/cuda_metric_contracts.cu", "tests/metric_registry_probe.h",
           "tests/cuda_metric_reference.h",
@@ -179,6 +183,13 @@ def main():
             "registry_entries": len(baseline.splitlines()),
             "files": {str(path): sha(path) for path in (baseline_path, probe_path, symbols_path)}}
         print("PASS host metric registry/factory identity and hidden source definitions; no GPU execution", flush=True)
+        rng_path = output / "sampling-rng-alignment.txt"
+        rng_check = capture([binaries["numerical"]["path"], "--sampling-rng"], rng_path)
+        if rng_check.strip() != "PASS sampling MT19937 row-seed alignment: 10005 cases; no GPU execution":
+            raise ValueError("Sampling RNG alignment check did not complete its full host corpus")
+        record["sampling_rng_alignment"] = {
+            "status": "passed", "gpu_execution": False, "cases": 10005,
+            "files": {str(rng_path): sha(rng_path)}}
         if (git("rev-parse", "HEAD:xgboost").decode().strip() != tree
                 or hashlib.sha256(git("diff", "HEAD", "--", "xgboost")).hexdigest() != diff
                 or {relative: sha(ROOT / relative) for relative in INPUTS} != inputs):
@@ -209,6 +220,8 @@ def main():
                 str(output / "cuda-metric-observations.bin")]), flush=True)
         print("Stump runtime command:", shlex.join([binaries["numerical"]["path"], "--stumps",
                 "results/stump-inputs.bin", str(output / "cuda-stump-observations.bin")]), flush=True)
+        print("Sampling runtime command:", shlex.join([binaries["numerical"]["path"], "--sampling",
+                "results/sampling-inputs.bin", str(output / "cuda-sampling-observations.bin")]), flush=True)
     except Exception as error:
         record.update(status="failed", error=str(error))
         raise

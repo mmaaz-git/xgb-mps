@@ -43,6 +43,9 @@ def build(tmp_path,monkeypatch):
             # definition. Actual metric methods/vtables must remain hidden.
             text="00000001 T xgboost::metric::EvalRowRMSE()\n" if state["bad"]=="symbols" else "00000001 W thrust::Kernel<xgboost::metric::EvalRowRMSE>()\n"
             return SimpleNamespace(stdout=text,stderr="",returncode=0)
+        if "--sampling-rng" in args:
+            text = "partial check\n" if state["bad"] == "sampling-rng" else "PASS sampling MT19937 row-seed alignment: 10005 cases; no GPU execution\n"
+            return SimpleNamespace(stdout=text,stderr="",returncode=0)
         if "-S" in args:
             p=Path(args[args.index("-B")+1]); p.mkdir(); (p/"compile_commands.json").write_text("[]")
         elif args[2]==str(cmake):
@@ -67,7 +70,7 @@ def test_six_binaries_complete_hashes_and_host_only_isolation_gate(build):
     assert not any("--metric-registry" in c for c in state["calls"])
     record=run("link")
     assert record["status"]=="passed-compile-link" and not record["gpu_execution"]
-    assert len(record["binaries"])==6 and len(record["inputs"])==35
+    assert len(record["binaries"])==6 and len(record["inputs"])==43
     assert {"tests/cuda_metric_source.h","tests/cuda_metric_contracts.cu","tests/metric_contract_io.h",
             "tests/metric_registry_probe.h","tests/cuda_metric_reference.h",
             "xgboost/src/metric/elementwise_metric.cu","xgboost/src/metric/multiclass_metric.cu",
@@ -76,15 +79,24 @@ def test_six_binaries_complete_hashes_and_host_only_isolation_gate(build):
     assert isolation["status"]=="passed" and not isolation["gpu_execution"] and len(isolation["files"])==3
     assert sum("--metric-registry" in c for c in state["calls"])==2
     assert any(c[0]=="nm" for c in state["calls"])
+    assert record['sampling_rng_alignment']['cases'] == 10005
+    assert record['sampling_rng_alignment']['status'] == 'passed'
+    assert not record['sampling_rng_alignment']['gpu_execution']
+    assert sum('--sampling-rng' in c for c in state['calls']) == 1
+    assert {'tests/sampling_contract_io.h','tests/cuda_sampling_contracts.cuh',
+            'xgboost/src/tree/gpu_hist/sampler.cu','xgboost/src/tree/gpu_hist/sampler.cuh',
+            'xgboost/src/tree/gpu_hist/quantiser.cu','xgboost/src/tree/gpu_hist/quantiser.cuh',
+            'xgboost/src/tree/updater_gpu_hist.cuh','xgboost/src/tree/updater_gpu_hist.cu'} <= set(record['inputs'])
     cmake=(root/"tests/cuda_comparison/CMakeLists.txt").read_text()
     assert '-Xcompiler=-fvisibility=hidden -Xcompiler=-fvisibility-inlines-hidden' in cmake
     workflow=(ROOT/'.github/workflows/cuda-compile.yml').read_text()
-    for name in ('metric-registry-baseline.txt','metric-registry-probe.txt','metric-defined-dynamic-symbols.txt'):
+    for name in ('metric-registry-baseline.txt','metric-registry-probe.txt','metric-defined-dynamic-symbols.txt','sampling-rng-alignment.txt'):
         assert f'results/cuda-comparison-build/{name}' in workflow
 
 
 @pytest.mark.parametrize("bad,pattern",[("registry","registered names or factory"),("empty","registered names or factory"),
-                                        ("symbols","exports production metric"),("source","changed after object")])
+                                        ("symbols","exports production metric"),("source","changed after object"),
+                                        ("sampling-rng","Sampling RNG alignment check")])
 def test_isolation_and_source_mismatch_retain_failure(build,bad,pattern):
     run,state,root,output,driver=build
     run("compile"); state["bad"]=bad

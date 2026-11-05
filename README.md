@@ -62,6 +62,11 @@ The root/stump extension preserves all 405 existing cases and 11,964,810 gradien
 pairs; its Metal export and independent reference checks pass. Its CUDA consumer
 records production stump weights separately from diagnostic sums; compilation
 and NVIDIA execution remain pending.
+The sampling extension now preserves all 199 current CUDA-derived sampling
+records, including 54 calls across persistent sampler lifetimes. Its Metal
+observations and reference checks pass; eight undefined CUDA conversion cases
+are explicit exclusions. Its CUDA compiler and runtime checks are pending. See
+the [sampling record](validation/sampling-contract-m3-run.json).
 Production pipeline comparisons also cover eight
 fixtures and full-size HIGGS quantile construction. Six contracts still lack
 dedicated runners, broader caller coverage remains, and **none of these runners
