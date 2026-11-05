@@ -27,7 +27,7 @@ across 42 families / 109 CUDA roots at `382f78c`. Sixteen missing/defective rows
 map to **10 implementation tasks** below; all ten are locally fixed and validated.
 These unequal-sized rows are not a
 completion percentage, and this bounded audit cannot prove the absence of
-unlisted defects. **Next: VERIFY-1 numerical contracts and final integration evidence.** No new kernels were added during
+unlisted defects. **VERIFY-1 local acceptance is complete. Next: VERIFY-2 and PERF-1.** No new kernels were added during
 classification.
 
 ## Ordered work queue
@@ -36,7 +36,7 @@ classification.
 | --- | --- | --- | --- |
 | CLEAN-1 | Review, concise docs, selected-test runner, reproduced API fixes | Complete | Findings published; history archived; all 100 native groups preserved; current library built first; diagnostic schemas agree; metadata alias regression passes |
 | PORT-4 | Classify frozen CUDA caller inventory | Classification complete | All 1,078 listed sites assigned; 174 logical rows have source/Metal/test references and dispositions; findings are separate tasks, not a parity certificate |
-| PORT-5 | Classify numerical-contract ledger | Classification complete; acceptance work remains | Seventeen contracts record authority, comparisons, limits and actions; NUM-1 is locally fixed; required divergence fixtures and external comparisons remain VERIFY-1/2 work |
+| PORT-5 | Classify numerical-contract ledger | Local contract reconciliation complete; NVIDIA comparisons remain | All seventeen contracts have named passing fixtures and explicit limits in the [acceptance report](LOCAL_ACCEPTANCE.md); external execution remains VERIFY-2 |
 | NUM-1 | Correct weighted-quantile threshold precision | Locally complete at `2404827` | Binary64 comparison and independent boundary/alias regressions pass; three native groups and 34 Python tests; [evidence](../validation/cuda-num1-m3.txt). NVIDIA comparison remains VERIFY-2 |
 | PORT-9 | Correct vector row validity after sampling | Locally complete at `1034657` | Retained sampler state controls positions; 42 new exact none/uniform/MVS cases plus zero-Hessian production updater coverage; four native groups, 52 Python tests and CPU build/API/updater checks pass; [evidence](../validation/cuda-port9-m3.txt) |
 | PORT-1 | GPU vector root/child/model weights | Locally complete at `c78cb43`; CUDA compile passed at `383b448` | Resident producer/storage/consumer chain, growth/aliases and non-MPS host views checked; 100 native groups plus final predictor check, 3,595 Python passes and CPU checks; [evidence](../validation/cuda-port1-m3.txt) |
@@ -45,37 +45,36 @@ classification.
 | PORT-6 | Resident sampled/allowed feature IDs | Locally complete at `2bfb914`; CUDA compile passed at `0409c7f` | GPU sampler/filter/task/gather/consumer chain, exact assembly and lifetime checks; 102 native groups, 3,603 Python passes and CPU checks; [evidence](../validation/cuda-port6-m3.txt) |
 | PORT-7 | Resident native quantile weights | Locally complete at `796e9fa`; CUDA compile passed at `0409c7f` | Native row/group weights and expansion stay GPU-owned through quantile and host/disk constructors; six native groups, 820 Python passes and CPU checks; [evidence](../validation/cuda-port7-m3.txt) |
 | PORT-8 | GPU split-bound gathers | Locally complete at `ed5afcf`; CUDA compile passed at `0409c7f` | GPU gather/snapshot/feature/finalizer chain and root consumers; 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port8-m3.txt). Unsupported reduced-gradient/monotone refit restriction unchanged |
-| PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA CI pending | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
-| PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA CI pending | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
-| VERIFY-1 | Integration at a fixed revision | In progress; local suites refreshed at `68c800e` | Full native/Python run, CPU build/API + updater checks, optional federated checks, CUDA compile; complete required numerical divergence fixtures; record dependencies/skips and no unexplained required-operation gaps |
+| PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA compile passed at `bf1ebea` | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
+| PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA compile passed at `bf1ebea` | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
+| VERIFY-1 | Integration at a fixed revision | Locally complete; NVIDIA execution remains separate | [Acceptance report](LOCAL_ACCEPTANCE.md) maps all 17 contracts and 16 original gap rows; full Metal/CPU/federated evidence at `68c800e`, focused numerical fixtures at `0c66454`; CUDA compile passed at `bf1ebea` |
 | VERIFY-2 | NVIDIA execution comparison | External hardware required | Shared fixtures run against vendored CUDA on NVIDIA; publish numerical contracts and failures, not just compiler success |
-| PERF-1 | Profile/optimize a frozen benchmark matrix | After local coverage/correctness milestone | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
+| PERF-1 | Profile/optimize a frozen benchmark matrix | Ready after completed VERIFY-1; no current-source timing claimed | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
 
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
 while hardware is unavailable. Cross-Apple-hardware claims also require actual runs.
 
-## Next bounded work: VERIFY-1
+## Next bounded work: NVIDIA comparison and performance
 
-The full Metal, CPU and optional federated suites passed on the unchanged
-`68c800e` source. Reuse that evidence where applicable; repeat suites only when
-new changes or failures justify it. Completion of this gate still requires:
+[VERIFY-1 local acceptance](LOCAL_ACCEPTANCE.md) is complete: all seventeen
+numerical contracts and sixteen original gap rows have named evidence. Full
+Metal/CPU/federated gates cover `68c800e`; the new 104th native group passed
+separately without production changes. [CUDA run
+42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238) at
+`bf1ebea` passed all 197 compile/link steps on the same production tree.
 
-- Reconcile all seventeen numerical contracts with concrete current fixtures.
-  Check explicit scan/CDF selection and sketch neighbor-repair divergence cases,
-  especially P5-N08/13/14. Add missing witnesses without widening ordinary
-  tolerances or assuming an unmeasured NVIDIA summation order.
-- Check that every original required gap maps to its implemented caller path
-  and current acceptance evidence. Preserve the frozen audit and record current
-  resolution separately; a test count alone is not sufficient.
-- Obtain completed CUDA compile evidence for the final source. Poll the existing
-  job instead of restarting it. Compiler success remains separate from execution.
-- Publish the local acceptance result with dependencies, skips, numerical limits
-  and the remaining NVIDIA comparisons. VERIFY-2 and performance remain open.
+VERIFY-2 needs an actual NVIDIA runner. Integrate the portable numerical inputs
+and existing source fixtures with vendored CUDA consumers, recording GPU model,
+NVCC/CCCL/libdevice versions and flags. Use the per-contract exact, bounded,
+race-policy and domain-extension rules in the acceptance report. Portable inputs
+alone are not a completed NVIDIA harness; compiler success is not execution.
+Resolve concrete discrepancies instead of widening ordinary tolerances.
 
-[PORT-11](../validation/cuda-port11-m3.txt) now clears resident sketch pointers,
-snapshots feature types and reduces categorical presence on GPU. Empty schemas,
-input lifetime and subsequent batches pass the CUDA-source oracle. No merge,
-prune, rank, scan or final-cut arithmetic was changed.
+PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
+Freeze the accepted source and workload parameters; inspect prior outputs before
+running repeated CPU/MPS HIGGS, wide, sparse and vector benchmarks. Separate
+construction, training and prediction timing, retain correctness results and CPU
+wins, then profile a measured bottleneck before changing production code.
 
 ## PORT-4 audit boundary
 

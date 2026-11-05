@@ -30,8 +30,10 @@ PORT-9 at `1034657` ([evidence](../validation/cuda-port9-m3.txt)), and PORT-1 at
 ([evidence](../validation/cuda-port8-m3.txt)), and PORT-10 at `30639c6`
 ([evidence](../validation/cuda-port10-m3.txt)), and PORT-11 at `68c800e`
 ([evidence](../validation/cuda-port11-m3.txt)). All ten original implementation
-tasks are locally complete; numerical verification, NVIDIA execution and
-performance work remain. The JSON's current progress section records these fixes.
+tasks are locally complete. The [local acceptance report](LOCAL_ACCEPTANCE.md)
+reconciles all sixteen original gap rows and seventeen numerical contracts.
+VERIFY-1 local acceptance is complete; NVIDIA execution and performance remain. The JSON's
+current progress section records the fixes and links the acceptance evidence.
 The frozen audit retains its original findings. PORT-4/5 classification
 is complete for that ledger; full parity remains unproven.
 
@@ -44,8 +46,8 @@ NVIDIA execution and other Apple hardware are not represented by M3 tests.
 CUDA compilation/linking also passed at audit baseline `382f78c`
 ([run 41987882440](https://github.com/mmaaz-git/xgb-mps/actions/runs/41987882440)), including
 NCCL, nvCOMP and federated consumers. See [compiler evidence](../validation/cuda-compile-ci-13.4.txt).
-The latest successful compile covers `0409c7f`, including PORT-6/7/8;
-PORT-10/11 need their own completed compile result.
+The latest successful compile covers `bf1ebea`, including PORT-10/11, on the
+same production tree as the final local gates ([run 42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238)).
 Compilation is not runtime or numerical equivalence. Performance follows
 operation/storage correctness; historical timings are not current measurements.
 

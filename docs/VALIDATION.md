@@ -15,7 +15,7 @@ bash scripts/test.sh --python tests/test_metal_metadata.py
 bash scripts/test.sh --full
 ```
 
-No selectors means the full standard run: 102 native groups, the independent
+No selectors means the full standard run: 104 native groups, the independent
 linear reference build, then pytest with `--require-metal`. The manifest is
 [tests/native_tests.json](../tests/native_tests.json). The runner validates its
 native-source inventory and recompiles selected test binaries. Optional federated
@@ -96,5 +96,10 @@ Latest full local regression: [PORT-11](../validation/cuda-port11-m3.txt), sourc
 plus the separate CPU build/API/schema and nine updater checks.
 PyTorch and MLX interop ran. The optional federated suite passed 14 stage/world
 groups at the same revision, including TLS; all workers used one M3.
+The subsequent [local acceptance report](LOCAL_ACCEPTANCE.md) reconciles all
+audit fixes and numerical contracts. Four native groups and 49 Python tests
+passed in the focused numerical run; the added 104th group passed separately
+from the last full run. CUDA compilation/linking passed at `bf1ebea` on the same
+production tree. NVIDIA execution remains untested.
 The diagnostic schema remains at 303 native counters
 and 305 C API fields; initializer positions and CPU/Metal key agreement were checked.

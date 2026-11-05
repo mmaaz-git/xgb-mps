@@ -28,7 +28,6 @@ not every branch's behavior.
 
 | Plan ID | Remaining CUDA behavior or evidence |
 | --- | --- |
-| VERIFY-1 | Numerical-contract/fixture reconciliation and completed CUDA compile evidence for the final source. |
 | VERIFY-2 | Shared fixtures executed on actual NVIDIA hardware; local source oracles are insufficient. |
 | PERF-1 | Current-revision large-workload timings and optimization after local correctness acceptance. |
 
@@ -64,10 +63,11 @@ consumers; exact metadata and complete-tree checks pass
 GPU pointer initialization, categorical reduction and owned type snapshots pass
 constructor/lifetime, subsequent-batch and federated checks
 ([evidence](../validation/cuda-port11-m3.txt)). All ten audited implementation tasks
-are locally complete; the verification gates above remain open.
+and VERIFY-1 local acceptance are complete; NVIDIA execution and performance
+remain open.
 The frozen audit retains its original findings. This is a finite
 implementation queue, not proof that no unlisted defects remain. Numerical
-acceptance fixtures and NVIDIA comparisons remain separate verification work.
+acceptance is recorded in the [local acceptance report](LOCAL_ACCEPTANCE.md); NVIDIA comparisons remain open.
 
 Scalar control fields, topology, serialization and finalizers that CUDA itself
 runs on the host are not missing kernels merely because they access host memory.
@@ -95,6 +95,10 @@ not establish NVIDIA runtime equivalence.
   Completion is synchronous; a portable CUDA-style stream handshake is absent.
   Optimizations must preserve ownership/readiness.
 
+All 17 contracts now have named local fixtures and external requirements in the
+[acceptance report](LOCAL_ACCEPTANCE.md). New CDF/scan/repair witnesses explicitly
+show arithmetic/read-order differences without claiming measured NVIDIA output.
+
 These are explicit limits or tracked work. The [review](REVIEW.md) separates
 reproduced defects, confirmed gaps and architecture risks.
 
@@ -106,11 +110,15 @@ tests. Both PyTorch and MLX GPU interop tests ran.
 [Configuration, source hashes and results](../validation/cuda-port11-m3.txt).
 Optional federated transport, sketches and learners also passed at this revision:
 14 stage/world groups including TLS, with all workers on the same M3. Earlier
-validation records retain their original scope and failures.
+validation records retain their original scope and failures. The subsequent
+four-group/49-Python focused run includes 21 explicit numerical witnesses
+([record](../validation/cuda-verify1-m3-run.json)). The added 104th native group
+passed separately; the production library is unchanged.
 
-CUDA compile CI passed at `0409c7f`, including PORT-6/7/8
-([run 42020760438](https://github.com/mmaaz-git/xgb-mps/actions/runs/42020760438)).
-The subsequent PORT-10/11 sources still need completed CI evidence. CI compiles/links on
-a CPU runner. **No NVIDIA runtime comparison has been performed.** Other Apple
+CUDA compile CI passed at `bf1ebea`, including PORT-10/11
+([run 42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238)).
+All 197 compilation/link steps completed on the same production tree as the
+local gates. CI uses a CPU runner. **No NVIDIA runtime comparison has been
+performed.** Other Apple
 hardware is also untested. [Historical benchmarks](PUBLISHED_BENCHMARKS.md)
 predate subsequent correctness changes and are not current-HEAD measurements.

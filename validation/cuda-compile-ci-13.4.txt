@@ -80,3 +80,16 @@ PORT-6/7/8 shared-source compile validation:
   All 197 compilation/link steps completed. This includes resident feature IDs,
   native quantile weights and GPU bound gathers; it predates PORT-10 thresholds.
   No NVIDIA runtime test was run.
+
+VERIFY-1 final shared-source compile validation:
+  bf1ebeada90dae67da4db575e911747485d38ae8: 42027936238, success,
+    completed 2026-11-05T12:50:19Z (same CUDA/NCCL/nvCOMP/federated workflow).
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238
+  Production tree matches 68c800e, including PORT-10/11. NVCC 13.4.92,
+  architecture 80; the build checks the selected modern Philox4x64 branch.
+  Artifact cuda-compile-evidence, local log:
+    results/cuda-compile-42027936238/results/cuda-compile-ci.log
+  Log SHA256: c893b8aeaef43d8c7a4a5b6879d7a344b43c1473e43339931ac9745681b0809c
+  All 197 compilation/link steps completed, with the final shared library linked.
+  Prior run 42024506701 at a9960f2 was cancelled, not a compiler failure.
+  This completes the local VERIFY-1 compiler gate; no NVIDIA kernel was executed.

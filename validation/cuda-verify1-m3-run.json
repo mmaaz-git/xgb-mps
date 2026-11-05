@@ -1,0 +1,1110 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-05",
+  "status": "passed-local-acceptance; NVIDIA-runtime-unverified",
+  "scope": "VERIFY-1 acceptance evidence for the frozen audit; not proof of full CUDA parity",
+  "frozen_audit_revision": "382f78ce867bfa248cd85088c70322edca8805fb",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "test_commit": "0c66454352c739eefb62ca8eba797a76a658a69c",
+  "reuse_proof": {
+    "production_tree_unchanged": true,
+    "metal_library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "existing_103_manifest_entries_unchanged": true,
+    "new_104th_group_passed_separately": true,
+    "full_suite_record": "validation/cuda-port11-m3-run.json",
+    "full_suite_record_sha256": "bd50ba533abdb32c60cc93ed9f56e5117d9a21917db80abc17774cb76f62064b",
+    "full_native_groups": 103,
+    "full_python_passed": 3647,
+    "full_python_expected_skip": 1,
+    "cpu_record": "validation/cuda-port11-m3-run.json#cpu",
+    "federated_record": "validation/cuda-port11-m3-run.json#federated",
+    "reason": "Only tests/manifest/docs changed after the full production-source gates. No claim that all 104 native groups ran in one invocation."
+  },
+  "focused": {
+    "status": "passed",
+    "started_utc": "20261105T124326Z",
+    "revision": "bf1ebeada90dae67da4db575e911747485d38ae8",
+    "working_tree": "M tests/native_tests.json\n?? tests/metal_numerical_contracts.mm\n?? tests/numerical_contract_fixtures.h",
+    "diff_sha256": "9343a93064c2656d41459a143d3f427a6ec85d03b5942c71c45bbe207f59ecd9",
+    "manifest_sha256": "4c0e1a447a1c7a5e77df0de66b1a92d2837920cdb3797606a4f0049a0f98a23d",
+    "untracked_sha256": {
+      "tests/metal_numerical_contracts.mm": "a05bf1785b791420ebacfb1caeb860eb6c83f66e36c35fcdccae5255215a79ae",
+      "tests/numerical_contract_fixtures.h": "4034a224d96df0534c72ca957a2809118b35606aed3f2582ab8941c5bff3f887"
+    },
+    "native_groups": [
+      "metal_initialization_state_api",
+      "metal_quantile",
+      "metal_numerical_contracts",
+      "metal_cuda_sketch_api"
+    ],
+    "python_selection": [
+      "tests/test_metal_quantiles.py",
+      "tests/test_metal_sketch.py"
+    ],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.892947708023712
+      },
+      {
+        "name": "compile-metal_initialization_state_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_initialization_state_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_initialization_state_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_initialization_state_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.6431649171281606
+      },
+      {
+        "name": "metal_initialization_state_api",
+        "command": [
+          ".venv/bin/python",
+          "tests/run_initialization_state_collective.py"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1",
+          "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+        },
+        "log": "003-metal_initialization_state_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 7.6910570410545915
+      },
+      {
+        "name": "compile-metal_quantile",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-fobjc-arc",
+          "tests/metal_quantile.mm",
+          "-framework",
+          "Metal",
+          "-framework",
+          "Foundation",
+          "-o",
+          "results/metal_quantile_test"
+        ],
+        "environment": {},
+        "log": "004-compile-metal_quantile.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.8528188329655677
+      },
+      {
+        "name": "metal_quantile",
+        "command": [
+          "results/metal_quantile_test",
+          "xgboost/src/common/metal_histogram.metal"
+        ],
+        "environment": {},
+        "log": "005-metal_quantile.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.0720458750147372
+      },
+      {
+        "name": "compile-metal_numerical_contracts",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-fobjc-arc",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_numerical_contracts.mm",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-framework",
+          "Metal",
+          "-framework",
+          "Foundation",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_numerical_contracts_test"
+        ],
+        "environment": {},
+        "log": "006-compile-metal_numerical_contracts.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.048302249982953
+      },
+      {
+        "name": "metal_numerical_contracts",
+        "command": [
+          "results/metal_numerical_contracts_test",
+          "xgboost/src/common/metal_histogram.metal"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "007-metal_numerical_contracts.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.3366785829421133
+      },
+      {
+        "name": "compile-metal_cuda_sketch_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_cuda_sketch_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_cuda_sketch_api_test"
+        ],
+        "environment": {},
+        "log": "008-compile-metal_cuda_sketch_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.076176915783435
+      },
+      {
+        "name": "metal_cuda_sketch_api",
+        "command": [
+          "results/metal_cuda_sketch_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "009-metal_cuda_sketch_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.731348458910361
+      },
+      {
+        "name": "linear-reference",
+        "command": [
+          "bash",
+          "tests/build_linear_reference.sh"
+        ],
+        "environment": {},
+        "log": "010-linear-reference.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.1269847499206662
+      },
+      {
+        "name": "pytest",
+        "command": [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "tests/test_metal_quantiles.py",
+          "tests/test_metal_sketch.py",
+          "--require-metal"
+        ],
+        "environment": {
+          "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+        },
+        "log": "011-pytest.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 3.93541304115206
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T12:43:48.367878+00:00",
+    "original_summary_sha256": "324cc57d3c8672ea9d3770887cd80d62dab7b738560b01c30b04f57a2aa50f27",
+    "log_sha256": {
+      "001-build-metal.log": "65d4eb6f4e204b2f69b1282dc710f5bc979a8f9f23bf9693038f3552ddec659c",
+      "002-compile-metal_initialization_state_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "003-metal_initialization_state_api.log": "97fc7e3769c0e26526a455cd2faa78086c16760306958b33559d20ebcf4fa164",
+      "004-compile-metal_quantile.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "005-metal_quantile.log": "41dfa83c1d2fa754120956dc1edc121589a4cc47f186893baaeb1aab248bd98c",
+      "006-compile-metal_numerical_contracts.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "007-metal_numerical_contracts.log": "32beca73e83fce0bc4d3c99a286d3a0e43de104419b64d84ff72cd16ee9b3665",
+      "008-compile-metal_cuda_sketch_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "009-metal_cuda_sketch_api.log": "970d667c67e5c3cc13993bc1aede6febd5bd7025afc0f5cabcb1cdd7e247200e",
+      "010-linear-reference.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "011-pytest.log": "1b4a73a10c3b4a23f406598e25e2d07a6e7118e3bb3469c9da5f30f31da805c1"
+    },
+    "validated_test_commit": "0c66454352c739eefb62ca8eba797a76a658a69c",
+    "test_counts": {
+      "new_numerical_witnesses": 21,
+      "exact_checks": 3431,
+      "native_groups": 4,
+      "python_passed": 49,
+      "python_seconds": 2.9
+    },
+    "committed_manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "manifest_note": "After execution, restored the prior compact JSON formatting. Parsed profiles and all 104 entries are identical to the tested manifest. The original execution hash is retained above."
+  },
+  "cuda_compile": {
+    "status": "completed",
+    "run_id": 42027936238,
+    "head": "bf1ebeada90dae67da4db575e911747485d38ae8",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238",
+    "nvidia_execution": false,
+    "conclusion": "success",
+    "completed_utc": "2026-11-05T12:50:19Z",
+    "log": "results/cuda-compile-42027936238/results/cuda-compile-ci.log",
+    "log_sha256": "c893b8aeaef43d8c7a4a5b6879d7a344b43c1473e43339931ac9745681b0809c",
+    "steps": 197,
+    "nvcc": "13.4.92",
+    "architecture": "80",
+    "modern_philox_branch_checked": true,
+    "source_tree_matches_local_gates": true
+  },
+  "contracts": [
+    {
+      "id": "training-rng-modern",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Modern Philox4x64 and source uniform draws match exact fixtures; unweighted column sampling retains Thrust minstd shuffle keys.",
+      "native_evidence": [
+        {
+          "group": "metal_cuda_rng",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/191-metal_cuda_rng.log",
+          "sha256": "1e0299a29d5e3009ee08aaf3e28db62b462fae4581765d59ccfa3f6e387eb137"
+        },
+        {
+          "group": "metal_column_sampling_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/169-metal_column_sampling_api.log",
+          "sha256": "91019f7ebe98eb72e15fdccdec798e39e80dca646910227c641d77acbc7c8dd5"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Pin the NVIDIA CCCL/compiler branch. Legacy conditional RNG streams are not claimed equivalent."
+    },
+    {
+      "id": "training-reduction-association",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Integer histogram/leaf sums are exact; sampled floating reductions retain source term precision and forward-error checks.",
+      "native_evidence": [
+        {
+          "group": "metal_integer_cache_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/185-metal_integer_cache_api.log",
+          "sha256": "06e091fbb5d4c10219644ddb17ac1f8cd196800b0c12d58a227fecb4ec5a9dce"
+        },
+        {
+          "group": "metal_integer_leaf_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/199-metal_integer_leaf_api.log",
+          "sha256": "664e78eb9f12f1c3973cd435c54b390b7ed4c2a270a7956651099aaa379d5594"
+        },
+        {
+          "group": "metal_gradient_sampling_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/165-metal_gradient_sampling_api.log",
+          "sha256": "f581af6a3299033fe1bbb287a18f01780d6794bc809ebc2cf743cebf574b2f34"
+        },
+        {
+          "group": "metal_linear_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/181-metal_linear_api.log",
+          "sha256": "5f05a716f27f085f0357da86902be986503cdc563e1b882bf92bf17632c7c618"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Measure actual CUB association and compiler contraction. Distinguish the modern external-page leaf path from the legacy CUDA limitation."
+    },
+    {
+      "id": "training-shap-order",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Source eight-point quadrature and finishing expressions are retained; exact local expression replay covers finite fields and exceptional classifications.",
+      "native_evidence": [
+        {
+          "group": "metal_shap_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/177-metal_shap_api.log",
+          "sha256": "9fb45b10bd1ec4cfd2353b3cc3215f4f1431a57484b12cb4f4cede689cd88095"
+        }
+      ],
+      "python_fixtures": [
+        "tests/test_metal_shap_source.py"
+      ],
+      "python_gate": "validation/cuda-port11-m3-run.json#pytest",
+      "remaining_external": "Compare NVIDIA outputs without assuming its cross-tree atomic accumulation order equals Metal row/tree scheduling."
+    },
+    {
+      "id": "P5-N01",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "NUM-1 is fixed: binary64 weighted thresholds select row 1 for labels [0,1], weights [1,9], alpha=float32(.1). Boundary/stride/alias and resident-output checks remain.",
+      "native_evidence": [
+        {
+          "group": "metal_initialization_state_api",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/003-metal_initialization_state_api.log",
+          "sha256": "97fc7e3769c0e26526a455cd2faa78086c16760306958b33559d20ebcf4fa164"
+        },
+        {
+          "group": "metal_quantile",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/005-metal_quantile.log",
+          "sha256": "41dfa83c1d2fa754120956dc1edc121589a4cc47f186893baaeb1aab248bd98c"
+        },
+        {
+          "group": "metal_stats_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/119-metal_stats_api.log",
+          "sha256": "98a9a7ea7cd19f139507cb088d9958fec3e5838ad60b0d5cf54930dd1a48261d"
+        }
+      ],
+      "python_fixtures": [
+        "tests/test_metal_initialization.py",
+        "tests/test_metal_quantiles.py"
+      ],
+      "python_gate": "validation/cuda-port11-m3-run.json#pytest",
+      "remaining_external": "Execute the same source-precision boundaries on NVIDIA. CPU uses a different threshold precision at this boundary."
+    },
+    {
+      "id": "P5-N02",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "AFT keeps ordinary CPU tolerances and separate ill-conditioned source replay. The retained sensitive corpus has 322 fields outside CPU tolerance; production/raw-source differences are zero.",
+      "native_evidence": [
+        {
+          "group": "metal_aft_source",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/157-metal_aft_source.log",
+          "sha256": "aa5e6fbf10265d2d6d667b85c3bf2ce23e8229ed9afc34eb544ea49716dff1e2"
+        },
+        {
+          "group": "metal_survival_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/159-metal_survival_api.log",
+          "sha256": "62ef2100723f8b03659c67133d58ecf6c707cccfbeea39571f4ffabebb3bd222"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Run the same sensitive corpus on CUDA; preserve failures and classifications. No CPU correction or wider ordinary tolerance is accepted."
+    },
+    {
+      "id": "P5-N03",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Software binary64, FP32 casts and special values have direct fixtures. AFT observed log/exp/erf maxima are 2/1/3 ULP within its sampled four-ULP budget.",
+      "native_evidence": [
+        {
+          "group": "metal_fp64",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/065-metal_fp64.log",
+          "sha256": "4c7484f7eaec0449e0ff305115d5f10507ec2b734470e4c088bd47fdae6003da"
+        },
+        {
+          "group": "metal_transcendental",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/067-metal_transcendental.log",
+          "sha256": "426fbf05d345c65c2714f07efd81531766316b10ea395ed1ead13f2ebe7f8c31"
+        },
+        {
+          "group": "metal_aft_source",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/157-metal_aft_source.log",
+          "sha256": "aa5e6fbf10265d2d6d667b85c3bf2ce23e8229ed9afc34eb544ea49716dff1e2"
+        },
+        {
+          "group": "metal_metric_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/155-metal_metric_api.log",
+          "sha256": "2bfaae16ca0fa74bdd72f3424d5f5e24b93c8541b5e4e89740fddf972b9509dd"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Exercise extreme/subnormal/nonfinite fixtures on NVIDIA and other Apple generations. Sampled error bounds are not universal accuracy guarantees."
+    },
+    {
+      "id": "P5-N04",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Ranking uses the documented deterministic maximum rounding factor; nonfinite frexp inputs use exponent zero/factor one. Fixtures distinguish the global maximum from the last query.",
+      "native_evidence": [
+        {
+          "group": "metal_ranking_rounding_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/141-metal_ranking_rounding_api.log",
+          "sha256": "bf5334cbc57c4ce47c6fc6df9a817f4e9b08848f5a43e498a313ab199723d5d9"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Characterize source racing writes; do not require a deterministic implementation to match a unique nonexistent race winner."
+    },
+    {
+      "id": "P5-N05",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Independent positive/negative truncation, raw normalization, combined binary64 weights and actual-label MAP terms retain source fixtures and deterministic replay.",
+      "native_evidence": [
+        {
+          "group": "metal_ranking_gradient_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/147-metal_ranking_gradient_api.log",
+          "sha256": "59803b8b3120f31c81245644809da5c5b4101d9beaab75ba7570f16df7a2d8b6"
+        },
+        {
+          "group": "metal_ranking_unbiased_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/149-metal_ranking_unbiased_api.log",
+          "sha256": "95224efa295fd9932ccedb91abe54d23ea192758153da4e1ae4e4003263663da"
+        },
+        {
+          "group": "metal_ranking_rounding_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/141-metal_ranking_rounding_api.log",
+          "sha256": "bf5334cbc57c4ce47c6fc6df9a817f4e9b08848f5a43e498a313ab199723d5d9"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Compare the actual NVCC/CUB endpoint arithmetic and record contraction flags."
+    },
+    {
+      "id": "P5-N06",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Ranking pair fixtures retain modern Philox seed wrap, discard, rejection, singleton and empty policies; exact pair order and draws pass.",
+      "native_evidence": [
+        {
+          "group": "metal_ranking_pairs_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/145-metal_ranking_pairs_api.log",
+          "sha256": "6eefe236e6f8fc43d50721a9f9d0e159c397231c4402b082abd7ced9f1425514"
+        },
+        {
+          "group": "metal_ranking_rng",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/047-metal_ranking_rng.log",
+          "sha256": "ba9da5109cd66d49cd7e512088aefcd262043aa0f3f20e05d9fe16ec2fa353fd"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Pin CCCL headers/branch with the training RNG comparison; old Thrust streams differ by definition."
+    },
+    {
+      "id": "P5-N07",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Precision witnesses distinguish FP32 reductions from optional binary64 weights, including cancellation, overflow and subnormals. Association tests use explicit forward-error budgets.",
+      "native_evidence": [
+        {
+          "group": "metal_stats_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/119-metal_stats_api.log",
+          "sha256": "98a9a7ea7cd19f139507cb088d9958fec3e5838ad60b0d5cf54930dd1a48261d"
+        },
+        {
+          "group": "metal_linalg_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/153-metal_linalg_api.log",
+          "sha256": "07af2ab83832feb432ef0cc9a36dee34b40b553786c2e802a02d51db2990638f"
+        },
+        {
+          "group": "metal_metric_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/155-metal_metric_api.log",
+          "sha256": "2bfaae16ca0fa74bdd72f3424d5f5e24b93c8541b5e4e89740fddf972b9509dd"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Compare NVIDIA values under declared bounds. Huge 1,073,741,823-element batches and cross-architecture reduction trees remain untested."
+    },
+    {
+      "id": "P5-N08",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "New alpha=1 witnesses isolate FP32 CDF association from NUM-1. For 3/257 rows and three scales, serial versus regrouped totals select row 0 versus the last row; production Metal API and ownership are checked.",
+      "native_evidence": [
+        {
+          "group": "metal_numerical_contracts",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/007-metal_numerical_contracts.log",
+          "sha256": "32beca73e83fce0bc4d3c99a286d3a0e43de104419b64d84ff72cd16ee9b3665"
+        },
+        {
+          "group": "metal_quantile",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/005-metal_quantile.log",
+          "sha256": "41dfa83c1d2fa754120956dc1edc121589a4cc47f186893baaeb1aab248bd98c"
+        },
+        {
+          "group": "metal_initialization_state_api",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/003-metal_initialization_state_api.log",
+          "sha256": "97fc7e3769c0e26526a455cd2faa78086c16760306958b33559d20ebcf4fa164"
+        }
+      ],
+      "python_fixtures": [
+        "tests/test_metal_quantiles.py"
+      ],
+      "python_gate": "validation/cuda-port11-m3-run.json#pytest",
+      "remaining_external": "Publish actual NVIDIA CDFs and selected observations. The regrouped result is an illustrative order, not a measured CUB result."
+    },
+    {
+      "id": "P5-N09",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "PR preserves source divisions/difference-of-logs, including the 1e30 negative-weight then unit-positive pathology (source 1 versus mathematical approximately 5e-31). Exact terms and independent 320-bit prefix diagnostics remain.",
+      "native_evidence": [
+        {
+          "group": "metal_auc_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/129-metal_auc_api.log",
+          "sha256": "083818187c633c959d83635015c59dc0c265431291630cccc9f37e042a10ba84"
+        },
+        {
+          "group": "metal_ranking_pr_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/133-metal_ranking_pr_api.log",
+          "sha256": "72452aea1c596ecfe1aee74f496a55334f9d53c9a5b105645a55d48192910cae"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Compare common inputs with NVIDIA using declared prefix/log budgets and NaN classification; do not silently stabilize the source formula."
+    },
+    {
+      "id": "P5-N10",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Grouped ROC replaces quadratic pair enumeration with exact win/tie/pair counts while preserving FP32 weight terms before binary64 accumulation. Ordinary source-oracle tolerance stays 2e-12.",
+      "native_evidence": [
+        {
+          "group": "metal_ranking_roc_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/131-metal_ranking_roc_api.log",
+          "sha256": "2a01abfbcc91de6a130db2b6a830d7d1786e4973ac6ab4582ed5bd2fba5aee4e"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Run NVIDIA comparisons in the common valid domain. Safe empty/singleton zeros and million-row analytic tests are labeled extensions, not CUB bitwise claims."
+    },
+    {
+      "id": "P5-N11",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Ranking metrics retain fallback/topk=0/soft-label cases and Decimal80 cancellation diagnostics. Metric tolerance remains 2e-12; a near-zero ideal sum can amplify inverse relative error.",
+      "native_evidence": [
+        {
+          "group": "metal_ranking_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/135-metal_ranking_api.log",
+          "sha256": "618fa63d093342e2ed4d5f55aff47feca2d8be53edfc557711a8c83b03512664"
+        },
+        {
+          "group": "metal_ranking_cache_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/137-metal_ranking_cache_api.log",
+          "sha256": "7b0ff8a51a49a5e948923b3aacf16887f9f1e2967d6675b0a15ac7e228c3447c"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "Record actual NVIDIA fallback branches, prefix sums and IDCG inverses; no universal inverse-relative error claim."
+    },
+    {
+      "id": "P5-N12",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "Metal disables fast math and source replay preserves declared cast/operation boundaries; host reference builds disable FP contraction. This does not identify NVCC emitted instructions.",
+      "native_evidence": [
+        {
+          "group": "metal_aft_source",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/157-metal_aft_source.log",
+          "sha256": "aa5e6fbf10265d2d6d667b85c3bf2ce23e8229ed9afc34eb544ea49716dff1e2"
+        },
+        {
+          "group": "metal_ranking_gradient_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/147-metal_ranking_gradient_api.log",
+          "sha256": "59803b8b3120f31c81245644809da5c5b4101d9beaab75ba7570f16df7a2d8b6"
+        },
+        {
+          "group": "metal_auc_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/129-metal_auc_api.log",
+          "sha256": "083818187c633c959d83635015c59dc0c265431291630cccc9f37e042a10ba84"
+        }
+      ],
+      "python_fixtures": [],
+      "python_gate": null,
+      "remaining_external": "External evidence only: record GPU, NVCC, CCCL, libdevice and FMA/fast-math flags; execute shared fixtures."
+    },
+    {
+      "id": "P5-N13",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "New synthetic rank chains explicitly distinguish left-to-right repair from unrepaired-predecessor reads, at three scales with empty/singleton columns and guards. Production Metal follows the declared left-to-right policy.",
+      "native_evidence": [
+        {
+          "group": "metal_numerical_contracts",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/007-metal_numerical_contracts.log",
+          "sha256": "32beca73e83fce0bc4d3c99a286d3a0e43de104419b64d84ff72cd16ee9b3665"
+        },
+        {
+          "group": "metal_cuda_sketch_api",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/009-metal_cuda_sketch_api.log",
+          "sha256": "970d667c67e5c3cc13993bc1aede6febd5bd7025afc0f5cabcb1cdd7e247200e"
+        }
+      ],
+      "python_fixtures": [
+        "tests/test_metal_sketch.py"
+      ],
+      "python_gate": "validation/cuda-port11-m3-run.json#pytest",
+      "remaining_external": "Characterize actual CUDA neighbor scheduling. Synthetic chains isolate the operation; they are not a claim of reachability from an exact training dataset or a predicted race winner."
+    },
+    {
+      "id": "P5-N14",
+      "local_status": "fixtures-pass-with-declared-limits",
+      "current_contract": "New 3/261/513-row segmented prefixes cross 256-entry tiles; reverse-duplicate witnesses distinguish grouping orders. Exact fields pass at ordinary, subnormal and large finite scales alongside source predicate/partition fixtures.",
+      "native_evidence": [
+        {
+          "group": "metal_numerical_contracts",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/007-metal_numerical_contracts.log",
+          "sha256": "32beca73e83fce0bc4d3c99a286d3a0e43de104419b64d84ff72cd16ee9b3665"
+        },
+        {
+          "group": "metal_cuda_sketch_api",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/009-metal_cuda_sketch_api.log",
+          "sha256": "970d667c67e5c3cc13993bc1aede6febd5bd7025afc0f5cabcb1cdd7e247200e"
+        },
+        {
+          "group": "metal_sketch_collective_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/009-metal_sketch_collective_api.log",
+          "sha256": "f765b44b626cb5e1e3ed214442dc1af8de9c613afad6c3b682fa936d5c3e6e7d"
+        }
+      ],
+      "python_fixtures": [
+        "tests/test_metal_sketch.py"
+      ],
+      "python_gate": "validation/cuda-port11-m3-run.json#pytest",
+      "remaining_external": "Compare actual NVIDIA summaries. The Metal hierarchical/serial scan oracle and illustrative alternatives do not establish CUB output identity."
+    }
+  ],
+  "resolved_gaps": [
+    {
+      "id": "NUM-1",
+      "operation_ids": [
+        "NUM-OP-10"
+      ],
+      "source_commit": "24048272cc0105f27c3b37823969a0b9a927b03c",
+      "status": "locally-validated",
+      "producer_consumer_chain": "Quantiles -> GPU CDF/select with binary64 threshold -> resident initializer output",
+      "acceptance_record": "validation/cuda-num1-m3.txt",
+      "current_native_evidence": [
+        {
+          "group": "metal_quantile",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/005-metal_quantile.log",
+          "sha256": "41dfa83c1d2fa754120956dc1edc121589a4cc47f186893baaeb1aab248bd98c"
+        },
+        {
+          "group": "metal_stats_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/119-metal_stats_api.log",
+          "sha256": "98a9a7ea7cd19f139507cb088d9958fec3e5838ad60b0d5cf54930dd1a48261d"
+        },
+        {
+          "group": "metal_initialization_state_api",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/003-metal_initialization_state_api.log",
+          "sha256": "97fc7e3769c0e26526a455cd2faa78086c16760306958b33559d20ebcf4fa164"
+        }
+      ]
+    },
+    {
+      "id": "PORT-9",
+      "operation_ids": [
+        "training-partition-sample-flags"
+      ],
+      "source_commit": "10346574755dcc312d88a9426df280a1dadaf049",
+      "status": "locally-validated",
+      "producer_consumer_chain": "Retained QuantizedGradients sampler state -> CommonRowPartitioner -> DeviceRows::LeafPositions",
+      "acceptance_record": "validation/cuda-port9-m3.txt",
+      "current_native_evidence": [
+        {
+          "group": "metal_training_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/015-metal_training_state_api.log",
+          "sha256": "3d8860a3657a81c0b9625e3dc51b2e630e59efcd9d2be1738981fe8bb276a5a2"
+        },
+        {
+          "group": "metal_gradient_sampling_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/165-metal_gradient_sampling_api.log",
+          "sha256": "f581af6a3299033fe1bbb287a18f01780d6794bc809ebc2cf743cebf574b2f34"
+        },
+        {
+          "group": "metal_integer_leaf_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/199-metal_integer_leaf_api.log",
+          "sha256": "664e78eb9f12f1c3973cd435c54b390b7ed4c2a270a7956651099aaa379d5594"
+        }
+      ]
+    },
+    {
+      "id": "PORT-1",
+      "operation_ids": [
+        "training-leaf-cache-vector",
+        "training-vector-weight-persistence",
+        "training-vector-root-scale",
+        "training-model-copy-weight"
+      ],
+      "source_commit": "c78cb430be4e0ce3e4bcd91f55e371514c7317a2",
+      "status": "locally-validated",
+      "producer_consumer_chain": "FinalizeSplitNodes -> SplitWeightStorage -> root/model GPU copies -> compact prediction-cache consumer",
+      "acceptance_record": "validation/cuda-port1-m3.txt",
+      "current_native_evidence": [
+        {
+          "group": "metal_model_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/201-metal_model_state_api.log",
+          "sha256": "8dd8a0a8374e850b55dc6cc8425bf630c65f68a1264048f5c6fe613c5ec9cb6b"
+        },
+        {
+          "group": "metal_prediction_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/019-metal_prediction_state_api.log",
+          "sha256": "7cf8cddbf833e821c419db8315286233dfe2eabed39c76f4f0251211aa0e513c"
+        },
+        {
+          "group": "metal_training_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/015-metal_training_state_api.log",
+          "sha256": "3d8860a3657a81c0b9625e3dc51b2e630e59efcd9d2be1738981fe8bb276a5a2"
+        },
+        {
+          "group": "metal_bound_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/207-metal_bound_state_api.log",
+          "sha256": "2107ca4fe7fb2bf2b6f7b53c63e9f9d54d0e68d90dfdf819f24aef1ac78dfb89"
+        }
+      ]
+    },
+    {
+      "id": "PORT-2",
+      "operation_ids": [
+        "training-vector-categories",
+        "training-model-copy-categories"
+      ],
+      "source_commit": "6a606e101914e7433f2d6ca036c6ebc9c3cb8fa1",
+      "status": "locally-validated",
+      "producer_consumer_chain": "BuildSplitCategories -> SplitCategoryStorage -> model category words -> partition consumer",
+      "acceptance_record": "validation/cuda-port2-m3.txt",
+      "current_native_evidence": [
+        {
+          "group": "metal_split_categories",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/203-metal_split_categories.log",
+          "sha256": "04d0aaf0bbe33bda6ee8c50160e994aab3f1ee6b0581619892e04591cf063df2"
+        },
+        {
+          "group": "metal_model_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/201-metal_model_state_api.log",
+          "sha256": "8dd8a0a8374e850b55dc6cc8425bf630c65f68a1264048f5c6fe613c5ec9cb6b"
+        },
+        {
+          "group": "metal_compressed_consumers_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/101-metal_compressed_consumers_api.log",
+          "sha256": "73f5a2ddac82bb32fa60999338e99cb25d7de568c6c2f665b8c5c0d7035c256d"
+        },
+        {
+          "group": "metal_training_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/015-metal_training_state_api.log",
+          "sha256": "3d8860a3657a81c0b9625e3dc51b2e630e59efcd9d2be1738981fe8bb276a5a2"
+        }
+      ]
+    },
+    {
+      "id": "PORT-3",
+      "operation_ids": [
+        "training-vector-root-sum",
+        "training-vector-child-sums"
+      ],
+      "source_commit": "ab8787245846f7fff2fa77066573d76e0dc76eca",
+      "status": "locally-validated",
+      "producer_consumer_chain": "SumRoot/selected exact integers -> SplitSumStorage -> parent gather/child propagation -> evaluator",
+      "acceptance_record": "validation/cuda-port3-m3.txt",
+      "current_native_evidence": [
+        {
+          "group": "metal_split_sum_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/189-metal_split_sum_api.log",
+          "sha256": "8e165f30262afd2ee3b378d64d3cfc5cbba1e902d1b9971636713e288b301652"
+        },
+        {
+          "group": "metal_integer_collective_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/003-metal_integer_collective_api.log",
+          "sha256": "34c3460708d556ac79e95954631af485af2ec47c224acd693e52e8742dcdd6c2"
+        },
+        {
+          "group": "metal_feature_split_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/187-metal_feature_split_api.log",
+          "sha256": "2d79bd23c326d2704dc6e928c505d8d8129be01b6992552ca43e3906fc0e54f7"
+        },
+        {
+          "group": "metal_training_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/015-metal_training_state_api.log",
+          "sha256": "3d8860a3657a81c0b9625e3dc51b2e630e59efcd9d2be1738981fe8bb276a5a2"
+        }
+      ]
+    },
+    {
+      "id": "PORT-6",
+      "operation_ids": [
+        "training-allowed-feature-storage",
+        "training-column-storage"
+      ],
+      "source_commit": "2bfb91489e063575628ed8f80207c618e351e1fc",
+      "status": "locally-validated",
+      "producer_consumer_chain": "ColumnSampler -> resident interaction query -> feature task/gather assembly -> scalar/vector evaluator",
+      "acceptance_record": "validation/cuda-port6-m3.txt",
+      "current_native_evidence": [
+        {
+          "group": "metal_column_sampling_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/169-metal_column_sampling_api.log",
+          "sha256": "91019f7ebe98eb72e15fdccdec798e39e80dca646910227c641d77acbc7c8dd5"
+        },
+        {
+          "group": "metal_interaction_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/205-metal_interaction_api.log",
+          "sha256": "a04e2ccf934d6b42300998cb17f1545ee17521a28f38705470c9c8aa776d2b6b"
+        },
+        {
+          "group": "metal_feature_split_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/187-metal_feature_split_api.log",
+          "sha256": "2d79bd23c326d2704dc6e928c505d8d8129be01b6992552ca43e3906fc0e54f7"
+        },
+        {
+          "group": "metal_training_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/015-metal_training_state_api.log",
+          "sha256": "3d8860a3657a81c0b9625e3dc51b2e630e59efcd9d2be1738981fe8bb276a5a2"
+        }
+      ]
+    },
+    {
+      "id": "PORT-7",
+      "operation_ids": [
+        "DATA-18"
+      ],
+      "source_commit": "796e9fa9dd1b31d03a54ff07de9468d616a4f0f3",
+      "status": "locally-validated",
+      "producer_consumer_chain": "Native row/group device spans -> resident expansion -> SetWeights snapshot -> matrix sketch constructor",
+      "acceptance_record": "validation/cuda-port7-m3.txt",
+      "current_native_evidence": [
+        {
+          "group": "metal_quantile_weights_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/095-metal_quantile_weights_api.log",
+          "sha256": "52672b0a7498c50922e090980f788c732794c162492f9dae2b92820b92f0cf47"
+        },
+        {
+          "group": "metal_adapter_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/093-metal_adapter_api.log",
+          "sha256": "037a8855b3764e82a93ab5dd81a786a1f7026a123f637ab03b976386fbfd500f"
+        },
+        {
+          "group": "metal_extmem_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/103-metal_extmem_api.log",
+          "sha256": "665a233663f3dd186152517467aac3b3104ec7163fabb55af490887e89588f96"
+        },
+        {
+          "group": "metal_metadata_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/039-metal_metadata_api.log",
+          "sha256": "aea4e5b1e40b7a542fe1986010a05e726b1cf9aa6aade35fe8bfc1a0732aabe8"
+        }
+      ]
+    },
+    {
+      "id": "PORT-8",
+      "operation_ids": [
+        "training-bounds-consumers"
+      ],
+      "source_commit": "ed5afcfd3753ebdce4fd1dd18c544a3eb9978886",
+      "status": "locally-validated",
+      "producer_consumer_chain": "GPU bound updates -> GatherSplitBounds snapshot -> feature evaluation/root and child finalization",
+      "acceptance_record": "validation/cuda-port8-m3.txt",
+      "current_native_evidence": [
+        {
+          "group": "metal_bound_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/207-metal_bound_state_api.log",
+          "sha256": "2107ca4fe7fb2bf2b6f7b53c63e9f9d54d0e68d90dfdf819f24aef1ac78dfb89"
+        },
+        {
+          "group": "metal_feature_split_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/187-metal_feature_split_api.log",
+          "sha256": "2d79bd23c326d2704dc6e928c505d8d8129be01b6992552ca43e3906fc0e54f7"
+        },
+        {
+          "group": "metal_split_finalize",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/121-metal_split_finalize.log",
+          "sha256": "c986a8e5653cb806475bef02da8c956aed9153ee64452d19457b03ae5169c2e9"
+        },
+        {
+          "group": "metal_training_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/015-metal_training_state_api.log",
+          "sha256": "3d8860a3657a81c0b9625e3dc51b2e630e59efcd9d2be1738981fe8bb276a5a2"
+        }
+      ]
+    },
+    {
+      "id": "PORT-10",
+      "operation_ids": [
+        "training-selected-record"
+      ],
+      "source_commit": "30639c64f8406b3143c625c9606455632fc79868",
+      "status": "locally-validated",
+      "producer_consumer_chain": "Resident cut buffer -> GPU selected-winner threshold -> scalar/vector evaluator metadata consumer",
+      "acceptance_record": "validation/cuda-port10-m3.txt",
+      "current_native_evidence": [
+        {
+          "group": "metal_feature_split_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/187-metal_feature_split_api.log",
+          "sha256": "2d79bd23c326d2704dc6e928c505d8d8129be01b6992552ca43e3906fc0e54f7"
+        },
+        {
+          "group": "metal_split_finalize",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/121-metal_split_finalize.log",
+          "sha256": "c986a8e5653cb806475bef02da8c956aed9153ee64452d19457b03ae5169c2e9"
+        },
+        {
+          "group": "metal_category_state_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/013-metal_category_state_api.log",
+          "sha256": "141493f5d81791ca91ce145697fcd639679ebe7aeaaa09d53b754f376edb3c74"
+        }
+      ]
+    },
+    {
+      "id": "PORT-11",
+      "operation_ids": [
+        "DATA-45"
+      ],
+      "source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+      "status": "locally-validated",
+      "producer_consumer_chain": "Feature-type snapshot/GPU categorical reduction and pointer clear -> subsequent sketch Push/Merge",
+      "acceptance_record": "validation/cuda-port11-m3.txt",
+      "current_native_evidence": [
+        {
+          "group": "metal_cuda_sketch_api",
+          "record": "validation/cuda-verify1-m3-run.json#focused",
+          "log": "results/verify1-numeric/009-metal_cuda_sketch_api.log",
+          "sha256": "970d667c67e5c3cc13993bc1aede6febd5bd7025afc0f5cabcb1cdd7e247200e"
+        },
+        {
+          "group": "metal_sketch_ingest_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/173-metal_sketch_ingest_api.log",
+          "sha256": "261e0947dcd0716f066c589babaee385587fa00c334f8764252c45a2dab1f12f"
+        },
+        {
+          "group": "metal_sketch_collective_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/009-metal_sketch_collective_api.log",
+          "sha256": "f765b44b626cb5e1e3ed214442dc1af8de9c613afad6c3b682fa936d5c3e6e7d"
+        },
+        {
+          "group": "metal_quantile_weights_api",
+          "record": "validation/cuda-port11-m3-run.json",
+          "log": "results/port11-integration/095-metal_quantile_weights_api.log",
+          "sha256": "52672b0a7498c50922e090980f788c732794c162492f9dae2b92820b92f0cf47"
+        }
+      ]
+    }
+  ],
+  "remaining": [
+    "VERIFY-2: implement/run shared CUDA harnesses on actual NVIDIA hardware; existing portable inputs and host source oracles are not a complete NVIDIA runner.",
+    "Cross-Apple, multi-host and extreme-size coverage remain untested as declared per contract.",
+    "PERF-1: freeze and benchmark current source on large HIGGS, wide, sparse and vector workloads after local acceptance."
+  ]
+}

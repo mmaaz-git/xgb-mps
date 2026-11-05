@@ -34,22 +34,13 @@ quantile precision and vector-row validity bugs, plus GPU state/data-placement
 gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
 **not a completion percentage or proof of parity**. See the
 [findings and evidence](docs/CUDA_AUDIT.md) and [ordered plan](docs/PLAN.md).
-All ten tasks are locally complete: [quantile precision](validation/cuda-num1-m3.txt),
-[vector sampling validity](validation/cuda-port9-m3.txt),
-[resident vector weights](validation/cuda-port1-m3.txt),
-[resident categorical state](validation/cuda-port2-m3.txt),
-[exact vector sums](validation/cuda-port3-m3.txt),
-[resident feature selection](validation/cuda-port6-m3.txt),
-[resident quantile weights](validation/cuda-port7-m3.txt),
-[GPU split-bound gathers](validation/cuda-port8-m3.txt),
-[GPU split thresholds](validation/cuda-port10-m3.txt), and
-[GPU sketch initialization](validation/cuda-port11-m3.txt).
-The latest change (`68c800e`) initializes sketch pointers and checks categorical
-types on GPU, preserving owned type snapshots through later batches.
-**Next: numerical-contract verification**, then actual NVIDIA comparisons and
-performance work. Closing the audit's implementation tasks is not proof of full parity.
-Numerical, scheduling and external-hardware limits remain explicit in the
-[parity ledger](docs/CUDA_PARITY.md).
+All ten tasks are locally complete. The [local acceptance report](docs/LOCAL_ACCEPTANCE.md)
+connects every fix and all 17 numerical contracts to passing fixtures and states
+the remaining limits. The latest production change (`68c800e`) initializes sketch
+pointers and categorical state on GPU; subsequent work adds numerical witnesses.
+**Local verification is complete, including CUDA compilation. Next: NVIDIA
+execution comparisons and current-source performance work.** Full parity remains
+unproven.
 
 `tree_method="exact"` is unsupported on MPS. For linear GPU training, use
 `booster="gblinear", updater="coord_descent"`; the default `shotgun` updater
@@ -115,7 +106,10 @@ tests passed, with one expected skip**, plus CPU build/API/schema and nine updat
 checks. PyTorch and MLX GPU interop tests ran. The
 [record](validation/cuda-port11-m3.txt) includes commands, source hashes and limits.
 The optional federated suite also passed at this revision: 14 transport, sketch,
-and learner groups, including TLS, with all workers on the same M3.
+and learner groups, including TLS, with all workers on the same M3. A subsequent
+focused run passed four native groups and 49 Python tests, including a new group
+with 21 explicit numerical witnesses. There are now 104 native groups; the new
+group passed separately from the 103-group full run. [Acceptance evidence](docs/LOCAL_ACCEPTANCE.md).
 
 The [CUDA CI workflow](.github/workflows/cuda-compile.yml) separately checks that
 shared-code changes still compile with NVIDIA dependencies. Successful compilation

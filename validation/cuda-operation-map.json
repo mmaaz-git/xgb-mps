@@ -1355,14 +1355,15 @@
       "source_commit": "30639c64f8406b3143c625c9606455632fc79868",
       "status": "locally-validated",
       "evidence": "validation/cuda-port10-m3.txt",
-      "limits": "CUDA compile for this source remains pending; NVIDIA execution remains VERIFY-2. Frozen caller ledger is unchanged."
+      "limits": "CUDA compile passed at bf1ebea; NVIDIA execution remains VERIFY-2. Frozen caller ledger is unchanged."
     },
     "PORT-11": {
       "source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
       "status": "locally-validated",
       "evidence": "validation/cuda-port11-m3.txt",
-      "limits": "CUDA compile for this source remains pending; full local Metal/CPU/federated checks pass; NVIDIA execution remains VERIFY-2. Frozen caller ledger is unchanged."
+      "limits": "CUDA compile passed at bf1ebea; NVIDIA execution remains VERIFY-2. Frozen caller ledger is unchanged."
     }
   },
-  "task_status_scope": "Group status and open_tasks describe audit_revision; current task status is in resolved_after_audit and completion_plan."
+  "task_status_scope": "Group status and open_tasks describe audit_revision; current task status is in resolved_after_audit and completion_plan.",
+  "current_acceptance": "validation/cuda-verify1-m3-run.json"
 }
