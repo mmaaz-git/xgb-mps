@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+# A newer revision supersedes the same branch/PR's compile-only evidence.
+concurrency:
+  group: cuda-compile-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   compile:
     runs-on: ubuntu-24.04
