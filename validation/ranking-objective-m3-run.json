@@ -1,5 +1,5 @@
 {
-  "status": "Complete Metal gradient/unbiased corpora and interchange checks passed; public-objective CUDA compile and execution pending",
+  "status": "Complete Metal gradient/unbiased corpora and interchange checks passed; public-objective CUDA compile in progress; NVIDIA execution absent",
   "suite": "ranking-objective-v1",
   "scope": "Existing full public ranking-gradient and repeated unbiased-objective corpora for P5-N05; includes NDCG, changing predictions, parent RNG and batched cases.",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -328,10 +328,15 @@
     "log_sha256": "7ff377ecd2348b0a7f6f4fb080de5219170d128a6a2f3fd8b309162a5bb5c0aa"
   },
   "cuda_compile": {
-    "status": "not_run",
+    "status": "in_progress",
     "gpu_execution": false,
     "previous_rounding_run": 42067452564,
-    "previous_run_includes_public_objectives": false
+    "previous_run_includes_public_objectives": false,
+    "run_id": 42073244457,
+    "head": "cee40209d55dcbd74a3538151b87a76c2c340d11",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42073244457",
+    "last_observed_utc": "2026-11-05T17:18:35.159934+00:00",
+    "job_id": 127406524402
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -345,5 +350,6 @@
     "Covers the original sampled public lifecycles; reloads, changed metadata shapes and other native-input/state combinations remain broader caller work.",
     "Separate primitive-rounding boundaries still need a matching CUDA runner.",
     "Report framing cannot authenticate hardware; retain actual build/runtime metadata and logs."
-  ]
+  ],
+  "harness_commit": "cee40209d55dcbd74a3538151b87a76c2c340d11"
 }
