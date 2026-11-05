@@ -1,5 +1,5 @@
 {
-  "status": "Full Metal cache corpus and independent reference/integrity checks passed; CUDA compilation and NVIDIA execution pending",
+  "status": "Complete Metal corpus and independent reference/integrity checks plus CUDA compile/link/host gates passed; NVIDIA execution pending",
   "suite": "integer-cache-v1",
   "recorded_utc": "2026-11-05T20:47:07.151094+00:00",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -238,20 +238,76 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "in_progress",
+    "status": "passed-compile-link-and-host-checks",
     "gpu_execution": false,
     "run_id": 42108648407,
     "head": "aee649cd547be9d0c2814c15eddbbe4f60251159",
     "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42108648407",
-    "declared_input_hashes": 59,
-    "scope": "Leaf/cache consumers with corrected typed cache accessor functor; six binaries"
+    "finished_utc": "2026-11-05T21:25:50.064197+00:00",
+    "production_steps": 197,
+    "harness_objects": 6,
+    "linked_binaries": 6,
+    "verified_input_hashes": 59,
+    "nvcomp_loader_probe": {
+      "status": "passed",
+      "gpu_execution": false
+    },
+    "nvcomp_runtime_path": "/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13/libnvcomp.so.5.3.0.16\n/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13",
+    "metric_source_isolation": {
+      "status": "passed",
+      "gpu_execution": false,
+      "registry_entries": 24,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-baseline.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-probe.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-defined-dynamic-symbols.txt": "599daf66f208e7929a234db26b14838d909627adddc34cd1ed850d0dfdd1cc58"
+      }
+    },
+    "sampling_rng_alignment": {
+      "status": "passed",
+      "gpu_execution": false,
+      "cases": 10005,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/sampling-rng-alignment.txt": "918099a29222fdb9b4e2c25ff8dc75f10c22537f7a5a7af6188a3ce889a05b1d"
+      }
+    },
+    "log_sha256": "6ac3fe51b62dfb4e7193d38c79b16b883b6b0846842e53d9b2f7e821bfc87624",
+    "build_record_sha256": "eb673563ae80e92fbd739b1274061648eb4048f516396a52adcb278a66a73863",
+    "library_sha256": "ab5a3cf95052d9dfbb1c84ba38092db8e85cfbfea21038c5e9692b980fe82820",
+    "binaries": {
+      "numerical": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_numerical_contracts",
+        "sha256": "fcdcfe01c63841df2765a15aef18ddb0b0377ce78322dedfb49445a1b1b3353a"
+      },
+      "aft": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_aft_contracts",
+        "sha256": "f15c52b67ff6915109d01fc00786ae28105fb985d5d6954c151c1a321c850d26"
+      },
+      "rng": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_rng_contracts",
+        "sha256": "ce5a0aa414d808a2c27ec6f99295aa15ef4ff00acac2e223ac2808176ce6f2d7"
+      },
+      "math": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_math_contracts",
+        "sha256": "08c5f24ae6b8beca85b49d11866b40cfa3b496a11d9fe3e976ccd198d934ad4c"
+      },
+      "ranking": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_ranking_contracts",
+        "sha256": "ccecc6c4f6a13b96146c85fa4f6d60ec59a96f6cd835f265e0499bbfbc1a3d93"
+      },
+      "metric": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_metric_contracts",
+        "sha256": "1a383318f0063d9f5f4d22aa353ffd36051f8786b1d934be7e4570a3b0ffa577"
+      }
+    },
+    "scope": "Includes integer leaf/cache consumers with typed cache accessor; predates linear consumer"
   },
   "cuda_runtime": {
     "status": "not_run",
     "command": "results/cuda-comparison-build/cmake/cuda_numerical_contracts --integer-cache results/integer-cache-inputs.bin results/integer-cache-cuda.bin"
   },
   "limits": [
-    "No NVIDIA execution; this CUDA consumer has not compiled yet.",
+    "No NVIDIA kernel execution; CUDA consumer compiled and linked in run42108648407.",
     "Metal materialized storage contains doubles; private integer storage is not exposed or fabricated.",
     "CUDA calls actual GHistIndex-to-ELLPACK conversion, DeviceHistogramBuilder/cache allocator/SubtractionTrick; first-page clearing is explicit caller orchestration.",
     "CUDA root diagnostic reduces actual histogram bins using production reduction/finalizer primitives; it is not the private updater root API, which normally reduces gradient rows.",

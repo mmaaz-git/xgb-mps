@@ -297,3 +297,16 @@ VERIFY-2 integer leaf/cache initial compiler run (terminal cache adapter failure
   Log SHA256: 63eafdf2a9b937b29f118156c0983b247a1d92a40c01456a13ae9d1284362557
   Build record SHA256: ca3d4d71473872ee25b13c976565bf2c1a149b1231aa971f20d6b537eb1b1a88
   Corrected compiler verification and NVIDIA execution remain pending.
+
+VERIFY-2 corrected integer leaf/cache compiler run (terminal success):
+  aee649cd547be9d0c2814c15eddbbe4f60251159:42108648407, completed 2026-11-05T21:25:50.064197+00:00
+  https://github.com/mmaaz-git/xgb-mps/actions/runs/42108648407
+  All59 declared input hashes verified against the exact CI revision.
+  Six CUDA objects, all197 production steps and six executable links passed.
+  Early nvCOMP loader check,24-entry metric registry/symbol isolation and
+  all10005 host sampling-RNG alignment cases passed.
+  Log SHA256: 6ac3fe51b62dfb4e7193d38c79b16b883b6b0846842e53d9b2f7e821bfc87624
+  Build record SHA256: eb673563ae80e92fbd739b1274061648eb4048f516396a52adcb278a66a73863
+  Library SHA256: ab5a3cf95052d9dfbb1c84ba38092db8e85cfbfea21038c5e9692b980fe82820
+  Resolves the cache accessor compiler failure above; includes both leaf/cache.
+  This run predates the linear consumer. No NVIDIA kernels executed.
