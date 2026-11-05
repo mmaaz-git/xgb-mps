@@ -33,8 +33,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates git cmake ninja-build g++ pkg-config \
-            libgrpc++-dev protobuf-compiler protobuf-compiler-grpc \
-            libnccl2=2.32.3-1+cuda13.4 libnccl-dev=2.32.3-1+cuda13.4 \
+            libgrpc++-dev libprotobuf-dev protobuf-compiler protobuf-compiler-grpc \
             libnvcomp6-cuda-13=6.0.0.12-1 libnvcomp6-dev-cuda-13=6.0.0.12-1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Compile CUDA, NCCL, nvCOMP and federated paths
