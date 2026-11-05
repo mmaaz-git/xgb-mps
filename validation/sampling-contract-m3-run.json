@@ -1,5 +1,5 @@
 {
-  "status": "Complete Metal sampling/reference checks passed; initial CUDA object compilation failed, corrected source awaits CI; NVIDIA execution pending",
+  "status": "Complete Metal sampling/reference checks passed; corrected CUDA consumer compiling; NVIDIA execution pending",
   "suite": "sampling-v1",
   "recorded_utc": "2026-11-05T20:18:09.859519+00:00",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -284,8 +284,11 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "correction-awaiting-CI",
-    "gpu_execution": false
+    "status": "in_progress",
+    "gpu_execution": false,
+    "run_id": 42103889374,
+    "head": "2b2e298f9fb8648331a5034f1736bca3cd398194",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42103889374"
   },
   "cuda_runtime": {
     "status": "not_run",
