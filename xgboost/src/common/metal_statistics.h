@@ -144,5 +144,7 @@ struct Statistics {
       model_snapshot_bytes;
   // Resident input bindings for prediction, including compact vector leaf caches.
   std::uint64_t prediction_shared_input_bytes;
+  std::uint64_t split_category_store_dispatches, split_category_readback_bytes,
+      partition_category_shared_input_bytes, partition_category_host_copy_bytes;
 };
 }  // namespace xgboost::common::metal

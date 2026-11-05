@@ -619,6 +619,7 @@ class HistMultiEvaluator {
   // Exact node sums and selected child sums persist by node ID across queues.
   std::vector<GradientPairInt64> metal_node_sums_, metal_split_sums_;
   std::unique_ptr<common::metal::SplitWeightStorage> metal_weights_;
+  std::unique_ptr<common::metal::SplitCategoryStorage> metal_categories_;
   std::vector<common::metal::SplitNodeResult> metal_node_results_;
 #endif
 
@@ -902,11 +903,12 @@ class HistMultiEvaluator {
                                         parameters, true, &finalized, nullptr,
                                         metal_workspace_.get());
       std::vector<common::metal::SplitWeightCopy> weight_copies;
+      std::vector<common::metal::SplitCategoryCopy> category_copies;
       std::vector<common::metal::SplitCategoryTask> category_tasks;
       std::vector<std::size_t> category_slot(entries.size());
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
         auto i = finalized[entry].winner;
-        if (i == std::numeric_limits<std::uint32_t>::max() || !tasks[i].kind) continue;
+        if (i == std::numeric_limits<std::uint32_t>::max() || !cut.HasCategorical()) continue;
         category_slot[entry] = category_tasks.size();
         category_tasks.push_back({i, ptr[mapping[i].second]});
       }
@@ -915,9 +917,8 @@ class HistMultiEvaluator {
               ? 0u
               : static_cast<std::uint32_t>(
                     common::CatBitField::ComputeStorageSize(cut.MaxCategory() + 1));
-      std::vector<std::uint32_t> category_bits;
       common::metal::BuildSplitCategories(cut.Values(), category_tasks, category_words,
-                                          &category_bits, metal_workspace_.get());
+                                          nullptr, metal_workspace_.get());
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
         auto i = finalized[entry].winner;
         if (i == std::numeric_limits<std::uint32_t>::max()) continue;
@@ -937,10 +938,6 @@ class HistMultiEvaluator {
         auto right = linalg::MakeVec(children.data() + 2 * task.parent_begin + targets, targets);
         candidate.Update(finalized[entry].loss_chg, f, split, r.default_left, task.kind != 0, left,
                          right);
-        if (task.kind) {
-          auto begin = category_bits.begin() + category_slot[entry] * category_words;
-          candidate.cat_bits.assign(begin, begin + category_words);
-        }
         if (entries[entry].split.Update(candidate)) {
           auto offset = std::size_t(nid) * 2 * targets;
           if (metal_split_sums_.size() < offset + 2 * targets)
@@ -949,11 +946,19 @@ class HistMultiEvaluator {
                       metal_split_sums_.data() + offset);
           weight_copies.push_back(
               {static_cast<std::uint32_t>(entry), static_cast<std::uint32_t>(nid)});
+          if (category_words)
+            category_copies.push_back({static_cast<std::uint32_t>(category_slot[entry]),
+                                       static_cast<std::uint32_t>(nid)});
           if (metal_node_results_.size() <= std::size_t(nid)) metal_node_results_.resize(nid + 1);
           metal_node_results_[nid] = finalized[entry];
         }
       }
       metal_weights_->Store(*metal_workspace_, weight_copies);
+      if (!category_copies.empty()) {
+        if (!metal_categories_)
+          metal_categories_ = common::metal::MakeSplitCategoryStorage(category_words);
+        metal_categories_->Store(*metal_workspace_, category_copies);
+      }
       return;
     }
 #endif
@@ -1067,6 +1072,7 @@ class HistMultiEvaluator {
       metal_node_sums_.assign(quantized.begin(), quantized.end());
       metal_split_sums_.clear();
       metal_weights_ = common::metal::MakeSplitWeightStorage(n_targets);
+      metal_categories_.reset();
       metal_node_results_.clear();
     }
 #endif
@@ -1153,7 +1159,15 @@ class HistMultiEvaluator {
 
     common::Span<CatWordT const> cat_bits;
     if (candidate.split.is_cat) {
-      cat_bits = candidate.split.cat_bits;
+#if defined(XGBOOST_USE_METAL)
+      if (ctx_->IsMPS()) {
+        CHECK(metal_categories_);
+        cat_bits = metal_categories_->Get(candidate.nid);
+      } else
+#endif
+      {
+        cat_bits = candidate.split.cat_bits;
+      }
     }
     auto as_span = [](linalg::VectorView<float const> weight) {
       // sliced weight might have larger span as the underlying data

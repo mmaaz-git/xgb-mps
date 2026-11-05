@@ -124,22 +124,24 @@ class CommonRowPartitioner {
       std::vector<std::int32_t> conditions(nodes.size());
       FindSplitConditions(nodes, tree, gmat, &conditions);
       std::vector<common::metal::PartitionSplit> splits;
-      std::vector<std::uint32_t> categories;
+      auto const& categories = tree.GetCategoriesMatrix();
+      CHECK_LE(categories.categories.size(), std::numeric_limits<std::uint32_t>::max());
       auto const& ids = *row_set_collection_.Data();
       for (std::size_t i = 0; i < nodes.size(); ++i) {
         auto node = nodes[i].nid;
         auto const& rows = row_set_collection_[node];
         auto begin = rows.Size() ? rows.begin() - ids.data() : 0;
         auto cat = tree.SplitType(node) == FeatureType::kCategorical;
-        auto bits = cat ? tree.NodeCats(node) : common::Span<std::uint32_t const>{};
-        CHECK_LE(categories.size() + bits.size(), std::numeric_limits<std::uint32_t>::max());
+        auto segment = cat ? categories.node_ptr[node] : RegTree::CategoricalSplitMatrix::Segment{};
+        CHECK_LE(segment.beg, categories.categories.size());
+        CHECK_LE(segment.size, categories.categories.size() - segment.beg);
         splits.push_back({static_cast<std::uint64_t>(begin), begin + rows.Size(),
                           tree.SplitIndex(node), conditions[i], tree.DefaultLeft(node), cat,
-                          static_cast<std::uint32_t>(categories.size()),
-                          static_cast<std::uint32_t>(bits.size()), 0, 0});
-        categories.insert(categories.end(), bits.begin(), bits.end());
+                          static_cast<std::uint32_t>(segment.beg),
+                          static_cast<std::uint32_t>(segment.size), 0, 0});
       }
-      auto counts = row_set_collection_.metal_rows->Partition(gmat, std::move(splits), categories);
+      auto counts = row_set_collection_.metal_rows->Partition(gmat, std::move(splits),
+                                                              categories.categories);
       for (std::size_t i = 0; i < nodes.size(); ++i) {
         auto nid = nodes[i].nid;
         auto size = row_set_collection_[nid].Size();

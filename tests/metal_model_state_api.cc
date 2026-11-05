@@ -15,6 +15,7 @@
 
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/metal_model.h"
+#include "../xgboost/src/tree/tree_view.h"
 #include "xgboost/context.h"
 #include "xgboost/json.h"
 #include "xgboost/tree_model.h"
@@ -241,6 +242,13 @@ void Tree(std::size_t targets, float eta, bool resident = false) {
     auto before_expand = metal::GetStatistics();
     tree.Expand(&ctx, batch);
     if (resident) {
+      auto view = tree::MultiTargetTreeView{&tree, DeviceOrd::MPS()};
+      Check(view.GetCategoriesMatrix().categories.data() ==
+                tree.GetSplitCategories(DeviceOrd::MPS()).data(),
+            "Training view lost device category storage");
+      for (auto node : nodes)
+        Check(view.SplitType(node) == FeatureType::kCategorical && view.NodeCats(node).size() == 4,
+              "Host category descriptors changed");
       auto after_expand = metal::GetStatistics();
       Check(after_expand.vector_upload_bytes == before_expand.vector_upload_bytes &&
                 after_expand.vector_readback_bytes == before_expand.vector_readback_bytes &&

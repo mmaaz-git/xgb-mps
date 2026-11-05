@@ -182,6 +182,10 @@ class MultiTargetHistBuilder {
   RegTree const *p_last_tree_{nullptr};
   DMatrix const *p_last_fmat_{nullptr};
 
+  tree::MultiTargetTreeView TrainingView(RegTree const* tree) const {
+    return {tree, ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU()};
+  }
+
  public:
 #if defined(XGBOOST_USE_METAL)
   void SetQuantized(std::shared_ptr<common::metal::QuantizedGradients const> gradients) {
@@ -199,7 +203,7 @@ class MultiTargetHistBuilder {
     std::size_t page_id{0};
     for (auto const &page : p_fmat->GetBatches<GHistIndexMatrix>(ctx_, HistBatch(this->param_))) {
       this->partitioner_.at(page_id).UpdatePosition(this->ctx_, page, applied,
-                                                    p_tree->HostMtView());
+                                                    this->TrainingView(p_tree));
       page_id++;
     }
     monitor_->Stop(__func__);
@@ -272,7 +276,7 @@ class MultiTargetHistBuilder {
       collective::SafeColl(rc);
     }
 
-    histogram_builder_->BuildRootHist(p_fmat, p_tree->HostMtView(), partitioner_, gpair, best,
+    histogram_builder_->BuildRootHist(p_fmat, this->TrainingView(p_tree), partitioner_, gpair, best,
                                       HistBatch(param_));
 
     float root_sum_hess = 0.0f;
@@ -318,7 +322,7 @@ class MultiTargetHistBuilder {
                       std::vector<MultiExpandEntry> const &valid_candidates,
                       linalg::MatrixView<GradientPair const> gpair) {
     monitor_->Start(__func__);
-    histogram_builder_->BuildHistLeftRight(ctx_, p_fmat, p_tree->HostMtView(), partitioner_,
+    histogram_builder_->BuildHistLeftRight(ctx_, p_fmat, this->TrainingView(p_tree), partitioner_,
                                            valid_candidates, gpair, HistBatch(param_));
     monitor_->Stop(__func__);
   }
@@ -349,11 +353,11 @@ class MultiTargetHistBuilder {
 #if defined(XGBOOST_USE_METAL)
       if (ctx_->IsMPS()) {
         CHECK(quantized_);
-        part.LeafPartition(ctx_, tree.HostMtView(), gpair, positions, quantized_.get());
+        part.LeafPartition(ctx_, this->TrainingView(&tree), gpair, positions, quantized_.get());
         continue;
       }
 #endif
-      part.LeafPartition(ctx_, tree.HostMtView(), gpair, positions);
+      part.LeafPartition(ctx_, this->TrainingView(&tree), gpair, positions);
     }
     monitor_->Stop(__func__);
   }
@@ -368,7 +372,7 @@ class MultiTargetHistBuilder {
   void ExpandTreeLeaf(linalg::Matrix<GradientPair> const &full_grad, RegTree *p_tree) {
     CHECK(p_last_fmat_);
     CHECK_EQ(full_grad.Shape(1), p_tree->NumTargets());
-    auto tree = p_tree->HostMtView();
+    auto tree = this->TrainingView(p_tree);
     auto n_targets = p_tree->NumTargets();
     auto value_gpair = full_grad.View(ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU());
 

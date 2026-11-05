@@ -93,6 +93,8 @@ std::atomic<std::uint64_t> model_weight_copy_dispatches{0}, model_category_copy_
 std::atomic<std::uint64_t> split_weight_store_dispatches{0}, split_weight_readback_bytes{0},
     model_host_copy_bytes{0}, model_snapshot_bytes{0};
 std::atomic<std::uint64_t> prediction_shared_input_bytes{0};
+std::atomic<std::uint64_t> split_category_store_dispatches{0}, split_category_readback_bytes{0},
+    partition_category_shared_input_bytes{0}, partition_category_host_copy_bytes{0};
 std::atomic<std::uint64_t> leaf_sum_init_dispatches{0}, leaf_sum_dispatches{0},
     leaf_weight_dispatches{0}, leaf_fitting_gpu_time_ns{0};
 std::atomic<std::uint64_t> linear_gradient_dispatches{0}, linear_residual_dispatches{0},
@@ -734,6 +736,8 @@ class MetalSplitWorkspace final : public SplitWorkspace {
   std::size_t candidate_child_count{0};
   bool vector_candidates{false};
   std::vector<SplitFinalizeNode> finalized_nodes;
+  std::size_t category_count{0};
+  std::uint32_t category_words{0};
   std::vector<BufferHolder> metadata;
 };
 id<MTLBuffer> Scratch(Runtime const& rt, id<MTLBuffer> __strong* buffer, std::size_t bytes,
@@ -1007,6 +1011,8 @@ class MetalRows final : public DeviceRows {
     std::size_t largest_block_count = 0;
     for (std::size_t node = 0; node < splits.size(); ++node) {
       auto& split = splits[node];
+      CHECK_LE(split.cat_begin, categories.size());
+      CHECK_LE(split.cat_size, categories.size() - split.cat_begin);
       CHECK_LE(split.end, size_);
       CHECK_LE(split.begin, split.end);
       split.block_begin = blocks.size();
@@ -1030,7 +1036,15 @@ class MetalRows final : public DeviceRows {
       auto split_buffer =
           Workspace(&splits_, splits.size() * sizeof(PartitionSplit), splits.data());
       auto block_buffer = Workspace(&blocks_, blocks.size() * sizeof(Block), blocks.data());
-      auto cats = Workspace(&categories_, categories.size_bytes(), categories.data());
+      auto cats = TryBorrowMemory(rt_.device, categories.data(), categories.size_bytes(), 4);
+      if (cats.buffer) {
+        partition_category_shared_input_bytes.fetch_add(categories.size_bytes(),
+                                                         std::memory_order_relaxed);
+      } else {
+        cats = {Workspace(&categories_, categories.size_bytes(), categories.data()), 0};
+        partition_category_host_copy_bytes.fetch_add(categories.size_bytes(),
+                                                      std::memory_order_relaxed);
+      }
       auto counts = Workspace(&counts_, blocks.size() * sizeof(std::uint32_t));
       auto prefix = Workspace(&prefix_, blocks.size() * sizeof(std::uint32_t));
       auto left = Workspace(&left_, splits.size() * sizeof(std::uint64_t));
@@ -1051,7 +1065,7 @@ class MetalRows final : public DeviceRows {
       [encoder setBuffer:rows_ offset:0 atIndex:4];
       [encoder setBuffer:split_buffer offset:0 atIndex:5];
       [encoder setBuffer:block_buffer offset:0 atIndex:6];
-      [encoder setBuffer:cats offset:0 atIndex:7];
+      [encoder setBuffer:cats.buffer offset:cats.offset atIndex:7];
       [encoder setBuffer:ranks_ offset:0 atIndex:8];
       [encoder setBuffer:counts offset:0 atIndex:9];
       [encoder setBuffer:saved_rows_ offset:0 atIndex:10];
@@ -2293,7 +2307,11 @@ Statistics GetStatistics() {
           split_weight_readback_bytes.load(std::memory_order_relaxed),
           model_host_copy_bytes.load(std::memory_order_relaxed),
           model_snapshot_bytes.load(std::memory_order_relaxed),
-          prediction_shared_input_bytes.load(std::memory_order_relaxed)};
+          prediction_shared_input_bytes.load(std::memory_order_relaxed),
+          split_category_store_dispatches.load(std::memory_order_relaxed),
+          split_category_readback_bytes.load(std::memory_order_relaxed),
+          partition_category_shared_input_bytes.load(std::memory_order_relaxed),
+          partition_category_host_copy_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -10013,9 +10031,13 @@ void BuildSplitCategories(Span<float const> cuts, Span<SplitCategoryTask const> 
                           std::uint32_t words_per_node, std::vector<std::uint32_t>* output,
                           SplitWorkspace* workspace) {
   static_assert(sizeof(SplitCategoryTask) == 8);
-  CHECK(output);
+  if (workspace) {
+    auto scratch = static_cast<MetalSplitWorkspace*>(workspace);
+    scratch->category_count = 0;
+    scratch->category_words = 0;
+  }
   if (tasks.empty()) {
-    output->clear();
+    if (output) output->clear();
     return;
   }
   CHECK(workspace);
@@ -10079,9 +10101,68 @@ void BuildSplitCategories(Span<float const> cuts, Span<SplitCategoryTask const> 
     split_category_nodes.fetch_add(tasks.size(), std::memory_order_relaxed);
     CHECK_EQ(*static_cast<std::uint32_t const*>(error.contents), 0)
         << "Invalid category, partition, sorted index or bitset extent";
-    output->resize(count);
-    std::memcpy(output->data(), bits.contents, count * sizeof(std::uint32_t));
+    if (output) {
+      output->resize(count);
+      std::memcpy(output->data(), bits.contents, count * sizeof(std::uint32_t));
+      split_category_readback_bytes.fetch_add(count * sizeof(std::uint32_t),
+                                               std::memory_order_relaxed);
+    }
+    scratch->category_count = tasks.size();
+    scratch->category_words = words_per_node;
   }
+}
+
+namespace {
+class MetalSplitCategoryStorage final : public SplitCategoryStorage {
+  std::uint32_t words_;
+  std::unique_ptr<VectorBuffer> data_{MakeVectorBuffer()};
+  std::vector<bool> ready_;
+
+ public:
+  explicit MetalSplitCategoryStorage(std::uint32_t words) : words_{words} { CHECK_GT(words, 0); }
+  Span<std::uint32_t const> Get(std::uint32_t node) const override {
+    CHECK_LT(node, ready_.size());
+    CHECK(ready_[node]) << "No selected categories for this node.";
+    return {static_cast<std::uint32_t const*>(data_->Data()) + std::size_t(node) * words_, words_};
+  }
+  void Store(SplitWorkspace const& workspace, Span<SplitCategoryCopy const> copies) override {
+    if (copies.empty()) return;
+    auto const& source = static_cast<MetalSplitWorkspace const&>(workspace);
+    CHECK_EQ(words_, source.category_words);
+    std::vector<std::uint32_t> ids;
+    auto size = ready_.size();
+    for (auto const& copy : copies) {
+      CHECK_LT(copy.source, source.category_count);
+      size = std::max(size, std::size_t(copy.node) + 1);
+      ids.push_back(copy.node);
+    }
+    std::sort(ids.begin(), ids.end());
+    CHECK(std::adjacent_find(ids.begin(), ids.end()) == ids.end())
+        << "Duplicate category destinations";
+    auto& rt = GetRuntime();
+    auto bytes_per_node = std::size_t{words_} * sizeof(std::uint32_t);
+    CHECK_LE(size, rt.device.maxBufferLength / bytes_per_node);
+    data_->Resize(size * bytes_per_node);
+    @autoreleasepool {
+      auto out = TryBorrowMemory(rt.device, data_->Data(), data_->SizeBytes(), 4);
+      CHECK(out.buffer) << "Cannot bind owned Metal category storage.";
+      auto command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      for (auto const& copy : copies) {
+        [blit copyFromBuffer:source.category_output sourceOffset:copy.source * bytes_per_node
+                   toBuffer:out.buffer destinationOffset:out.offset + copy.node * bytes_per_node
+                       size:bytes_per_node];
+      }
+      [blit endEncoding];
+      CompleteOperation(command, &split_category_store_dispatches, &split_gpu_time_ns);
+    }
+    ready_.resize(size, false);
+    for (auto node : ids) ready_[node] = true;
+  }
+};
+}  // namespace
+std::unique_ptr<SplitCategoryStorage> MakeSplitCategoryStorage(std::uint32_t words_per_node) {
+  return std::make_unique<MetalSplitCategoryStorage>(words_per_node);
 }
 
 namespace {

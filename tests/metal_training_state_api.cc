@@ -282,6 +282,71 @@ void VectorLeafSampling() {
         }
 }
 
+void CategoricalUpdater(unsigned targets, bool onehot, bool lossguide) {
+  current = "resident category updater/" + std::to_string(targets) + "/" +
+            std::to_string(onehot) + "/" + std::to_string(lossguide);
+  constexpr std::size_t rows = 257, columns = 2;
+  std::vector<float> data(rows * columns);
+  for (std::size_t r = 0; r < rows; ++r) {
+    data[2 * r] = r % 11 ? float(r % 9) : NAN;
+    data[2 * r + 1] = float(r / 9 % 7);
+  }
+  data::DenseAdapter adapter{data.data(), rows, columns};
+  std::unique_ptr<DMatrix> matrix{DMatrix::Create(&adapter, NAN, 2)};
+  matrix->Info().feature_types.HostVector() = {FeatureType::kCategorical, FeatureType::kNumerical};
+  Context ctx;
+  ctx.Init({{"device", "mps"}, {"nthread", "2"}});
+  ObjInfo task{ObjInfo::kRegression};
+  tree::TrainParam param;
+  Args args{{"max_depth", "4"}, {"max_bin", "17"}, {"max_cached_hist_node", "1"},
+            {"max_cat_to_onehot", onehot ? "16" : "2"},
+            {"grow_policy", lossguide ? "lossguide" : "depthwise"}};
+  param.InitAllowUnknown(args);  // max_cached_hist_node belongs to the updater configuration.
+  std::unique_ptr<TreeUpdater> updater{TreeUpdater::Create("grow_quantile_histmaker", &ctx, &task)};
+  updater->Configure(args);
+  GradientContainer gradients;
+  gradients.gpair.Reshape(rows, targets);
+  auto pairs = gradients.gpair.HostView();
+  for (std::size_t r = 0; r < rows; ++r)
+    for (unsigned t = 0; t < targets; ++t)
+      pairs(r, t) = {(float(int(r % 9) - 4) * 4.f + data[2 * r + 1]) * (t + 1), 1.f};
+  gradients.gpair.View(DeviceOrd::MPS());
+  RegTree model(targets, columns);
+  std::vector<RegTree*> trees{&model};
+  std::vector<HostDeviceVector<bst_node_t>> positions(1);
+  auto before = metal::GetStatistics();
+  updater->Update(&param, &gradients, matrix.get(), positions, trees);
+  auto after = metal::GetStatistics();
+  // Ordinary vector SetLeaves reads final base weights once, as CUDA does.
+  // Any growing-tree category HostView adds bytes and violates this bound.
+  Check(after.vector_readback_bytes - before.vector_readback_bytes ==
+            model.NumNodes() * targets * sizeof(float),
+        "Category payload was read back during production tree growth");
+  Check(after.split_category_readback_bytes == before.split_category_readback_bytes &&
+            after.partition_category_host_copy_bytes == before.partition_category_host_copy_bytes,
+        "Production categorical payload used host publication/staging");
+  Check(after.split_category_store_dispatches > before.split_category_store_dispatches &&
+            after.partition_category_shared_input_bytes > before.partition_category_shared_input_bytes,
+        "Production categorical storage/partition consumers missing");
+  Owned(positions[0]);
+  auto view = model.HostMtView();  // First intentional CPU category inspection.
+  Check(view.HasCategoricalSplit(), "Fixture did not select a category split");
+  auto leaves = positions[0].ConstHostSpan();
+  for (std::size_t r = 0; r < rows; ++r) {
+    bst_node_t node = 0;
+    while (!view.IsLeaf(node)) {
+      auto value = data[r * columns + view.SplitIndex(node)];
+      bool left = std::isnan(value) ? view.DefaultLeft(node)
+                  : view.SplitType(node) == FeatureType::kCategorical
+                      ? (view.NodeCats(node)[0] & (1u << (31u - unsigned(value)))) == 0
+                      : value < view.SplitCond(node);
+      node = left ? view.LeftChild(node) : view.RightChild(node);
+    }
+    Check(leaves[r] == node, "Resident-category partition position differs");
+  }
+  ++cases;
+}
+
 void Updater(bool approx, unsigned targets, bool reduced, unsigned forest, unsigned sampling,
              bool missing) {
   current = "updater/" + std::to_string(approx) + "/" + std::to_string(targets) + "/" +
@@ -388,6 +453,9 @@ int main() {
     for (auto rows : {1u, 257u, 4097u})
       for (bool grouped : {false, true})
         for (unsigned alias = 0; alias < 3; ++alias) Weights(rows, grouped, alias);
+    for (unsigned targets : {3u, 17u})
+      for (bool onehot : {false, true})
+        for (bool lossguide : {false, true}) CategoricalUpdater(targets, onehot, lossguide);
     for (bool approx : {false, true})
       for (unsigned targets : {1u, 3u}) {
         if (approx && targets > 1) continue;

@@ -37,6 +37,11 @@ def test_categorical_gpu_assembly(metal, strategy, growth, onehot, sparse_ids):
     assert categorical > 0
     assert after["split_category_dispatches"] > before["split_category_dispatches"]
     assert after["split_category_nodes"] - before["split_category_nodes"] >= categorical
+    if strategy == "multi_output_tree":
+        assert after["split_category_store_dispatches"] > before["split_category_store_dispatches"]
+        assert after["split_category_readback_bytes"] == before["split_category_readback_bytes"]
+        assert after["partition_category_host_copy_bytes"] == before["partition_category_host_copy_bytes"]
+        assert after["partition_category_shared_input_bytes"] > before["partition_category_shared_input_bytes"]
     cpu = xgb.Booster(params={"device": "cpu"}, model_file=model.save_raw())
     np.testing.assert_array_equal(model.predict(d), cpu.predict(d))
     np.testing.assert_array_equal(model.inplace_predict(x), cpu.inplace_predict(x))
@@ -78,3 +83,24 @@ def test_no_category_dispatch_without_categorical_winner(metal, strategy, catego
     assert all((len(tree["left_children"]) == 1) == categorical for tree in trees(model))
     for key in ["split_category_dispatches", "split_category_nodes"]:
         assert after[key] == before[key]
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_vector_numeric_winners_clear_category_storage(metal, empty):
+    # CUDA clears node category storage even when a numeric feature wins.
+    # An empty categorical column must not create a zero-width invalid store.
+    x = np.column_stack([np.arange(97, dtype=np.float32),
+                         np.full(97, np.nan if empty else 0, dtype=np.float32)])
+    y = np.column_stack([x[:, 0], -x[:, 0]])
+    data = xgb.DMatrix(x, label=y, feature_types=["q", "c"])
+    params = dict(device="mps", tree_method="hist", multi_strategy="multi_output_tree",
+                  nthread=1, base_score=0, max_depth=3, max_bin=17)
+    before = xgb.metal_info()
+    model = xgb.train(params, data, 2)
+    after = xgb.metal_info()
+    assert all(len(tree["left_children"]) > 1 and not any(tree["split_type"])
+               for tree in trees(model))
+    assert after["split_category_store_dispatches"] > before["split_category_store_dispatches"]
+    assert after["split_category_readback_bytes"] == before["split_category_readback_bytes"]
+    cpu = xgb.Booster(params={"device": "cpu"}, model_file=model.save_raw())
+    np.testing.assert_array_equal(model.predict(data), cpu.predict(data))

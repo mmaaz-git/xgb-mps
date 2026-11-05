@@ -149,6 +149,9 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
 
   auto rows = metal::MakeDeviceRows();
   std::vector<std::uint32_t> categories{(1u << 31) | (1u << 28) | (1u << 24)};
+  // Nonzero input offset exercises binding directly from persistent GPU storage.
+  HostDeviceVector<std::uint32_t> resident_categories({0xdeadbeef, categories[0], 0xabababab},
+                                                    DeviceOrd::MPS());
   for (unsigned f = 0; f < cols; ++f) {
     for (bool missing_left : {false, true}) {
       rows->Reset(n, base);
@@ -173,7 +176,20 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
         (goes_left ? left : right).push_back(base + r);
       }
       auto stats = metal::GetStatistics();
-      auto counts = rows->Partition(page, {split}, categories);
+      auto input = missing_left ? resident_categories.ConstDeviceSpan().subspan(1, 1)
+                                : common::Span<std::uint32_t const>{categories};
+      auto counts = rows->Partition(page, {split}, input);
+      if (missing_left) {
+        auto after = metal::GetStatistics();
+        Check(after.partition_category_shared_input_bytes -
+                  stats.partition_category_shared_input_bytes == (n ? input.size_bytes() : 0),
+              "Partition did not bind resident categories");
+        Check(after.partition_category_host_copy_bytes == stats.partition_category_host_copy_bytes &&
+                  after.vector_readback_bytes == stats.vector_readback_bytes &&
+                  after.vector_upload_bytes == stats.vector_upload_bytes &&
+                  !resident_categories.HostCanRead(),
+              "Partition published category words through CPU memory");
+      }
       Check(counts.size() == 1 && counts[0] == left.size(), "Exact compressed partition count");
       left.insert(left.end(), right.begin(), right.end());
       std::vector<bst_idx_t> actual(n);

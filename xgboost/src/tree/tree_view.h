@@ -232,6 +232,13 @@ struct MultiTargetTreeView : public WalkTreeMixIn<MultiTargetTreeView>, public C
   explicit MultiTargetTreeView(DeviceOrd device, bool need_stat, RegTree const* tree);
   /** @brief Create a host view */
   explicit MultiTargetTreeView(RegTree const* tree);
+  // Host topology/statistics and category descriptors, with category bit words
+  // on category_device. Device words must only be consumed by device operations.
+  MultiTargetTreeView(RegTree const* tree, DeviceOrd category_device);
+
+ private:
+  MultiTargetTreeView(DeviceOrd device, bool need_stat, RegTree const* tree,
+                      RegTree::CategoricalSplitMatrix categories);
 };
 
 /**

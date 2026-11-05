@@ -162,9 +162,22 @@ void UpdateSplitBounds(Span<float> lower, Span<float> upper, std::uint32_t paren
 struct SplitCategoryTask {
   std::uint32_t candidate, cut_begin;
 };
+struct SplitCategoryCopy {
+  std::uint32_t source, node;
+};
+// Node-indexed selected bitsets, retained across candidate-workspace reuse.
+// Reacquire views after a Store that grows storage.
+class SplitCategoryStorage {
+ public:
+  virtual ~SplitCategoryStorage() = default;
+  virtual void Store(SplitWorkspace const& workspace, Span<SplitCategoryCopy const> copies) = 0;
+  virtual Span<std::uint32_t const> Get(std::uint32_t node) const = 0;
+};
+std::unique_ptr<SplitCategoryStorage> MakeSplitCategoryStorage(std::uint32_t words_per_node);
 // Build one zero-initialized LBitField32 per requested candidate from the latest
 // successful quantized evaluation. Reads resident results and sorted bin indices.
 // Numeric and invalid candidates produce empty bitsets; tasks can be reordered.
+// A null output retains the payload only in the workspace for device storage.
 void BuildSplitCategories(Span<float const> cuts, Span<SplitCategoryTask const> tasks,
                           std::uint32_t words_per_node, std::vector<std::uint32_t>* output,
                           SplitWorkspace* workspace);

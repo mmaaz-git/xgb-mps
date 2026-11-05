@@ -40,7 +40,11 @@ ScalarTreeView::ScalarTreeView(DeviceOrd device, bool need_stat, RegTree const* 
 }
 
 MultiTargetTreeView::MultiTargetTreeView(DeviceOrd device, bool need_stat, RegTree const* tree)
-    : CategoriesMixIn{tree->GetCategoriesMatrix(device)},
+    : MultiTargetTreeView{device, need_stat, tree, tree->GetCategoriesMatrix(device)} {}
+
+MultiTargetTreeView::MultiTargetTreeView(DeviceOrd device, bool need_stat, RegTree const* tree,
+                                        RegTree::CategoricalSplitMatrix categories)
+    : CategoriesMixIn{categories},
       left{DispatchPtr(device, tree->GetMultiTargetTree()->left_)},
       right{DispatchPtr(device, tree->GetMultiTargetTree()->right_)},
       parent{DispatchPtr(device, tree->GetMultiTargetTree()->parent_)},
@@ -54,5 +58,11 @@ MultiTargetTreeView::MultiTargetTreeView(DeviceOrd device, bool need_stat, RegTr
 
 MultiTargetTreeView::MultiTargetTreeView(RegTree const* tree)
     : MultiTargetTreeView{DeviceOrd::CPU(), true, tree} {}
+
+MultiTargetTreeView::MultiTargetTreeView(RegTree const* tree, DeviceOrd category_device)
+    : MultiTargetTreeView{DeviceOrd::CPU(), true, tree,
+                          {tree->GetSplitTypes(DeviceOrd::CPU()),
+                           tree->GetSplitCategories(category_device),
+                           tree->GetSplitCategoriesPtr()}} {}
 
 }  // namespace xgboost::tree

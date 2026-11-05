@@ -23,6 +23,7 @@ using namespace xgboost;
 namespace metal = common::metal;
 std::size_t direct_nodes = 0, words_checked = 0, api_calls = 0;
 std::size_t weight_fields = 0, weight_storage_cases = 0;
+std::size_t category_storage_cases = 0;
 void Check(bool ok, char const* text) {
   if (!ok) throw std::runtime_error(text);
 }
@@ -254,6 +255,54 @@ void WeightStorage(unsigned targets, metal::SplitWorkspace* workspace,
   ++weight_storage_cases;
 }
 
+void CategoryStorage(std::vector<float> const& values,
+                      std::vector<metal::SplitCategoryTask> const& requests, unsigned words,
+                      std::vector<unsigned> const& expected, metal::SplitWorkspace* workspace) {
+  auto storage = metal::MakeSplitCategoryStorage(words);
+  auto before = metal::GetStatistics();
+  metal::BuildSplitCategories(values, requests, words, nullptr, workspace);
+  storage->Store(*workspace, std::vector<metal::SplitCategoryCopy>{{0, 5}, {1, 0}, {2, 17}});
+  // Reuse the scratch payload, overwrite numeric node17 with one-hot words,
+  // and grow past node256. Node0/5 must retain their earlier selected bitsets.
+  std::vector<metal::SplitCategoryTask> next{requests[1], requests[2]};
+  metal::BuildSplitCategories(values, next, words, nullptr, workspace);
+  storage->Store(*workspace, std::vector<metal::SplitCategoryCopy>{{0, 17}, {1, 257}});
+  Reject([&] { storage->Get(1); });
+  Reject([&] { storage->Store(*workspace, std::vector<metal::SplitCategoryCopy>{{2, 1}}); });
+  Reject([&] {
+    storage->Store(*workspace, std::vector<metal::SplitCategoryCopy>{{0, 1}, {1, 1}});
+  });
+  Reject([&] { metal::MakeSplitCategoryStorage(0); });
+  Reject([&] {
+    metal::MakeSplitCategoryStorage(words + 1)->Store(
+        *workspace, std::vector<metal::SplitCategoryCopy>{{0, 0}});
+  });
+  storage->Store(*workspace, {});
+  metal::BuildSplitCategories({}, {}, 0, nullptr, workspace);
+  Reject([&] { storage->Store(*workspace, std::vector<metal::SplitCategoryCopy>{{0, 0}}); });
+  HostDeviceVector<unsigned> output(4 * words, 0u, DeviceOrd::MPS());
+  std::vector<metal::ModelCopy> copies;
+  for (unsigned node : {0u, 5u, 17u, 257u})
+    copies.push_back({storage->Get(node).data(), copies.size() * words, words});
+  metal::CopyModelBuffer(output.DeviceSpan().data(), output.Size(), copies,
+                         metal::ModelBufferKind::kCategories);
+  auto after = metal::GetStatistics();
+  Check(after.split_category_store_dispatches - before.split_category_store_dispatches == 2,
+        "Selected category stores/invalid request accounting");
+  Check(after.split_category_readback_bytes == before.split_category_readback_bytes &&
+            after.vector_readback_bytes == before.vector_readback_bytes &&
+            after.vector_upload_bytes == before.vector_upload_bytes &&
+            after.model_host_copy_bytes == before.model_host_copy_bytes,
+        "Selected categories passed through host payload storage");
+  Check(output.DeviceCanWrite() && !output.HostCanRead(), "Category consumer lost GPU authority");
+  std::vector<unsigned> reference;
+  for (unsigned source : {1u, 0u, 1u, 2u})
+    reference.insert(reference.end(), expected.begin() + source * words,
+                      expected.begin() + (source + 1) * words);
+  Check(output.ConstHostVector() == reference, "Queued/overwritten/grown categories differ");
+  ++category_storage_cases;
+}
+
 void Production(bool multi, unsigned targets) {
   Context ctx;
   ctx.Init({{"device", "mps"}, {"nthread", "1"}});
@@ -339,6 +388,7 @@ void Production(bool multi, unsigned targets) {
       for (unsigned j = 0; j < partition; ++j)
         bits.Set(common::AsCat(values[requests[i].cut_begin + order[k * n * targets + j]]));
   }
+  if (multi) CategoryStorage(values, requests, words, expected, ws.get());
   for (unsigned repeat = 0; repeat < 3; ++repeat) {
     if (repeat) evaluate(nullptr);  // Production path skips sorted-index readback.
     std::fill(order.begin(), order.end(), UINT32_MAX);
@@ -416,8 +466,9 @@ int main(int argc, char** argv) {
       }
       Production(true, 129);
       std::printf("PASS %zu category slots, %zu exact words, %zu successful production API calls; "
-                  "%zu weight-storage chains / %zu exact weight fields\n",
-                  direct_nodes, words_checked, api_calls, weight_storage_cases, weight_fields);
+                  "%zu weight-storage chains / %zu exact weight fields; %zu category chains\n",
+                  direct_nodes, words_checked, api_calls, weight_storage_cases, weight_fields,
+                  category_storage_cases);
     } catch (std::exception const& e) {
       std::fprintf(stderr, "%s\n", e.what());
       return 1;
