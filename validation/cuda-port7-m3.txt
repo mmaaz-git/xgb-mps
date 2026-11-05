@@ -1,0 +1,112 @@
+PORT-7: resident native quantile weights
+Date: 2026-11-05
+Source commit: 796e9fa9dd1b31d03a54ff07de9468d616a4f0f3
+Base: d5d21253066b9cc1a7c18071b47e5e7926866438
+
+Change and source contract:
+  metal_impl::MakeSketches now requests Metal device spans for row/group weights.
+  Ranking expansion writes into an MPS HostDeviceVector<float>, then SetWeights
+  owns a GPU snapshot before that temporary is destroyed. Unweighted input stays
+  unweighted (CUDA integer ranks); reference-cut constructors skip weight work.
+  This reuses the ordinary CudaSketchOnDMatrix path's existing kernels. No shader,
+  arithmetic, diagnostic schema or tolerance changed.
+  Authority: common/hist_util.cuh:250-307 keeps selected CUDA row/group weights on
+  device. Group boundaries remain source-defined CPU metadata, uploaded as needed.
+  CUDA itself finalizes cuts on CPU; that behavior is unchanged.
+
+Environment:
+  Apple M3, 10-core GPU, 16 GiB; macOS 26.6.2 arm64.
+  numpy 2.5.4, scipy 1.18.1, pytest 9.2.0, torch 2.15.0, mlx 0.32.4,
+  scikit-learn 1.9.1, pandas 3.1.0. Both PyTorch and MLX tests ran without skips.
+  Native API tests used the Metal validation layer.
+
+Successful focused regression:
+  bash scripts/test.sh --native metal_quantile_weights_api metal_adapter_api
+    metal_training_state_api metal_extmem_api metal_metadata_api
+    --python tests/test_metal_adapter.py tests/test_metal_extmem_adapter.py
+    tests/test_metal_metadata.py tests/test_metal_tensor.py
+    tests/test_metal_ordinary_tensor.py --log-dir results/port7-regression
+  Session xgb-port7-regression; driver results/port7-regression.log.
+  PASS all 13 stages: five freshly compiled native groups, independent linear
+  reference and 790 Python tests, no skips, six warnings in 48.52s.
+  Native results:
+    quantile weights: 144 constructor cases, 288 resident batches, 16001 checks.
+    adapter: 65 cases, 2184 windows, 1126724 exact fields.
+    training state: 249 cases, 397296 checks.
+    external caches: 408 cases, 5730 page visits, 24229203 exact fields.
+    metadata: 322 cases, 1011267 fields, 24 rejected inputs.
+
+New acceptance cases:
+  Actual QuantileDMatrix plus host/disk ExtMemQuantileDMatrix constructors;
+  unweighted, row, group and zero weights; empty, single and repeated variable
+  batches; numeric/categorical/missing values; reference-cut reuse for every case.
+  Shared/private MTLBuffer producers use strided weight views, reuse allocations,
+  and poison data/weight buffers immediately after native import. Producers are
+  released before completed matrices are consumed. Cache cleanup is checked.
+  Native callbacks and final matrices inspect HDV device-only authority before
+  CPU oracles. Zero vector readback, input staging, metadata host copy and adapter
+  diagnostic readback are required during native construction. Group expansion
+  must publish exactly rows*sizeof(float) GPU output; any staging is bounded by
+  CPU group-pointer bytes. Reference cuts perform no sketch/weight expansion.
+  Native cut checks use independent scalar CUDA-source sketch sort/prune/merge
+  equations with exactly summable weights. Final CPU cut extraction is shared
+  in this native fixture; the Python CUDA-source oracle independently checks
+  end-to-end cut extraction, with exact bits and no tolerance adjustment.
+  Expanded Python iterator coverage: 48 cases across Torch/MLX, three constructor
+  types, four weight kinds and native/mixed CPU+GPU data batches. Native metadata
+  remains GPU-owned in mixed data batches. Both training and reference matrices
+  are checked before getters; producer deletion, expected metadata, cut oracle,
+  prediction consistency and cache cleanup follow. Zero-total-weight training
+  uses an explicit base_score because its automatic weighted mean is undefined.
+
+Ordinary-matrix regression:
+  bash scripts/test.sh --native metal_cuda_sketch_api
+    --python tests/test_metal_sketch.py --log-dir results/port7-ordinary
+  Session xgb-port7-ordinary; driver results/port7-ordinary.log.
+  PASS all five stages: native 64 cases / 276 pushes / 1867178 source entries /
+  229976 exact fields; 30 Python tests, no skips, in 2.35s.
+  Overall this task ran six native groups and 820 Python tests successfully.
+
+Separate CPU gate:
+  bash results/port7-cpu.sh (session xgb-port7-cpu, log results/port7-cpu.log)
+  cmake --build build-cpu -j4
+  .venv/bin/python scripts/check_cpu_build.py --metal-library xgboost/lib/libxgboost.dylib
+  PYTHONPATH=results/cpu-python .venv/bin/python -m pytest -q
+    tests/test_metal_updater.py -k cpu -o pythonpath=results/cpu-python
+  PASS disabled Metal APIs/301-field schema/cache checks and nine updater tests,
+  72 deselected, 11 warnings. The CPU gate uses the isolated build-cpu library.
+  CPU library SHA256: 64becda36df109ce07cd9fa61d280bbd52d50ac3500833dd7acf682ee6e3aeec
+  Metal library SHA256: 44615f4a639999671058d7ecf2095117f5dedcbb58bbe08eba52d312e587316e
+  Tracked patch SHA256 (excluding then-untracked new native fixture):
+    0e9fde24fb6ed83c296588687522c46eda7626229e669ba9d26ee401d164b789
+  New tests/metal_quantile_weights_api.mm SHA256:
+    dd13f441383edf41488233dbb483f8cc59af02797b24ed0710fbb2b35b7da5db
+  Manifest SHA256: 99e0ae1efd47158ae181170229b8bcf3efedba7c4b81e43a9474cd10ad8bee5b
+  Committed source was verified against both successful run snapshots.
+  Commands, timings, hashes and raw runner summaries: cuda-port7-m3-run.json.
+
+Development history:
+  New native regression against the pre-fix library failed after eight cases:
+    "Quantile batch weights left GPU" (results/port7-before-v3.log).
+  Initial fixture compile attempts needed an explicit ARC strong-pointer type
+  and explicit void* callback handles; these were test-only corrections.
+  First focused run passed 96 cases then rejected the test's disk-cache ratio=0;
+  corrected the fixture to use the default NaN ratio for disk caches.
+  focused-v2: all 144 native cases passed; 18 Python cases passed and six zero-
+  weight training cases rejected automatic intercept estimation. Construction,
+  residency and cuts had passed. Added explicit base_score for that training
+  check and mixed-data cases; final regression passed all cases.
+
+Limits and next work:
+  Narrow constructor change; this is not a new full-suite run. Last full suite
+  remains PORT-6 at 2bfb914 (102 native groups, 3603 Python passes, one skip).
+  Frozen audit structure passes unchanged: 42 families / 109 roots / 1078 sites /
+  174 operations / 10 original tasks / 17 contracts / 2119 references.
+  Seven audited implementation tasks are locally complete. PORT-8/10/11 remain,
+  then fixed-revision integration and required numerical fixtures (VERIFY-1),
+  actual NVIDIA execution (VERIFY-2) and performance work. No percentage claim.
+  CUDA compilation last succeeded at a531694 (run 42010137944). The subsequent
+  PORT-6 run 42015634776 was still compiling when this record was prepared;
+  branch pushes can supersede it under the workflow's concurrency policy.
+  No new NVIDIA execution, benchmark, optional federated runtime or other-Apple-
+  hardware run is claimed. This source needs its own CUDA compilation result.

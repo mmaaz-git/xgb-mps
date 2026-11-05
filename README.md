@@ -34,15 +34,16 @@ quantile precision and vector-row validity bugs, plus GPU state/data-placement
 gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
 **not a completion percentage or proof of parity**. See the
 [findings and evidence](docs/CUDA_AUDIT.md) and [ordered plan](docs/PLAN.md).
-Six tasks are locally complete: [quantile precision](validation/cuda-num1-m3.txt),
+Seven tasks are locally complete: [quantile precision](validation/cuda-num1-m3.txt),
 [vector sampling validity](validation/cuda-port9-m3.txt),
 [resident vector weights](validation/cuda-port1-m3.txt),
 [resident categorical state](validation/cuda-port2-m3.txt),
-[exact vector sums](validation/cuda-port3-m3.txt), and
-[resident feature selection](validation/cuda-port6-m3.txt).
-The latest change (`2bfb914`) keeps sampled and allowed feature IDs on Metal
-through scalar/vector split task construction and histogram gathering. **Four
-implementation tasks remain.** Native quantile weights are next.
+[exact vector sums](validation/cuda-port3-m3.txt),
+[resident feature selection](validation/cuda-port6-m3.txt), and
+[resident quantile weights](validation/cuda-port7-m3.txt).
+The latest change (`796e9fa`) keeps native row/group weights on Metal through
+quantile and external-memory sketch construction. **Three implementation tasks
+remain:** split-bound gathers, numeric split thresholds, and sketch initialization.
 Numerical, scheduling and external-hardware limits remain explicit in the
 [parity ledger](docs/CUDA_PARITY.md).
 
@@ -109,6 +110,8 @@ Latest full regression covers `2bfb914`: **102 native groups and 3,603 Python
 tests passed, with one expected skip**, plus CPU build/API/schema and nine updater
 checks. PyTorch and MLX GPU interop tests ran. The
 [record](validation/cuda-port6-m3.txt) includes commands, source hashes and limits.
+The subsequent quantile-weight change passed six focused native groups, 820
+Python tests and the CPU gate; [evidence](validation/cuda-port7-m3.txt).
 Optional federated checks were last run at `dd44829`, as recorded
 [here](validation/cuda-metal-native-csr-storage-m3.txt).
 

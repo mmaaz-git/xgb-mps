@@ -24,11 +24,11 @@ Track three separate claims:
 
 The audit classified 174 logical operations and all 1,078 listed lexical sites
 across 42 families / 109 CUDA roots at `382f78c`. Sixteen missing/defective rows
-map to **10 implementation tasks** below; NUM-1, PORT-9 and PORT-1/2/3/6 are locally fixed,
-and four remain.
+map to **10 implementation tasks** below; NUM-1, PORT-9 and PORT-1/2/3/6/7 are locally fixed,
+and three remain.
 These unequal-sized rows are not a
 completion percentage, and this bounded audit cannot prove the absence of
-unlisted defects. **Next: PORT-7 native quantile weights, then the remaining GPU-placement tasks.** No new kernels were added during
+unlisted defects. **Next: PORT-8 split-bound gathers, then numeric thresholds and sketch initialization.** No new kernels were added during
 classification.
 
 ## Ordered work queue
@@ -43,9 +43,9 @@ classification.
 | PORT-1 | GPU vector root/child/model weights | Locally complete at `c78cb43`; CUDA compile passed at `383b448` | Resident producer/storage/consumer chain, growth/aliases and non-MPS host views checked; 100 native groups plus final predictor check, 3,595 Python passes and CPU checks; [evidence](../validation/cuda-port1-m3.txt) |
 | PORT-2 | GPU selected categorical bitsets | Locally complete at `6a606e1`; CUDA compile passed at `99cbeb3` | Resident selection, queued state, model/view/partition consumers; 100 native groups, 3,597 Python passes and CPU checks; [evidence](../validation/cuda-port2-m3.txt) |
 | PORT-3 | GPU exact vector node/child sums | Locally complete at `ab87872`; CUDA compile passed at `a531694` | Resident exact roots, queued child storage, parent gathers and propagation; 101 native groups, 3,603 Python passes and CPU checks; [evidence](../validation/cuda-port3-m3.txt) |
-| PORT-6 | Resident sampled/allowed feature IDs | Locally complete at `2bfb914`; new CUDA CI pending | GPU sampler/filter/task/gather/consumer chain, exact assembly and lifetime checks; 102 native groups, 3,603 Python passes and CPU checks; [evidence](../validation/cuda-port6-m3.txt) |
-| PORT-7 | Resident native quantile weights | Next | Keep row/group weights and GPU expansion resident through native adapter sketch construction; weighted/grouped/repeated-batch fixtures |
-| PORT-8 | GPU split-bound gathers | Open; after PORT-7 | Scalar/vector active evaluators consume GPU monotonic bounds; exclude unsupported reduced-gradient/monotone refit combination |
+| PORT-6 | Resident sampled/allowed feature IDs | Locally complete at `2bfb914`; CUDA CI pending | GPU sampler/filter/task/gather/consumer chain, exact assembly and lifetime checks; 102 native groups, 3,603 Python passes and CPU checks; [evidence](../validation/cuda-port6-m3.txt) |
+| PORT-7 | Resident native quantile weights | Locally complete at `796e9fa`; CUDA CI pending | Native row/group weights and expansion stay GPU-owned through quantile and host/disk constructors; six native groups, 820 Python passes and CPU checks; [evidence](../validation/cuda-port7-m3.txt) |
+| PORT-8 | GPU split-bound gathers | Next | Scalar/vector active evaluators consume GPU monotonic bounds; exclude unsupported reduced-gradient/monotone refit combination |
 | PORT-10 | GPU numeric split thresholds | Open; after PORT-8 | Selected cut and −∞ materialization executes on GPU; category-bit construction already exists, with categorical cases retained as regression guards |
 | PORT-11 | GPU sketch initialization | Open; after PORT-10 | GPU categorical-type reduction and pointer-payload clear; numeric/categorical/mixed/empty and subsequent-batch fixtures |
 | VERIFY-1 | Integration at a fixed revision | After required implementation tasks | Full native/Python run, CPU build/API + updater checks, optional federated checks, CUDA compile; complete required numerical divergence fixtures; record dependencies/skips and no unexplained required-operation gaps |
@@ -55,25 +55,26 @@ classification.
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
 while hardware is unavailable. Cross-Apple-hardware claims also require actual runs.
 
-## Next bounded change: PORT-7
+## Next bounded change: PORT-8
 
-Keep native quantile row/group weights on Metal through adapter sketch construction.
-The ordinary-matrix sketch path already has resident weight expansion; reuse its
-contracts in `metal_impl::MakeSketches` for quantile and external-memory matrices.
+Keep GPU-updated monotonic bounds resident through active scalar/vector split
+evaluation. The evaluators currently read device-backed lower/upper arrays on
+CPU to assemble per-node bounds before calling the Metal feature evaluator.
 
-- Replace weight host views with Metal device spans. Expand group weights into
-  an owned GPU vector, and retain the GPU snapshot through sort/scan and Push.
-- Cover native row/group weights for QuantileDMatrix and host/disk
-  ExtMemQuantileDMatrix, reused/mixed batches, empty weights and producer aliases
-  or destruction. Reference-cut constructors must avoid unnecessary weight work.
-- Inspect GPU ownership and payload counters before CPU comparisons; compare
-  weighted/grouped cuts with existing CUDA-source oracles. Keep ordinary sketch
-  behavior and PyTorch/MLX interop as regression guards.
-- Bound gathers, numeric thresholds and sketch initialization remain PORT-8/10/11.
+- Pass resident bound arrays and node IDs/strides to GPU gather or task assembly;
+  retain source-defined host scheduling and selected-node control data.
+- Update bounds on GPU, then evaluate candidates before any CPU oracle reads.
+  Cover scalar/vector consumers, multiple targets, tree growth, disabled
+  constraints and queued candidates; assert no bound payload host copies.
+- Compare existing CUDA-source arithmetic fixtures and relevant fixed-cut CPU
+  cases. Keep the unsupported reduced-gradient/monotone refit restriction.
+- Numeric threshold materialization and sketch initialization remain PORT-10/11.
 
-Resident feature selection and its actual split consumers are recorded under
-[PORT-6](../validation/cuda-port6-m3.txt). Source-defined scalar query counts,
-allocation sizes and selected node metadata remain host control data.
+Resident native quantile weights are recorded under
+[PORT-7](../validation/cuda-port7-m3.txt): actual constructors, GPU authority and
+payload counters, producer lifetimes, reference cuts, Torch/MLX interop and
+ordinary-sketch regressions pass. Final cut extraction and group-boundary source
+metadata retain CUDA's host behavior.
 
 ## PORT-4 audit boundary
 

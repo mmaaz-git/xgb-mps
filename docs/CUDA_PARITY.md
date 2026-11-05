@@ -28,7 +28,6 @@ not every branch's behavior.
 
 | Plan ID | Remaining CUDA behavior or evidence |
 | --- | --- |
-| PORT-7 | Native quantile row/group weights pass through host expansion/readback. |
 | PORT-8 | Active scalar/vector split evaluators gather GPU monotonic bounds on CPU. |
 | PORT-10 | Selected numeric cut/−∞ threshold materialization runs on CPU; categorical bit construction already runs on GPU. |
 | PORT-11 | Sketch categorical detection and pointer initialization still perform CUDA GPU work on CPU. |
@@ -51,7 +50,11 @@ exact vector roots, queued sums, parent gathers and child propagation stay on Me
 ([evidence](../validation/cuda-port3-m3.txt)). PORT-6 is locally fixed at `2bfb914`:
 feature sampling, interaction filtering and feature-indexed split construction
 consume resident IDs through actual scalar/vector evaluators
-([evidence](../validation/cuda-port6-m3.txt)). Four implementation tasks remain.
+([evidence](../validation/cuda-port6-m3.txt)). PORT-7 is locally fixed at `796e9fa`:
+native quantile row/group weights and expansion stay on Metal through quantile
+and host/disk external-memory construction; constructor authority/copy checks,
+independent cut oracles and Torch/MLX cases pass
+([evidence](../validation/cuda-port7-m3.txt)). Three implementation tasks remain.
 The frozen audit retains its original findings. This is a finite
 implementation queue, not proof that no unlisted defects remain. Numerical
 acceptance fixtures and NVIDIA comparisons remain separate verification work.
@@ -91,13 +94,16 @@ Latest full local regression covers `2bfb914`: **102 native groups and 3,603
 Python passes, one expected skip**, plus CPU build/API/schema and nine updater
 tests. Both PyTorch and MLX GPU interop tests ran.
 [Configuration, source hashes and results](../validation/cuda-port6-m3.txt).
+The subsequent PORT-7 change passed six focused native groups and 820 Python
+tests without skips, plus the CPU gate
+([record](../validation/cuda-port7-m3.txt)); this was not a new full-suite run.
 Optional federated learners were last tested at `dd44829`
 ([record](../validation/cuda-metal-native-csr-storage-m3.txt)). Earlier validation
 records retain their original scope and failures.
 
 CUDA compile CI passed at `a531694`, including PORT-3
 ([run 42010137944](https://github.com/mmaaz-git/xgb-mps/actions/runs/42010137944)).
-The PORT-6 source needs its own CI result. CI compiles/links on
+The subsequent PORT-6/7 sources still need completed CI evidence. CI compiles/links on
 a CPU runner. **No NVIDIA runtime comparison has been performed.** Other Apple
 hardware is also untested. [Historical benchmarks](PUBLISHED_BENCHMARKS.md)
 predate subsequent correctness changes and are not current-HEAD measurements.
