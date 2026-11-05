@@ -14,7 +14,24 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **resident prediction caches and outputs**. Tree prediction
+Latest step: **public prediction results retain Metal storage**. Legacy, DMatrix
+and inplace result APIs now return the synchronized, CPU-addressable contents of
+an existing Metal result instead of constructing another host mirror. Native
+`MetalOutput` creation snapshots that result on GPU. NumPy still receives an
+independent CPU copy; empty outputs and existing host fallback behavior are preserved.
+
+Validation passes **780 native API cases / 187,757 checks** and **153 focused
+Python tests**, including real PyTorch/MLX consumers, CPU fallbacks, device switches,
+empty outputs after buffer reuse, NumPy mutation and results that outlive worker
+threads and the model. GPU result publication requires no vector readback.
+Full regression passes **3,345 Python tests, one expected skip**, and the CPU-only
+build/API checks. [Public result validation](validation/cuda-metal-prediction-result-m3.txt).
+
+Training gradient/updater state, persistent model/dictionary storage, remaining
+CUDA audits and GPU collective transport remain open. This step changes no
+prediction arithmetic or ABI; no benchmark or NVIDIA execution comparison was run.
+
+The preceding step added **resident prediction caches and outputs**. Tree prediction
 initialization, batch/inplace traversal, leaf outputs, leaf-ID cache updates and
 SHAP now retain Metal arrays. Learner prediction/evaluation copies also stay on
 GPU. Scalar fills and vector broadcasts reuse the existing kernels; model base
@@ -33,8 +50,9 @@ checks were rebuilt and passed again after the handoff correction. No prediction
 arithmetic or cache-version rules changed.
 [Prediction storage validation](validation/cuda-metal-prediction-state-m3.txt).
 
-The public result API still requests a host mirror before Python creates a
-`MetalOutput`. Training gradient/updater state, persistent dictionaries, remaining
+At that checkpoint, the public result API still requested a host mirror before
+Python created a `MetalOutput`; the latest step addresses it. Training
+gradient/updater state, persistent dictionaries, remaining
 CUDA audits and GPU collective transport also remain open. No benchmark or NVIDIA
 execution comparison was run for this step.
 

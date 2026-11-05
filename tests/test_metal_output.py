@@ -96,6 +96,7 @@ def test_prediction_modes(metal, kind, mode, name):
     assert result.__dlpack_device__() == (8, 0)
     tensor = consume(name, result)
     after = xgb.metal_info()
+    assert after["vector_readback_bytes"] == before["vector_readback_bytes"]
     assert after["output_host_readback_bytes"] == before["output_host_readback_bytes"]
     assert (
         after["output_snapshot_host_copy_bytes"]
@@ -138,6 +139,9 @@ def test_prediction_modes(metal, kind, mode, name):
 )
 def test_transforms(metal, kind):
     _, data, cpu, gpu = fixture(kind)
+    # Model publication may prepare both base-score mirrors. Isolate subsequent
+    # prediction/result publication from that one-time setup.
+    gpu.predict(data, output_margin=True)
     before = xgb.metal_info()
     result = gpu.predict(data, output_device="mps")
     after = xgb.metal_info()
@@ -146,6 +150,7 @@ def test_transforms(metal, kind):
     )
     assert after["prediction_host_input_bytes"] == before["prediction_host_input_bytes"]
     if kind != "linear":
+        assert after["vector_readback_bytes"] == before["vector_readback_bytes"]
         assert (
             after["prediction_shared_output_bytes"]
             > before["prediction_shared_output_bytes"]
@@ -165,7 +170,8 @@ def test_transforms(metal, kind):
 @pytest.mark.parametrize("device", ["cpu", "mps"])
 @pytest.mark.parametrize("margin", [False, True])
 def test_inplace_sources(metal, layout, device, margin):
-    x, _, cpu, gpu = fixture()
+    x, warmup, cpu, gpu = fixture()
+    gpu.predict(warmup)
     x[::7, 2] = -99
     if layout == "dense":
         values = x
@@ -192,6 +198,8 @@ def test_inplace_sources(metal, layout, device, margin):
     before = xgb.metal_info()
     result = model.inplace_predict(values, output_device="mps", **options)
     after = xgb.metal_info()
+    if device == "mps":
+        assert after["vector_readback_bytes"] == before["vector_readback_bytes"]
     assert after["output_host_readback_bytes"] == before["output_host_readback_bytes"]
     np.testing.assert_array_equal(result.numpy(), expected)
     np.testing.assert_array_equal(
@@ -205,9 +213,12 @@ def test_empty_and_chunked_output(metal, name, rows):
     x, _, cpu, gpu = fixture()
     values = np.resize(x, (rows, x.shape[1])).copy()
     native = producer(name, values)
+    gpu.predict(xgb.DMatrix(x, nthread=2))
     for strict in [False, True]:
         expected = cpu.inplace_predict(values, strict_shape=strict)
+        before = xgb.metal_info()
         result = gpu.inplace_predict(native, output_device="mps", strict_shape=strict)
+        assert xgb.metal_info()["vector_readback_bytes"] == before["vector_readback_bytes"]
         assert result.shape == expected.shape
         np.testing.assert_array_equal(result.numpy(), expected)
         np.testing.assert_array_equal(host(name, consume(name, result)), expected)
@@ -296,6 +307,46 @@ def test_gpu_output_chaining(metal, name):
     np.testing.assert_array_equal(matrix.get_label(), expected[:, 0])
     np.testing.assert_array_equal(matrix.get_data().toarray(), expected)
     assert matrix.num_row() == len(x)
+
+
+@pytest.mark.parametrize("kind", ["scalar", "vector", "multi:softmax"])
+@pytest.mark.parametrize("inplace", [False, True])
+def test_numpy_results_own_their_values(metal, kind, inplace):
+    x, data, _, gpu = fixture(kind)
+    method, argument = (gpu.inplace_predict, x) if inplace else (gpu.predict, data)
+    returned = method(argument)
+    expected = returned.copy()
+    before = xgb.metal_info()
+    another = method(argument)
+    assert xgb.metal_info()["vector_readback_bytes"] == before["vector_readback_bytes"]
+    returned.fill(-991)
+    np.testing.assert_array_equal(another, expected)
+    np.testing.assert_array_equal(method(argument), expected)
+    # Cache overwrite and learner destruction cannot invalidate a NumPy copy.
+    gpu.predict(data, pred_contribs=True)
+    del method, gpu, data
+    gc.collect()
+    np.testing.assert_array_equal(another, expected)
+
+
+@pytest.mark.parametrize("output_device", ["cpu", "mps"])
+def test_threaded_prediction_results(metal, output_device):
+    x, data, cpu, gpu = fixture()
+    expected = cpu.predict(data)
+    gpu.predict(data)  # Publish model state before concurrent read-only calls.
+    counts = [1, 17, 33, len(x)] * 3
+    before = xgb.metal_info()
+    with ThreadPoolExecutor(4) as executor:
+        results = list(executor.map(
+            lambda rows: gpu.inplace_predict(x[:rows], output_device=output_device), counts
+        ))
+    assert xgb.metal_info()["vector_readback_bytes"] == before["vector_readback_bytes"]
+    # Worker TLS and then the model are gone; returned arrays/snapshots remain owned.
+    del gpu, data
+    gc.collect()
+    for rows, result in zip(counts, results):
+        values = result.numpy() if output_device == "mps" else result
+        np.testing.assert_array_equal(values, expected[:rows])
 
 
 def test_threaded_exports(metal):

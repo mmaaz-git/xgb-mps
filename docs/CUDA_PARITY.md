@@ -89,7 +89,7 @@ must be reported rather than hidden by widening test tolerances.
 | Ranking losses, pair construction, normalization | `objective/lambdarank_obj.cu` | Prediction order and NDCG ideal-label order use stable grouped Metal sorting; query-weight sums use Metal. Predictions, labels, query weights, gradients, NDCG caches and unbiased-learning arrays now retain explicit Metal storage through objective calls. Top-k and CUDA-source Philox mean pairs, raw gradient/cost bounds, independent sign truncation, actual-label segmented MAP prefixes, query normalization and combined binary64 weight multipliers execute on Metal; the global cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Unbiased loss corrections, per-row bias costs, cross-query aggregation and regularized bias updates execute on GPU. Source bias initialization/reload rules are preserved; serialization explicitly reads the small bias arrays |
 | AFT survival loss | `objective/aft_obj.cu`, `common/survival_util.h` | Metal normal/logistic/extreme gradients for every row and prediction/base-score transforms, now with explicit Metal input/output storage; CPU corrections removed. Actual upstream expression replay covers sensitive tails; cross-library output differences remain, as detailed below |
 | Base score estimation, leaf value fitting | `tree/fit_stump.cu`, `common/stats.cu`, `tree/gpu_hist/leaf_sum.cu` | Means/weighted means, quantiles/medians, Newton stump gradient aggregation and unregularized weights on Metal; final vector-leaf refitting quantizes sampled float value gradients with original scales, uses GPU segmented integer sums and cross-page integer accumulation, then regularized/clipped weights; final tree updates stay host as in CUDA. Means, medians/quantiles and stump wrappers now consume Metal spans and publish strided outputs/empty fills on GPU. Other state work still requires porting/audit |
-| Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu`, `predictor/predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application. Initialization, base margins, prediction caches and outputs now retain Metal storage, including learner copies; scalar fills/vector broadcasts reuse existing kernels. Host-input packing remains on CPU; native dense/columnar snapshots use GPU copies; public result API still requests a host mirror |
+| Batch/inplace/leaf tree traversal | `predictor/gpu_predictor.cu`, `predictor/predictor.cu` | Metal: scalar/vector leaves, category bitsets, missing values, tree ranges, dropout weights; GPU input decoding, missing checks, bin lower bounds and category-map application. Initialization, base margins, prediction caches and outputs now retain Metal storage, including learner copies; scalar fills/vector broadcasts reuse existing kernels. Host-input packing remains on CPU; native dense/columnar snapshots use GPU copies; public result APIs retain existing Metal arrays without an extra host mirror; native outputs snapshot them on GPU and NumPy explicitly copies |
 | Prediction cache from leaf IDs | `predictor/gpu_predictor.cu` | Metal IDs and output arrays, guarded input bindings and alias snapshots; supports strided target slices and negated sampling positions. GBTree retains Metal prediction storage through cache updates; updater gradient/position producers still need migration |
 | SHAP contributions and interactions | `predictor/gpu_predictor.cu`, `predictor/interpretability/shap.cu` | Metal fixed eight-point quadrature, repeated-feature paths, scalar/vector leaves, categorical/missing decisions, dropout weights, bias addition, symmetry and diagonal finalization; model compression/root means remain host as in CUDA. Outputs/base margins now retain Metal storage; raw feature inputs bind guarded shared memory with GPU alias snapshots. Input decoding/category mapping runs on GPU; host-input packing remains on CPU; native dense/columnar snapshots use GPU copies |
 | RMSE/RMSLE/MAE/MAPE/logloss/error/Poisson/gamma/Tweedie/pseudo-Huber metrics | `metric/elementwise_metric.cu` | CUDA-source FP32 weighted terms and complete binary64 GPU reduction; explicit Metal input storage and guarded payload bindings; final ratio/collective transport host |
@@ -107,7 +107,7 @@ must be reported rather than hidden by widening test tolerances.
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
-| CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack tensors and native columnar tables feed ordinary/quantile constructors, iterators and inplace prediction/CPU fallback through owned GPU snapshots. Metadata imports use GPU conversion/validation/grouping; custom gradients use GPU typed pair packing. Explicit `output_device="mps"` returns owned GPU predictions, including leaves and SHAP, with legacy/versioned DLPack exports to PyTorch/MLX. Known runtimes synchronize; generic producers/consumers must finish writes. Portable stream handshakes and end-to-end device ownership remain open. NVIDIA-specific interfaces cannot consume Metal memory |
+| CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack tensors and native columnar tables feed ordinary/quantile constructors, iterators and inplace prediction/CPU fallback through owned GPU snapshots. Metadata imports use GPU conversion/validation/grouping; custom gradients use GPU typed pair packing. Explicit `output_device="mps"` returns owned GPU predictions, including leaves and SHAP, with legacy/versioned DLPack exports to PyTorch/MLX. Public prediction result pointers retain synchronized shared Metal storage; native output snapshots avoid intermediate host mirrors, while NumPy copies explicitly. Known runtimes synchronize; generic producers/consumers must finish writes. Portable stream handshakes and end-to-end device ownership remain open. NVIDIA-specific interfaces cannot consume Metal memory |
 | CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Owned shared Metal vector allocations with CUDA-derived access states, GPU fills/copies/growth and lazy host mirrors; native float metadata uses them. Reused queues/histograms/workspaces and guarded host views remain. The execution context still defaults generic state to host storage; remaining consumers, persistent end-to-end ownership and asynchronous scheduling are unfinished |
 
 Paths in the table are relative to `xgboost/src` and denote starting points, not
@@ -3814,7 +3814,58 @@ handoff correction, the changed prediction/learner checks were rebuilt and passe
 again with the final counts above; unchanged native groups were not redundantly
 rebuilt. No production/test edits followed the final build and focused checks.
 [Validation record](../validation/cuda-metal-prediction-state-m3.txt).
-The public CAPI result path still materializes a host mirror before Python creates
-an owned `MetalOutput`. Training gradient/updater ownership, persistent model and
+At that checkpoint, the public CAPI result path still materialized a host mirror
+before Python created an owned `MetalOutput`; the next section addresses it. Training gradient/updater ownership, persistent model and
 dictionary storage, remaining CUDA audits, GPU collectives and cross-hardware
 validation remain open. No benchmark or NVIDIA execution comparison was run.
+
+
+## Public prediction results retain Metal storage
+
+The legacy prediction, shaped DMatrix prediction and shared inplace result APIs
+now preserve already-valid Metal output storage. `MetalVectorBuffer` allocates
+CPU-addressable shared buffers and all its producers complete synchronously.
+Returning that buffer's float address satisfies the existing C API contract;
+it does not expose an opaque Metal handle or change the ABI. Empty arrays still
+return null, including when a previous result left reusable allocation capacity.
+The result remains owned by learner thread-local storage and must be copied before
+reuse as before.
+
+Publication checks both Metal placement and a valid device mirror. It does not
+upload an existing host fallback just to return it. CPU/CUDA fallback access modes
+are preserved, as are host-producing linear predictions and approximate
+attributions. Ordinary NumPy output still makes an independent CPU copy. Native
+`MetalOutput` uses its existing GPU snapshot to retain the result independently of
+later predictions, learner destruction and foreign consumer writes.
+
+Native validation passes **780 API cases / 187,757 checks** with Metal API
+validation: eight model kinds, margins/no margins, legacy/shaped APIs, dense/native
+inplace prediction, and 33/zero/one rows to exercise empty-after-reuse behavior.
+Tests compare immediate float values and shapes against the same CPU-trained
+models, inspect actual pointer identity and TLS access state, require no vector
+readback for resident tree results and preserve host fallback authority. Every
+result is GPU-snapshotted with exact binding byte counts and checked byte-for-byte
+after model destruction. All output/export/vector lifetime gauges return to zero.
+The upstream host linear interaction producer has a size inconsistent with the
+common shaped API; it is excluded from these tests without reading beyond storage.
+Linear raw and contribution fallbacks are covered. No linear arithmetic changed.
+
+**153 focused Python tests pass** (151 output/prediction tests plus two concurrent
+prediction cases). Existing PyTorch/MLX consumers now check implicit vector
+readbacks as well as explicit output readbacks. Eight added cases verify NumPy
+copy independence and CPU/Metal results surviving worker thread exit and model
+release. Existing export alias/copy, external writes, GC, shutdown, empty and
+65,537-row chunk tests remain intact. One-time model publication is warmed before
+transfer measurements; source-defined base-score mirrors and explicit CPU output
+copies are not claimed to disappear. Numerical tolerances are unchanged.
+
+Full regression completed **2026-11-05 00:28:56–00:32:17 UTC** (3m21s): **3,345
+Python tests passed, one expected skip** (623 warnings, 192.55s), plus the CPU-only
+build and API/device/cache checks. The native runner now contains 93 groups;
+this C API change rebuilds/tests its new group and runs the full Python regression
+without redundantly rebuilding unchanged kernel groups. No production/test edits
+followed the final build and focused checks.
+[Validation record](../validation/cuda-metal-prediction-result-m3.txt).
+Training gradient/updater arrays, persistent model/dictionary storage, remaining
+CUDA arithmetic audits, GPU collective transport and cross-hardware validation
+remain open. No benchmark or NVIDIA execution comparison was run.

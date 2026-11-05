@@ -66,6 +66,21 @@ void ValidateCAPIDataSplitMode(std::int64_t data_split_mode) {
   CHECK_EQ(data_split_mode, 0)
       << "Column-wise data split has been removed. Please use row-wise data split instead.";
 }
+float const *PredictionHostPointer(HostDeviceVector<float> *predictions,
+                                   bool writable_host = false) {
+#if defined(XGBOOST_USE_METAL)
+  if (predictions->Device().IsMPS() && predictions->DeviceCanRead()) {
+    // Metal vectors own CPU-addressable shared storage, and producers complete
+    // before returning. Keep the learner-owned result there instead of making
+    // a second host mirror. Empty results must remain null even with capacity.
+    return predictions->Empty() ? nullptr : predictions->ConstDevicePointer();
+  }
+#endif
+  // Preserve the original access modes for CPU/CUDA and host-authoritative
+  // outputs. Merely returning a result must not upload a host fallback.
+  return writable_host ? dmlc::BeginPtr(predictions->HostVector())
+                       : dmlc::BeginPtr(predictions->ConstHostVector());
+}
 }  // namespace
 
 XGB_DLL int XGMetalOutputCreate(float const *values, bst_ulong const *shape, bst_ulong ndim,
@@ -2094,7 +2109,7 @@ XGB_DLL int XGBoosterPredict(BoosterHandle handle, DMatrixHandle dmat, int optio
   xgboost_CHECK_C_ARG_PTR(len);
   xgboost_CHECK_C_ARG_PTR(out_result);
 
-  *out_result = dmlc::BeginPtr(entry.predictions.ConstHostVector());
+  *out_result = PredictionHostPointer(&entry.predictions);
   *len = static_cast<xgboost::bst_ulong>(entry.predictions.Size());
   API_END();
 }
@@ -2144,7 +2159,7 @@ XGB_DLL int XGBoosterPredictFromDMatrix(BoosterHandle handle, DMatrixHandle dmat
                    interactions, strict_shape);
 
   xgboost_CHECK_C_ARG_PTR(out_result);
-  *out_result = dmlc::BeginPtr(entry.predictions.ConstHostVector());
+  *out_result = PredictionHostPointer(&entry.predictions);
 
   auto &shape = learner->GetThreadLocal().prediction_shape;
   auto chunksize = p_m->Info().num_row_ == 0 ? 0 : entry.predictions.Size() / p_m->Info().num_row_;
@@ -2188,7 +2203,7 @@ void InplacePredictImpl(std::shared_ptr<DMatrix> p_m, char const *c_json_config,
   xgboost_CHECK_C_ARG_PTR(out_result);
   xgboost_CHECK_C_ARG_PTR(out_shape);
 
-  *out_result = dmlc::BeginPtr(p_predt->HostVector());
+  *out_result = PredictionHostPointer(p_predt, true);
   *out_shape = dmlc::BeginPtr(shape);
 }
 
