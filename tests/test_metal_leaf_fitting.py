@@ -115,6 +115,29 @@ def test_regular_vector_training_skips_refitting(metal, tmp_path):
     assert xgb.metal_info()["leaf_weight_dispatches"] == before
 
 
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+def test_empty_reduced_gradients_preserve_targets(metal, device):
+    # Empty workers still supply value gradients shaped (0, targets); these
+    # differ from the absent value-gradient matrix, whose shape is (0, 0).
+    empty = np.empty((0, 3), dtype=np.float32)
+    data = xgb.DMatrix(empty, label=empty, nthread=2)
+    params = dict(device=device, nthread=2, num_target=3, base_score=[0., 0., 0.],
+                  tree_method="hist", multi_strategy="multi_output_tree")
+    class EmptyReduced(Reduced):
+        def __call__(self, iteration, prediction, data):
+            # The upstream empty prediction has no inferred output width.
+            # Supply the known value-gradient shape explicitly.
+            assert data.num_row() == prediction.size == 0
+            return empty, empty
+
+    before = xgb.metal_info()["leaf_weight_dispatches"]
+    model = xgb.train(params, data, 2, obj=EmptyReduced())
+    if device == "mps":
+        assert xgb.metal_info()["leaf_weight_dispatches"] - before == 2
+    probe = xgb.DMatrix(np.zeros((4, 3), dtype=np.float32), nthread=2)
+    np.testing.assert_array_equal(model.predict(probe), np.zeros((4, 3), dtype=np.float32))
+
+
 def integer_leaf_data(x, targets, layout, tmp_path):
     if layout == "missing":
         x[:, 0], x[1, 1] = np.nan, np.nan

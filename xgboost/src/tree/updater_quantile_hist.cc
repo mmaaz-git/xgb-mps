@@ -256,18 +256,20 @@ class MultiTargetHistBuilder {
     auto n_targets = gpair.Shape(1);
     auto root_sum = linalg::Empty<GradientPairPrecise>(ctx_, n_targets);
     std::vector<GradientPairInt64> quantized_root(n_targets);
-#if defined(XGBOOST_USE_METAL)
-    if (ctx_->IsMPS())
-      quantized_->Sum(root_sum.HostView(), quantized_root);
-    else
-#endif
-      cpu_impl::SumGradients(ctx_, gpair, root_sum.HostView());
     auto h_root_sum = root_sum.HostView();
     CHECK(h_root_sum.CContiguous());
-    auto rc = collective::GlobalSum(
-        ctx_, linalg::MakeVec(reinterpret_cast<double *>(h_root_sum.Values().data()),
-                              h_root_sum.Size() * 2));
-    collective::SafeColl(rc);
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      quantized_->SumRoot(ctx_, DeviceOrd::MPS(), h_root_sum, quantized_root);
+    } else
+#endif
+    {
+      cpu_impl::SumGradients(ctx_, gpair, h_root_sum);
+      auto rc = collective::GlobalSum(
+          ctx_, linalg::MakeVec(reinterpret_cast<double *>(h_root_sum.Values().data()),
+                                h_root_sum.Size() * 2));
+      collective::SafeColl(rc);
+    }
 
     histogram_builder_->BuildRootHist(p_fmat, p_tree->HostMtView(), partitioner_, gpair, best,
                                       HistBatch(param_));
@@ -372,7 +374,6 @@ class MultiTargetHistBuilder {
 
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
-      CHECK(!collective::IsDistributed()) << "Distributed Metal leaf fitting is not implemented.";
       CHECK(value_quantizer_);
       auto sums = common::metal::MakeLeafSums(n_leaves, n_targets, std::move(value_quantizer_));
       for (auto const& part : partitioner_) {
@@ -387,6 +388,7 @@ class MultiTargetHistBuilder {
         }
         rows.metal_rows->AddLeafGradients(segments, value_gpair, sums.get());
       }
+      sums->AllReduce(ctx_);
       auto evaluator = this->evaluator_->Evaluator();
       std::vector<common::metal::SplitBounds> bounds;
       if (evaluator.has_constraint) {
@@ -575,7 +577,8 @@ class HistUpdater {
       GradientPairInt64 quantized_root;
 #if defined(XGBOOST_USE_METAL)
       if (ctx_->IsMPS()) {
-        quantized_->Sum(linalg::MakeVec(&grad_stat, 1), {&quantized_root, 1});
+        quantized_->SumRoot(ctx_, DeviceOrd::CPU(), linalg::MakeVec(&grad_stat, 1),
+                            {&quantized_root, 1});
       } else
 #endif
           if (p_fmat->IsDense() && !collective::IsDistributed()) {

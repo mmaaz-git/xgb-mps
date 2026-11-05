@@ -78,7 +78,6 @@ class HistogramBuilder {
     is_distributed_ = is_distributed;
 #if defined(XGBOOST_USE_METAL)
     if (ctx->IsMPS()) {
-      CHECK(!is_distributed) << "Distributed Metal training is not supported yet.";
       if (!metal_) metal_ = common::metal::MakeHistogram();
       metal_->Reset();
     } else {
@@ -235,10 +234,18 @@ class HistogramBuilder {
       CHECK(!nodes_to_build.empty());
       auto first_nidx = nodes_to_build.front();
       std::size_t n = n_total_bins * nodes_to_build.size() * 2;
-      auto rc = collective::Allreduce(
-          ctx, linalg::MakeVec(reinterpret_cast<double *>(this->hist_[first_nidx].data()), n),
-          collective::Op::kSum);
-      SafeColl(rc);
+#if defined(XGBOOST_USE_METAL)
+      if (metal_) {
+        common::metal::AllreduceHistograms(ctx, hist_.MetalBuffer(), hist_.Offset(first_nidx),
+                                           n / 2);
+      } else
+#endif
+      {
+        auto rc = collective::Allreduce(
+            ctx, linalg::MakeVec(reinterpret_cast<double *>(this->hist_[first_nidx].data()), n),
+            collective::Op::kSum);
+        SafeColl(rc);
+      }
     }
 
 #if defined(XGBOOST_USE_METAL)

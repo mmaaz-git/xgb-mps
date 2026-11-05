@@ -124,16 +124,16 @@ class GlobalApproxBuilder {
 #if defined(XGBOOST_USE_METAL)
     if (ctx_->IsMPS()) {
       GradientPairPrecise sum;
-      quantized_->Sum(linalg::MakeVec(&sum, 1), {&quantized_root, 1});
+      quantized_->SumRoot(ctx_, DeviceOrd::CPU(), linalg::MakeVec(&sum, 1), {&quantized_root, 1});
       root_sum = GradStats{sum};
     } else
 #endif
     {
       for (auto const &g : gpair.Values()) root_sum.Add(g);
+      auto rc =
+          collective::GlobalSum(ctx_, linalg::MakeVec(reinterpret_cast<double *>(&root_sum), 2));
+      collective::SafeColl(rc);
     }
-    auto rc =
-        collective::GlobalSum(ctx_, linalg::MakeVec(reinterpret_cast<double *>(&root_sum), 2));
-    collective::SafeColl(rc);
 
     std::vector<CPUExpandEntry> nodes{best};
     this->histogram_builder_.BuildRootHist(p_fmat, p_tree->HostScView(), partitioner_, gpair, best,

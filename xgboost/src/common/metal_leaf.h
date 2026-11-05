@@ -18,6 +18,8 @@ class LeafSums {
  public:
   virtual ~LeafSums() = default;
   virtual Span<GradientPairPrecise const> Data() const = 0;
+  // Call after local page accumulation, before fitting global leaf weights.
+  virtual void AllReduce(Context const* ctx) = 0;
   virtual void Weights(SplitParameters const& parameters, Span<SplitBounds const> bounds,
                        float learning_rate, Span<float> output) const = 0;
 };

@@ -19,7 +19,10 @@ struct GradientContainer {
   /** @brief Gradient used for tree leaf value, optional. */
   linalg::Matrix<GradientPair> value_gpair;
 
-  [[nodiscard]] bool HasValueGrad() const noexcept { return !value_gpair.Empty(); }
+  // An empty worker can still provide value gradients with a known target count.
+  // Testing the payload size would make it skip collectives used by other ranks.
+  // A default (absent) matrix has shape (0, 0), an empty batch has shape (0, n).
+  [[nodiscard]] bool HasValueGrad() const noexcept { return value_gpair.Shape(1) != 0; }
 
   [[nodiscard]] std::size_t NumSplitTargets() const noexcept { return gpair.Shape(1); }
   [[nodiscard]] std::size_t NumTargets() const noexcept {

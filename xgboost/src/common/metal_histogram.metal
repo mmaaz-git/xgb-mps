@@ -1566,6 +1566,19 @@ kernel void xgb_histogram_dequantize(device const ulong2* quantized [[buffer(0)]
   }
   output[out] = value;
 }
+// Materialize completed global integer statistics without changing their
+// authoritative representation. One scale per target (one for a histogram).
+kernel void xgb_integer_statistics_view(device const ulong2* integers [[buffer(0)]],
+                                        device ulong2* output [[buffer(1)]],
+                                        device const GradientScale* scales [[buffer(2)]],
+                                        constant ulong2& shape [[buffer(3)]],
+                                        uint tid [[thread_position_in_grid]]) {
+  if (ulong(tid) >= shape.x) return;
+  GradientScale scale = scales[ulong(tid) % shape.y];
+  ulong2 value = integers[tid];
+  output[tid] = ulong2(xgb_scaled_integer(value.x, -scale.grad_exponent),
+                       xgb_scaled_integer(value.y, -scale.hess_exponent));
+}
 // The integer cache is authoritative. Convert only the completed page sum for
 // existing split evaluators; never feed that rounded view into cache arithmetic.
 kernel void xgb_histogram_store_integer(device const ulong2* page [[buffer(0)]],

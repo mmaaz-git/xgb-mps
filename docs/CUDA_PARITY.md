@@ -24,9 +24,8 @@ Mac and provide test oracles. They cannot establish measured CUDA equivalence.
 **No tests in this repository have yet compared this port with execution on an
 NVIDIA GPU.** Such a run remains a separate validation requirement.
 
-Several earlier kernels deliberately followed CPU behavior. Their tests remain
-useful regression evidence, but the following differences are unfinished porting
-work, not accepted substitutes for CUDA behavior:
+Several earlier kernels followed CPU behavior. Their tests remain useful
+regression evidence. The source-alignment work and remaining differences include:
 
 - Quantized training state and tree reductions: original per-target quantization,
   both integer sampling methods, histogram caches and all scalar/vector/hist/approx
@@ -35,8 +34,10 @@ work, not accepted substitutes for CUDA behavior:
   floats with original value scales and accumulate integers across pages. Scalar
   and vector split scans and persistent child statistics now retain integers as well.
   Per-target quantizer scales now use CUDA-defined host global bounds/row counts
-  before GPU quantization, including original value-gradient scales; root/leaf/
-  histogram integer collective reductions still need integration.
+  before GPU quantization, including original value-gradient scales. Scalar roots
+  use host integer collectives; vector roots, histograms and value leaves use
+  Metal integer collectives. Native production-updater integration is tested;
+  full distributed learner support remains guarded.
 - Row/column/ranking sampling: uniform row sampling targets CUDA's modern
   `<cuda/std/random>` Philox4x64 branch, including seed consumption and replay.
   The older Thrust branch is not an equivalent stream. Gradient-based sampling now
@@ -110,7 +111,7 @@ must be reported rather than hidden by widening test tolerances.
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
-| Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/allreduce_v.cuh`, `collective/aggregator.cuh` | Metal numeric/bytewise fixed reductions, broadcast and fixed/variable allgather over shared buffers and host TCP; 1/2/3/4-worker tests. Ordered variable-size reduction and sketch consumers are implemented (1/2/3/5-worker tests); global quantizers use source-defined host bounds/row controls, and stump/weighted-unweighted sample means use GPU output reductions. Histogram/root/leaf integer reductions and other training consumers remain open. Distributed `mps` training still rejected |
+| Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/allreduce_v.cuh`, `collective/aggregator.cuh` | Metal numeric/bytewise fixed reductions, broadcast and fixed/variable allgather over shared buffers and host TCP; 1/2/3/4-worker tests. Ordered variable-size reduction and sketch consumers are implemented (1/2/3/5-worker tests); global quantizers use source-defined host bounds/row controls, and stump/weighted-unweighted sample means use GPU output reductions. Scalar roots use host integer reductions; vector roots, histograms and value-leaf sums use Metal integer reductions. Production updater integration is tested with 1/2/3/5 workers. Other consumers and full learner integration remain open; distributed `mps` training still rejected |
 | CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack tensors and native columnar tables feed ordinary/quantile constructors, iterators and inplace prediction/CPU fallback through owned GPU snapshots. Metadata imports use GPU conversion/validation/grouping; custom gradients use GPU typed pair packing. Explicit `output_device="mps"` returns owned GPU predictions, including leaves and SHAP, with legacy/versioned DLPack exports to PyTorch/MLX. Public prediction result pointers retain synchronized shared Metal storage; native output snapshots avoid intermediate host mirrors, while NumPy copies explicitly. Known runtimes synchronize; generic producers/consumers must finish writes. Portable stream handshakes and end-to-end device ownership remain open. NVIDIA-specific interfaces cannot consume Metal memory |
 | CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Owned shared Metal vector allocations with CUDA-derived access states, GPU fills/copies/growth and lazy host mirrors; native float metadata uses them. Reused queues/histograms/workspaces and guarded host views remain. The execution context still defaults generic state to host storage; remaining consumers, persistent end-to-end ownership and asynchronous scheduling are unfinished |
 
@@ -156,8 +157,9 @@ The remaining work includes a complete CUDA operation/arithmetic audit and GPU
 collective integration. SHAP leaf weighting, basis recurrence, edge/pair expressions and eight-point
 reduction association now follow the CUDA source, as recorded below; NVIDIA
 compiler behavior and cross-tree atomic scheduling remain unverified. Fixed Metal
-collectives now exist, but variable-size sketch reduction, global quantization and
-histogram/root/leaf consumers still need integration. Federated MPS collectives
+collectives, variable-size sketch reduction, global quantization and integer
+histogram/root/leaf consumers are integrated. Other objective/metric/booster
+consumers and full learner integration remain unfinished. Federated MPS collectives
 and asynchronous streams remain open. CUDA/NVIDIA execution comparison and testing on other Apple hardware remain
 separate validation requirements; local passing tests cannot establish them.
 
@@ -4214,3 +4216,59 @@ work does not require a GPU collective to match the source. AUC's earlier host-s
 fallback, other consumers, federated transport, cross-machine testing and NVIDIA
 execution validation remain open. No benchmark or performance claim accompanies
 this change. See the [validation record](../validation/cuda-metal-collectives-m3.txt).
+
+
+## Distributed integer tree statistics
+
+Following the [global sketch](../validation/cuda-metal-distributed-sketch-m3.txt)
+and [global quantizer](../validation/cuda-metal-global-quantizer-m3.txt) work,
+Metal tree statistics now reduce integers before converting to floating point.
+The source placements are explicit:
+
+- `updater_gpu_hist.cu::InitRoot` copies a local integer pair to the host and
+  performs a host integer `GlobalSum`. Metal scalar `hist` and `approx` roots
+  follow that placement and convert the global result with the common scales.
+- `updater_gpu_hist.cuh::InitRoot` reduces per-target integers on GPU. Metal vector
+  roots do likewise, then publish the completed statistics for host orchestration.
+- `gpu_hist/histogram.cu::AllReduceHist` combines integer bins before subtraction.
+  Metal reduces a contiguous cache range and refreshes its binary64 view on GPU;
+  cache growth, subtraction and subsequent root sums retain integer authority.
+- `updater_gpu_hist.cuh::ExpandTreeLeaf` reduces integer leaf/target pairs after
+  all local pages and before weight calculation. Metal uses the same placement,
+  original value scales, GPU materialization and existing GPU weight kernels.
+  Final tree publication stays on host, as it does in CUDA.
+
+Local `QuantizedGradients::Sum` remains local; explicit `SumRoot` selects the
+source's host or GPU collective. Existing single-worker paths retain their local
+command. Histogram and leaf collectives reject legacy double-only state. Shared
+Metal allocations remain alive until synchronous GPU/transport work completes.
+Resident tests assert zero payload-vector readbacks and zero collective staging.
+
+An empty-rank integration failure exposed a shared gradient-container bug:
+`HasValueGrad` tested element count, so a valid `(0, targets)` matrix was treated
+like absent `(0, 0)` gradients. That skipped value-quantizer/leaf collectives and
+could mismatch tree target counts. Presence now follows the target dimension.
+The two corresponding CUDA updater checks were aligned; NVIDIA compilation and
+execution have not been run. CPU and Metal updater tests and public empty-gradient
+training tests exercise the fix.
+
+The native group checks 1,485 primitive cases, 516,780 exact fields and 5,940
+rejected invalid calls across 1/2/3/5 localhost workers. Inputs include empty/all-
+empty workers, extreme magnitudes, zeros, multi-target scales, both samplers and
+cross-rank cancellation that a reduction of rounded local views would lose.
+Histogram tests include three pages, missing values, cache growth and subtraction;
+leaf tests include empty leaves and original-scale sampling replay.
+
+A further 396 production-updater cases exercise scalar hist/approx, full and
+reduced vector hist, missing features, sampling, empty ranks and two rounds through
+reused updaters. All ranks must serialize the same model; local row assignments
+are checked by independent host tree traversal. Unsampled, finite-bin fixtures
+pass 33,792 CPU prediction comparisons at 2e-6 relative/absolute tolerance.
+Sampled primitives use the CUDA-derived scalar oracle instead of CPU RNG streams.
+
+Full regression passes 100 native groups, 3,431 Python tests (one expected skip)
+and the CPU-only build/API checks. See the
+[validation record](../validation/cuda-metal-integer-collectives-m3.txt). The learner-wide distributed guard is retained: other training
+consumers, full learner/external-memory integrations and federated transport still
+need validation or implementation. These localhost tests do not establish
+cross-machine, NVIDIA or performance equivalence.

@@ -6,6 +6,15 @@ libomp_root="${LIBOMP_ROOT:-$(brew --prefix libomp)}"
 # PyTorch wheels bundle another libomp. Use one runtime for all linked clients;
 # mixing their internal weak symbols can crash macOS OpenMP worker threads.
 export DYLD_LIBRARY_PATH="$libomp_root/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+echo "Checking global integer roots, histogram caches, subtraction and leaf weights"
+clang++ -O2 -std=c++17 -ffp-contract=off \
+  -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \
+  -I xgboost/include -I xgboost/dmlc-core/include -I build-metal/dmlc-core/include \
+  -Xpreprocessor -fopenmp -I "$libomp_root/include" tests/metal_integer_collective_api.cc \
+  -L xgboost/lib -lxgboost -L "$libomp_root/lib" -lomp \
+  -Wl,-rpath,"$PWD/xgboost/lib" -o results/metal_integer_collective_api_test
+MTL_DEBUG_LAYER=1 PYTHONPATH="$PWD/xgboost/python-package${PYTHONPATH:+:$PYTHONPATH}" \
+  .venv/bin/python tests/run_integer_collective.py
 echo "Checking global quantizers, sampled integer state, value scales and GPU initialization reductions"
 clang++ -O2 -std=c++17 -ffp-contract=off \
   -DDMLC_CORE_USE_CMAKE -DDMLC_LOG_CUSTOMIZE=1 -DXGBOOST_USE_METAL=1 \

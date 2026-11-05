@@ -233,7 +233,7 @@ class MultiTargetHistMaker {
     // Sampling
     this->sampler_.Sample(this->ctx_, this->split_gpair_.View(this->ctx_->Device()),
                           this->split_quantizer_->DeviceSpan());
-    if (!this->value_gpair_.Empty()) {
+    if (this->value_gpair_.Shape(1) != 0) {
       this->value_quantizer_ =
           std::make_unique<GradientQuantiserGroup>(this->ctx_, value_gpair_.View(ctx_->Device()));
       this->sampler_.ApplySampling(this->ctx_, &this->value_gpair_);
@@ -354,7 +354,7 @@ class MultiTargetHistMaker {
    * value gradient.
    */
   void ExpandTreeLeaf(RegTree* p_tree) const {
-    CHECK(!this->value_gpair_.Empty());
+    CHECK_NE(this->value_gpair_.Shape(1), 0);
     CHECK(this->value_quantizer_);
     CHECK_EQ(this->value_gpair_.Shape(1), p_tree->NumTargets());
     auto n_leaves = static_cast<bst_target_t>(p_tree->GetNumLeaves());

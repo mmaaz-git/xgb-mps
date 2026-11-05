@@ -251,7 +251,7 @@ class Runtime {
   id<MTLComputePipelineState> dequantize_hist_pipeline, subtract_hist_pipeline,
       gather_hist_pipeline;
   id<MTLComputePipelineState> store_integer_hist_pipeline, subtract_integer_hist_pipeline,
-      sum_integer_hist_pipeline;
+      sum_integer_hist_pipeline, integer_statistics_view_pipeline;
   id<MTLComputePipelineState> residual_reduce_pipeline, residual_finish_pipeline, adaptive_pipeline;
   id<MTLComputePipelineState> quantile_metric_pipeline, binning_pipeline, metric_sum_pipeline;
   id<MTLComputePipelineState> mean_weight_pipeline, mean_pipeline, mean_result_pipeline;
@@ -415,6 +415,7 @@ class Runtime {
       store_integer_hist_pipeline = make_pipeline(@"xgb_histogram_store_integer");
       subtract_integer_hist_pipeline = make_pipeline(@"xgb_histogram_subtract_integer");
       sum_integer_hist_pipeline = make_pipeline(@"xgb_histogram_sum_integer");
+      integer_statistics_view_pipeline = make_pipeline(@"xgb_integer_statistics_view");
       residual_stats_pipeline = make_pipeline(@"xgb_residual_stats_reduce");
       residual_apply_pipeline = make_pipeline(@"xgb_residual_scale_apply");
       float32_sum_pipeline = make_pipeline(@"xgb_float32_sum");
@@ -637,6 +638,24 @@ BorrowedMemory BindCSRInput(Runtime const& rt, void const* data, std::size_t byt
   return view;
 }
 
+void EncodeIntegerStatistics(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuffer> integers,
+                             id<MTLBuffer> output, id<MTLBuffer> scales, std::size_t count,
+                             std::size_t targets, std::size_t input_offset = 0,
+                             std::size_t output_offset = 0) {
+  CHECK_GT(targets, 0);
+  CHECK_LE(count, std::numeric_limits<std::uint32_t>::max());
+  if (!count) return;
+  auto e = [command computeCommandEncoder];
+  CHECK(e);
+  std::uint64_t shape[]{count, targets};
+  [e setComputePipelineState:rt.integer_statistics_view_pipeline];
+  [e setBuffer:integers offset:input_offset atIndex:0];
+  [e setBuffer:output offset:output_offset atIndex:1];
+  [e setBuffer:scales offset:0 atIndex:2];
+  [e setBytes:shape length:sizeof(shape) atIndex:3];
+  [e dispatchThreads:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [e endEncoding];
+}
 class MetalHistogramBuffer final : public HistogramBuffer {
   std::size_t size_{0};
 
@@ -851,6 +870,22 @@ class MetalLeafSums final : public LeafSums {
                 std::shared_ptr<GradientQuantizer const> original_quantizer);
   Span<GradientPairPrecise const> Data() const override {
     return {static_cast<GradientPairPrecise const*>(buffer.contents), leaves * targets};
+  }
+  void AllReduce(Context const* ctx) override {
+    CHECK(ctx);
+    CHECK(quantizer) << "Metal leaf collectives require integer statistics.";
+    if (!collective::GlobalCommGroup()->IsDistributed() || !leaves) return;
+    @autoreleasepool {
+      auto& rt = GetRuntime();
+      auto count = leaves * targets;
+      auto view = linalg::MakeVec(static_cast<std::int64_t*>(integers.contents), count * 2,
+                                  DeviceOrd::MPS());
+      collective::SafeColl(collective::GlobalSum(ctx, view));
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      EncodeIntegerStatistics(rt, command, integers, buffer, scales, count, targets);
+      CompleteOperation(command, nullptr, &leaf_fitting_gpu_time_ns);
+    }
   }
   void Weights(SplitParameters const& parameters, Span<SplitBounds const> bounds, float eta,
                Span<float> output) const override {
@@ -1498,6 +1533,16 @@ class MetalQuantizedGradients final : public QuantizedGradients {
   std::size_t Targets() const override { return columns.size(); }
   void Sum(linalg::VectorView<GradientPairPrecise> output,
            Span<GradientPairInt64> integers) const override {
+    SumImpl(nullptr, DeviceOrd::CPU(), output, integers);
+  }
+  void SumRoot(Context const* ctx, DeviceOrd device, linalg::VectorView<GradientPairPrecise> output,
+               Span<GradientPairInt64> integers) const override {
+    CHECK(ctx);
+    CHECK(device.IsCPU() || device.IsMPS()) << "Invalid Metal root reduction device.";
+    SumImpl(ctx, device, output, integers);
+  }
+  void SumImpl(Context const* ctx, DeviceOrd device, linalg::VectorView<GradientPairPrecise> output,
+               Span<GradientPairInt64> integers) const {
     CHECK_EQ(output.Size(), columns.size());
     CHECK(integers.empty() || integers.size() == columns.size());
     @autoreleasepool {
@@ -1530,18 +1575,39 @@ class MetalQuantizedGradients final : public QuantizedGradients {
         [e dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
         [e endEncoding];
       }
-      [command commit];
-      [command waitUntilCompleted];
-      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
-      auto values = static_cast<GradientPairPrecise const*>(result.contents);
-      for (std::size_t t = 0; t < columns.size(); ++t) output(t) = values[t];
-      if (!integers.empty()) std::memcpy(integers.data(), exact.contents, integers.size_bytes());
+      CompleteOperation(command, nullptr, &gradient_sum_gpu_time_ns);
+      bool distributed = ctx && collective::GlobalCommGroup()->IsDistributed();
+      if (distributed && device.IsCPU()) {
+        // CUDA's scalar root explicitly returns integer pairs to host before
+        // GlobalSum/ToFloatingPoint. Do not globally add its rounded double view.
+        std::vector<GradientPairInt64> host(columns.size());
+        std::memcpy(host.data(), exact.contents, host.size() * sizeof(GradientPairInt64));
+        auto view = linalg::MakeVec(reinterpret_cast<std::int64_t*>(host.data()), host.size() * 2);
+        collective::SafeColl(collective::GlobalSum(ctx, view));
+        for (std::size_t t = 0; t < columns.size(); ++t) {
+          auto scale = static_cast<GradientScale const*>(columns[t]->gradient_scale_.contents);
+          output(t) = {std::ldexp(static_cast<double>(host[t].GetQuantisedGrad()), -scale->grad_exponent),
+                       std::ldexp(static_cast<double>(host[t].GetQuantisedHess()), -scale->hess_exponent)};
+        }
+        if (!integers.empty()) std::copy(host.begin(), host.end(), integers.begin());
+      } else {
+        if (distributed) {
+          auto view = linalg::MakeVec(static_cast<std::int64_t*>(exact.contents), columns.size() * 2,
+                                      DeviceOrd::MPS());
+          collective::SafeColl(collective::GlobalSum(ctx, view));
+          command = [rt_.queue commandBuffer];
+          CHECK(command);
+          for (std::size_t t = 0; t < columns.size(); ++t)
+            EncodeIntegerStatistics(rt_, command, exact, result, columns[t]->gradient_scale_, 1, 1,
+                                    t * sizeof(GradientPairInt64), t * sizeof(GradientPairPrecise));
+          CompleteOperation(command, nullptr, &gradient_sum_gpu_time_ns);
+        }
+        auto values = static_cast<GradientPairPrecise const*>(result.contents);
+        for (std::size_t t = 0; t < columns.size(); ++t) output(t) = values[t];
+        if (!integers.empty()) std::memcpy(integers.data(), exact.contents, integers.size_bytes());
+      }
       gradient_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
       quantized_gradient_sum_dispatches.fetch_add(1, std::memory_order_relaxed);
-      auto elapsed = command.GPUEndTime - command.GPUStartTime;
-      if (elapsed > 0)
-        gradient_sum_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
-                                           std::memory_order_relaxed);
     }
   }
   void SampleUniform(float probability, std::uint32_t seed) override {
@@ -1836,6 +1902,27 @@ std::unique_ptr<SplitWorkspace> MakeSplitWorkspace() {
 }
 std::unique_ptr<HistogramBuffer> MakeHistogramBuffer() {
   return std::make_unique<MetalHistogramBuffer>();
+}
+void AllreduceHistograms(Context const* ctx, HistogramBuffer* storage, std::size_t offset,
+                         std::size_t bins) {
+  CHECK(ctx && storage);
+  CHECK_LE(offset, storage->Data().size());
+  CHECK_LE(bins, storage->Data().size() - offset);
+  if (!bins) return;
+  auto shared = static_cast<MetalHistogramBuffer*>(storage);
+  CHECK(shared->integers && shared->scale) << "Metal histogram collectives require integer statistics.";
+  if (!collective::GlobalCommGroup()->IsDistributed()) return;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto first = static_cast<std::int64_t*>(shared->integers.contents) + offset * 2;
+    auto view = linalg::MakeVec(first, bins * 2, DeviceOrd::MPS());
+    collective::SafeColl(collective::GlobalSum(ctx, view));
+    auto command = [rt.queue commandBuffer];
+    CHECK(command);
+    EncodeIntegerStatistics(rt, command, shared->integers, shared->buffer, shared->scale, bins, 1,
+                            offset * sizeof(GradientPairInt64), offset * sizeof(GradientPairPrecise));
+    CompleteOperation(command, &histogram_conversion_dispatches, &gpu_time_ns);
+  }
 }
 void SubtractHistograms(HistogramBuffer* storage, Span<HistogramSubtraction const> tasks) {
   static_assert(sizeof(HistogramSubtraction) == 32);

@@ -14,7 +14,31 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **workers now share gradient quantizers, and initialization uses
+Latest step: **distributed trees now reduce exact integer statistics**. Scalar
+roots follow CUDA's host integer collective; vector roots, histogram caches and
+value-leaf sums use Metal integer reductions. Floating-point views are refreshed
+only after those reductions, preserving small terms when large values cancel.
+Production `hist`/`approx` updaters use these paths before split evaluation,
+histogram subtraction and final leaf weights.
+
+The new suite passes **1,485 primitive cases / 516,780 exact field checks** and
+**396 production-updater cases across 1/2/3/5 local workers**. Updaters produce
+identical models across workers; unsampled fixtures pass **33,792 CPU prediction
+comparisons**. Tests cover empty workers, sampling, cache growth, multiple pages,
+multiple targets and cancellation. A shared empty-gradient bug was fixed so a
+zero-row worker retains the value-gradient target count and participates in the
+same collectives. Public CPU/Metal regression tests cover that distinction.
+Full regression passes **100 native groups**, **3,431 Python tests with one
+expected skip**, and the CPU-only build/API checks.
+[Integer collective validation](validation/cuda-metal-integer-collectives-m3.txt).
+
+**Distributed MPS training remains disabled at the learner entry point.** These
+native integration tests exercise the production tree updaters directly. Other
+objective/metric/booster consumers and full learner integration still need work;
+federated MPS, asynchronous streams and NVIDIA execution validation remain open.
+This step makes no performance claim.
+
+Previous step: **workers now share gradient quantizers, and initialization uses
 GPU collective reductions**. Local positive/negative gradient bounds run on GPU;
 CUDA's host reductions combine those small bounds and row counts to produce common
 per-target scales. Both sampling methods and original value-gradient leaf
@@ -30,12 +54,10 @@ passes **99 native groups**, **3,429 Python tests with one expected skip**, and
 the CPU-only build/API checks.
 [Global quantizer/initialization validation](validation/cuda-metal-global-quantizer-m3.txt).
 
-**Distributed MPS training remains disabled.** Histograms, roots and leaf sums
-still need their integer collective reductions; other consumers and the remaining
-CUDA audit are also open. Federated MPS, asynchronous streams and NVIDIA execution
-validation remain unfinished. This step makes no performance claim.
+At that checkpoint, histogram/root/leaf collectives were still open. The latest
+step above adds those reductions; other training consumers remain unfinished.
 
-Previous step: **distributed feature sketches now run on Metal**. Variable-size
+Earlier step: **distributed feature sketches now run on Metal**. Variable-size
 reductions preserve CUDA's binomial-tree merge/prune order. Ordinary matrices and
 in-memory/external quantile constructors share the resulting global cuts,
 including empty workers and native Metal tensor inputs. Summary arithmetic and
@@ -52,7 +74,7 @@ expected skip**, and the CPU-only build/API checks.
 [Distributed sketch validation](validation/cuda-metal-distributed-sketch-m3.txt).
 
 At that checkpoint, global quantizers and initialization collectives were still
-open. The latest step above adds them; histogram/root/leaf reductions and other
+open. The later steps above add those and histogram/root/leaf reductions; other
 training consumers remain unfinished.
 
 Earlier step: **Metal has a collective backend for multiple workers**. Numeric
@@ -70,9 +92,9 @@ tests with one expected skip**, and the CPU-only build/API checks.
 [Collective validation](validation/cuda-metal-collectives-m3.txt).
 
 At that checkpoint, variable-size sketch reduction and training consumers were
-still open. The latest step above adds the sketch path; global quantization,
-histogram/root/leaf reductions and other training consumers remain open. Federated MPS communication and asynchronous
-stream support also remain open. This uses host networking, not NCCL/GPU-direct
+still open. The later steps above add sketches, global quantization and integer
+tree-statistic reductions; other training consumers remain open. Federated MPS
+communication and asynchronous stream support also remain open. This uses host networking, not NCCL/GPU-direct
 transport, and makes no new speedup or NVIDIA execution-equivalence claim.
 
 Earlier step: **SHAP arithmetic follows CUDA's recurrence and operation order**.
@@ -1532,7 +1554,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Add Metal fixed reductions, broadcast and fixed/variable allgather with local-worker tests.
 - [x] Port ordered variable-size GPU reductions and distributed sketch construction.
 - [x] Integrate global quantizer scales, GPU stump initialization and GPU sample-mean collectives.
-- [ ] Integrate histogram/root/leaf integer reductions and remaining distributed training consumers.
+- [x] Integrate histogram/root/leaf integer reductions and validate production updaters across workers.
+- [ ] Integrate remaining distributed objective/metric/booster consumers and enable validated learner paths.
 - [ ] Complete federated communication and asynchronous stream interoperability.
 - [ ] Validate across Apple GPU generations and broader real datasets.
 - [ ] Reach complete CUDA-operation coverage and competitive training performance.

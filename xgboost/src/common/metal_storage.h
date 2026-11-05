@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "xgboost/base.h"
+#include "xgboost/context.h"
 #include "xgboost/span.h"
 
 namespace xgboost::common::metal {
@@ -27,6 +28,9 @@ struct HistogramSubtraction {
   std::uint64_t parent, sibling, output, bins;
 };
 void SubtractHistograms(HistogramBuffer* buffer, Span<HistogramSubtraction const> tasks);
+// Reduce the authoritative integer cache, then refresh its binary64 view.
+void AllreduceHistograms(Context const* ctx, HistogramBuffer* buffer, std::size_t offset,
+                         std::size_t bins);
 
 struct HistogramGather {
   std::uint64_t source;

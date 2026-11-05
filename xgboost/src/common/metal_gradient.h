@@ -34,6 +34,11 @@ class QuantizedGradients {
   // integers from the rounded floating-point view.
   virtual void Sum(linalg::VectorView<GradientPairPrecise> output,
                    Span<GradientPairInt64> integers = {}) const = 0;
+  // Global exact roots: CUDA scalar roots reduce host integers, vector roots
+  // reduce device integers. Dequantize only after the collective completes.
+  virtual void SumRoot(Context const* ctx, DeviceOrd reduction_device,
+                       linalg::VectorView<GradientPairPrecise> output,
+                       Span<GradientPairInt64> integers) const = 0;
   // CUDA's <cuda/std/random> branch (Philox4x64), with one draw per row.
   // Mutates the integer gradients exactly once; replay can be called repeatedly.
   virtual void SampleUniform(float probability, std::uint32_t seed) = 0;
