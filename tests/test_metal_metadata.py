@@ -5,7 +5,9 @@ import gc
 import numpy as np
 import pytest
 from test_metal_extmem_adapter import DiskPages
+from test_metal_adapter import Pages
 from test_metal_tensor import producer
+from cuda_sketch_reference import assert_cuts
 
 import xgboost as xgb
 
@@ -303,29 +305,83 @@ def test_metadata_scalars(metal, name):
 
 
 @pytest.mark.parametrize("name", ["torch", "mlx"])
-@pytest.mark.parametrize("on_host", [False, True])
-def test_gpu_metadata_iterator(metal, tmp_path, name, on_host):
+@pytest.mark.parametrize("constructor", ["memory", "host", "disk"])
+@pytest.mark.parametrize("weight_kind", ["none", "row", "group", "zero"])
+@pytest.mark.parametrize("input_kind", ["native", "mixed"])
+def test_gpu_metadata_iterator(metal, tmp_path, name, constructor, weight_kind, input_kind):
     values = (np.arange(259 * 7).reshape(259, 7) % 31).astype(np.float32)
     labels = np.arange(259, dtype=np.float32) % 7
-    weights = np.arange(259, dtype=np.float32) % 3 + 1
-    slices = [slice(0, 0), slice(0, 129), slice(129, 259), slice(259, 259)]
-    raw, y, w = (producer(name, v) for v in [values, labels, weights])
-    it = DiskPages(
-        tmp_path / "native",
-        [raw[s] for s in slices],
-        on_host=on_host,
-        label=[y[s] for s in slices],
-        weight=[w[s] for s in slices],
+    split = [0, 0, 129, 129, 259, 259]
+    slices = [slice(a, b) for a, b in zip(split[:-1], split[1:])]
+    raw, y = (producer(name, v) for v in [values, labels])
+    batches = [raw[s] for s in slices]
+    if input_kind == "mixed":
+        # Native weights also remain resident when the next data batch is on CPU.
+        batches[3] = values[slices[3]]
+    metadata = dict(label=[y[s] for s in slices])
+    weights = np.zeros(259, dtype=np.float32) if weight_kind == "zero" else (
+        np.arange(259, dtype=np.float32) % 9 / 4
     )
-    q = xgb.ExtMemQuantileDMatrix(it, max_bin=17, nthread=2)
-    it.closed = True
-    del it, raw, y, w
+    expected_weights = np.array([], dtype=np.float32)
+    if weight_kind == "group":
+        groups = [np.array([n // 2, n - n // 2], dtype=np.uint32)
+                  if n else np.array([], dtype=np.uint32) for n in np.diff(split)]
+        group_weights = [np.array([0.5, 1.75], dtype=np.float32)
+                         if len(g) else np.array([], dtype=np.float32) for g in groups]
+        metadata.update(group=groups, weight=[producer(name, w) for w in group_weights])
+        expected_weights = np.concatenate(group_weights)
+    elif weight_kind != "none":
+        w = producer(name, weights)
+        metadata["weight"] = [w[s] for s in slices]
+        expected_weights = weights
+        del w
+
+    def construct(prefix, ref=None):
+        if constructor == "memory":
+            it = Pages(batches, **metadata)
+            result = xgb.QuantileDMatrix(it, ref=ref, max_bin=17, nthread=2)
+        else:
+            it = DiskPages(tmp_path / prefix, batches, on_host=constructor == "host", **metadata)
+            result = xgb.ExtMemQuantileDMatrix(it, ref=ref, max_bin=17, nthread=2)
+            it.closed = True
+        return result
+
+    before = xgb.metal_info()
+    q = construct("native")
+    after = xgb.metal_info()
+    for key in ["vector_readback_bytes", "metadata_host_copy_bytes",
+                "adapter_debug_readback_bytes"]:
+        assert after[key] == before[key], key
+    if input_kind == "native":
+        assert after["input_staging_bytes"] == before["input_staging_bytes"]
+    assert after["sketch_weight_dispatches"] - before["sketch_weight_dispatches"] == (
+        2 if weight_kind == "group" else 0
+    )
+    assert after["gradient_state_shared_output_bytes"] - before["gradient_state_shared_output_bytes"] == (
+        259 * 4 if weight_kind == "group" else 0
+    )
+    validation = construct("reference", ref=q)
+    reused = xgb.metal_info()
+    for key in ["vector_readback_bytes", "metadata_host_copy_bytes",
+                "cuda_sketch_batches", "sketch_weight_dispatches", "gradient_state_shared_output_bytes",
+                "gradient_state_staging_bytes"]:
+        assert reused[key] == after[key], key
+    if input_kind == "native":
+        assert reused["input_staging_bytes"] == after["input_staging_bytes"]
+    del raw, y, batches, metadata
     gc.collect()
     np.testing.assert_array_equal(q.get_label(), labels)
-    np.testing.assert_array_equal(q.get_weight(), weights)
-    params = dict(device="mps", max_bin=17, nthread=2, max_depth=3)
+    np.testing.assert_array_equal(q.get_weight(), expected_weights)
+    np.testing.assert_array_equal(validation.get_weight(), expected_weights)
+    csr = xgb.DMatrix(values, nthread=2).get_data()
+    assert_cuts(q, 17, csr=csr, page_rows=np.diff(split).tolist(), adapter=True)
+    for actual, expected in zip(validation.get_quantile_cut(), q.get_quantile_cut()):
+        np.testing.assert_array_equal(actual, expected)
+    # A zero total weight has no automatic weighted-mean intercept.
+    params = dict(device="mps", max_bin=17, nthread=2, max_depth=3, base_score=0.5,
+                  objective="rank:pairwise" if weight_kind == "group" else "reg:squarederror")
     model = xgb.train(params, q, 3)
     np.testing.assert_array_equal(model.predict(q), model.inplace_predict(values))
-    del model, q
+    del model, q, validation
     gc.collect()
     assert not list(tmp_path.iterdir())

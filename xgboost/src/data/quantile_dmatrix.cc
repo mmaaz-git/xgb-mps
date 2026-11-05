@@ -18,6 +18,7 @@
 #if defined(XGBOOST_USE_METAL)
 #include "../common/metal_cuda_sketch.h"
 #include "../common/metal_sketch.h"
+#include "../common/metal_vector.h"
 #include "metal_page_source.h"
 #include "metal_quantile.h"
 #endif
@@ -106,13 +107,18 @@ void MakeSketches(Context const* ctx,
       CHECK_EQ(cats.n_total_cats, ext.cats->NumCatsTotal()) << error::InconsistentCategories();
     }
     if (sketch) {
-      auto weights = proxy->Info().weights_.ConstHostSpan();
-      std::vector<float> expanded;
+      auto weights = common::metal::ConstDeviceSpan(proxy->Info().weights_);
+      HostDeviceVector<float> expanded;
       if (!weights.empty() && proxy->Info().IsRanking()) {
-        expanded = common::metal::MakeSketchWeights(rows, {}, weights, proxy->Info().group_ptr_);
-        weights = expanded;
+        expanded.SetDevice(DeviceOrd::MPS());
+        expanded.Resize(rows);
+        common::metal::MakeSketchWeights(rows, {}, weights, proxy->Info().group_ptr_,
+                                         expanded.DeviceSpan());
+        weights = expanded.ConstDeviceSpan();
       }
       CHECK(weights.empty() || weights.size() == rows);
+      // SetWeights owns a GPU snapshot, including the temporary group expansion.
+      // Leave empty weights empty: CUDA uses integer ranks for unweighted input.
       sketch->SetWeights(weights);
     }
     bst_idx_t nnz = 0;
