@@ -1,0 +1,90 @@
+Repository review and bounded cleanup — Apple M3
+2026-11-04 local / 2026-11-05 UTC
+
+Baseline: 2eaad4dd0b49dca26ba12320c01b5f052e039ed2.
+Reviewed fixes:
+  8c6b0d1 — shared diagnostic schema, CPU/Metal key-set regression.
+  2d80ee1 — aliased native metadata exports captured once; focused tests.
+  f9899b8 — build-first selected-test runner and CUDA CI concurrency.
+Docs and coverage-map changes are described in docs/REVIEW.md and docs/PLAN.md.
+
+Scope and environment:
+  Three independent reviewers: native runtime/storage, validation/CI/evidence,
+  documentation/public API. Critical-path review, not every kernel/branch proof.
+  Apple M3; macOS 26.6.2; Python 3.13.5; torch 2.15.0; MLX 0.32.4.
+  DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib.
+  Native checks use Metal API Validation and the freshly rebuilt main library.
+  No benchmark, NVIDIA execution, or other Apple hardware validation.
+
+Preserved unfinished work:
+  Local branch wip/vector-weight-storage-review, commit ca00777.
+  Contains the interrupted vector-weight implementation/tests, including a
+  reviewed unsafe CUDA-context view in a CPU transform. Not merged or published.
+  Main cleanup changes no Metal kernel, training formula, tolerance, allocator
+  behavior or synchronization contract.
+
+Independent checks before runtime validation:
+  All 276 Statistics field types/order match baseline after header extraction.
+  All 276 Metal JSON keys/expressions preserved; one mapping replaces separate
+  CPU zeros. CPU baseline lacked 17 fields (261 total vs 278).
+  All 100 original compiler argv lists and run/environment pairs match the
+  new native manifest in original execution order (11 compiler profiles).
+  List/dry-run, invalid-selector rejection, shell syntax and Python compile pass.
+  Runner logs source revision/diff, untracked hashes, manifest and library hash;
+  no stale test binary or library reuse without rebuilding.
+
+Representative native runner integration PASS:
+  bash scripts/test.sh --native metal_model_state_api metal_split_categories
+    metal_collective_api --log-dir results/review-runner-native-v1
+  UTC 07:18:22–07:18:51, exit 0. Build 13.96 s; all 7 build/compile/run steps pass.
+  Model: 81 copy cases, 80 scale cases / 1,053,248 products, 16 growing trees.
+  Categories: 864 slots, 33,738,112 exact words, 16 production API calls.
+  Collectives: 1/2/3/4 local workers; each worker 602 cases / 1,330,392 fields /
+    11 rejected calls; disconnected-peer propagation also passes.
+  Logs: results/review-runner-native-v1/summary.json and per-step logs.
+
+CPU configuration PASS:
+  cmake --build build-cpu -j4 (isolated USE_METAL=false build), exit 0.
+  .venv/bin/python scripts/check_cpu_build.py
+    --metal-library xgboost/lib/libxgboost.dylib
+  Actual key sets match across separate processes: 278 fields; all CPU counters
+  zero. Disabled APIs and CPU ordinary/quantile/external cache checks pass.
+  Isolated results/cpu-python package explicitly checked USE_METAL=false.
+  PYTHONPATH=results/cpu-python .venv/bin/python -m pytest -q
+    tests/test_metal_updater.py -k cpu -o pythonpath=results/cpu-python
+  9 passed, 72 deselected, 11 expected warnings, 0.16 s.
+  Logs: results/review-cpu-build-v1.log, review-cpu-schema-v1.log,
+    review-cpu-updater-v1.log.
+
+Python integration and resolved test failure:
+  bash scripts/test.sh --python tests/test_metal_metadata.py
+    tests/test_metal_tensor.py tests/test_metal_gradient_import.py
+    tests/test_metal_model_state.py tests/test_metal_updater.py
+    --log-dir results/review-runner-python-v1
+  UTC 07:21:47–07:22:19: build/reference compilation pass; pytest initially
+  703 passed / 16 failed, 34 warnings, 27.36 s; runner correctly reports exit 1.
+  All 16 failures were the new alias test's input_staging_bytes assertion:
+  quantile/external fixtures intentionally upload host feature arrays. That
+  broad counter included unrelated feature staging. Production was not changed
+  to satisfy the assertion. Replaced it with metadata_host_copy_bytes unchanged
+  and metadata_shared_output_bytes >= two metadata arrays.
+  Reran affected test group with the same library:
+    .venv/bin/python -m pytest -q tests/test_metal_metadata.py
+      -k aliased_metadata_capsule --require-metal
+  Final: 32 passed, 332 deselected, 2.84 s, exit 0; no skips.
+  Covers ordinary/set_info/quantile/external constructors, weight/base-margin
+  aliasing, legacy/versioned capsules, both torch/MLX, producer mutation/lifetime,
+  expected values and rejection of independent reuse of consumed capsules.
+  719 distinct selected cases are covered across the initial and corrective
+  runs; this is NOT a claimed fresh 719-pass single run.
+  Logs: results/review-runner-python-v1/summary.json and 003-pytest.log;
+    results/review-metadata-alias-v2.log.
+
+Scope limits:
+  No full 100-native/3,554-Python regression rerun for this cleanup; previous
+  full result remains revision-qualified at dd44829. Focused coverage is chosen
+  for the schema/header extraction, capsule fix and runner migration. Optional
+  federated suites were not rerun. No claim these selected tests prove parity.
+  CUDA runs 41978324629, 41980647083 and 41982974034 passed after the three
+  initial dependency fixes. Cleanup revisions require their own subsequent CI;
+  pre-cleanup compiler passes are not evidence for unbuilt later revisions.

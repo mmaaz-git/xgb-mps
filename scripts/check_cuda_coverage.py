@@ -57,6 +57,7 @@ def main():
         data["implementation_bodies"]
         + [data["latest_local_regression"]]
         + data.get("caller_audit_records", [])
+        + [data["review_record"], data["completion_plan"]]
     ):
         assert (ROOT / path).is_file(), path
     assert (

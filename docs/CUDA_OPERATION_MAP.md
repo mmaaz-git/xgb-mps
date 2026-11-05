@@ -14,38 +14,24 @@ It deliberately does not turn these structural checks into a correctness claim.
 The implementation bodies behind the listed Metal interfaces live primarily in
 `metal_histogram.mm` and `metal_histogram.metal`.
 
-## Concrete remaining work
+## Current work and validation boundaries
 
-- **Vector-tree model storage:** `MultiTargetTree` weight/category copy and scaling
-  dispatches use Metal, but MPS `CopyBatch` and `ApplyLearningRate` still obtain
-  `HostSpan`/`ConstHostSpan`, and alias snapshots copy on the CPU. CUDA uses device
-  spans and device-to-device copies. `SetRoot` also has an `IsCUDA`-only copy branch.
-  Existing model-buffer tests prove arithmetic/copy results, not persistent GPU
-  ownership. The root caller also multiplies by eta on CPU, and the split
-  evaluator gathers root/child weights from host vectors. CUDA keeps these
-  operations and weight views on GPU; port these producers with the containers.
-  Host node topology and source-defined serialization must remain host where
-  CUDA does the same.
-- **Generic helper consumers:** reconcile the remaining CUDA scan/sort/helper
-  callers with their specialized Metal dispatch. The current production
-  transform/linalg caller set is accounted for in the
-  [caller audit](../validation/cuda-metal-transform-callers.txt). A C++ lambda
-  helper lacking a Metal launcher is not itself proof of a missing operation, but matching a few consumers
-  does not prove all callers are covered either.
-- **Numerical boundaries:** AFT sensitive tails, ranking policies and reduction
-  association have documented differences. GPU execution, expression fidelity and
-  CPU equivalence are separate claims. See the linked detailed ledger; do not
-  restore CPU-specific formulas merely to make a mismatched oracle pass.
-- **Scheduling/performance:** current producer synchronization and Metal command
-  completion establish readiness, but do not reproduce CUDA asynchronous scheduling.
-  There is no assumed portable Metal stream-pointer protocol. Optimize scheduling
-  after operation/state coverage; retain the existing explicit readiness contract.
+The [completion plan](PLAN.md) is the authoritative queue. Before new kernels,
+freeze the remaining caller inventory and classify numerical contracts (PORT-4/5).
+The confirmed vector gaps are separately tracked: weights (PORT-1), selected
+categorical bitsets (PORT-2), and exact node/child sums (PORT-3). A partial weight
+implementation is quarantined locally and is not part of main.
 
-NVIDIA execution and other Apple hardware are not represented by local M3 tests.
-CUDA compilation/linking passes at `b8ad69d` with CUDA 13.4.92, NCCL, nvCOMP
-and federated consumers; see [compiler evidence](../validation/cuda-compile-ci-13.4.txt).
-This is checked separately in the repository workflow; its
-result cannot establish runtime or numerical equivalence.
+The [review](REVIEW.md) records reproduced defects and architecture risks.
+Existing [transform/linalg caller evidence](../validation/cuda-metal-transform-callers.txt)
+should be retained. A missing generic helper launcher alone does not prove a
+missing operation; actual production consumers determine coverage.
+
+NVIDIA execution and other Apple hardware are not represented by M3 tests.
+CUDA compilation/linking passed at `b8ad69d`, `ce63cab` and `2eaad4d`, including
+NCCL, nvCOMP and federated consumers. See [compiler evidence](../validation/cuda-compile-ci-13.4.txt).
+Compilation is not runtime or numerical equivalence. Performance follows
+operation/storage correctness; historical timings are not current measurements.
 
 ## Mapped families
 
@@ -89,7 +75,7 @@ mechanisms. The JSON contains full source lists and explicit limitations for eac
 | quantization-sampling: Global sign bounds, integer quantizers, uniform masks, gradient thresholds and value-gradient replay | mapped | [metal_gradient.h](../xgboost/src/common/metal_gradient.h); [metal_sampling.h](../xgboost/src/common/metal_sampling.h); [metal_training.h](../xgboost/src/common/metal_training.h) | [metal_quantized_state_api.cc](../tests/metal_quantized_state_api.cc); [metal_gradient_sampling_api.cc](../tests/metal_gradient_sampling_api.cc); [metal_global_quantizer_api.cc](../tests/metal_global_quantizer_api.cc); [test_metal_sampling.py](../tests/test_metal_sampling.py) |
 | histograms: Quantized dense/sparse histogram accumulation, subtraction/cache and feature-group launch scheduling | mapped | [histogram.h](../xgboost/src/tree/hist/histogram.h); [metal_histogram.h](../xgboost/src/common/metal_histogram.h); [metal_gradient.h](../xgboost/src/common/metal_gradient.h) | [metal_integer_cache_api.cc](../tests/metal_integer_cache_api.cc); [metal_training_state_api.cc](../tests/metal_training_state_api.cc); [test_metal_storage.py](../tests/test_metal_storage.py) |
 | scalar-splits: Numeric/categorical scalar split scans, missing direction, gains, weights and expansion state | mapped | [evaluate_splits.h](../xgboost/src/tree/hist/evaluate_splits.h); [metal_split.h](../xgboost/src/common/metal_split.h); [metal_constraints.h](../xgboost/src/common/metal_constraints.h) | [test_metal_cuda_splits.py](../tests/test_metal_cuda_splits.py); [test_metal_split_categories.py](../tests/test_metal_split_categories.py); [test_metal_split_finalize.py](../tests/test_metal_split_finalize.py) |
-| vector-splits: Multi-target split evaluation, per-target sums, reduced split/value gradients and category candidates | partial-host-weights | [evaluate_splits.h](../xgboost/src/tree/hist/evaluate_splits.h); [metal_split.h](../xgboost/src/common/metal_split.h) | [test_metal_cuda_multi_splits.py](../tests/test_metal_cuda_multi_splits.py); [test_metal_split_categories.py](../tests/test_metal_split_categories.py); [test_metal_split_finalize.py](../tests/test_metal_split_finalize.py) |
+| vector-splits: Multi-target split evaluation, per-target sums, reduced split/value gradients and category candidates | partial-host-payloads | [evaluate_splits.h](../xgboost/src/tree/hist/evaluate_splits.h); [metal_split.h](../xgboost/src/common/metal_split.h) | [test_metal_cuda_multi_splits.py](../tests/test_metal_cuda_multi_splits.py); [test_metal_split_categories.py](../tests/test_metal_split_categories.py); [test_metal_split_finalize.py](../tests/test_metal_split_finalize.py) |
 | partition: Stable row partition, compressed-page reads and leaf-position output | mapped | [common_row_partitioner.h](../xgboost/src/tree/common_row_partitioner.h); [metal_training.h](../xgboost/src/common/metal_training.h) | [metal_training_state_api.cc](../tests/metal_training_state_api.cc); [metal_compressed_consumers_api.cc](../tests/metal_compressed_consumers_api.cc) |
 | leaf-refit: Reduced-gradient sampling replay, leaf/page integer sums and final weights | mapped | [metal_leaf.h](../xgboost/src/common/metal_leaf.h); [metal_gradient.h](../xgboost/src/common/metal_gradient.h) | [metal_leaf_fitting_api.cc](../tests/metal_leaf_fitting_api.cc); [metal_integer_leaf_api.cc](../tests/metal_integer_leaf_api.cc); [test_metal_leaf_fitting.py](../tests/test_metal_leaf_fitting.py) |
 | vector-model: Batched model weight/category copies, root assignment and learning-rate scaling | partial-host-storage | [multi_target_tree_model.cc](../xgboost/src/tree/multi_target_tree_model.cc); [metal_model.h](../xgboost/src/common/metal_model.h) | [metal_model_state_api.cc](../tests/metal_model_state_api.cc); [test_metal_model_state.py](../tests/test_metal_model_state.py) |

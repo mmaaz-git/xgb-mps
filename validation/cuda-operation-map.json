@@ -744,8 +744,8 @@
         "tests/test_metal_split_categories.py",
         "tests/test_metal_split_finalize.py"
       ],
-      "status": "partial-host-weights",
-      "limits": "Split arithmetic runs on GPU, but MultiHistEvaluator::InitRoot/ApplyTreeSplit gather root/child weights from host result vectors. The common vector updater multiplies root eta on CPU. CUDA keeps these weight operations/views on GPU; migrate them with persistent vector-model storage."
+      "status": "partial-host-payloads",
+      "limits": "Confirmed host payloads: root/child weights, selected vector category bitsets, and exact node/child sums. CUDA retains device node_weights_, split_cats_, node_sums_ and split_sums_. Root eta also runs on CPU. See PORT-1/2/3 in docs/PLAN.md; the local quarantined weight draft does not close these gaps."
     },
     {
       "id": "partition",
@@ -885,5 +885,7 @@
   ],
   "caller_audit_records": [
     "validation/cuda-metal-transform-callers.txt"
-  ]
+  ],
+  "review_record": "docs/REVIEW.md",
+  "completion_plan": "docs/PLAN.md"
 }

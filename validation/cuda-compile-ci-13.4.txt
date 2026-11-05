@@ -51,3 +51,12 @@ This validates compilation/linking at the listed revision/configuration only.
 No NVIDIA runtime tests, performance measurements, other CUDA versions or other
 GPU architectures are represented. Metal arithmetic/runtime correctness remains
 covered separately by the local Apple M3 suites and documented numerical limits.
+
+Subsequent successful runs of the same workflow before review cleanup:
+  ce63cab9bb6f672ba4b0287ad50d1281de13ebac: 41980647083, success,
+    completed 2026-11-05T06:50:35Z.
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/41980647083
+  2eaad4dd0b49dca26ba12320c01b5f052e039ed2: 41982974034, success,
+    completed 2026-11-05T07:15:05Z.
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/41982974034
+  These are compiler workflow results, not new GPU runtime measurements.
