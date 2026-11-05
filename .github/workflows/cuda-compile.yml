@@ -1,0 +1,53 @@
+name: CUDA compile
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "xgboost/**"
+      - "scripts/ci_cuda_build.sh"
+      - ".github/workflows/cuda-compile.yml"
+  pull_request:
+    paths:
+      - "xgboost/**"
+      - "scripts/ci_cuda_build.sh"
+      - ".github/workflows/cuda-compile.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # NVIDIA CUDA 13.4.2 devel Ubuntu 24.04, immutable multi-architecture manifest.
+    container: nvidia/cuda@sha256:7005688f5eaa5a9aaa9e555f546107c4454446a543347fd48b0bdb63ea027ad2
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git cmake ninja-build g++ pkg-config \
+            libgrpc++-dev protobuf-compiler protobuf-compiler-grpc \
+            libnccl2=2.32.3-1+cuda13.4 libnccl-dev=2.32.3-1+cuda13.4 \
+            libnvcomp6-cuda-13=6.0.0.12-1 libnvcomp6-dev-cuda-13=6.0.0.12-1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Compile CUDA, NCCL, nvCOMP and federated paths
+        run: |
+          mkdir -p results
+          bash scripts/ci_cuda_build.sh 2>&1 | tee results/cuda-compile-ci.log
+      - name: Preserve compiler evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cuda-compile-evidence
+          path: |
+            results/cuda-compile-ci.log
+            build-cuda-ci/CMakeCache.txt
+            build-cuda-ci/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
