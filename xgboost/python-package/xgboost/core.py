@@ -2720,16 +2720,18 @@ class Booster:
 
         output_device :
             Metal fork extension. ``"mps"`` returns an owned :py:class:`MetalOutput`
-            that PyTorch/MLX can consume through DLPack. The default preserves
-            existing NumPy results for host/Metal input and CuPy results for CUDA
-            input. ``"cpu"`` requests a NumPy result. Direct CUDA-to-Metal transfer
+            that PyTorch/MLX can consume through DLPack. The default returns
+            MetalOutput for native Metal input, CuPy for CUDA input, and NumPy
+            for host input, regardless of the model device. ``"cpu"`` requests
+            a NumPy result. Direct CUDA-to-Metal transfer
             is unsupported.
 
         Returns
         -------
         prediction : numpy.ndarray/cupy.ndarray/MetalOutput
             The prediction result, with storage selected by ``output_device``.
-            The default uses CuPy for CUDA input and NumPy for host/Metal input.
+            The default uses MetalOutput for Metal input, CuPy for CUDA input,
+            and NumPy for host input.
 
         """
         if output_device not in (None, "cpu", "mps"):
@@ -2831,7 +2833,7 @@ class Booster:
                     ctypes.byref(preds),
                 )
             )
-            return _prediction_output(shape, dims, preds, False, output_device)
+            return _prediction_output(shape, dims, preds, False, output_device or "mps")
         if _is_np_array_like(data):
             data, _ = _ensure_np_dtype(data, data.dtype)
             _check_call(

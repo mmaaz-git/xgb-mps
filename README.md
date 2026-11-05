@@ -14,7 +14,22 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **federated MPS training is implemented behind
+Latest step: **native Metal inplace prediction returns GPU output by default**,
+matching CUDA input placement. PyTorch/MLX tensors and `MetalData`/`MetalColumnar`
+inputs return an owned `MetalOutput`, including when prediction uses a CPU model.
+Use `output_device="cpu"` or `.numpy()` for a NumPy copy. Host inputs and ordinary
+`predict(DMatrix)` still default to NumPy; scikit-learn explicitly returns NumPy.
+This closes a public API coverage gap; it does not change training algorithms.
+
+Validation passes **100 native groups**, **3,474 Python tests with one expected
+skip**, and standard CPU-only build/API checks. The native result test covers
+**948 cases / 198,073 checks**. Optional federated learners pass **520 cases /
+13,056 CPU prediction checks**, including mutual TLS, plus the CPU-only federated
+build. No benchmark or NVIDIA execution was added.
+[Native output validation](validation/cuda-metal-native-default-m3.txt).
+Manual updater selection and the remaining operation audit are still open.
+
+Previous step: **federated MPS training is implemented behind
 `PLUGIN_FEDERATED=ON`**. Metal payloads use the existing gRPC server, sharing its
 request sequence with CPU control messages. Fixed reductions run on the server,
 as in CUDA; variable sketch payloads merge on GPU at rank zero in CUDA's ascending
@@ -402,7 +417,8 @@ No new benchmark or NVIDIA execution comparison.
 The preceding step added **owned GPU prediction outputs**. Request
 `predict(..., output_device="mps")` or `inplace_predict(..., output_device="mps")`
 to get an `xgb.MetalOutput`. PyTorch and MLX consume it through DLPack; `.numpy()`
-explicitly copies it to a host array. Existing default return types are unchanged.
+explicitly copies it to a host array. Native Metal inplace inputs now default to
+MetalOutput, as described above.
 Outputs include values, margins, leaves, SHAP contributions and interactions.
 
 Each result owns a private Metal buffer independently of the model and prediction
@@ -510,7 +526,8 @@ Focused validation passes **93 Python tests** and **105 native cases / 145,567
 field checks / nine rejected descriptors**. Full regression passes **2,459 Python
 tests, one skip**, every rebuilt native suite and the CPU-only build/API checks.
 Native metadata, ordinary `DMatrix` inputs and explicit GPU prediction outputs
-are covered above. Default Metal prediction results still return NumPy.
+are covered above. Native Metal inplace prediction now defaults to MetalOutput;
+ordinary batch prediction still defaults to NumPy.
 PyTorch coexistence requires a single OpenMP runtime, configured below.
 No new benchmark. [Tensor validation](validation/cuda-metal-tensor-m3.txt).
 
@@ -867,13 +884,13 @@ X_gpu = torch.randn(1000, 32, device="mps", dtype=torch.float16)
 y_gpu = torch.randn(1000, device="mps")
 train = xgb.QuantileDMatrix(X_gpu, y_gpu, max_bin=256)
 model = xgb.train({"device": "mps", "max_bin": 256}, train)
-prediction = model.inplace_predict(X_gpu)  # NumPy output
+prediction = model.inplace_predict(X_gpu)  # owned MetalOutput on GPU
 ```
 
-To keep the result in GPU storage:
+Consume the GPU result or request an explicit CPU copy:
 
 ```python
-result = model.inplace_predict(X_gpu, output_device="mps")
+result = model.inplace_predict(X_gpu)  # native Metal input selects GPU output
 prediction_gpu = torch.from_dlpack(result)  # shares the owned Metal buffer
 prediction_cpu = result.numpy()            # explicit host copy
 
@@ -990,7 +1007,7 @@ selecting `mps` does not imply that every stage runs on the GPU.
 | Category names | GPU typed dictionary sorting, schema/empty checks, segmented lower-bound recoding maps and first-unknown search; exact integer widths and signed-byte strings. Row-code mapping and native dictionary gathers run on GPU. Model dictionary copies and persistent storage remain host |
 | Quantized data cache | Ordinary in-memory DMatrix pages use raw CSR-to-ELLPACK compression. Quantile matrices use direct adapter-to-ELLPACK construction or one-time compression of CPU bins. External host cache adds shared/private ratios and two-page prefetch. Histogram, partition and prediction/SHAP consumers read compressed buffers directly; CPU access explicitly materializes host mirrors. Compressed disk storage, internal ELLPACK save/load and optional native Snappy compression are implemented |
 | Native Apple feature tensors | Metal DLPack inputs for ordinary and quantile matrices, external iterators and inplace prediction/CPU fallback; GPU sparse entry packing, strided snapshots, half decoding and PyTorch/MLX synchronization. Native columnar masks and integer/string dictionaries use the same consumers; persistent dictionary ownership remains open |
-| Native prediction outputs | Explicit `output_device="mps"` returns owned private Metal results, with legacy/versioned DLPack exports to PyTorch/MLX, independent copy support and explicit host readback. Values, margins, leaves and SHAP outputs are supported; generic prediction state remains host-owned |
+| Native prediction outputs | Native Metal inplace inputs default to owned private Metal results; `output_device="mps"` also selects them for host/batch prediction, with legacy/versioned DLPack exports to PyTorch/MLX, independent copy support and explicit host readback. Values, margins, leaves and SHAP outputs are supported; GPU-produced results retain Metal storage through C API publication |
 | Native custom-gradient imports | CUDA typed casts and GPU pair packing for regular and split/value entry points; real PyTorch/MLX and legacy/versioned capsules. Safe shared destinations or counted copy fallback; generic allocation remains host-owned |
 | Native metadata imports | GPU typed copies/conversion and CUDA label/weight predicates into owned Metal vectors; GPU query-ID RLE/prefix scans. Float metadata has lazy host mirrors. Internal row slicing, device copies/stacking and feature-type equality use Metal; group boundaries and group-size prefix sums remain host as in CUDA |
 | Generic vector storage | Explicit Metal storage ordinal with CUDA-derived host/device access states; GPU POD fills, copies, growth and concatenation, lazy readback, retained capacity and move ownership. Default execution-context storage and many consumers remain host-side |
@@ -1595,6 +1612,8 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Port optional Snappy cache compression under the native opt-in.
 - [x] Add native Metal feature/metadata/gradient tensors and columnar masks/dictionaries.
 - [x] Add owned GPU prediction outputs and PyTorch/MLX DLPack consumers.
+- [x] Match native inplace output placement/defaults to CUDA while preserving sklearn NumPy results.
+- [ ] Audit and remove the legacy blanket rejection of manual tree updater selection on MPS.
 - [x] Add generic Metal vector storage and internal metadata slice/copy/stack/equality operations.
 - [x] Keep nonranking objective inputs/gradients/transforms in Metal vector storage.
 - [x] Keep initialization/statistics/stump payloads on Metal through their GPU stages.

@@ -30,6 +30,7 @@ from scipy.special import softmax
 
 from ._c_api import _parse_version, _py_version
 from ._data_utils import Categories
+from ._metal import MetalOutput
 from ._typing import (
     ArrayLike,
     EvalsLog,
@@ -1517,6 +1518,8 @@ class XGBModel(XGBModelBase):
                         cp = import_cupy()
 
                         predts = cp.asnumpy(predts)  # ensure numpy array is used.
+                    elif isinstance(predts, MetalOutput):
+                        predts = predts.numpy()
                     return predts
                 except TypeError:
                     # coo, csc, dt

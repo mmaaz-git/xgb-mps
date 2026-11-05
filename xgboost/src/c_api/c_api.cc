@@ -2195,7 +2195,7 @@ XGB_DLL int XGBoosterPredictFromDMatrix(BoosterHandle handle, DMatrixHandle dmat
 
 void InplacePredictImpl(std::shared_ptr<DMatrix> p_m, char const *c_json_config, Learner *learner,
                         xgboost::bst_ulong const **out_shape, xgboost::bst_ulong *out_dim,
-                        const float **out_result) {
+                        const float **out_result, DeviceOrd output_device = DeviceOrd::CPU()) {
   xgboost_CHECK_C_ARG_PTR(c_json_config);
   auto config = Json::Load(StringView{c_json_config});
 
@@ -2221,7 +2221,16 @@ void InplacePredictImpl(std::shared_ptr<DMatrix> p_m, char const *c_json_config,
   xgboost_CHECK_C_ARG_PTR(out_result);
   xgboost_CHECK_C_ARG_PTR(out_shape);
 
-  *out_result = PredictionHostPointer(p_predt, true);
+  if (output_device.IsMPS()) {
+    // Like InplacePreidctCUDA, native input returns device storage even when
+    // prediction fell back to a CPU learner. Host entry points retain their
+    // existing publication behavior.
+    p_predt->SetDevice(output_device);
+    auto ptr = p_predt->ConstDevicePointer();
+    *out_result = p_predt->Empty() ? nullptr : ptr;
+  } else {
+    *out_result = PredictionHostPointer(p_predt, true);
+  }
   *out_shape = dmlc::BeginPtr(shape);
 }
 
@@ -2262,7 +2271,7 @@ XGB_DLL int XGBoosterPredictFromMetal(BoosterHandle handle, char const *data,
   xgboost_CHECK_C_ARG_PTR(data);
   proxy->SetMetalArray(data);
   auto *learner = static_cast<xgboost::Learner *>(handle);
-  InplacePredictImpl(p_m, c_json_config, learner, out_shape, out_dim, out_result);
+  InplacePredictImpl(p_m, c_json_config, learner, out_shape, out_dim, out_result, DeviceOrd::MPS());
   API_END();
 }
 

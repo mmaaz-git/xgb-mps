@@ -86,9 +86,11 @@ def test_mixed_columns_masks(metal, name, bit, kind):
     before = xgb.metal_info()
     prediction = model.inplace_predict(table, missing=0)
     no_staging(before)
+    assert isinstance(prediction, xgb.MetalOutput)
+    prediction = prediction.numpy()
     np.testing.assert_array_equal(prediction, model.inplace_predict(frame, missing=0))
     model.set_param({"device": "cpu"})
-    np.testing.assert_array_equal(model.inplace_predict(table, missing=0), prediction)
+    np.testing.assert_array_equal(model.inplace_predict(table, missing=0).numpy(), prediction)
 
 
 def categorical(name, names, *, order=None, n=271, begin=0):
@@ -167,7 +169,7 @@ def test_dictionary_prediction_references(metal, name, names, kind, tmp_path):
         assert model.save_raw() == host_model.save_raw()
         for input_data, expected in [(table, frame), (new_table, new_frame)]:
             np.testing.assert_array_equal(
-                model.inplace_predict(input_data), model.inplace_predict(expected)
+                model.inplace_predict(input_data).numpy(), model.inplace_predict(expected)
             )
         ref = model.get_categories()
         extra = dict(ref=actual) if kind == "quantile" else {}
@@ -189,7 +191,7 @@ def test_dictionary_prediction_references(metal, name, names, kind, tmp_path):
         restored = xgb.Booster(model_file=path)
         restored.set_param({"device": device})
         np.testing.assert_array_equal(
-            restored.inplace_predict(new_table), model.inplace_predict(new_frame)
+            restored.inplace_predict(new_table).numpy(), model.inplace_predict(new_frame)
         )
         del ref, recoded, host_recoded
     # Reject missing categories instead of silently assigning another code.
@@ -236,7 +238,7 @@ def test_columnar_external(metal, name, kind, on_host, tmp_path):
     np.testing.assert_array_equal(model.predict(actual), host_model.predict(reference))
     test, expected = categorical(name, NAMES[1], order=[4, 2, 0, 3, 1])
     np.testing.assert_array_equal(
-        model.inplace_predict(test), model.inplace_predict(expected)
+        model.inplace_predict(test).numpy(), model.inplace_predict(expected)
     )
     del actual, reference, model, host_model
     gc.collect()
@@ -320,7 +322,8 @@ def test_reference_dictionaries_across_batches(metal, name, kind, on_host, tmp_p
     for part, frame in zip(parts, frames):
         a = booster.inplace_predict(part, strict_shape=True)
         b = booster.inplace_predict(frame, strict_shape=True)
-        np.testing.assert_array_equal(a, b)
+        assert isinstance(a, xgb.MetalOutput)
+        np.testing.assert_array_equal(a.numpy(), b)
         per_batch.append(b.reshape(-1))
     np.testing.assert_array_equal(booster.predict(actual), np.concatenate(per_batch))
     model, reference = xgb.train(params, actual, 2), xgb.train(params, expected, 2)

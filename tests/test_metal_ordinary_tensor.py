@@ -143,7 +143,7 @@ def test_native_ordinary_training_and_reuse(metal, name, method, kind, tmp_path)
     b = xgb.train(cpu_config, expected, 2)
     assert a.save_raw() == b.save_raw()
     # Native inplace input to a CPU tree model uses the ordinary-matrix fallback.
-    np.testing.assert_array_equal(a.inplace_predict(raw), a.predict(expected))
+    np.testing.assert_array_equal(a.inplace_predict(raw).numpy(), a.predict(expected))
     selection = np.array([7, 2, 7, 9, 0, 256], dtype=np.int32)
     same_csr(actual.slice(selection), expected.slice(selection))
     path = tmp_path / "matrix.buffer"
@@ -267,6 +267,8 @@ def test_native_cpu_fallback_margin_and_range(metal, name, targets):
     after = xgb.metal_info()
     assert after["tensor_csr_dispatches"] == before["tensor_csr_dispatches"] + 1
     assert after["tensor_prediction_windows"] == before["tensor_prediction_windows"]
+    assert isinstance(actual, xgb.MetalOutput)
+    actual = actual.numpy()
     expected = model.predict(
         host, output_margin=True, iteration_range=(1, 3), strict_shape=True
     )

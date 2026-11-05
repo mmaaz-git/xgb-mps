@@ -1,0 +1,66 @@
+Native Metal inplace prediction default/device placement — Apple M3
+2026-11-04 local / 2026-11-05 UTC
+
+CUDA source authority:
+  src/c_api/c_api.cu::InplacePreidctCUDA selects proxy->Device() and publishes
+  ConstDevicePointer() even for CPU model fallback.
+  Python core.py CUDA input branches default to CuPy; sklearn.py explicitly
+  converts those outputs to NumPy.
+
+Implementation:
+  XGBoosterPredictFromMetal selects MPS result storage even with a CPU learner.
+  Host entry-point publication and ordinary DMatrix prediction defaults retain
+  their existing behavior. Empty public outputs remain null.
+  Native Metal inplace inputs default to owned MetalOutput snapshots. Explicit
+  output_device=cpu returns NumPy. Explicit mps still works for host inputs.
+  sklearn converts MetalOutput to NumPy for predict/probabilities/margins; apply
+  retains its batch-prediction behavior. No implicit NumPy readback was added.
+
+Focused native regression PASS:
+  948 public prediction result cases / 198,073 field/state/lifetime checks.
+  Both CPU and MPS learners; native and host inputs; scalar, binary, multiclass,
+  vector, DART, expectile; ranges/margins; nonempty->empty->nonempty storage reuse;
+  shared pointer identity, GPU producer residency, CPU fallback upload and
+  snapshots surviving cache mutation and model deletion.
+  Existing linear batch fallback coverage remains; upstream has no gblinear
+  native inplace prediction producer.
+
+Focused Python regression:
+  Initial run: 817 pass / 4 fail (new multi-target sklearn fixture reapplied a
+  scalar base_score while changing device). Fixed test to set the trained
+  booster device directly, without resetting unrelated trained parameters.
+  Rerun affected/new default-output and sklearn cases: 64 pass / 84 deselected,
+  1 warning, 1.97s. Added real Torch/MLX GPU-consumer arithmetic after native
+  prediction, including CPU learners. No numerical tolerances were relaxed.
+  Other native input/columnar/metadata comparisons explicitly read back outputs.
+
+Optional federated regression PASS:
+  Isolated Metal/federated build (18 incremental steps).
+  Learner worlds 1/2/3 plus mutual TLS world 2: 520 cases / 13,056 CPU prediction
+  checks across 8 worker executions. Existing model/history/reload/storage checks
+  all pass. Pooled CPU references apply only to the existing source-compatible
+  unsampled exhaustive numeric fixtures; same 2e-5 atol/rtol.
+  Isolated CPU/federated build (18 steps) and CPU API checks pass.
+  2026-11-05 05:18:42–05:19:57 UTC; EXIT_STATUS=0.
+  Existing transport/sketch regressions are documented in cuda-metal-federated-m3.txt;
+  this checkpoint reran the public learner stage, not unchanged transport matrices.
+
+Final standard regression PASS:
+  All 100 native groups rebuilt and passed.
+  Python: 3,474 passed, 1 expected skip, 639 warnings; 241.40s.
+  Standard CPU-only build (18 incremental steps) and API/device/native input,
+  output/quantile/cache checks passed.
+  2026-11-05 05:18:42–05:28:28 UTC (9m46s); exit=0.
+  No production or test edits followed these final runs. Only documentation and
+  this validation record were finalized afterward.
+
+Logs (local ignored scratch):
+  results/native-output-v1.log
+  results/native-output-focused-v4.log
+  results/native-default-standard-v1.log
+  results/native-default-federated-v1.log
+
+No benchmark or NVIDIA execution was added. All tests ran on one physical M3.
+Complete CUDA operation coverage and asynchronous interoperability remain open.
+Read-only followup found the legacy blanket manual-updater rejection; no updater
+behavior is changed in this checkpoint.

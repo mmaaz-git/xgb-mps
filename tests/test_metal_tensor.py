@@ -83,6 +83,8 @@ def test_tensor_quantiles_and_prediction(metal, name, dtype, layout):
         xgb.metal_info()["tensor_prediction_windows"]
         > before["tensor_prediction_windows"]
     )
+    assert isinstance(predicted, xgb.MetalOutput)
+    predicted = predicted.numpy()
     np.testing.assert_array_equal(
         predicted, model.inplace_predict(values.astype(np.float32), missing=-99)
     )
@@ -265,6 +267,8 @@ def test_tensor_prediction_shapes_and_reference(metal, name, kind):
             strict_shape=True,
         )
         no_staging(before)
+        assert isinstance(actual, xgb.MetalOutput)
+        actual = actual.numpy()
         np.testing.assert_array_equal(actual, expected)
     model.set_param(dict(device="cpu"))
     np.testing.assert_array_equal(

@@ -135,7 +135,11 @@ XGB_DLL int XGDMatrixCreateFromMetal(char const *data, char const *config, DMatr
  */
 XGB_DLL int XGDMatrixSetInfoFromMetal(DMatrixHandle handle, char const *field, char const *data);
 /** Inplace prediction from the same native descriptor, with CPU fallback;
- * configuration/output follow XGBoosterPredictFromDense, including host results.
+ * configuration/shape follow XGBoosterPredictFromDense. Results reside in Metal
+ * storage even for a CPU learner, matching native CUDA input placement. The
+ * returned pointer addresses ready shared buffer contents owned by the learner
+ * and is invalidated by the next prediction. Use XGMetalOutputCreate to retain
+ * an independent GPU snapshot.
  */
 XGB_DLL int XGBoosterPredictFromMetal(BoosterHandle handle, char const *data, char const *config,
                                       DMatrixHandle proxy, bst_ulong const **out_shape,

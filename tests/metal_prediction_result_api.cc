@@ -102,12 +102,12 @@ struct Snapshot {
           "Snapshot changed after cache/model mutation");
   }
 };
-void Inspect(Learner* learner, Result const& result, bool resident) {
+void Inspect(Learner* learner, Result const& result, bool resident, bool device_only = true) {
   auto const& storage = learner->GetThreadLocal().prediction_entry.predictions;
   Check(storage.Size() == result.Size(), "TLS result size");
   if (resident) {
-    Check(storage.Device().IsMPS() && storage.DeviceCanRead() && !storage.HostCanRead(),
-          "Public result acquired a host mirror");
+    Check(storage.Device().IsMPS() && storage.DeviceCanRead(), "Public result is not on Metal");
+    if (device_only) Check(!storage.HostCanRead(), "Public result acquired a host mirror");
     Check(result.values == (storage.Empty() ? nullptr : storage.ConstDevicePointer()),
           "Public pointer does not refer to shared Metal contents");
   } else {
@@ -218,20 +218,24 @@ void Run(std::string const& kind, bool margin) {
                   std::to_string(type);
         auto expected = Predict(cpu.get(), &data, type, 2, false, true).Copy();
         auto config = Config(type, 2, true);
-        Result result;
-        bst_ulong const* shape = nullptr;
-        bst_ulong dims = 0;
-        auto before = metal::GetStatistics();
-        auto fn = native ? XGBoosterPredictFromMetal : XGBoosterPredictFromDense;
-        API(fn(gpu.get(), desc.str().c_str(), config.c_str(), &proxy, &shape, &dims,
-               &result.values));
-        result.shape.assign(shape, shape + dims);
-        Check(metal::GetStatistics().vector_readback_bytes == before.vector_readback_bytes,
-              "Inplace result made a host copy");
-        Inspect(gpu.get(), result, true);
-        Compare(result.Span(), expected);
-        snapshots.push_back(std::make_unique<Snapshot>(result));
-        ++cases;
+        for (auto* learner : {gpu.get(), cpu.get()}) {
+          bool gpu_model = learner == gpu.get();
+          Result result;
+          bst_ulong const* shape = nullptr;
+          bst_ulong dims = 0;
+          auto before = metal::GetStatistics();
+          auto fn = native ? XGBoosterPredictFromMetal : XGBoosterPredictFromDense;
+          API(fn(learner, desc.str().c_str(), config.c_str(), &proxy, &shape, &dims,
+                 &result.values));
+          result.shape.assign(shape, shape + dims);
+          if (gpu_model)
+            Check(metal::GetStatistics().vector_readback_bytes == before.vector_readback_bytes,
+                  "Inplace result made a host copy");
+          Inspect(learner, result, native || gpu_model, gpu_model);
+          Compare(result.Span(), expected);
+          if (native || gpu_model) snapshots.push_back(std::make_unique<Snapshot>(result));
+          ++cases;
+        }
       }
     }
   }

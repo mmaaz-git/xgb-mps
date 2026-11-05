@@ -3153,7 +3153,8 @@ and returns `ConstDevicePointer()`. Python `_prediction_output` and
 `_data_utils.from_array_interface` then make an independent CuPy copy by default.
 The ordinary batch C API returns a host pointer upstream. This fork adds an
 explicit `output_device="mps"` option to both batch and inplace prediction;
-existing defaults remain NumPy for host/Metal inputs and CuPy for CUDA inputs.
+native Metal inplace inputs now default to MetalOutput, CUDA inputs to CuPy,
+and host inputs to NumPy. Ordinary batch prediction still defaults to NumPy.
 `output_device="cpu"` explicitly selects NumPy. Output storage selection does not
 change the booster device or prediction algorithm.
 
@@ -4401,3 +4402,47 @@ exited zero. No implementation changes followed these runs. See the
 All processes share one Apple M3. Cross-machine/NVIDIA execution, asynchronous
 interoperability and remaining CUDA operation/state audits are still open.
 No performance claim accompanies this checkpoint.
+
+
+## Default native Metal prediction output placement
+
+CUDA authority is `c_api/c_api.cu::InplacePreidctCUDA`: after prediction it selects
+`proxy->Device()` and publishes `ConstDevicePointer()`, including for a CPU learner.
+The Python native CUDA branches construct an independent CuPy output by default;
+`sklearn.py::XGBModel.predict` deliberately converts that result to NumPy.
+
+The Metal native C API now selects Metal result storage before publication,
+including CPU fallback. CPU predictions may retain their existing host mirror,
+as with CUDA's const device upload. Predictions produced on GPU remain device-only.
+The shared pointer is ready for a GPU snapshot or CPU access, and empty results
+remain null. Host C API entry points keep their existing publication behavior.
+
+Python `inplace_predict` now defaults to an owned `MetalOutput` for native
+PyTorch/MLX tensors, `MetalData` and `MetalColumnar`. Explicit `output_device="cpu"`
+still returns an independent NumPy copy. Host inputs and `predict(DMatrix)` retain
+NumPy defaults. Scikit-learn explicitly copies MetalOutput to NumPy, matching its
+CuPy boundary; prediction, probabilities, margins and apply retain NumPy outputs.
+No implicit `__array__` readback was introduced. Callers comparing native results
+with NumPy must request CPU output or call `.numpy()` deliberately.
+
+The native storage/lifetime regression now covers CPU and MPS learners across
+scalar, binary, multiclass, vector, DART and expectile predictions, ranges, margins,
+empty/reused allocations and retained snapshots. Its 948 cases / 198,073 checks
+pass. Public tests cover default/explicit output selection, native dense/strided
+and columnar inputs, CPU fallback, real PyTorch/MLX GPU consumers, chunk boundaries
+and sklearn regression, multiple targets, classification and ranking. Numerical
+tolerances remain unchanged; many same-model comparisons are exact.
+
+This is output placement/API work, not a new training algorithm or performance
+claim. CUDA execution and full operation coverage remain unverified. A separate
+source audit found the blanket manual-updater rejection in `GBTree::Configure`;
+that restriction is not changed by this checkpoint.
+
+Final standard regression passes all 100 native groups and 3,474 Python tests
+with one expected skip and 639 warnings (241.40s), followed by the CPU-only build
+and API checks. The complete run took 9m46s, from 2026-11-05 05:18:42 to 05:28:28 UTC,
+and exited zero. The optional federated learner regression passes 520 cases /
+13,056 CPU prediction comparisons across worlds 1/2/3 plus mutual TLS world 2;
+its CPU-only build/API checks also pass (1m15s, exit zero). No implementation or
+test changes followed these final runs. See the
+[validation record](../validation/cuda-metal-native-default-m3.txt).

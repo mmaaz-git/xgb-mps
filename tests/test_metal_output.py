@@ -169,7 +169,8 @@ def test_transforms(metal, kind):
 )
 @pytest.mark.parametrize("device", ["cpu", "mps"])
 @pytest.mark.parametrize("margin", [False, True])
-def test_inplace_sources(metal, layout, device, margin):
+@pytest.mark.parametrize("output_device", [None, "mps"])
+def test_inplace_sources(metal, layout, device, margin, output_device):
     x, warmup, cpu, gpu = fixture()
     gpu.predict(warmup)
     x[::7, 2] = -99
@@ -196,14 +197,63 @@ def test_inplace_sources(metal, layout, device, margin):
     )
     expected = cpu.inplace_predict(x, **options)
     before = xgb.metal_info()
-    result = model.inplace_predict(values, output_device="mps", **options)
+    result = model.inplace_predict(values, output_device=output_device, **options)
     after = xgb.metal_info()
     if device == "mps":
         assert after["vector_readback_bytes"] == before["vector_readback_bytes"]
     assert after["output_host_readback_bytes"] == before["output_host_readback_bytes"]
-    np.testing.assert_array_equal(result.numpy(), expected)
+    if output_device == "mps" or layout in ("torch", "mlx", "columnar"):
+        assert isinstance(result, xgb.MetalOutput)
+        assert result.__dlpack_device__() == (8, 0)
+        np.testing.assert_array_equal(result.numpy(), expected)
+        if layout in ("torch", "mlx"):
+            np.testing.assert_array_equal(
+                host(layout, consume(layout, result) + 1), expected + 1
+            )
+    else:
+        assert isinstance(result, np.ndarray)
+        np.testing.assert_array_equal(result, expected)
     np.testing.assert_array_equal(
         model.inplace_predict(values, output_device="cpu", **options), expected
+    )
+
+
+@pytest.mark.parametrize("name", ["torch", "mlx"])
+@pytest.mark.parametrize("device", ["cpu", "mps"])
+@pytest.mark.parametrize("kind", ["regressor", "multi_target", "classifier", "ranker"])
+def test_sklearn_native_output(metal, name, device, kind):
+    rng = np.random.default_rng(381)
+    x = rng.normal(size=(96, 4)).astype(np.float32)
+    y = x[:, 0] - x[:, 1]
+    options = dict(n_estimators=3, max_depth=2, n_jobs=2, base_score=0.5)
+    fit_options = {}
+    if kind == "classifier":
+        y = np.digitize(y, [-0.5, 0.5])
+        model = xgb.XGBClassifier(**options)
+    elif kind == "ranker":
+        y = np.digitize(y, [-0.5, 0.5])
+        model = xgb.XGBRanker(**options)
+        fit_options["qid"] = np.repeat(np.arange(12), 8)
+    else:
+        if kind == "multi_target":
+            y = np.column_stack([y, -y, y / 2])
+            options["multi_strategy"] = "multi_output_tree"
+        model = xgb.XGBRegressor(**options)
+    model.fit(x, y, **fit_options)
+    model.get_booster().set_param({"device": device})
+    native = producer(name, x)
+    methods = [model.predict, model.apply]
+    if kind == "classifier":
+        methods.append(model.predict_proba)
+    for method in methods:
+        expected = method(x)
+        result = method(native)
+        assert isinstance(result, np.ndarray)
+        np.testing.assert_array_equal(result, expected)
+    result = model.predict(native, output_margin=True, iteration_range=(1, 3))
+    assert isinstance(result, np.ndarray)
+    np.testing.assert_array_equal(
+        result, model.predict(x, output_margin=True, iteration_range=(1, 3))
     )
 
 
@@ -217,7 +267,7 @@ def test_empty_and_chunked_output(metal, name, rows):
     for strict in [False, True]:
         expected = cpu.inplace_predict(values, strict_shape=strict)
         before = xgb.metal_info()
-        result = gpu.inplace_predict(native, output_device="mps", strict_shape=strict)
+        result = gpu.inplace_predict(native, strict_shape=strict)
         assert xgb.metal_info()["vector_readback_bytes"] == before["vector_readback_bytes"]
         assert result.shape == expected.shape
         np.testing.assert_array_equal(result.numpy(), expected)

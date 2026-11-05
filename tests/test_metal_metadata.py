@@ -197,7 +197,7 @@ def test_gpu_metadata_training(metal, tmp_path, name, kind):
     expected = xgb.train(params, host, 4)
     np.testing.assert_array_equal(actual.predict(q), expected.predict(host))
     np.testing.assert_array_equal(
-        actual.inplace_predict(raw, base_margin=native_meta["base_margin"]),
+        actual.inplace_predict(raw, base_margin=native_meta["base_margin"]).numpy(),
         expected.inplace_predict(values, base_margin=meta["base_margin"]),
     )
     result = actual.predict(q)
