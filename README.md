@@ -47,7 +47,7 @@ run them on NVIDIA.** Full parity remains unproven.
 | Validation stage | Current status |
 | --- | --- |
 | Local Metal/CPU acceptance | Passed for the audited implementation; details below |
-| CUDA compilation | [Latest completed run passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42108648407), including leaf/cache comparisons; the [linear build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537) |
+| CUDA compilation | [Linear build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537); grouped PR and the AUC capacity follow-up await the next build |
 | CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
 | Performance | Mixed; the latest full HIGGS run is slower on MPS |
 

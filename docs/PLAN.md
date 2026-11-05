@@ -239,7 +239,8 @@ adapter, with registry/symbol gates. Each action receives explicit source input
 state; the 123 duplicate-column residual writes and three unsafe guards are
 excluded from CUDA execution. This addresses the reduction contract but does
 not close it or replace full updater/selector comparisons. See the
-[linear record](../validation/linear-contract-m3-run.json).
+[linear record](../validation/linear-contract-m3-run.json). Its CUDA compiler/link
+and host registry/symbol gates passed in run 42113854537; NVIDIA execution remains.
 
 The grouped PR replay preserves all 297 main cases (14,198,354 rows), sixteen
 edge cases and six label rejections. Independent input reconstruction and source

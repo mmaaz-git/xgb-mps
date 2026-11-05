@@ -1202,8 +1202,10 @@ python3 scripts/compare_linear_contracts.py validate-metal results/new-linear.me
 ```
 
 Metal execution, the independent checker, 20 report-integrity tests and the full
-C++ input round trip pass. CUDA compilation/execution and full updater/selector
-comparisons remain pending. Primitive association bounds are not universal CUB
+C++ input round trip pass. CUDA compilation/linking and host registry/symbol
+isolation passed in [run 42113854537](https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537).
+NVIDIA execution and full updater/selector comparisons remain pending.
+Primitive association bounds are not universal CUB
 architecture guarantees; preserve concrete failures for review alongside the
 separate compiler/contraction contract.
 

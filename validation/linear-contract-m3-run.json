@@ -1,5 +1,5 @@
 {
-  "status": "Full Metal linear corpus and all local checks passed; CUDA compile run42113854537 active, NVIDIA execution pending",
+  "status": "Full Metal linear corpus, local checks and CUDA compiler/host isolation gates passed; NVIDIA execution pending",
   "suite": "linear-v1",
   "recorded_utc": "2026-11-05T21:32:31.558814+00:00",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -270,13 +270,83 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "in_progress",
+    "status": "passed-compile-link-and-host-checks",
+    "gpu_execution": false,
     "run_id": 42113854537,
     "head": "3943d6a03069af187db714dc6cbfec81d2a3cda8",
     "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537",
-    "gpu_execution": false,
-    "inputs": 67,
-    "binaries": 7
+    "finished_utc": "2026-11-05T22:00:52.827662+00:00",
+    "production_steps": 197,
+    "harness_objects": 7,
+    "linked_binaries": 7,
+    "verified_input_hashes": 67,
+    "nvcomp_loader_probe": {
+      "status": "passed",
+      "gpu_execution": false
+    },
+    "nvcomp_runtime_path": "/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13/libnvcomp.so.5.3.0.16\n/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13",
+    "metric_source_isolation": {
+      "status": "passed",
+      "gpu_execution": false,
+      "registry_entries": 24,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-baseline.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-probe.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-defined-dynamic-symbols.txt": "599daf66f208e7929a234db26b14838d909627adddc34cd1ed850d0dfdd1cc58"
+      }
+    },
+    "linear_source_isolation": {
+      "status": "passed",
+      "gpu_execution": false,
+      "registry_entries": 3,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/linear-registry-baseline.txt": "ff530317415f03fafaa546ef508d8ccec55f5d300a4b42b0fb708b68e60d01fd",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/linear-registry-probe.txt": "ff530317415f03fafaa546ef508d8ccec55f5d300a4b42b0fb708b68e60d01fd",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/linear-defined-dynamic-symbols.txt": "28e38395638294e0f7467ce49291076d963d240e4ab5367c00602204022c3c8e"
+      }
+    },
+    "sampling_rng_alignment": {
+      "status": "passed",
+      "gpu_execution": false,
+      "cases": 10005,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/sampling-rng-alignment.txt": "918099a29222fdb9b4e2c25ff8dc75f10c22537f7a5a7af6188a3ce889a05b1d"
+      }
+    },
+    "log_sha256": "deb18b8912d8fdbb4213aa23e31af00898aac7768fefdc4547a037ec8146f603",
+    "build_record_sha256": "4ed192c925257592c07dadfcb73f4a9441395a04ef060b06bb80cb66bae223a4",
+    "library_sha256": "95e0acad25674e7c3c5f09b040ad8fd5a50dacee334a2e06df0f01ef35badf6b",
+    "binaries": {
+      "numerical": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_numerical_contracts",
+        "sha256": "9089c0bb9ffae1420bb08ee6cd9a111b35f6bf0d74ad3ff3b66f088d0e6a8b0f"
+      },
+      "aft": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_aft_contracts",
+        "sha256": "f15c52b67ff6915109d01fc00786ae28105fb985d5d6954c151c1a321c850d26"
+      },
+      "rng": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_rng_contracts",
+        "sha256": "ce5a0aa414d808a2c27ec6f99295aa15ef4ff00acac2e223ac2808176ce6f2d7"
+      },
+      "math": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_math_contracts",
+        "sha256": "08c5f24ae6b8beca85b49d11866b40cfa3b496a11d9fe3e976ccd198d934ad4c"
+      },
+      "ranking": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_ranking_contracts",
+        "sha256": "ccecc6c4f6a13b96146c85fa4f6d60ec59a96f6cd835f265e0499bbfbc1a3d93"
+      },
+      "metric": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_metric_contracts",
+        "sha256": "1a383318f0063d9f5f4d22aa353ffd36051f8786b1d934be7e4570a3b0ffa577"
+      },
+      "linear": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_linear_contracts",
+        "sha256": "4e8485ec14b7cc2cb6e878b8ae196eac5e40f6cd24a2d7381a0ce740fbc416a6"
+      }
+    },
+    "scope": "Includes linear source consumer and registry/symbol checks; predates grouped PR consumer"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -915,7 +985,7 @@
     }
   ],
   "limits": [
-    "No NVIDIA execution; the CUDA consumer is not compiler-validated yet.",
+    "No NVIDIA execution. CUDA compilation/linking and host registry/symbol isolation passed in run42113854537; this does not establish GPU equivalence.",
     "Actual vendored GPUCoordinateUpdater method bodies are included with private unregistered registry entries and hidden visibility. A member-pointer adapter initializes/readbacks owned state without changing the source class or access specifiers.",
     "Each operation loads its explicit source input state through original UpdateGpair. This is not LazyInitDevice, the full updater/selector loop, or a continuous CUDA update sequence.",
     "123 duplicate-column residual actions remain CUDA exclusions; their gradient reductions run. Three unsafe rejection calls remain Metal guards and CUDA exclusions. No successful CUDA rejection observations are fabricated.",
@@ -923,5 +993,6 @@
     "Original reduction bounds are retained, not universal CUB architecture guarantees. CUDA association and NVCC contraction differences require actual execution and review.",
     "Reports preserve original checks and additionally expose copy guards and edge-case fields, including two previously unchecked Hessian diagnostics.",
     "Only Apple M3 execution. Full linear updater/selector comparisons and broader caller combinations remain necessary."
-  ]
+  ],
+  "updated_utc": "2026-11-05T22:01:53.803847+00:00"
 }

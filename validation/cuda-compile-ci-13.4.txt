@@ -310,3 +310,16 @@ VERIFY-2 corrected integer leaf/cache compiler run (terminal success):
   Library SHA256: ab5a3cf95052d9dfbb1c84ba38092db8e85cfbfea21038c5e9692b980fe82820
   Resolves the cache accessor compiler failure above; includes both leaf/cache.
   This run predates the linear consumer. No NVIDIA kernels executed.
+
+VERIFY-2 linear consumer (terminal success; no NVIDIA execution):
+  3943d6a03069af187db714dc6cbfec81d2a3cda8: 42113854537, completed 2026-11-05T22:00:52.827662+00:00
+  https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537
+  All 67 declared input hashes verified against the exact CI revision.
+  Seven CUDA objects, all 197 production steps and seven executable links passed.
+  Early nvCOMP loader check, 24-entry metric registry/symbol isolation,
+  3-entry linear registry/factory/symbol isolation and 10,005 host RNG cases passed.
+  Log SHA256: deb18b8912d8fdbb4213aa23e31af00898aac7768fefdc4547a037ec8146f603
+  Build record SHA256: 4ed192c925257592c07dadfcb73f4a9441395a04ef060b06bb80cb66bae223a4
+  Library SHA256: 95e0acad25674e7c3c5f09b040ad8fd5a50dacee334a2e06df0f01ef35badf6b
+  Linear executable SHA256: 4e8485ec14b7cc2cb6e878b8ae196eac5e40f6cd24a2d7381a0ce740fbc416a6
+  This predates grouped PR and the AUC capacity fix. No CUDA kernels executed.
