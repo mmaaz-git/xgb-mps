@@ -14,7 +14,29 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **native custom gradients retain Metal-owned storage**. GPU inputs
+Latest step: **native matrix entries stay on Metal through sketching and
+compression**. Ordinary dense/columnar imports now publish GPU-owned CSR entries;
+the sketch and compressed-page consumers keep that device storage. Row offsets
+still expose the host view used by CUDA for sizing and window selection. CPU
+inspection, slicing and serialization remain explicit access boundaries.
+
+Focused validation passes **415 native import/pipeline cases / 620,419 checks**,
+**70 raw-CSR compression cases**, **130 ordinary-matrix cases**, and **253 Python
+tests**. The new test runs hist/approx sketching, compression, cache reuse and
+regeneration before CPU comparisons, then checks bins against independent CPU
+searches. Full regression passes **100 native groups**, **3,554 Python tests
+with one expected skip**, CPU-only build/API checks and nine pure-CPU configuration
+tests. Optional federated learners pass **520 cases / 13,056 CPU prediction checks**,
+including mutual TLS, plus their CPU-only build.
+[Native matrix storage validation](validation/cuda-metal-native-csr-storage-m3.txt).
+
+The next confirmed gap is the **vector-tree weight pipeline**: persistent model
+storage, GPU weight gathering and root learning-rate multiplication. Source
+inspection found that the current root multiplier still runs on CPU. The
+[operation map](docs/CUDA_OPERATION_MAP.md) records this explicitly; general
+helper and numerical audits remain open.
+
+Previous step: **native custom gradients retain Metal-owned storage**. GPU inputs
 now produce device-authoritative gradient pairs even when the learner uses CPU,
 matching CUDA's input-device placement. Empty/reused outputs and aliased producers
 are covered; CPU consumers explicitly request a host view. This closes the storage
@@ -31,7 +53,7 @@ prediction checks**, including mutual TLS, plus their CPU-only build.
 The new [operation evidence map](docs/CUDA_OPERATION_MAP.md) links **42 operation
 families / 109 CUDA source/header files** to Metal dispatches and tests. File
 coverage is an inventory check, not proof of parity. Confirmed remaining storage
-gaps are ordinary native matrix entries and vector-tree weights/category buffers;
+gaps from that audit are tracked above; vector-tree weights/category buffers,
 generic helper callers and numerical boundaries still need reconciliation.
 A separate [CUDA compile workflow](.github/workflows/cuda-compile.yml) now checks
 the NVIDIA code with NCCL, nvCOMP and federated support. The validated

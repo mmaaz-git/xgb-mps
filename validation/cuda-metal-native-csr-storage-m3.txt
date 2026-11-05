@@ -1,0 +1,72 @@
+Native ordinary CSR entry storage — Apple M3
+2026-11-04 local / 2026-11-05 UTC
+
+Implementation revision: dd448291300f4256e14b23fd79e3d25217cd700b
+CUDA authority: src/data/simple_dmatrix.cuh::CopyToSparsePage sets both vectors'
+  device, fills offsets on GPU, reads offsets.HostVector().back for sizing,
+  and packs entries through data.DeviceSpan. DevicePush iterator import uses
+  the same path. Source GetRowStride/window selection also uses host offsets.
+
+Changes:
+  CopyTensorToSparsePage selects MPS output vectors and writes device spans,
+  then explicitly publishes/checks the host row-offset mirror. Entry payloads
+  remain device-authoritative, including empty/reused output. Validation and
+  producer snapshots precede output mutation. Proxy MetalPush also uses it.
+  CudaSketchOnDMatrix and compressed PushCSR use ConstDeviceSpan for entries,
+  preserving native GPU storage and uploading host-origin entries on demand.
+  Existing arithmetic/packing/sketch/binning kernels are unchanged.
+  Explicit CPU consumers/serialization may materialize entries, as with CUDA.
+
+Focused validation:
+  v1 built the library (12 steps); the new test used the wrong compressed-view
+  interface and failed compilation. Fixed the test to use CompressedNonMissing
+  and explicit CPU bin materialization with independent CPU searches.
+  v2 native import/pipeline passed. The runner then failed on macOS Bash 3's
+  set-u handling of an empty argument array, before the remaining tests ran.
+  Its EXIT trap misleadingly printed zero; that run is NOT a full pass.
+  v3 fixed the runner; all three native groups and Python tests completed.
+  Native import/pipeline:415cases/620419checks/6rejections;
+    280038importedentries/2302816shared-outputbytes/zerooutputhostcopybytes.
+    216newpipelinecases cover 0/33/257rows,1/7features,dense/sparse/allmissing,
+    weighted/unweighted,hist/approx,bins9/17/repeated17.
+    Require native entry MPS authority before comparisons, only row offsets
+    read back during import, no implicit vector readback/CSR CPU staging in
+    sketch/compression, and no repeated entry upload for unweighted consumers.
+    Compare native/host-input cuts and independent CPU bin searches, then
+    explicit CPU entry access. Producer snapshots outlive original buffers.
+    Aggregate CSR input-copy bytes=264 from the deliberately read-only host
+    fallback test; native resident consumers themselves require zero.
+  Raw CSR compression:70cases/568windows/120537exactbytes/7573364checks,
+    12expectederrors.
+  Ordinary matrix:130cases/1173186exactchecks/10concurrentcases/35regeneratedviews.
+  Public Python:253passed,6warnings,14.88sec. Includes native dtypes/layouts,
+    CPU/MPS training, category/vector data, hist/approx, cache regeneration,
+    CPU fallback, slicing/serialization, external memory, DART/linear consumers.
+  Native training test now trains before get_data(), preventing an early CPU
+    comparison from hiding storage-transition bugs.
+  v3 FOCUSED_EXIT=0 at2026-11-05T06:36:48Z.
+
+Full standard regression PASS:
+  All 100 native groups rebuilt and passed, with Metal API validation enabled.
+  Python3554passed,1expectedskip,670warnings,243.07sec.
+  Standard CPU-only build/API checks passed. Isolated CPU package verified
+  USE_METAL=false, then9configurationtests passed,72deselected,11warnings,0.16sec.
+  UTC2026-11-05 06:37:49–06:47:34 (9m45s),exit0.
+Optional federated regression PASS:
+  Metal/federated and CPU/federated incremental builds/API checks passed.
+  Learner worlds1/2/3 plus mutual-TLS2:520cases/13056CPUchecks across8workers,
+  all on this M3. UTC06:37:49–06:38:51 (62sec),EXIT_STATUS=0.
+  Unchanged low-level transport/sketch matrices were not rerun.
+No production/test changes followed these final runs.
+
+Logs:
+  results/native-csr-storage-focused-v1.log
+  results/native-csr-storage-focused-v2.log
+  results/native-csr-storage-focused-v3.log
+  results/native-csr-storage-standard-v1.log
+  results/native-csr-storage-federated-v1.log
+
+No new benchmark or NVIDIA execution. Full parity remains incomplete.
+Next confirmed gap: vector-tree weight producers/model storage, including
+CPU root eta multiplication and root/child weight gathering, plus remaining
+helper and numerical audits. Source-defined host topology/finalizers remain.

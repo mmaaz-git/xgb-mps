@@ -2,7 +2,7 @@
   "schema_version": 1,
   "upstream_version": "3.4.2",
   "upstream_import": "22a84e0538e8c8db8d517c610b393bd5799a05d5",
-  "audit_revision": "5b7629da4bcb60d4944cdb6aa3531e4f499d5f46",
+  "audit_revision": "dd448291300f4256e14b23fd79e3d25217cd700b",
   "scope": "CUDA translation units and headers under vendored src and plugin, grouped by operations and consumers; not an exhaustive symbol/branch proof.",
   "completeness": "not_proven",
   "source_files": 109,
@@ -10,7 +10,7 @@
     "xgboost/src/common/metal_histogram.mm",
     "xgboost/src/common/metal_histogram.metal"
   ],
-  "latest_local_regression": "validation/cuda-metal-native-gradient-storage-m3.txt",
+  "latest_local_regression": "validation/cuda-metal-native-csr-storage-m3.txt",
   "groups": [
     {
       "id": "native-api",
@@ -67,14 +67,18 @@
       ],
       "metal_dispatch_and_interfaces": [
         "xgboost/src/data/simple_dmatrix.cc",
-        "xgboost/src/common/metal_tensor.h"
+        "xgboost/src/common/metal_tensor.h",
+        "xgboost/src/common/metal_cuda_sketch.cc",
+        "xgboost/src/common/metal_ellpack.h"
       ],
       "tests": [
         "tests/metal_tensor_csr_api.mm",
-        "tests/test_metal_ordinary_tensor.py"
+        "tests/test_metal_ordinary_tensor.py",
+        "tests/metal_ellpack_csr_api.cc",
+        "tests/metal_ordinary_ellpack_api.cc"
       ],
-      "status": "partial-host-storage",
-      "limits": "CONFIRMED GAP: CUDA CopyToSparsePage sets the device for both arrays and packs entries through DeviceSpan. Metal CopyTensorToSparsePage uses host destination spans. CUDA explicitly publishes a host row-offset mirror to read the nonzero count; that mirror is intentional, but persistent entry storage remains missing. CudaSketchOnDMatrix and compressed PushCSR also request host entry spans; migrate these consumers together with the importer."
+      "status": "mapped",
+      "limits": "Native entries retain Metal device authority through import, sketch and compressed-page consumers. Row offsets publish a host view for sizing/window selection, as in CUDA. Explicit CPU matrix access and external cache serialization can read payloads back."
     },
     {
       "id": "metadata",
@@ -243,7 +247,7 @@
         "tests/test_metal_vector_state.py"
       ],
       "status": "mapped",
-      "limits": "Typed bit-preserving storage is covered. A storage implementation existing does not prove every consumer uses it; vector-tree model buffers and ordinary native matrix entries remain confirmed gaps."
+      "limits": "Typed bit-preserving storage is covered. A storage implementation existing does not prove every consumer uses it; vector-tree model buffers and their weight producers remain confirmed gaps. Ordinary native entries now retain Metal storage through sketch/compression."
     },
     {
       "id": "resources",
@@ -740,8 +744,8 @@
         "tests/test_metal_split_categories.py",
         "tests/test_metal_split_finalize.py"
       ],
-      "status": "mapped",
-      "limits": "GPU arithmetic/state is mapped; persistent final vector-tree model containers are a separate confirmed gap."
+      "status": "partial-host-weights",
+      "limits": "Split arithmetic runs on GPU, but MultiHistEvaluator::InitRoot/ApplyTreeSplit gather root/child weights from host result vectors. The common vector updater multiplies root eta on CPU. CUDA keeps these weight operations/views on GPU; migrate them with persistent vector-model storage."
     },
     {
       "id": "partition",
@@ -795,7 +799,7 @@
         "tests/test_metal_model_state.py"
       ],
       "status": "partial-host-storage",
-      "limits": "CONFIRMED GAP: MPS CopyBatch/ApplyLearningRate use HostSpan/ConstHostSpan and host alias snapshots. CUDA selects DeviceSpan and device-to-device copies. SetRoot tests only IsCUDA. GPU arithmetic tests do not establish persistent Metal model storage."
+      "limits": "CONFIRMED GAP: MPS CopyBatch/ApplyLearningRate use HostSpan/ConstHostSpan and host alias snapshots. CUDA selects DeviceSpan and device-to-device copies. SetRoot tests only IsCUDA. GPU arithmetic tests do not establish persistent Metal model storage. The root updater caller also multiplies eta on CPU, and root/child weight gathering uses host vectors; port the producing pipeline together with the final containers."
     },
     {
       "id": "tree-updaters",

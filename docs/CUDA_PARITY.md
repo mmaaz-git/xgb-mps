@@ -8,7 +8,9 @@ library is not a replacement for XGBoost's custom CUDA kernels.
 
 Current architecture: CPU orchestrates training; many intermediate arrays,
 native inputs and outputs retain Metal-owned buffers. Confirmed storage gaps
-remain in ordinary native matrix entries and vector-tree weight/category buffers.
+remain in vector-tree weight/category buffers and their producers; root eta
+multiplication and weight gathering still use CPU code. Ordinary native matrix
+entries now retain Metal storage through sketching and compression.
 The [operation evidence map](CUDA_OPERATION_MAP.md) reconciles CUDA source roots,
 Metal dispatches and tests, with explicit open caller/numerical audits.
 This is not yet a complete GPU backend.
@@ -112,7 +114,7 @@ must be reported rather than hidden by widening test tolerances.
 | Categorical recoding, metadata manipulation, validation | `data/cat_container.cu`, `encoder/ordinal.cuh`, `data/data.cu`, `metainfo.cu`, `array_interface.cu` | Category sorting/schema checks/lower-bound mapping/first-unknown search, row-code mapping, native dictionary gathers and metadata conversion/validation/query-ID grouping run on GPU. Native float metadata retains Metal vector storage; internal row gathers, device copies/stacking and feature-type equality run on Metal. Group boundaries and public ordinary row slicing remain host as upstream. Typed dictionaries now own reusable Metal snapshots, copies and sorted indices; native names are gathered on GPU; recoding mappings stay Metal-owned through prediction, SHAP and ingestion. Explicit CPU access/serialization lazily publishes host mirrors; host shape/type descriptors remain |
 | Linear coordinate-descent booster | `linear/updater_gpu_coordinate.cu` | GPU FP32 bias/feature gradient reductions, CUDA residual order/filter rules and unchanged selector snapshots with `updater=coord_descent`; host selectors, scalar weight/model updates, CSC preparation and linear predictions match CUDA's placement; default `shotgun` remains host |
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; explicit Metal gradient storage and guarded payload bindings, with staged snapshots for aliases. Native custom-gradient packing now publishes Metal-owned pairs, including for CPU learners; host consumers explicitly request mirrors |
-| Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. CONFIRMED GAP: MPS model copy/scaling still takes host spans and CPU alias snapshots; CUDA uses device spans and device copies. Root assignment has no MPS branch. Source-defined host topology/finalization remains intentional |
+| Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. CONFIRMED GAP: MPS model copy/scaling still takes host spans and CPU alias snapshots; CUDA uses device spans and device copies. Root assignment has no MPS branch; its caller scales eta on CPU and gathers root/child weights from host result vectors. Port the producing pipeline with the containers. Source-defined host topology/finalization remains intentional |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented through dedicated Metal operations; remaining generic helper call sites require reconciliation before claiming full coverage |
 | Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/allreduce_v.cuh`, `collective/aggregator.cuh` | Metal numeric/bytewise fixed reductions, broadcast and fixed/variable allgather over shared buffers and host TCP; 1/2/3/4-worker tests. Ordered variable-size reduction and sketch consumers are implemented (1/2/3/5-worker tests); global quantizers use source-defined host bounds/row controls, and stump/weighted-unweighted sample means use GPU output reductions. Scalar roots use host integer reductions; vector roots, histograms and value-leaf sums use Metal integer reductions. Production updater integration is tested with 1/2/3/5 workers. Public row-partitioned hist/approx/DART learners are enabled and tested across 1/2/3 workers, including objectives, metrics, empty workers and external memory. Mixed optional weights use a globally consistent initialization mode. Optional federated Metal fixed collectives use the CUDA-defined RPC/server boundary; variable sketches use ascending GPU folds on rank zero, with public learner and mutual-TLS tests |
 | CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack tensors and native columnar tables feed ordinary/quantile constructors, iterators and inplace prediction/CPU fallback through owned GPU snapshots. Metadata imports use GPU conversion/validation/grouping; custom gradients use GPU typed pair packing into Metal-owned storage. Native inplace prediction defaults to owned GPU output; explicit `output_device="mps"` also returns owned GPU predictions, including leaves and SHAP, with legacy/versioned DLPack exports to PyTorch/MLX. Public prediction result pointers retain synchronized shared Metal storage; native output snapshots avoid intermediate host mirrors, while NumPy copies explicitly. Known runtimes synchronize; generic producers/consumers must finish writes. Portable stream handshakes and end-to-end device ownership remain open. NVIDIA-specific interfaces cannot consume Metal memory |
@@ -4532,3 +4534,26 @@ learners and independent split/value pairs. See
 The [operation map](CUDA_OPERATION_MAP.md) now records the source inventory and
 remaining ordinary-matrix/vector-model storage gaps explicitly. These checks do
 not establish NVIDIA runtime equivalence or complete CUDA coverage.
+
+
+## Native ordinary matrix entries retain Metal storage
+
+`CopyTensorToSparsePage` now selects MPS for both destination arrays and packs
+through device spans. As in CUDA's `CopyToSparsePage`, row offsets publish a host
+view for sizing/window selection; entries stay device-authoritative. Reused and
+empty destinations follow the same access state, and validation precedes mutation.
+The iterator proxy `MetalPush` uses this same importer.
+
+`CudaSketchOnDMatrix` and compressed-page `PushCSR` now request device entry spans.
+Host-origin pages upload on demand; native entries avoid a host mirror and repeated
+payload uploads. Host row-offset searches, final sketch cuts and explicit external
+cache serialization retain the placements used by CUDA. Arithmetic kernels and
+cut/bin selection rules are unchanged.
+
+The native test checks entry authority before CPU comparison, then drives real
+`SimpleDMatrix` hist/approx generation, cache reuse and regeneration. It requires
+no implicit vector readback/CSR staging through those GPU consumers, compares
+native/host input cuts, and checks materialized bins against independent CPU
+searches while the original raw entries remain device-authoritative. Public tests
+train before calling `get_data()`, then verify CPU handoffs, slicing and save/load.
+See [native matrix storage validation](../validation/cuda-metal-native-csr-storage-m3.txt).

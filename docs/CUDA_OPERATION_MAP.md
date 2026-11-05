@@ -16,20 +16,16 @@ The implementation bodies behind the listed Metal interfaces live primarily in
 
 ## Concrete remaining work
 
-- **Ordinary native matrix entries:** CUDA's `CopyToSparsePage` sets both arrays'
-  device and packs entries into `page->data.DeviceSpan()`. Metal's
-  `CopyTensorToSparsePage` currently uses host spans for both destination arrays.
-  Filtering/counting/packing already runs on GPU; persistent entry storage is
-  still missing. The sketch and compressed-page consumers also request host entry
-  spans, so they must migrate together with the importer. CUDA explicitly reads
-  the row offsets back to obtain the entry count, so a host row-offset mirror is
-  not itself a parity gap.
 - **Vector-tree model storage:** `MultiTargetTree` weight/category copy and scaling
   dispatches use Metal, but MPS `CopyBatch` and `ApplyLearningRate` still obtain
   `HostSpan`/`ConstHostSpan`, and alias snapshots copy on the CPU. CUDA uses device
   spans and device-to-device copies. `SetRoot` also has an `IsCUDA`-only copy branch.
   Existing model-buffer tests prove arithmetic/copy results, not persistent GPU
-  ownership. Host node topology and source-defined serialization must remain host where CUDA does the same.
+  ownership. The root caller also multiplies by eta on CPU, and the split
+  evaluator gathers root/child weights from host vectors. CUDA keeps these
+  operations and weight views on GPU; port these producers with the containers.
+  Host node topology and source-defined serialization must remain host where
+  CUDA does the same.
 - **Generic helper consumers:** reconcile the remaining CUDA scan/sort/helper
   callers with their specialized Metal dispatch. The current production
   transform/linalg caller set is accounted for in the
@@ -61,7 +57,7 @@ mechanisms. The JSON contains full source lists and explicit limitations for eac
 |---|---|---|---|
 | native-api: Native dense/columnar matrices; custom gradient pairs; native prediction placement; build information | mapped | [c_api.cc](../xgboost/src/c_api/c_api.cc); [metal_gradient.h](../xgboost/src/common/metal_gradient.h); [metal_output.h](../xgboost/src/common/metal_output.h) | [metal_gradient_import_api.mm](../tests/metal_gradient_import_api.mm); [metal_prediction_result_api.cc](../tests/metal_prediction_result_api.cc); [test_metal_output.py](../tests/test_metal_output.py); [test_metal_updater.py](../tests/test_metal_updater.py) |
 | tensor-adapters: Typed/strided tensors, masks, categorical columns, proxy setup and producer completion | mapped-with-scheduling-difference | [proxy_dmatrix.cc](../xgboost/src/data/proxy_dmatrix.cc); [metal_tensor.h](../xgboost/src/common/metal_tensor.h); [metal_adapter.h](../xgboost/src/common/metal_adapter.h); [_metal.py](../xgboost/python-package/xgboost/_metal.py) | [metal_tensor_api.mm](../tests/metal_tensor_api.mm); [metal_columnar_api.mm](../tests/metal_columnar_api.mm); [test_metal_tensor.py](../tests/test_metal_tensor.py); [test_metal_columnar.py](../tests/test_metal_columnar.py) |
-| ordinary-import: Native sparse entry filtering, row counts/prefixes, CSR packing and ordinary matrix creation | partial-host-storage | [simple_dmatrix.cc](../xgboost/src/data/simple_dmatrix.cc); [metal_tensor.h](../xgboost/src/common/metal_tensor.h) | [metal_tensor_csr_api.mm](../tests/metal_tensor_csr_api.mm); [test_metal_ordinary_tensor.py](../tests/test_metal_ordinary_tensor.py) |
+| ordinary-import: Native sparse entry filtering, row counts/prefixes, CSR packing and ordinary matrix creation | mapped | [simple_dmatrix.cc](../xgboost/src/data/simple_dmatrix.cc); [metal_tensor.h](../xgboost/src/common/metal_tensor.h) | [metal_tensor_csr_api.mm](../tests/metal_tensor_csr_api.mm); [test_metal_ordinary_tensor.py](../tests/test_metal_ordinary_tensor.py) |
 | metadata: Typed metadata import/validation, query IDs, slicing, copy/extend and equality | mapped | [data.cc](../xgboost/src/data/data.cc); [metal_metadata.h](../xgboost/src/common/metal_metadata.h); [metal_vector.h](../xgboost/src/common/metal_vector.h) | [metal_metadata_api.mm](../tests/metal_metadata_api.mm); [metal_vector_api.cc](../tests/metal_vector_api.cc); [test_metal_metadata.py](../tests/test_metal_metadata.py); [test_metal_vector_state.py](../tests/test_metal_vector_state.py) |
 | category-dictionaries: Typed dictionary sort/search, recoding, device dictionary copies and sorted-index lifetime | mapped | [cat_container.cc](../xgboost/src/data/cat_container.cc); [cat_container.h](../xgboost/src/data/cat_container.h); [metal_category.h](../xgboost/src/common/metal_category.h) | [metal_category_api.cc](../tests/metal_category_api.cc); [metal_category_state_api.cc](../tests/metal_category_state_api.cc); [test_metal_category_names.py](../tests/test_metal_category_names.py); [test_metal_columnar.py](../tests/test_metal_columnar.py) |
 | quantile-frontends: In-memory and external quantile adapters, reference cuts, batch concatenation and bin assignment | mapped | [metal_quantile.h](../xgboost/src/data/metal_quantile.h); [iterative_dmatrix.cc](../xgboost/src/data/iterative_dmatrix.cc); [extmem_quantile_dmatrix.cc](../xgboost/src/data/extmem_quantile_dmatrix.cc); [metal_adapter.h](../xgboost/src/common/metal_adapter.h) | [metal_adapter_api.cc](../tests/metal_adapter_api.cc); [metal_ellpack_adapter_api.cc](../tests/metal_ellpack_adapter_api.cc); [test_metal_input.py](../tests/test_metal_input.py); [test_metal_disk_ellpack.py](../tests/test_metal_disk_ellpack.py) |
@@ -93,7 +89,7 @@ mechanisms. The JSON contains full source lists and explicit limitations for eac
 | quantization-sampling: Global sign bounds, integer quantizers, uniform masks, gradient thresholds and value-gradient replay | mapped | [metal_gradient.h](../xgboost/src/common/metal_gradient.h); [metal_sampling.h](../xgboost/src/common/metal_sampling.h); [metal_training.h](../xgboost/src/common/metal_training.h) | [metal_quantized_state_api.cc](../tests/metal_quantized_state_api.cc); [metal_gradient_sampling_api.cc](../tests/metal_gradient_sampling_api.cc); [metal_global_quantizer_api.cc](../tests/metal_global_quantizer_api.cc); [test_metal_sampling.py](../tests/test_metal_sampling.py) |
 | histograms: Quantized dense/sparse histogram accumulation, subtraction/cache and feature-group launch scheduling | mapped | [histogram.h](../xgboost/src/tree/hist/histogram.h); [metal_histogram.h](../xgboost/src/common/metal_histogram.h); [metal_gradient.h](../xgboost/src/common/metal_gradient.h) | [metal_integer_cache_api.cc](../tests/metal_integer_cache_api.cc); [metal_training_state_api.cc](../tests/metal_training_state_api.cc); [test_metal_storage.py](../tests/test_metal_storage.py) |
 | scalar-splits: Numeric/categorical scalar split scans, missing direction, gains, weights and expansion state | mapped | [evaluate_splits.h](../xgboost/src/tree/hist/evaluate_splits.h); [metal_split.h](../xgboost/src/common/metal_split.h); [metal_constraints.h](../xgboost/src/common/metal_constraints.h) | [test_metal_cuda_splits.py](../tests/test_metal_cuda_splits.py); [test_metal_split_categories.py](../tests/test_metal_split_categories.py); [test_metal_split_finalize.py](../tests/test_metal_split_finalize.py) |
-| vector-splits: Multi-target split evaluation, per-target sums, reduced split/value gradients and category candidates | mapped | [evaluate_splits.h](../xgboost/src/tree/hist/evaluate_splits.h); [metal_split.h](../xgboost/src/common/metal_split.h) | [test_metal_cuda_multi_splits.py](../tests/test_metal_cuda_multi_splits.py); [test_metal_split_categories.py](../tests/test_metal_split_categories.py); [test_metal_split_finalize.py](../tests/test_metal_split_finalize.py) |
+| vector-splits: Multi-target split evaluation, per-target sums, reduced split/value gradients and category candidates | partial-host-weights | [evaluate_splits.h](../xgboost/src/tree/hist/evaluate_splits.h); [metal_split.h](../xgboost/src/common/metal_split.h) | [test_metal_cuda_multi_splits.py](../tests/test_metal_cuda_multi_splits.py); [test_metal_split_categories.py](../tests/test_metal_split_categories.py); [test_metal_split_finalize.py](../tests/test_metal_split_finalize.py) |
 | partition: Stable row partition, compressed-page reads and leaf-position output | mapped | [common_row_partitioner.h](../xgboost/src/tree/common_row_partitioner.h); [metal_training.h](../xgboost/src/common/metal_training.h) | [metal_training_state_api.cc](../tests/metal_training_state_api.cc); [metal_compressed_consumers_api.cc](../tests/metal_compressed_consumers_api.cc) |
 | leaf-refit: Reduced-gradient sampling replay, leaf/page integer sums and final weights | mapped | [metal_leaf.h](../xgboost/src/common/metal_leaf.h); [metal_gradient.h](../xgboost/src/common/metal_gradient.h) | [metal_leaf_fitting_api.cc](../tests/metal_leaf_fitting_api.cc); [metal_integer_leaf_api.cc](../tests/metal_integer_leaf_api.cc); [test_metal_leaf_fitting.py](../tests/test_metal_leaf_fitting.py) |
 | vector-model: Batched model weight/category copies, root assignment and learning-rate scaling | partial-host-storage | [multi_target_tree_model.cc](../xgboost/src/tree/multi_target_tree_model.cc); [metal_model.h](../xgboost/src/common/metal_model.h) | [metal_model_state_api.cc](../tests/metal_model_state_api.cc); [test_metal_model_state.py](../tests/test_metal_model_state.py) |
@@ -113,10 +109,11 @@ transport/codec implementations, not by reproducing NVIDIA binary interfaces.
 CuPy array methods outside XGBoost's result/input contract are not automatically
 requirements for `MetalOutput`.
 
-The latest full local regression is recorded in
-[native gradient storage validation](../validation/cuda-metal-native-gradient-storage-m3.txt).
-That checkpoint closes the native custom-gradient destination storage gap; the
-packing kernel was already present before the audit.
+Native custom-gradient storage and ordinary native matrix entry storage have
+been addressed since the initial audit. The latter includes sketch/compression
+consumers, not only the importer. See
+[native matrix storage validation](../validation/cuda-metal-native-csr-storage-m3.txt)
+and [native gradient storage validation](../validation/cuda-metal-native-gradient-storage-m3.txt).
 Detailed algorithm, arithmetic and historical validation records remain in
 [CUDA_PARITY.md](CUDA_PARITY.md). Older broad statements there or in the development
 log are historical evidence; the concrete open items above take precedence for
