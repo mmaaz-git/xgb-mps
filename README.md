@@ -51,7 +51,7 @@ unproven.
 | Validation stage | Current status |
 | --- | --- |
 | Local Metal/CPU acceptance | Full regression passed at `41d4dc2`; details below |
-| CUDA compilation | [Grouped PR/AUC build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770). The [next build failed in the new AUC test helper](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288); its name-lookup fix passes local regression checks, with CUDA confirmation pending |
+| CUDA compilation | [Capacity and AUC capture build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995), including the helper fix. The [full AUC/ROC replay build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731) |
 | CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
 | Performance | Mixed; the latest full HIGGS run is slower on MPS |
 
@@ -66,12 +66,12 @@ its CUDA build passed; NVIDIA execution remains pending. [Evidence and domain li
 
 The binary/multi-output AUC replay now retains all 528 original records. Its
 Metal export, independent reference checks and complete input round trip pass;
-[CUDA compilation is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731)
+[CUDA compilation is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731)
 and NVIDIA execution remains pending. [AUC evidence](validation/auc-contract-m3-run.json).
 
 Grouped ROC now also preserves all 278 records, including its 390-query edge
 batch and million-row extensions. Local input/output and packing checks pass;
-the queued CUDA build includes both new AUC replays. NVIDIA execution remains pending. [Grouped ROC evidence](validation/grouped-roc-contract-m3-run.json).
+the active CUDA build includes both new AUC replays. NVIDIA execution remains pending. [Grouped ROC evidence](validation/grouped-roc-contract-m3-run.json).
 
 Remaining work is to validate the new AUC replays on CUDA, complete ranking-metric,
 SHAP and compiler arithmetic comparisons; extend caller coverage, including the full
@@ -147,7 +147,7 @@ no-GPU negative check. PyTorch and MLX GPU interop tests ran. The
 library and logs. Subsequent AUC observation preparation has 22 separate passing
 source/helper and mocked build-driver checks. Its first CUDA compilation failed
 on an ambiguous test-helper call; the corrected helper passes a regression that
-reproduces the collision, and CUDA confirmation remains pending.
+reproduces the collision, and the corrected CUDA build also passed.
 
 The CPU-only build/API/schema and nine updater checks, plus 14 optional federated
 transport/sketch/learner groups, previously passed at `68c800e`. Those separate

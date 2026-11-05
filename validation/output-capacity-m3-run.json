@@ -1,6 +1,6 @@
 {
   "task": "PORT-13",
-  "status": "passed-focused-and-full-Metal-CPU-acceptance; current-revision CUDA compilation pending",
+  "status": "passed-focused-and-full-Metal-CPU-acceptance-and-CUDA-compilation",
   "recorded_utc": "2026-11-05T22:14:53.578878+00:00",
   "production_commit": "41d4dc26cc23bf58357e59f986cbbf7aec0e2864",
   "production_tree": "145fdffbc52f59354bed55b96d184d9e50c23ff4",
@@ -85,6 +85,100 @@
     "expected_skips": 2
   },
   "cuda_compilation": {
+    "status": "passed-compile-link-and-host-checks",
+    "gpu_execution": false,
+    "run_id": 42123616995,
+    "head": "5f9f1f7c6b8fe49ef87c1a2c41c65b06d8744ecc",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995",
+    "finished_utc": "2026-11-05T23:05:31.074326+00:00",
+    "production_steps": 197,
+    "harness_objects": 8,
+    "linked_binaries": 8,
+    "verified_input_hashes": 73,
+    "nvcomp_loader_probe": {
+      "status": "passed",
+      "gpu_execution": false
+    },
+    "nvcomp_runtime_path": "/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13/libnvcomp.so.5.3.0.16\n/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13",
+    "auc_source_isolation": {
+      "status": "passed",
+      "gpu_execution": false,
+      "registry_entries": 24,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/auc-registry-probe.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/auc-defined-dynamic-symbols.txt": "c960415b39bd4f165457b560af7b1ed8877f6596cf8e15c400c5e93b8d6ee904",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/auc_probe.inc": "739990fed6c400f0eae057830fcc458d09eb0b660290cc25866125f783c901ee",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/auc_probe.inc.json": "07e55c14fd9288d80a67b704c693dbbac30850c618f421860830c9728838f406"
+      }
+    },
+    "metric_source_isolation": {
+      "status": "passed",
+      "gpu_execution": false,
+      "registry_entries": 24,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-baseline.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-probe.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-defined-dynamic-symbols.txt": "599daf66f208e7929a234db26b14838d909627adddc34cd1ed850d0dfdd1cc58"
+      }
+    },
+    "linear_source_isolation": {
+      "status": "passed",
+      "gpu_execution": false,
+      "registry_entries": 3,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/linear-registry-baseline.txt": "ff530317415f03fafaa546ef508d8ccec55f5d300a4b42b0fb708b68e60d01fd",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/linear-registry-probe.txt": "ff530317415f03fafaa546ef508d8ccec55f5d300a4b42b0fb708b68e60d01fd",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/linear-defined-dynamic-symbols.txt": "28e38395638294e0f7467ce49291076d963d240e4ab5367c00602204022c3c8e"
+      }
+    },
+    "sampling_rng_alignment": {
+      "status": "passed",
+      "gpu_execution": false,
+      "cases": 10005,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/sampling-rng-alignment.txt": "918099a29222fdb9b4e2c25ff8dc75f10c22537f7a5a7af6188a3ce889a05b1d"
+      }
+    },
+    "log_sha256": "62edc7a1ee2020c6b7b8356afca6d8ee7fb6cbae2dfac2c6c55052a873ec7614",
+    "build_record_sha256": "d342fceb2159f1cc62093ddf679fffd594ddbc1bb88df6929d90376df3afec46",
+    "library_sha256": "f722452c27ae43bae8114830549b0525fe0b10aa98df7c5f08a30d0a5482fc76",
+    "binaries": {
+      "numerical": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_numerical_contracts",
+        "sha256": "09ab3be8b18e78692113ab259ed496087480ba91ad3db027c80b64d2a9f35c3f"
+      },
+      "aft": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_aft_contracts",
+        "sha256": "69ed10457168285c5cd6253a337e642ccdb6a6ea1d5041ffd4ce3cb49fea2ae4"
+      },
+      "rng": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_rng_contracts",
+        "sha256": "173841a87faf1e63699d19ac50de673e20fa5b8cf1c9b14670229cb14c0bdf33"
+      },
+      "math": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_math_contracts",
+        "sha256": "b981731e219f9fc44ee83c8efeceae8d6cafbf5dfaba6bc336db5d3e03156c29"
+      },
+      "ranking": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_ranking_contracts",
+        "sha256": "c3cc5329627a20a3e82356f7b74163a49e267a32bb5458cc5a7d6dae3ce666ad"
+      },
+      "metric": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_metric_contracts",
+        "sha256": "4e0e29f7330d69b9d3b866282e8755e70b1c7367d88422da86b9a0b4fdfad3d7"
+      },
+      "linear": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_linear_contracts",
+        "sha256": "37d168e935d10c525ba696d5822af9fedfdcdfde148a7754ffcbf9d9d28538f1"
+      },
+      "auc": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_auc_contracts",
+        "sha256": "c7eddaf7392361bba906466c2186a1d7c3314a714928e143b73e78ef1b95f7a3"
+      }
+    },
+    "scope": "Includes PORT-13 capacity fix and source-preserving AUC observation preparation; no CUDA or MPS kernel execution in this CI gate"
+  },
+  "previous_cuda_compilation": {
     "status": "failed-AUC-test-helper-compilation",
     "run_id": 42122113288,
     "head": "ed8e433c9add6e3e73b6a9426bca45a9f581bd1e",

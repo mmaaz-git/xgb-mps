@@ -349,3 +349,16 @@ VERIFY-2 AUC source-capture preparation (terminal object-compile failure):
   Log SHA256: b48629704950660dfc515aeb8e7cd4673992e118dad2d31cd49fb3abb8f7f520
   Build record SHA256: 1d7eb0c173866ad11750f85a62091ba21fcfa1586601e40d34d6a37022ea3dd8
   Artifacts: results/cuda-compile-42122113288.
+
+VERIFY-2 corrected AUC source capture and PORT-13 capacity (terminal success):
+  5f9f1f7c6b8fe49ef87c1a2c41c65b06d8744ecc:42123616995, completed 2026-11-05T23:05:31.074326+00:00
+  https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995
+  All 73 input hashes, eight CUDA objects, 197 production steps and eight executable links verified.
+  Early nvCOMP loader, metric/linear registry-symbol isolation, 10,005 host RNG checks passed.
+  AUC source-copy bytes/edit metadata match the pinned original and generator;
+  its 24 metric registry entries match the baseline and it exports no production metric definitions.
+  Log SHA256: 62edc7a1ee2020c6b7b8356afca6d8ee7fb6cbae2dfac2c6c55052a873ec7614
+  Build record SHA256: d342fceb2159f1cc62093ddf679fffd594ddbc1bb88df6929d90376df3afec46
+  Library SHA256: f722452c27ae43bae8114830549b0525fe0b10aa98df7c5f08a30d0a5482fc76
+  Artifacts: results/cuda-compile-42123616995; verifier results/verify-cuda-42123616995.py.
+  Resolves the helper lookup failure. Predates full AUC/grouped ROC replays; no NVIDIA kernels executed.

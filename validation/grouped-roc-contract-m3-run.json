@@ -187,7 +187,7 @@
     "results/grouped-roc-codec.cc": "3b5111c3938deebef622c4909bbfaab9c536a150c6d1ec1e1ed8b78bd018c46a"
   },
   "cuda_compile": {
-    "status": "pending",
+    "status": "in_progress",
     "gpu_execution": false,
     "run_id": 42126588731,
     "head": "63770982ca38cba3e8d3816916ffe5ef1eeafb9f",

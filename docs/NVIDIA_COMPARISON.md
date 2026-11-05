@@ -1303,14 +1303,14 @@ because an unqualified `Cuda(cudaMemcpy(...))` call found both the capture helpe
 and the consumer's global helper through argument-dependent lookup. Explicit
 qualification fixes the ambiguity. The host-copy check now includes that global
 helper: it fails to compile with the old header and passes with the correction.
-All 22 checks pass; corrected CUDA compilation remains pending. These host checks
+All 22 checks pass; [corrected CUDA compilation passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995), including the source-copy and registry/symbol checks. These host checks
 do not prove CUDA execution or numerical agreement. The full **528-record** corpus now has a Metal exporter, CUDA replay and independent
 report checker. The local acceptance record is
 [auc-contract-m3-run.json](../validation/auc-contract-m3-run.json); the complete
 [saved Metal report](../validation/auc-contract-metal-m3.bin.xz) retains exact input
-and observed-output bits. The [new replay build is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731)
-behind the [active helper-fix build](https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995).
-Both need terminal verification, and NVIDIA execution remains pending.
+and observed-output bits. The [combined replay build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731).
+The preceding [helper-fix build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995)
+and was verified; it predates this replay. NVIDIA execution remains pending.
 
 The corpus retains four binary edge cases, 22 normalization cases, eight metadata
 cases, one malformed shape, six wide cases, 486 ordinary/pathological cases with
@@ -1422,9 +1422,9 @@ its packing transformation matches **6,363,747 words** independently selected in
 Python, including weight alignment after removing zero-pair groups. The
 [acceptance record](../validation/grouped-roc-contract-m3-run.json) links the
 [saved Metal observations](../validation/grouped-roc-contract-metal-m3.bin.xz)
-and records source/library hashes. The [combined AUC/grouped ROC build is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731);
+and records source/library hashes. The [combined AUC/grouped ROC build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731);
 NVIDIA runtime validation remains pending. This supersedes AUC-only run
-42125079498 before it started, preserving the active helper-fix build.
+42125079498 before it started. The helper-fix build completed successfully.
 
 ```sh
 python3 scripts/compare_grouped_roc_contracts.py validate-metal \
