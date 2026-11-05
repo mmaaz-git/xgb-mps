@@ -2,6 +2,8 @@
 import argparse
 import ctypes
 import json
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -9,6 +11,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--library", type=Path,
                     default=Path(__file__).resolve().parents[1] / "build-cpu/lib/libxgboost.dylib")
 parser.add_argument("--require-federated", action="store_true")
+parser.add_argument("--metal-library", type=Path,
+                    help="Also compare the diagnostic schema with this Metal-enabled library")
 args = parser.parse_args()
 path = args.library.resolve()
 lib = ctypes.CDLL(str(path))
@@ -28,6 +32,32 @@ if args.require_federated:
 check(lib.XGBMetalInfo(ctypes.byref(out)))
 info = json.loads(out.value)
 assert info["built"] is False and info["available"] is False
+if args.metal_library:
+    # Isolate libraries in different processes: both export the same C symbols.
+    probe = """
+import ctypes, json, sys
+lib = ctypes.CDLL(sys.argv[1])
+lib.XGBGetLastError.restype = ctypes.c_char_p
+out = ctypes.c_char_p()
+assert lib.XGBMetalInfo(ctypes.byref(out)) == 0, lib.XGBGetLastError().decode()
+print(out.value.decode())
+"""
+    metal_info = json.loads(subprocess.check_output(
+        [sys.executable, "-c", probe, str(args.metal_library.resolve())], text=True))
+    assert metal_info["built"] is True
+    assert info.keys() == metal_info.keys(), {
+        "missing_from_cpu": sorted(metal_info.keys() - info.keys()),
+        "missing_from_metal": sorted(info.keys() - metal_info.keys()),
+    }
+    print(f"CPU/Metal diagnostic schemas match: {len(info)} fields.")
+# These documented counters were formerly absent, not zero, in CPU builds.
+for key in ("pr_auc_dispatches", "pr_auc_gpu_time_ns", "roc_auc_dispatches", "roc_auc_gpu_time_ns",
+            "group_sort_dispatches", "group_sort_gpu_time_ns", "ranking_metric_dispatches",
+            "ranking_metric_gpu_time_ns", "ranking_label_dispatches", "ranking_label_gpu_time_ns",
+            "ranking_cache_dispatches", "ranking_cache_gpu_time_ns", "ranking_gradient_dispatches",
+            "ranking_gradient_gpu_time_ns", "ranking_bias_dispatches", "ranking_pairs",
+            "ranking_pair_batches"):
+    assert info[key] == 0, key
 for key in ("prediction_model_pack_dispatches", "prediction_model_shared_input_bytes",
             "prediction_model_staging_bytes"):
     assert info[key] == 0
