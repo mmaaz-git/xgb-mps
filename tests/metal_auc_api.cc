@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -15,6 +16,7 @@
 #include "../xgboost/src/common/metal_auc.h"
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/optional_weight.h"
+#include "../xgboost/src/metric/metric_common.h"
 #include "xgboost/context.h"
 namespace xgboost::metric {
 std::tuple<double, double, double> BinaryPRAUC(Context const*, common::Span<float const>,
@@ -257,7 +259,7 @@ void CheckNormalization() {
     auto after = common::metal::GetStatistics();
     Check(after.metric_dispatches == before.metric_dispatches + 1,
           "AUC normalization did not execute a GPU command");
-    Check(std::memcmp(input.data(), snapshot.data(), input.size() * sizeof(double)) == 0,
+    Check(input.empty() || std::memcmp(input.data(), snapshot.data(), input.size() * sizeof(double)) == 0,
           "AUC normalization modified its collective input");
     Close(actual, expected, "CUDA ScaleOutputs", 2e-12);
     ++checked;
@@ -275,7 +277,7 @@ void CheckNormalization() {
                                                      {2, INFINITY, 1},
                                                      {1e-300, 1e-200, 5e-301}})
     run(input);
-  for (size_t targets : {1, 2, 31, 257, 65535}) {
+  for (size_t targets : {1, 2, 31, 257, 65535, 65536, 65537, 262145}) {
     std::vector<double> summaries(targets * 3);
     for (size_t t = 0; t < targets; ++t) {
       summaries[3 * t] = 1 + double(t % 17);
@@ -318,7 +320,11 @@ void CheckNormalization() {
       }
     }
   }
-  for (auto bad : std::vector<std::vector<double>>{{}, {1, 2}, std::vector<double>(65536 * 3)}) {
+  // CUDA ScaleOutputs returns NaN for an empty reduction and for zero local
+  // areas. These are valid inputs, including beyond the former 16-bit cap.
+  run({});
+  run(std::vector<double>(65536 * 3));
+  for (auto bad : std::vector<std::vector<double>>{{1, 2}}) {
     bool rejected = false;
     try {
       common::metal::NormalizeAUC(bad);
@@ -327,7 +333,70 @@ void CheckNormalization() {
     }
     Check(rejected, "Invalid normalization shape accepted");
   }
-  std::printf("PASS %zu GPU normalization/metadata cases and three shape errors\n", checked);
+  std::printf("PASS %zu GPU normalization/metadata cases and one malformed shape error\n", checked);
+}
+
+void WideOutputs() {
+  using namespace xgboost;
+  Context cpu, gpu;
+  cpu.Init({{"device", "cpu"}, {"nthread", "2"}});
+  gpu.Init({{"device", "mps"}, {"nthread", "2"}});
+  std::size_t fields = 0;
+  for (std::size_t targets : {65535, 65536, 65537}) {
+    current_n=2; current_targets=targets; current_layout=0; current_mode=0;
+    std::size_t shape[]{2, targets};
+    std::vector<float> predictions(2*targets), labels(2*targets);
+    for (std::size_t t=0; t<targets; ++t) {
+      predictions[t]=t%3==1 ? 1.f : 0.f;
+      predictions[targets+t]=t%3==0 ? 1.f : 0.f;
+      labels[t]=0.f; labels[targets+t]=1.f;
+    }
+    for (bool roc : {true, false}) {
+      std::vector<common::metal::ROCAUCSums> curves(targets);
+      auto before=common::metal::GetStatistics();
+      if (roc) common::metal::ROCAUC({predictions,shape,DeviceOrd::CPU()},
+          {labels,shape,DeviceOrd::CPU()}, {}, false, curves);
+      else common::metal::PRAUC({predictions,shape,DeviceOrd::CPU()},
+          {labels,shape,DeviceOrd::CPU()}, {}, false, curves);
+      auto after=common::metal::GetStatistics();
+      Check(after.radix_sort_dispatches==before.radix_sort_dispatches+1 &&
+            after.metric_dispatches==before.metric_dispatches+1,"Wide AUC did not execute GPU sort/metric");
+      double expected=0;
+      for (std::size_t t=0; t<targets; ++t) {
+        current_target=t;
+        auto value=t%3==0 ? 1. : t%3==2 ? .5 : roc ? 0. : 1.-std::log(2.);
+        Close(curves[t].fp,1.,"wide fp"); Close(curves[t].tp,1.,"wide tp");
+        Close(curves[t].area,value,"wide analytic curve",2e-12);
+        expected+=value; fields+=3;
+      }
+      expected/=targets;
+      MetaInfo info;info.num_row_=2;info.labels.Reshape(2,targets);
+      info.labels.Data()->HostVector()=labels;
+      HostDeviceVector<float> pred{predictions};
+      auto name=roc ? "auc" : "aucpr";
+      std::unique_ptr<Metric> cpu_metric{Metric::Create(name,&cpu)}, gpu_metric{Metric::Create(name,&gpu)};
+      cpu_metric->Configure({});gpu_metric->Configure({});
+      auto cpu_eval=dynamic_cast<MetricNoCache*>(cpu_metric.get());
+      auto gpu_eval=dynamic_cast<MetricNoCache*>(gpu_metric.get());
+      Check(cpu_eval && gpu_eval,"Wrong AUC metric type");
+      Close(cpu_eval->Eval(pred,info),expected,"wide CPU production metric",2e-12);
+      pred.SetDevice(DeviceOrd::MPS());pred.DevicePointer();
+      info.labels.SetDevice(DeviceOrd::MPS());info.labels.Data()->DevicePointer();
+      info.weights_.SetDevice(DeviceOrd::MPS());info.weights_.DevicePointer();
+      before=common::metal::GetStatistics();
+      Close(gpu_eval->Eval(pred,info),expected,"wide MPS production metric",2e-12);
+      after=common::metal::GetStatistics();
+      Check(after.metric_dispatches==before.metric_dispatches+2 &&
+            after.vector_readback_bytes==before.vector_readback_bytes &&
+            after.vector_upload_bytes==before.vector_upload_bytes &&
+            after.metric_host_input_bytes==before.metric_host_input_bytes &&
+            after.auc_final_readback_bytes==before.auc_final_readback_bytes+8,
+            "Wide public AUC did not preserve resident inputs/GPU normalization");
+      fields+=2;
+      std::printf("PASS wide %s: %zu outputs, actual %.17g\n",name,targets,expected);std::fflush(stdout);
+    }
+  }
+  std::printf("PASS six wide ROC/PR cases / %zu analytic and public-CPU/MPS fields\n",fields);
 }
 long double ReferencePR(std::vector<float> const& scores, std::vector<float> const& labels,
                         std::vector<float> const& weights) {
@@ -371,6 +440,7 @@ int main() {
   try {
     CudaContracts();
     CheckNormalization();
+    WideOutputs();
     using namespace xgboost;
     Context cpu;
     cpu.Init({{"nthread", "2"}, {"device", "cpu"}});

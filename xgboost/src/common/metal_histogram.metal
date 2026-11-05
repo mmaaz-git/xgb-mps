@@ -2840,14 +2840,14 @@ kernel void xgb_auc_result(device const ulong2* prefix [[buffer(0)]],
 // performs per-output normalization, weighted reduction and the final ratio.
 kernel void xgb_auc_normalize(device const ulong* input [[buffer(0)]],
                               device ulong* output [[buffer(1)]],
-                              constant uint& targets [[buffer(2)]],
+                              constant ulong& targets [[buffer(2)]],
                               uint tid [[thread_index_in_threadgroup]],
                               uint lane [[thread_index_in_simdgroup]],
                               uint simd [[simdgroup_index_in_threadgroup]]) {
   using namespace xgb_survival;
   D score = zero, weight = zero;
-  for (uint t = tid; t < targets; t += 256) {
-    D local{input[ulong(t) * 3]}, w{input[ulong(t) * 3 + 1]}, area{input[ulong(t) * 3 + 2]};
+  for (ulong t = tid; t < targets; t += 256) {
+    D local{input[t * 3]}, w{input[t * 3 + 1]}, area{input[t * 3 + 2]};
     if (local > zero) {
       score = score + (area / local) * w;
       weight = weight + w;

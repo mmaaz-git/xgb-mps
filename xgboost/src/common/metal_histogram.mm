@@ -5930,7 +5930,7 @@ void AUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<float c
   CHECK_EQ(output_count, targets);
   CHECK(weights.empty() || weights.size() == rows);
   CHECK_LE(rows, std::numeric_limits<std::uint32_t>::max());
-  CHECK_LE(targets, 65535);
+  CHECK_LE(targets, std::numeric_limits<std::uint32_t>::max());
   if (!targets) return;
   CHECK(output);
   @autoreleasepool {
@@ -6071,13 +6071,11 @@ void MultiAUC(linalg::MatrixView<float const> predictions, linalg::MatrixView<fl
 }
 double NormalizeAUC(Span<double const> summaries) {
   CHECK_EQ(summaries.size() % 3, 0);
-  CHECK_LE(summaries.size() / 3, 65535);
-  CHECK_GT(summaries.size(), 0);
   @autoreleasepool {
     auto& rt = GetRuntime();
     auto input = MetricInput(rt, summaries.data(), summaries.size_bytes(), alignof(double));
     auto output = Allocate(rt, sizeof(double));
-    std::uint32_t targets = summaries.size() / 3;
+    std::uint64_t targets = summaries.size() / 3;
     auto command = [rt.queue commandBuffer];
     CHECK(command);
     auto e = [command computeCommandEncoder];

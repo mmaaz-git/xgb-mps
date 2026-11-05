@@ -12,6 +12,30 @@ def score(model, d):
 
 
 @pytest.mark.parametrize("metric", ["auc", "aucpr"])
+def test_auc_above_former_output_limit(metal, metric):
+    targets = 65536
+    columns = np.arange(targets)
+    margins = np.zeros((2, targets), dtype=np.float32)
+    margins[0, columns % 3 == 1] = 1
+    margins[1, columns % 3 == 0] = 1
+    labels = np.zeros_like(margins)
+    labels[1] = 1
+    data = xgb.DMatrix(np.ones((2, 1), dtype=np.float32), label=labels,
+                       base_margin=margins, nthread=2)
+    params = dict(objective="reg:squarederror", num_target=targets,
+                  eval_metric=metric, base_score=.5, nthread=2)
+    cpu = xgb.train(params | {"device": "cpu"}, data, 0)
+    gpu = xgb.train(params | {"device": "mps"}, data, 0)
+    expected = score(cpu, data)
+    before = xgb.metal_info()
+    actual = score(gpu, data)
+    after = xgb.metal_info()
+    np.testing.assert_allclose(actual, expected, rtol=2e-12, atol=2e-12)
+    assert after["radix_sort_dispatches"] == before["radix_sort_dispatches"] + 1
+    assert after["metric_dispatches"] == before["metric_dispatches"] + 2
+
+
+@pytest.mark.parametrize("metric", ["auc", "aucpr"])
 @pytest.mark.parametrize("problem", ["binary", "multiclass", "multilabel"])
 @pytest.mark.parametrize("weight_mode", ["none", "normal", "tiny", "large"])
 @pytest.mark.parametrize("ties", [False, True])
