@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include "cuda_ranking_pairs.h"
+#include "rng_contract_fixtures.h"
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
@@ -39,39 +40,15 @@ int main(int argc, char** argv) {
           [device newComputePipelineStateWithFunction:[library newFunctionWithName:@"test_rank_rng"]
                                                 error:&error];
       if (!pipeline) throw std::runtime_error(error.localizedDescription.UTF8String);
-      std::vector<uint32_t> seeds{0,          1,           2,           2147483646,
-                                  2147483647, 2147483648u, 4294967294u, 4294967295u};
-      std::mt19937 rng(78223);
-      for (int i = 0; i < 32; ++i) seeds.push_back(rng());
-      std::vector<uint32_t> ranges{1,           2,           3,          17,    127,
-                                   129,         257,         4097,       65537, 2147483646u,
-                                   2147483647u, 2147483648u, 4294967295u};
-      for (uint32_t bit = 2; bit < 32; ++bit) {
-        ranges.push_back((1u << bit) - 1);
-        ranges.push_back(1u << bit);
-        ranges.push_back((1u << bit) + 1);
+      auto inputs = rng_contracts::RankingQueries();
+      std::vector<uint64_t> expected;
+      for (std::size_t c = 0; c < inputs.size(); c += 4) {
+        for (uint64_t i = 0; i < 16; ++i) {
+          auto position = inputs[c + 2] + i;
+          expected.push_back(cuda_reference::RankingUniform(inputs[c], &position, inputs[c + 1]));
+          expected.push_back(position);
+        }
       }
-      std::vector<uint64_t> positions{0,
-                                      1,
-                                      2,
-                                      3,
-                                      15,
-                                      255,
-                                      0xffffffffULL,
-                                      0x100000000ULL,
-                                      0x10000000003ULL,
-                                      0x7fffffffffffffefULL};
-      std::vector<uint64_t> inputs, expected;
-      for (uint32_t seed : seeds)
-        for (uint32_t range : ranges)
-          for (auto start : positions) {
-            inputs.insert(inputs.end(), {seed, range, start, 0});
-            for (uint64_t i = 0; i < 16; ++i) {
-              auto position = start + i;
-              expected.push_back(cuda_reference::RankingUniform(seed, &position, range));
-              expected.push_back(position);
-            }
-          }
       auto in = [device newBufferWithBytes:inputs.data()
                                     length:inputs.size() * 8
                                    options:MTLResourceStorageModeShared];

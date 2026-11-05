@@ -9,13 +9,11 @@
 #include <string>
 #include <vector>
 #include "cuda_philox_reference.h"
+#include "rng_contract_fixtures.h"
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
-struct Query {
-  std::uint64_t row;
-  std::uint32_t seed, padding;
-};
+using Query = rng_contracts::PhiloxQuery;
 struct Result {
   std::uint64_t word;
   std::uint32_t weight, padding;
@@ -49,16 +47,7 @@ kernel void probe_cuda_rng(device const Query* in [[buffer(0)]],
           newComputePipelineStateWithFunction:[library newFunctionWithName:@"probe_cuda_rng"]
                                         error:&error];
       Check(pipeline != nil, "No pipeline");
-      std::vector<Query> queries;
-      for (std::uint32_t seed : {0u, 1u, 17u, 20111115u, 0x80000000u, 0xffffffffu}) {
-        for (std::uint64_t row = 0; row < 10001; ++row) queries.push_back({row, seed, 0});
-        for (unsigned bit : {32, 40, 62, 63})
-          for (int offset = -5; offset <= 5; ++offset)
-            queries.push_back({(std::uint64_t{1} << bit) + offset, seed, 0});
-        queries.push_back({UINT64_MAX, seed, 0});
-      }
-      std::mt19937_64 rng{803};
-      for (unsigned i = 0; i < 1000000; ++i) queries.push_back({rng(), std::uint32_t(rng()), 0});
+      auto queries = rng_contracts::PhiloxQueries();
       auto input = [device newBufferWithBytes:queries.data()
                                        length:queries.size() * sizeof(Query)
                                       options:MTLResourceStorageModeShared];

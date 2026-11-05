@@ -8,36 +8,24 @@
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/metal_ranking.h"
 #include "cuda_ranking_pairs.h"
+#include "rng_contract_fixtures.h"
 using namespace xgboost;
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
 int main() {
   try {
-    std::mt19937 rng(881927);
     std::size_t cases = 0, checked = 0, reversed = 0, homogeneous = 0;
-    auto run = [&](std::vector<bst_group_t> sizes, std::uint32_t k, std::uint32_t seed, int mode,
-                   bool batched) {
+    auto run = [&](rng_contracts::PairCase const& c) {
+      auto const& sizes = c.sizes;
+      auto k = c.count, seed = c.seed;
+      auto mode = c.mode;
+      auto batched = c.batched;
       std::vector<bst_group_t> groups{0};
       for (auto n : sizes) groups.push_back(groups.back() + n);
       std::size_t n = groups.back();
-      std::vector<float> predictions(n), labels(n * 3, -999.f);
-      for (std::size_t i = 0; i < n; ++i) {
-        predictions[i] = mode == 0 ? (i % 2 ? 0.f : -0.f) : float(int(rng() % 23) - 11);
-        float y = float(rng() % 5);
-        if (mode == 1) y = 0;
-        if (mode == 2) {
-          float edge[] = {-0.f,
-                          0.f,
-                          std::numeric_limits<float>::denorm_min(),
-                          -std::numeric_limits<float>::denorm_min(),
-                          1.e-7f,
-                          -1.e-7f};
-          y = edge[rng() % 6];
-        }
-        if (mode == 3) y = float(int(rng() % 1001) - 500) / 173.f;
-        labels[3 * i] = y;
-      }
+      auto const& predictions = c.predictions;
+      auto const& labels = c.labels;
       auto label = linalg::MakeTensorView(DeviceOrd::CPU(), common::Span<float const>{labels}, n, 3)
                        .Slice(linalg::All(), 0);
       std::vector<GradientPair> gradients(n);
@@ -77,15 +65,13 @@ int main() {
       }
       ++cases;
     };
-    for (std::uint32_t seed : {0u, 1u, 2147483647u, 2147483648u, 0xfffffffeu, 0xffffffffu}) {
-      for (std::uint32_t k : {1u, 8u, 32u})
-        for (int mode = 0; mode < 4; ++mode)
-          run({0, 1, 0, 7, 31, 33, 0, 255, 256, 257, 4097, 0}, k, seed, mode, false);
-      std::printf("Checked %zu cases / %zu exact raw CUDA pairs\n", cases, checked);
-      std::fflush(stdout);
-    }
-    run({0, 0}, 8, 0, 0, false);
-    run(std::vector<bst_group_t>(512, 257), 32, 0xffffffffu, 2, true);
+    rng_contracts::PairCases([&](auto const& c) {
+      run(c);
+      if (cases % 12 == 0) {
+        std::printf("Checked %zu cases / %zu exact raw CUDA pairs\n", cases, checked);
+        std::fflush(stdout);
+      }
+    });
     Check(reversed > 0 && homogeneous > 0, "Raw orientation/homogeneous coverage missing");
     std::printf(
         "PASS %zu production cases / %zu exact pairs / %zu reversed / %zu homogeneous; "

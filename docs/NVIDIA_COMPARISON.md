@@ -3,8 +3,9 @@
 VERIFY-2 requires actual GPU execution. The current native harness,
 `numerical-v2`, covers **P5-N01, P5-N08, P5-N13 and P5-N14**, using the same 39
 inputs as the Metal numerical-contract test. A second native harness covers
-**P5-N02**, using the complete AFT corpus described below. The other twelve
-numerical contracts and broader caller/integration comparisons remain work;
+**P5-N02**, using the complete AFT corpus described below. A third covers
+**P5-N06** ranking RNG and raw pairs. The other eleven numerical contracts and
+broader caller/integration comparisons remain work;
 these harnesses are not a full parity certificate.
 
 No NVIDIA execution result is published yet. The CUDA CI job compiles/links the
@@ -82,7 +83,7 @@ results/cuda-comparison-build/cmake/cuda_numerical_contracts \
   results/cuda-observations.jsonl
 ```
 
-The build driver first compiles both harness objects using the configured compiler,
+The build driver first compiles all three harness objects using the configured compiler,
 CCCL, architectures and arithmetic flags. It then checks/rebuilds production
 dependencies and links the executables. This exposes harness compiler errors
 before the expensive library build. It writes `build.json`, including terminal
@@ -142,7 +143,7 @@ classifies sensitive rows; it does not capture an objective's private temporary.
 This runner covers gradients and Hessians, not survival metrics or prediction
 transformation.
 
-After building both CUDA executables as above:
+After building the CUDA executables as above:
 
 ```sh
 python3 scripts/compare_aft_contracts.py unpack \
@@ -187,6 +188,51 @@ FP64 fields (gradient, Hessian, likelihood) and two FP32 weighted outputs. The
 footer is `AFTE` plus uint32 case count; trailing bytes are rejected. Signed
 zeros, subnormals and nonfinite payloads survive interchange. Gzip is packaging
 only; the CUDA reader consumes the uncompressed input-only file.
+
+## Exact RNG streams and ranking pairs
+
+`cuda_rng_contracts` uses shared generators for the entire existing Metal corpus:
+
+| Corpus | NVIDIA execution | Exact checks |
+| --- | --- | --- |
+| 1,060,276 Philox queries | Vendored `DefaultRng` and production `RandomWeight` | Every engine word and FP32 uniform-draw bit pattern, including 64-bit discard boundaries |
+| 41,200 seed/range/discard cases; 659,200 draws | Vendored `UniformIntDistribution<size_t>` using an instrumented production engine | Draw, consumed engine position and next engine word; singleton ranges and rejection sampling retained |
+| 74 cases; 9,068,696 raw ranking pairs | Production `RankingCache`, prediction/label sorts and `MakePairsOp<false>` | Every prediction rank and both indices of every pair; seed/group wrap, homogeneous labels, empty queries and the large reused-batch Metal case retained |
+
+The shared fixture header preserves the old inputs bit for bit, including signed
+zeros and subnormal labels. It uses standard integer engines, without
+implementation-defined standard random distributions. The Metal pair test still
+passes labels through its stride-three view. CUDA's `MetaInfo` stores the same
+target as one contiguous column; padding is not treated as label data. The
+empty case checks the production CUDA cache's zero-work metadata and launches
+no pair kernel. This does not compare the complete ranking gradient computation.
+
+```sh
+results/cuda-comparison-build/cmake/cuda_rng_contracts results/cuda-rng-report.json
+```
+
+Success requires **every actual GPU result** to match the shared independent
+host oracle exactly. This is the same oracle against which the Metal results
+were checked; expected values never feed the CUDA kernels. The JSON summary
+records counts, each completed pair case, hardware, compiler/CCCL versions and
+the selected RNG branch. It does not contain full output arrays. A mismatch
+returns failure with its field, row, actual and expected values; retain the log
+and report, including any partial failure record, alongside `build.json`.
+That build record identifies the fixture, oracle, harness and production source
+hashes. Use matching source inputs on both machines; there is no separate
+tolerance-based report comparator for this exact contract.
+
+Compilation requires the modern `cuda::std::philox4x64` branch and rejects an
+older Thrust fallback. The Philox/`RandomWeight` portion also contributes evidence
+for training RNG, but the separate unweighted column shuffle and broader
+sampling caller comparisons remain open. It therefore adds one complete
+contract runner, P5-N06. No NVIDIA result exists yet. The
+[M3 record](../validation/rng-contract-m3-run.json) contains the three passing
+Metal groups and the input-preservation check. To rerun those groups:
+
+```sh
+bash scripts/test.sh --native metal_cuda_rng metal_ranking_rng metal_ranking_pairs_api
+```
 
 ## Production sketch, training and prediction comparison
 
@@ -239,6 +285,6 @@ same model bit for bit. HIGGS dispatched five sketch batches, and its cuts and
 first predictive tree exactly reproduce the earlier full benchmark. The
 [run record](../validation/gpu-pipeline-m3-run.json) includes hashes, commands,
 the initial validator error and 18 passing synthetic integrity tests. NVIDIA
-results are still absent. These integration cases do not close the twelve
+results are still absent. These integration cases do not close the eleven
 remaining numerical contracts or cover external memory, native device inputs,
 distributed execution and all other caller combinations.

@@ -44,8 +44,9 @@ unproven.
 
 The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) cover 39 shared threshold,
 CDF and sketch-order witnesses, plus 96 survival-objective cases with 316,683
-rows. These provide runners for five of the seventeen numerical contracts;
-twelve still need runners. Production sketch/training/prediction comparisons
+rows. A ranking RNG runner adds the existing 659,200 draws and 9,068,696 raw
+pairs. These provide runners for six of the seventeen numerical contracts;
+eleven still need complete runners. Production sketch/training/prediction comparisons
 also cover eight fixtures and full-size HIGGS quantile construction. Metal
 observations are published; NVIDIA execution is still required. Differences
 remain visible for review.

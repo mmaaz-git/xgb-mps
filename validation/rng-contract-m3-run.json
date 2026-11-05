@@ -1,0 +1,275 @@
+{
+  "status": "Metal exact corpus passed; new CUDA RNG consumer not yet compiled or executed",
+  "scope": "Complete existing P5-N06 distribution/raw-pair corpus; training Philox/RandomWeight primitive coverage is partial for the separate training-rng-modern contract",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "native_runs": [
+    {
+      "path": "results/verify2-rng-native/summary.json",
+      "sha256": "c31a6434038df85f5f2086c764a8fa69b90cb0409b3b60c4556192fad06e722c",
+      "summary": {
+        "status": "passed",
+        "started_utc": "20261105T151635Z",
+        "revision": "d2b674743cba7fb25506330eab42b29965a0a124",
+        "working_tree": "M .github/workflows/cuda-compile.yml\n M scripts/build_cuda_comparison.py\n M tests/cuda_comparison/CMakeLists.txt\n M tests/metal_cuda_rng.mm\n M tests/metal_ranking_pairs_api.cc\n M tests/metal_ranking_rng.mm\n?? tests/cuda_rng_contracts.cu\n?? tests/rng_contract_fixtures.h",
+        "diff_sha256": "6dcc0a8d27f36d4be6b84f15d17749213be52e64b9988835006f1a5ad47499d4",
+        "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+        "untracked_sha256": {
+          "tests/cuda_rng_contracts.cu": "4f8618583f872477e31273ec45323d6db630f6a3801104664e97693e9030b780",
+          "tests/rng_contract_fixtures.h": "76d905562d00c70ef2e71632a5ca5fd79c241f0f08f27aaf3052af87eb8a850b"
+        },
+        "native_groups": [
+          "metal_ranking_pairs_api"
+        ],
+        "python_selection": [],
+        "steps": [
+          {
+            "name": "build-metal",
+            "command": [
+              "bash",
+              "scripts/build.sh"
+            ],
+            "environment": {},
+            "log": "001-build-metal.log",
+            "status": "passed",
+            "exit_code": 0,
+            "seconds": 0.7057410420384258
+          },
+          {
+            "name": "compile-metal_ranking_pairs_api",
+            "command": [
+              "clang++",
+              "-O2",
+              "-std=c++17",
+              "-ffp-contract=off",
+              "-DDMLC_CORE_USE_CMAKE",
+              "-DDMLC_LOG_CUSTOMIZE=1",
+              "-DXGBOOST_USE_METAL=1",
+              "-I",
+              "xgboost/include",
+              "-I",
+              "xgboost/dmlc-core/include",
+              "-I",
+              "build-metal/dmlc-core/include",
+              "-Xpreprocessor",
+              "-fopenmp",
+              "-I",
+              "/opt/homebrew/opt/libomp/include",
+              "tests/metal_ranking_pairs_api.cc",
+              "-L",
+              "xgboost/lib",
+              "-lxgboost",
+              "-L",
+              "/opt/homebrew/opt/libomp/lib",
+              "-lomp",
+              "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+              "-o",
+              "results/metal_ranking_pairs_api_test"
+            ],
+            "environment": {},
+            "log": "002-compile-metal_ranking_pairs_api.log",
+            "status": "passed",
+            "exit_code": 0,
+            "seconds": 1.2289154168684036
+          },
+          {
+            "name": "metal_ranking_pairs_api",
+            "command": [
+              "results/metal_ranking_pairs_api_test"
+            ],
+            "environment": {
+              "MTL_DEBUG_LAYER": "1"
+            },
+            "log": "003-metal_ranking_pairs_api.log",
+            "status": "passed",
+            "exit_code": 0,
+            "seconds": 2.4601216251030564
+          }
+        ],
+        "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+        "exit_code": 0,
+        "finished_utc": "2026-11-05T15:16:40.092674+00:00"
+      },
+      "tracked_patch_matches": true,
+      "shared_fixture_matches": true
+    },
+    {
+      "path": "results/verify2-rng-streams-native/summary.json",
+      "sha256": "3aec1088c2d3a163c2530cc5774b56657f39b88adcb89291b65439433b65df75",
+      "summary": {
+        "status": "passed",
+        "started_utc": "20261105T151716Z",
+        "revision": "d2b674743cba7fb25506330eab42b29965a0a124",
+        "working_tree": "M .github/workflows/cuda-compile.yml\n M scripts/build_cuda_comparison.py\n M tests/cuda_comparison/CMakeLists.txt\n M tests/metal_cuda_rng.mm\n M tests/metal_ranking_pairs_api.cc\n M tests/metal_ranking_rng.mm\n?? tests/cuda_rng_contracts.cu\n?? tests/rng_contract_fixtures.h",
+        "diff_sha256": "6dcc0a8d27f36d4be6b84f15d17749213be52e64b9988835006f1a5ad47499d4",
+        "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+        "untracked_sha256": {
+          "tests/cuda_rng_contracts.cu": "4f8618583f872477e31273ec45323d6db630f6a3801104664e97693e9030b780",
+          "tests/rng_contract_fixtures.h": "76d905562d00c70ef2e71632a5ca5fd79c241f0f08f27aaf3052af87eb8a850b"
+        },
+        "native_groups": [
+          "metal_ranking_rng",
+          "metal_cuda_rng"
+        ],
+        "python_selection": [],
+        "steps": [
+          {
+            "name": "build-metal",
+            "command": [
+              "bash",
+              "scripts/build.sh"
+            ],
+            "environment": {},
+            "log": "001-build-metal.log",
+            "status": "passed",
+            "exit_code": 0,
+            "seconds": 0.6406100001186132
+          },
+          {
+            "name": "compile-metal_ranking_rng",
+            "command": [
+              "clang++",
+              "-O2",
+              "-std=c++17",
+              "-fobjc-arc",
+              "tests/metal_ranking_rng.mm",
+              "-framework",
+              "Metal",
+              "-framework",
+              "Foundation",
+              "-o",
+              "results/metal_ranking_rng_test"
+            ],
+            "environment": {},
+            "log": "002-compile-metal_ranking_rng.log",
+            "status": "passed",
+            "exit_code": 0,
+            "seconds": 1.0750167919322848
+          },
+          {
+            "name": "metal_ranking_rng",
+            "command": [
+              "results/metal_ranking_rng_test",
+              "xgboost/src/common/metal_histogram.metal"
+            ],
+            "environment": {
+              "MTL_DEBUG_LAYER": "1"
+            },
+            "log": "003-metal_ranking_rng.log",
+            "status": "passed",
+            "exit_code": 0,
+            "seconds": 1.3778112079016864
+          },
+          {
+            "name": "compile-metal_cuda_rng",
+            "command": [
+              "clang++",
+              "-O2",
+              "-std=c++17",
+              "-ffp-contract=off",
+              "-fobjc-arc",
+              "tests/metal_cuda_rng.mm",
+              "-framework",
+              "Metal",
+              "-framework",
+              "Foundation",
+              "-o",
+              "results/metal_cuda_rng_test"
+            ],
+            "environment": {},
+            "log": "004-compile-metal_cuda_rng.log",
+            "status": "passed",
+            "exit_code": 0,
+            "seconds": 0.5703663749154657
+          },
+          {
+            "name": "metal_cuda_rng",
+            "command": [
+              "results/metal_cuda_rng_test",
+              "xgboost/src/common/metal_histogram.metal"
+            ],
+            "environment": {
+              "MTL_DEBUG_LAYER": "1"
+            },
+            "log": "005-metal_cuda_rng.log",
+            "status": "passed",
+            "exit_code": 0,
+            "seconds": 0.550485041923821
+          }
+        ],
+        "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+        "exit_code": 0,
+        "finished_utc": "2026-11-05T15:17:20.565449+00:00"
+      },
+      "tracked_patch_matches": true,
+      "shared_fixture_matches": true
+    }
+  ],
+  "tested_patch_sha256": "6dcc0a8d27f36d4be6b84f15d17749213be52e64b9988835006f1a5ad47499d4",
+  "tested_patch_paths": [
+    ".github/workflows/cuda-compile.yml",
+    "scripts/build_cuda_comparison.py",
+    "tests/cuda_comparison/CMakeLists.txt",
+    "tests/metal_cuda_rng.mm",
+    "tests/metal_ranking_pairs_api.cc",
+    "tests/metal_ranking_rng.mm"
+  ],
+  "harness_input_sha256": {
+    "tests/rng_contract_fixtures.h": "76d905562d00c70ef2e71632a5ca5fd79c241f0f08f27aaf3052af87eb8a850b",
+    "tests/cuda_rng_contracts.cu": "253abac2e8ec0454479170c156a96bac62649a6ef6901bcb462f15f2c8f9113c",
+    "tests/cuda_philox_reference.h": "6bf3ca2a23896947913c6a04a08102c60115a1335638a1141384ad7bd4f66d1e",
+    "tests/cuda_ranking_pairs.h": "16aaaf56f3be14a2d253cbd681c830f35df7f52c5290d87b0988ab17de489636",
+    "tests/metal_cuda_rng.mm": "b153d0830e636607600cbf3b938fd49238e566867a164de1b5d10ff180bf2a4b",
+    "tests/metal_ranking_rng.mm": "7b81816e610993fde97088f4e0cb589be67f3a34c3793f1c8640b135c441ef0c",
+    "tests/metal_ranking_pairs_api.cc": "f8e8ef2de55cb6322577f7b7b5f69c0282661b906cb1e4dfb8ee5ad78eef4d01",
+    "scripts/build_cuda_comparison.py": "ed3bfc5621f2ceba2442125ef4b5dfc4b3b2cae423ede807b5e60761835220ae",
+    "tests/cuda_comparison/CMakeLists.txt": "67eb28923709c13901745f4cb44faabf3b3d3ec48b8589c6395cb332712f374a"
+  },
+  "corpus": {
+    "philox_queries": 1060276,
+    "ranking_distribution_cases": 41200,
+    "ranking_distribution_draws": 659200,
+    "pair_cases": 74,
+    "pair_input_rows": 487048,
+    "raw_pairs": 9068696,
+    "reversed_pairs": 3928736,
+    "homogeneous_pairs": 1215240
+  },
+  "input_preservation": {
+    "status": "all old/new inputs bit-identical",
+    "baseline_commit": "d2b674743cba7fb25506330eab42b29965a0a124",
+    "method": "Compiled the exact generator blocks extracted from git show of the three original Metal tests beside the new shared generators. Compared all Philox struct bytes, ranking query words, pair metadata and prediction/label float bytes; retained signed zeros and subnormals.",
+    "command": "clang++ -std=c++17 -O2 -I . results/verify2-rng-corpus.cc -o results/verify2-rng-corpus && results/verify2-rng-corpus",
+    "diagnostic_source_sha256": "9d736a555422c1c4cca7a0a77e99d91fef5275d3c96fd8812934054803e0878b",
+    "diagnostic_binary_sha256": "602b59b9746b05022e7f842716de76c5c3c795837c914c83375e7f546509ab41",
+    "baseline_source_sha256": {
+      "tests/metal_cuda_rng.mm": "61990c7dffe4ea451ad485fa9533a019a381ad5a6862c25794e22f4ee083596d",
+      "tests/metal_ranking_rng.mm": "ecf99e5f7c5f4258083cd2b376a533cd0262e547a0012e2355ed5ee569702dc5",
+      "tests/metal_ranking_pairs_api.cc": "4ffa29775a6f4f1efd3864bfe925b50a38e98a011f3e35dabdfb7d3d9ce037d7"
+    }
+  },
+  "logs": {
+    "results/verify2-rng.log": "defdce8119d46c7ad1d255243390c63252086c446a78a94a0994863502c269d1",
+    "results/verify2-rng-streams.log": "9d038d84b9fef03f7cd56a71f720627b66830fc73fb117b361bb567fe602ca30",
+    "results/verify2-rng-build-mock.log": "a4985e26f57498f0a8f1e0fcda5725bdc22fe58a4a7c1bd3d6e01267b8af8dab"
+  },
+  "build_driver_check": "Mocked compile/link lifecycle passed: numerical/aft/rng binary metadata, shared RNG fixture and oracle input hashes, aggregate object target. Does not execute NVCC or GPU code.",
+  "cuda_compile": {
+    "status": "not_run",
+    "reason": "Existing AFT compile run 42051624772 is still live; avoid cancelling it with a new compile-triggering push."
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "results/cuda-comparison-build/cmake/cuda_rng_contracts results/cuda-rng-report.json"
+  },
+  "limits": [
+    "NVIDIA execution is absent; compiler validation of the RNG consumer is still pending.",
+    "CUDA source-only edits after the Metal runs fix template argument deduction and add direct Thrust includes; they do not change the tested Metal files or shared corpus.",
+    "Each GPU result is checked directly against an independent exact oracle; the CUDA JSON is a completion/failure summary, not a full output-array archive.",
+    "The runtime report and matching build.json must be retained together to identify source, oracle, compiler flags and hardware.",
+    "Targets modern cuda::std::philox4x64; legacy Thrust RNG branch is rejected, not declared equivalent.",
+    "CUDA uses contiguous one-target labels; Metal additionally checks stride-three labels and batch-buffer reuse.",
+    "No full ranking-gradient, unweighted column-shuffle, distributed or general caller equivalence claim."
+  ]
+}
