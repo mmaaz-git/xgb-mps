@@ -14,6 +14,7 @@
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/metal_quantile.h"
 #include "numerical_contract_fixtures.h"
+#include "numerical_contract_report.h"
 
 namespace fixture = numerical_contracts;
 namespace metal = xgboost::common::metal;
@@ -107,7 +108,7 @@ struct GPU {
     return output;
   }
 };
-void QuantileWitness(GPU& gpu, unsigned rows, int exponent) {
+void QuantileWitness(GPU& gpu, fixture::Report& report, unsigned rows, int exponent) {
   auto q = fixture::MakeQuantile(rows, exponent);
   Check(q.serial.back() != q.regrouped.back(), "CDF witness lost association difference");
   struct Record { std::uint32_t key, row; };
@@ -151,11 +152,16 @@ void QuantileWitness(GPU& gpu, unsigned rows, int exponent) {
   Check(after.vector_readback_bytes == before.vector_readback_bytes && !v.HostCanRead() &&
             !w.HostCanRead() && !out.HostCanRead(), "Quantile payload requested a host mirror");
   Check(out.ConstHostVector()[0] == 0, "Production quantile changed its declared CDF policy");
+  report.Case("weighted_cdf", rows, exponent, 0,
+              {{"values", fixture::FloatWords(q.values)}, {"weights", fixture::FloatWords(q.weights)}},
+              {{"cdf", fixture::FloatWords(static_cast<float const*>(cdf.contents), rows)},
+               {"selected", fixture::FloatWords(results+1, 1)},
+               {"api_selected", fixture::FloatWords(out.ConstHostVector())}});
   std::printf("P5-N08 rows=%u exponent=%d totals=%08x/%08x selected=0/%u (Metal/regrouped)\n",
               rows, exponent, Bits(q.serial.back()), Bits(q.regrouped.back()), rows-1);
   ++witnesses;
 }
-void PrefixWitness(GPU& gpu, unsigned rows, int exponent) {
+void PrefixWitness(GPU& gpu, fixture::Report& report, unsigned rows, int exponent) {
   auto p = fixture::MakePrefix(rows, exponent);
   auto input = gpu.Upload(p.values), ids = gpu.Upload(p.ids);
   auto command = [gpu.queue commandBuffer];
@@ -165,11 +171,14 @@ void PrefixWitness(GPU& gpu, unsigned rows, int exponent) {
   unsigned differences = 0;
   for (unsigned i = 0; i < rows; ++i) differences += p.metal[i] != p.serial[i];
   Check(differences > 0, "Raw-prefix witness lost its sequential-scan difference");
+  report.Case("raw_prefix", rows, exponent, 0,
+              {{"weights", fixture::FloatWords(p.values)}, {"ids", {p.ids.begin(), p.ids.end()}}},
+              {{"cdf", fixture::FloatWords(static_cast<float const*>(output.contents), rows)}});
   std::printf("P5-N14 raw-prefix rows=%u exponent=%d differing_CDF_entries=%u\n",
               rows, exponent, differences);
   ++witnesses;
 }
-void SummaryWitness(GPU& gpu, int exponent, bool repair) {
+void SummaryWitness(GPU& gpu, fixture::Report& report, int exponent, bool repair) {
   auto s = repair ? fixture::MakeRepair(exponent) : fixture::MakeReverse(exponent);
   Check(std::memcmp(s.metal.data(), s.alternative.data(), s.metal.size()*sizeof(fixture::Entry)) != 0,
         "Summary witness lost its order difference");
@@ -187,6 +196,22 @@ void SummaryWitness(GPU& gpu, int exponent, bool repair) {
   for (unsigned i = 0; i < 4; ++i)
     Check(guard[i] == 0xa5a5a5a5u && guard[(s.input.size()+1)*4+i] == 0xa5a5a5a5u,
           "Summary guard changed");
+  auto actual = static_cast<fixture::Entry const*>(data.contents)+1;
+  std::vector<fixture::Entry> observed;
+  fixture::Words observed_ptr{0};
+  for (std::size_t c = 0; c+1 < s.ptr.size(); ++c) {
+    for (auto i = s.ptr[c]; i < s.ptr[c+1]; ++i) {
+      // CUDA ScanInput includes unique compaction. Project the observed Metal
+      // reverse-scan output onto the same retained entries for comparison.
+      // This is report processing, not an execution test of Metal compaction.
+      if (repair || i == s.ptr[c] || actual[i].value != actual[i-1].value)
+        observed.push_back(actual[i]);
+    }
+    observed_ptr.push_back(observed.size());
+  }
+  report.Case(repair ? "repair" : "reverse_unique", s.input.size(), exponent, 0,
+              {{"entries", fixture::EntryWords(s.input.data(), s.input.size())}, {"ptr", s.ptr}},
+              {{"entries", fixture::EntryWords(observed.data(), observed.size())}, {"ptr", observed_ptr}});
   std::printf("%s exponent=%d first_weight=%08x/%08x third_rank=%08x/%08x (Metal/alternative)\n",
               repair ? "P5-N13 repair" : "P5-N14 reverse", exponent,
               Bits(s.metal[0].wmin), Bits(s.alternative[0].wmin),
@@ -196,14 +221,20 @@ void SummaryWitness(GPU& gpu, int exponent, bool repair) {
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
-      Check(argc == 2, "Pass production shader source");
+      Check(argc == 2 || (argc == 4 && std::string{argv[2]} == "--report"),
+            "Pass production shader source [--report new-output.jsonl]");
       GPU gpu(argv[1]);
+      fixture::Report report{argc == 4 ? argv[3] : ""};
+      report.Metadata({{"backend", "metal"}, {"device", gpu.device.name.UTF8String},
+                       {"compiler", __clang_version__}, {"shader", argv[1]},
+                       {"reverse_unique", "host projection of observed GPU reverse scan"}});
       for (int exponent : {0, -149, 100}) {
-        for (unsigned rows : {3u, 257u}) QuantileWitness(gpu, rows, exponent);
-        for (unsigned rows : {3u, 261u, 513u}) PrefixWitness(gpu, rows, exponent);
-        SummaryWitness(gpu, exponent, false);
-        SummaryWitness(gpu, exponent, true);
+        for (unsigned rows : {3u, 257u}) QuantileWitness(gpu, report, rows, exponent);
+        for (unsigned rows : {3u, 261u, 513u}) PrefixWitness(gpu, report, rows, exponent);
+        SummaryWitness(gpu, report, exponent, false);
+        SummaryWitness(gpu, report, exponent, true);
       }
+      report.Finish();
       std::printf("PASS %zu explicit numerical witnesses / %zu exact checks; NVIDIA untested\n",
                   witnesses, checked);
     } catch (std::exception const& e) {

@@ -28,5 +28,8 @@ cmake -S xgboost -B build-cuda-ci -G Ninja \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 echo 'Compiling and linking libxgboost (no GPU execution)'
 cmake --build build-cuda-ci --parallel 2
+echo 'Compiling the shared numerical observation harness (no GPU execution)'
+python3 scripts/build_cuda_comparison.py --build-dir build-cuda-ci \
+  --output-dir results/cuda-comparison-build
 echo 'PASS CUDA compilation/linking; GPU runtime behavior remains untested'
 date -u

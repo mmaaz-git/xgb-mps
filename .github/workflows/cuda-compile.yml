@@ -6,11 +6,19 @@ on:
     paths:
       - "xgboost/**"
       - "scripts/ci_cuda_build.sh"
+      - "scripts/build_cuda_comparison.py"
+      - "tests/cuda_numerical_contracts.cu"
+      - "tests/cuda_comparison/**"
+      - "tests/numerical_contract_*.h"
       - ".github/workflows/cuda-compile.yml"
   pull_request:
     paths:
       - "xgboost/**"
       - "scripts/ci_cuda_build.sh"
+      - "scripts/build_cuda_comparison.py"
+      - "tests/cuda_numerical_contracts.cu"
+      - "tests/cuda_comparison/**"
+      - "tests/numerical_contract_*.h"
       - ".github/workflows/cuda-compile.yml"
 
 permissions:
@@ -37,7 +45,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates git cmake ninja-build g++ pkg-config \
+            ca-certificates git cmake ninja-build g++ pkg-config python3 \
             libgrpc++-dev libprotobuf-dev protobuf-compiler protobuf-compiler-grpc \
             libnvcomp5-cuda-13=5.3.0.16-1 libnvcomp5-dev-cuda-13=5.3.0.16-1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -54,4 +62,7 @@ jobs:
             results/cuda-compile-ci.log
             build-cuda-ci/CMakeCache.txt
             build-cuda-ci/CMakeFiles/CMakeConfigureLog.yaml
+            results/cuda-comparison-build/build.json
+            results/cuda-comparison-build/cmake/compile_commands.json
+            results/cuda-comparison-build/cmake/CMakeCache.txt
           if-no-files-found: ignore
