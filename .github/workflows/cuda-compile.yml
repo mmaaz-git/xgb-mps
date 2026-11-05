@@ -24,6 +24,11 @@ on:
       - "tests/ranking_primitive_io.h"
       - "tests/stats_contract_io.h"
       - "tests/linalg_contract_io.h"
+      - "tests/metric_contract_io.h"
+      - "tests/cuda_metric_source.h"
+      - "tests/cuda_metric_contracts.cu"
+      - "tests/metric_registry_probe.h"
+      - "tests/cuda_metric_reference.h"
       - "tests/cuda_ranking_contracts.cu"
       - "tests/cuda_comparison/**"
       - "tests/numerical_contract_*.h"
@@ -50,6 +55,11 @@ on:
       - "tests/ranking_primitive_io.h"
       - "tests/stats_contract_io.h"
       - "tests/linalg_contract_io.h"
+      - "tests/metric_contract_io.h"
+      - "tests/cuda_metric_source.h"
+      - "tests/cuda_metric_contracts.cu"
+      - "tests/metric_registry_probe.h"
+      - "tests/cuda_metric_reference.h"
       - "tests/cuda_ranking_contracts.cu"
       - "tests/cuda_comparison/**"
       - "tests/numerical_contract_*.h"
@@ -97,6 +107,9 @@ jobs:
             build-cuda-ci/CMakeCache.txt
             build-cuda-ci/CMakeFiles/CMakeConfigureLog.yaml
             results/cuda-comparison-build/build.json
+            results/cuda-comparison-build/metric-registry-baseline.txt
+            results/cuda-comparison-build/metric-registry-probe.txt
+            results/cuda-comparison-build/metric-defined-dynamic-symbols.txt
             results/cuda-comparison-build/cmake/compile_commands.json
             results/cuda-comparison-build/cmake/CMakeCache.txt
           if-no-files-found: ignore

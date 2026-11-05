@@ -19,6 +19,7 @@
 #include "stats_contract_io.h"
 #include "../xgboost/src/common/linalg_op.h"
 #include "linalg_contract_io.h"
+#include "metric_registry_probe.h"
 #include "xgboost/json.h"
 #include "numerical_contract_fixtures.h"
 #include "numerical_contract_report.h"
@@ -373,6 +374,7 @@ void Statistics(char const* input_path, char const* output_path) {
 
 int main(int argc, char** argv) {
   try {
+    if (argc == 2 && std::string(argv[1]) == "--metric-registry") { MetricRegistrySignature(); return 0; }
     if (argc == 4 && std::string(argv[1]) == "--linalg") { Linalg(argv[2], argv[3]); return 0; }
     if (argc == 4 && std::string(argv[1]) == "--statistics") { Statistics(argv[2], argv[3]); return 0; }
     Check(argc == 2, "Usage: cuda_numerical_contracts_test new-report.jsonl");

@@ -1,0 +1,374 @@
+{
+  "status": "Complete Metal metric corpus, independent reference checks and integrity tests passed; CUDA compilation/host isolation and NVIDIA runtime pending",
+  "suite": "metric-v1",
+  "recorded_utc": "2026-11-05T19:08:50.389881+00:00",
+  "scope": "Complete metal_metric_api corpus for P5-N07, including all previously uncounted math, invalid-label and empty-operation checks; this does not cover PR/ROC/ranking metric corpora.",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T185010Z",
+    "revision": "c63e3394637ab59bce0e3535341ff05082596108",
+    "working_tree": "M .github/workflows/cuda-compile.yml\n M scripts/build_cuda_comparison.py\n M tests/cuda_comparison/CMakeLists.txt\n M tests/cuda_numerical_contracts.cu\n M tests/metal_metric_api.mm\n?? scripts/compare_metric_contracts.py\n?? tests/cuda_metric_contracts.cu\n?? tests/cuda_metric_source.h\n?? tests/metric_contract_io.h\n?? tests/metric_registry_probe.h\n?? tests/test_cuda_metric_build.py\n?? tests/test_metric_contract_reports.py\n?? validation/metric-contract-inputs-m3.bin.gz\n?? validation/metric-contract-metal-m3.bin.gz",
+    "diff_sha256": "0e5f4f3e6fbee72a20b2bd0197b7ee1582e73dfc2c75a37cff38215b6439b5b5",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "scripts/compare_metric_contracts.py": "c2af3580c965ffb933f6e28ad659d3696b803706e95c99f72526063bf10682b2",
+      "tests/cuda_metric_contracts.cu": "a839c9c0b2774d2da31eaaf0ec8fbbbd4a75dafc4b70c9ad6ed3fa0c2de6c3d9",
+      "tests/cuda_metric_source.h": "5119d52add416988005d21c8fb583bad576a4018ac1c55bb70f3dee7bb42b3aa",
+      "tests/metric_contract_io.h": "57c03ca8a007a045473461ee99377465851170f5ae7b7ace91047f09c53cc88f",
+      "tests/metric_registry_probe.h": "d402abd368d168d7db92911f46765e736a3023cf2aa2adc050764797e31ee1dd",
+      "tests/test_cuda_metric_build.py": "2bd6380405cf21e5a6d1b4ceb7cf49e4bc3b23f4f461493884955d19ecbd6eb1",
+      "tests/test_metric_contract_reports.py": "374a0996ee13fd0e10c27fc70bb0822e5a140de58babf9abcb1706bea9acc1c2",
+      "validation/metric-contract-inputs-m3.bin.gz": "65ea0594d169a376c05dcda1395202a6fe18e8ba62a889c74500fe0e9202c225",
+      "validation/metric-contract-metal-m3.bin.gz": "8b846878d6eb58bab673269b318da752af17130ec096e3cf6e0d22800684b772"
+    },
+    "native_groups": [
+      "metal_metric_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.6949218339286745
+      },
+      {
+        "name": "compile-metal_metric_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-fobjc-arc",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_metric_api.mm",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-framework",
+          "Metal",
+          "-framework",
+          "Foundation",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_metric_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_metric_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.679122333880514
+      },
+      {
+        "name": "metal_metric_api",
+        "command": [
+          "results/metal_metric_api_test",
+          "xgboost/src/common/metal_histogram.metal"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_metric_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.3455581669695675
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T18:50:14.913965+00:00"
+  },
+  "initial_native_run": {
+    "status": "passed",
+    "started_utc": "20261105T183018Z",
+    "revision": "c63e3394637ab59bce0e3535341ff05082596108",
+    "working_tree": "M tests/metal_metric_api.mm\n?? tests/metric_contract_io.h",
+    "diff_sha256": "197bd71e5ddbf1f7fbfc619bc918094bf07ebd85e952c6bb92d98a16a18783b3",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/metric_contract_io.h": "f04a5de9f0c306a8cb6e689c3f6e58dfa109dd9f22832ec3352d9a27298e7225"
+    },
+    "native_groups": [
+      "metal_metric_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.6717293330002576
+      },
+      {
+        "name": "compile-metal_metric_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-fobjc-arc",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_metric_api.mm",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-framework",
+          "Metal",
+          "-framework",
+          "Foundation",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_metric_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_metric_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.6985972910188138
+      },
+      {
+        "name": "metal_metric_api",
+        "command": [
+          "results/metal_metric_api_test",
+          "xgboost/src/common/metal_histogram.metal"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_metric_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.2855565829668194
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T18:30:22.372197+00:00"
+  },
+  "native_source_proof": {
+    "tracked_native_diff_sha256": "197bd71e5ddbf1f7fbfc619bc918094bf07ebd85e952c6bb92d98a16a18783b3",
+    "current_header_sha256": "57c03ca8a007a045473461ee99377465851170f5ae7b7ace91047f09c53cc88f",
+    "domain_policy_update_reproduces_initial_input_and_metal_bytes": true
+  },
+  "export_run": {
+    "status": "passed",
+    "command": "MTL_DEBUG_LAYER=1 results/metal_metric_api_test xgboost/src/common/metal_histogram.metal --report-prefix results/verify2-metric-domain",
+    "log": "results/verify2-metric-domain.log"
+  },
+  "counts": {
+    "records": 375,
+    "input_words": 20806110,
+    "row_math_fields": 16128903,
+    "sum_fields": 724,
+    "status_fields": 375,
+    "reduction_diagnostic_words": 1276,
+    "analytic_reference_words": 60
+  },
+  "family_cases": {
+    "math": 1,
+    "ordinary": 287,
+    "quantile_expectile": 32,
+    "survival": 24,
+    "ordered_nan_survival_guards": 6,
+    "invalid_multiclass_labels": 12,
+    "empty": 13
+  },
+  "original_checks": {
+    "counted_cases": 349,
+    "row_fields": 15628618,
+    "zero_ulp_fields": 15628618,
+    "maximum_reduction_bound_ratio": 0.0373374008,
+    "math_inputs": 100057,
+    "math_fields": 500285,
+    "max_math_ulp": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "generator_changed": false,
+    "tolerances_changed": false
+  },
+  "reference_policies": {
+    "ordinary_loss_zero_ulp_kinds": [
+      0,
+      2,
+      3,
+      5,
+      10,
+      12
+    ],
+    "other_ordinary_loss_ulp": 4,
+    "weight_and_quantile_ulp": 0,
+    "math_ulp": [
+      1,
+      1,
+      1,
+      0,
+      6
+    ],
+    "math_zero_sign_exact": [
+      "log1p",
+      "sqrt"
+    ],
+    "reduction": "Each backend independently recomputed Neumaier sum/magnitude from its own FP32 terms; original 32*epsilon64*magnitude bound and nonfinite equality rules; recorded diagnostics checked against recomputation",
+    "survival": "Original analytic2e-14 checks and exact numeric weight sums; ordered-NaN guard absolute floor1 retained",
+    "differences": "All GPU output bit differences retained for review; diagnostic JSON shows at most32examples per case/field, full reports retain all fields"
+  },
+  "source_sha256": {
+    "tests/metal_metric_api.mm": "e9d44de712d11002da0239dc62199fa2d7747050d1db34f85e7b0a09299b1705",
+    "tests/metric_contract_io.h": "57c03ca8a007a045473461ee99377465851170f5ae7b7ace91047f09c53cc88f",
+    "tests/cuda_metric_contracts.cu": "a839c9c0b2774d2da31eaaf0ec8fbbbd4a75dafc4b70c9ad6ed3fa0c2de6c3d9",
+    "tests/cuda_metric_source.h": "5119d52add416988005d21c8fb583bad576a4018ac1c55bb70f3dee7bb42b3aa",
+    "tests/metric_registry_probe.h": "d402abd368d168d7db92911f46765e736a3023cf2aa2adc050764797e31ee1dd",
+    "tests/cuda_metric_reference.h": "9d59165923924700172f558d843c354846a847a134460e373c2f9d103050e982",
+    "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+    "tests/cuda_numerical_contracts.cu": "ba7b3f84d46a27b9ea3725ae4bf7625efd175235592f34a530f7afa162b54ae2",
+    "scripts/compare_metric_contracts.py": "ce77cf011d6b7769e79ec5dd735422affd2ba1515dcb8b18e47959665f5d02e0",
+    "scripts/build_cuda_comparison.py": "c2346c857cf03e6794be6211ae511fef76f8cbf57b2ec0cbe400044d12accea6",
+    "tests/cuda_comparison/CMakeLists.txt": "8fd02f4b2a9580edf3155fdea584ea65b4e4dcf69173059a06f52f265f77f96b",
+    ".github/workflows/cuda-compile.yml": "62d948e02c632d95dab445afd57ea8885c3053a82732c3b0a71561282d3761c2",
+    "tests/test_metric_contract_reports.py": "69b12a0b697cd36465131509c0bf53f0a31d141e756683ccc40cf071eb8f6714",
+    "tests/test_cuda_metric_build.py": "91b46fa2d7b5dd48b8c7f88e1f47e879351b2fef6bb53b3dfc5e98d0cc2dd3b8",
+    "xgboost/src/metric/elementwise_metric.cu": "d9b226d51a8fcf8788ae5fa7da9fb1accbfa93e330ae0f22bfa018fa9cade2cb",
+    "xgboost/src/metric/multiclass_metric.cu": "f5c639c31be96c13e2b5629fdab4e89ce76c5139f85ec1f3bf00a69210ebdec2",
+    "xgboost/src/metric/survival_metric.cu": "4da2848a2ea84bc8dc5ca662f4721edbb2e89cbd5647e6878702b703db99450a"
+  },
+  "log_sha256": {
+    "results/verify2-metric-domain.log": "3f52e9864c86d9be81db08118da13c8bb481168d90bd642af4f3e822abe48070",
+    "results/verify2-metric-comparator-final.log": "be1a54dd730a3ac365a6cda54845e9476f8f420a04fce0cdcbb94e3c4283acfa",
+    "results/verify2-metric-report-tests-xz.log": "7c74d9e530f099271eedb44f0834679009c3f713b3fafa8e8f377a106b7f4417",
+    "results/verify2-metric-build-tests-final.log": "0d01c33cc7348dd2c33f14ab55819e61263f75f08ca7c4a7f899a09a19ea7e5a",
+    "results/verify2-metric-source-formal.log": "a6a7013599bad396df9b5fbfac03967aed7885cb2b1ef29b451a516099a230e7",
+    "results/verify2-metric-io-final.log": "a3f895697acec87c25a335720c7f282c71e3b13e85684a854b054237bb00ea01"
+  },
+  "artifacts": {
+    "inputs": {
+      "path": "validation/metric-contract-inputs-m3.bin.xz",
+      "compression": "xz",
+      "bytes": 9265112,
+      "sha256": "6795d06220552b0774c7f1a7f04bc99f93af5bd556c179ea35baad9d7ebc1af6",
+      "raw_bytes": 83246964,
+      "raw_sha256": "590c44dede2bfdb79821437cd77aecbd817497db763344ab95dc6689ea960d59"
+    },
+    "metal": {
+      "path": "validation/metric-contract-metal-m3.bin.xz",
+      "compression": "xz",
+      "bytes": 36225412,
+      "sha256": "164e942d5b984f35e556074f81fb0b45acf4039c9ba7366391d03d7f2c5e74a0",
+      "raw_bytes": 212296168,
+      "raw_sha256": "ec5e53261533025e6b85c24af10dcc7c0e6684ca814f6ef56dc4122d3f1ee4bf"
+    }
+  },
+  "integrity_tests": {
+    "status": "passed",
+    "count": 18,
+    "log": "results/verify2-metric-report-tests-xz.log",
+    "command": "PYTHONPATH=xgboost/python-package DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib .venv/bin/python -m pytest -q tests/test_metric_contract_reports.py",
+    "gpu_execution": false
+  },
+  "build_driver_tests": {
+    "status": "passed",
+    "count": 6,
+    "log": "results/verify2-metric-build-tests-final.log",
+    "command": "PYTHONPATH=xgboost/python-package DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib .venv/bin/python -m pytest -q tests/test_cuda_metric_build.py",
+    "scope": "Mocked six-binary lifecycle,31sourcehashes, unchanged registry signatures, metric-definition visibility, empty/mismatched signatures, source drift and retained failing command output; not compilation/GPU evidence"
+  },
+  "host_source_probe": {
+    "status": "passed",
+    "gpu_execution": false,
+    "source": "results/verify2-metric-source-formal.cc",
+    "source_sha256": "d83c460cc38464a64c0250380474dc319959d7263e24054fa68183918577ac07",
+    "driver": "results/run-verify2-metric-source-formal.sh",
+    "driver_sha256": "84b4a4e16091e375a2ed7569e50074c26f6fcd04a3ef4da09e723f1b4b27d8ab",
+    "baseline_signature_sha256": "2a1d1ed1a0794422702425f95cf306faad4abe2c6f938cbff2a7817f81e3e41a",
+    "probe_signature_sha256": "2a1d1ed1a0794422702425f95cf306faad4abe2c6f938cbff2a7817f81e3e41a",
+    "scope": "Actual source helper access and three CPU reducer checks; identical registered names/factory types with and without formal source header on AppleClang. Not NVCC or NVIDIA execution; CUDA host/symbol gates remain pending"
+  },
+  "codec_check": {
+    "status": "passed",
+    "source": "results/verify2-metric-io.cc",
+    "source_sha256": "6b8e48f2aa078776a317e390097cfeb012a6d9de19f49de23b03eef03e7f73f9",
+    "input_roundtrip_byte_exact": true,
+    "observations_rejected_before_output_creation": true,
+    "log": "results/verify2-metric-io-final.log"
+  },
+  "cuda_compile": {
+    "status": "not_run",
+    "gpu_execution": false,
+    "previous_run": 42083981584,
+    "previous_run_includes_metric": false
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "results/cuda-comparison-build/cmake/cuda_metric_contracts results/metric-inputs.bin results/metric-cuda.bin",
+    "planned_executed_cases": 367,
+    "planned_outside_domain_cases": 8,
+    "planned_defined_label_rejections": 4,
+    "planned_output_fields_excluding_status": 16129627
+  },
+  "limits": [
+    "No NVIDIA runtime execution has occurred. CUDA compilation and the CUDA-linked host registry/dynamic-symbol gates for this extension remain pending.",
+    "NUM-OP-36 defines nonfinite/out-of-int32 label casts as outside the CUDA domain. All eight Metal guard observations are retained; CUDA marks them not executed and writes no fabricated sums. Four finite invalid-label cases exercise source rejection.",
+    "Zero-ULP original checks include numeric signed-zero equality and matching NaN classifications; they do not imply every raw bit agrees. GPU-to-GPU differences remain review items.",
+    "CUDA compiles actual elementwise/multiclass/survival policy and reducer bodies from unchanged source. Private registration entries and hidden definitions must pass host isolation gates before build success.",
+    "Pseudo-Huber/quantile/expectile terms are separately evaluated source-expression probes using actual source reducers, not captures of private temporaries in the public metric methods.",
+    "Empty cases cover source reducer boundaries without evaluating loss or constructor parameters; no empty-case constructor-validation equivalence claim is made.",
+    "CUDA gets input-only records. Each GPU reduction is checked against its own observed terms and unchanged original bounds, not against the other GPU arithmetic.",
+    "Comparison returns1for malformed reports/reference failures, otherwise2for numerical/domain review, including exclusions even when all common-domain outputs agree.",
+    "The report format and hashes preserve data/provenance but do not authenticate GPU hardware. Retain matching runtime metadata/logs and build records.",
+    "Lossless XZ archives replace only newly created, uncommitted gzip copies. Raw hashes and complete inputs/results are unchanged."
+  ]
+}

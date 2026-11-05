@@ -14,9 +14,12 @@
 #include "../xgboost/src/common/metal_ops.h"
 #include "../xgboost/src/common/metal_survival.h"
 #include "cuda_metric_reference.h"
+#include "metric_contract_io.h"
 using namespace xgboost;
 namespace metal = common::metal;
 using namespace cuda_metric;
+namespace mc = metric_contracts;
+std::unique_ptr<mc::Exporter> report;
 std::size_t cases = 0, fields = 0, exact = 0;
 double max_reduction_ratio = 0;
 void Check(bool ok, char const* message) {
@@ -45,6 +48,12 @@ struct QParams {
   std::uint32_t targets, levels, weighted, expectile;
 };
 using Pair = std::array<float, 2>;
+std::vector<float> Flatten(std::vector<Pair> const& pairs) {
+  std::vector<float> out;
+  out.reserve(pairs.size()*2);
+  for (auto pair : pairs) { out.push_back(pair[0]); out.push_back(pair[1]); }
+  return out;
+}
 struct GPU {
   id<MTLDevice> device;
   id<MTLCommandQueue> queue;
@@ -135,8 +144,9 @@ kernel void test_metric_math(device const uint* input [[buffer(0)]], device uint
     return {begin, begin + shape.n};
   }
 };
-void Reduction(std::array<double, 2> actual, std::vector<Pair> const& terms,
-               metal::Statistics const& before) {
+std::array<mc::Reduction,2> Reduction(std::array<double, 2> actual, std::vector<Pair> const& terms,
+                                    metal::Statistics const& before) {
+  std::array<mc::Reduction,2> diagnostics{};
   for (int channel = 0; channel < 2; ++channel) {
     Sum expected;
     for (auto const& pair : terms) expected.Add(pair[channel]);
@@ -152,6 +162,7 @@ void Reduction(std::array<double, 2> actual, std::vector<Pair> const& terms,
       std::fprintf(stderr, "Reduction actual %.17g expected %.17g bound %.17g\n", actual[channel],
                    value, bound);
     Check(ok, "Binary64 metric reduction differs");
+    diagnostics[channel] = {value,expected.magnitude};
   }
   auto after = metal::GetStatistics();
   std::uint64_t passes = 0;
@@ -162,6 +173,7 @@ void Reduction(std::array<double, 2> actual, std::vector<Pair> const& terms,
   Check(after.metric_final_readback_bytes == before.metric_final_readback_bytes + 16,
         "Metric readback was not the final binary64 pair");
   ++cases;
+  return diagnostics;
 }
 void RowField(float actual, float expected, bool algebra) {
   auto ulps = Ulps(actual, expected);
@@ -215,6 +227,8 @@ void Ordinary(GPU& gpu, unsigned kind, unsigned rows, unsigned mode) {
   float parameter = kind == 9 ? 1.3712345f : kind == 10 ? 1.3f : .371234567f;
   Params shape{y.size(), targets, kind, !w.empty(), 0, parameter, 0};
   auto terms = gpu.Terms(p, y, w, shape);
+  std::vector<float> references;
+  if (report) references.reserve(terms.size()*2);
   for (std::size_t i = 0; i < y.size(); ++i) {
     auto row = multi ? i : i / targets;
     float weight = w.empty() ? 1 : w[row], loss;
@@ -235,9 +249,11 @@ void Ordinary(GPU& gpu, unsigned kind, unsigned rows, unsigned mode) {
     } else
       loss = Loss(kind, y[i], p[i], parameter);
     try {
-      RowField(terms[i][0], Mul(loss, weight),
+      auto expected = Mul(loss, weight);
+      RowField(terms[i][0], expected,
                kind == 0 || kind == 2 || kind == 3 || kind == 5 || kind == 10 || kind == 12);
       RowField(terms[i][1], weight, true);
+      if (report) { references.push_back(expected); references.push_back(weight); }
     } catch (...) {
       std::fprintf(stderr, "kind %u rows %u mode %u index %zu y %.9g p %.9g w %.9g\n", kind, rows,
                    mode, i, y[i], p[i], weight);
@@ -246,9 +262,13 @@ void Ordinary(GPU& gpu, unsigned kind, unsigned rows, unsigned mode) {
   }
   auto before = metal::GetStatistics();
   auto actual = metal::MetricSums(names[kind], p, y, w, targets, parameter);
-  Reduction(actual, terms, before);
+  auto diagnostics = Reduction(actual, terms, before);
   Check(metal::GetStatistics().metric_label_dispatches == before.metric_label_dispatches + multi,
         "Missing GPU multiclass validation");
+  if (report) {
+    mc::Observation observed{0,Flatten(terms),references,actual,{},diagnostics};
+    report->Add(1,kind,rows,targets,1,mode,0,parameter,p,y,{},w,{},observed);
+  }
 }
 void Quantiles(GPU& gpu, bool expectile, unsigned rows, unsigned mode) {
   unsigned targets = 3, levels = 7;
@@ -287,15 +307,22 @@ void Quantiles(GPU& gpu, bool expectile, unsigned rows, unsigned mode) {
   gpu.Finish(command, e, p.size());
   auto begin = static_cast<Pair const*>(out.contents);
   std::vector<Pair> terms(begin, begin + p.size());
+  std::vector<float> references;
+  if (report) references.reserve(terms.size()*2);
   for (std::size_t i = 0; i < p.size(); ++i) {
     auto row = i / (targets * levels), level = (i / targets) % levels;
-    RowField(terms[i][0],
-             Quantile(expectile, p[i], y[row * targets + i % targets], a[level], w[row]), true);
+    auto expected = Quantile(expectile, p[i], y[row * targets + i % targets], a[level], w[row]);
+    RowField(terms[i][0], expected, true);
     RowField(terms[i][1], w[row], true);
+    if (report) { references.push_back(expected); references.push_back(w[row]); }
   }
   auto before = metal::GetStatistics();
   auto actual = metal::QuantileMetricSums(expectile, p, y, w, a, targets);
-  Reduction(actual, terms, before);
+  auto diagnostics = Reduction(actual, terms, before);
+  if (report) {
+    mc::Observation observed{0,Flatten(terms),references,actual,{},diagnostics};
+    report->Add(2,expectile,rows,targets,levels,mode,0,0.f,p,y,{},w,a,observed);
+  }
 }
 void Math(GPU& gpu) {
   std::vector<float> values{0,     -0.f, 0x1p-149f, -0x1p-149f,  0x1p-126f, 1,         2,
@@ -321,6 +348,8 @@ void Math(GPU& gpu) {
   auto output = static_cast<float const*>(out.contents);
   std::uint64_t maximum[5]{}, limits[5]{1, 1, 1, 0, 6};
   std::size_t failures = 0;
+  std::vector<float> references;
+  if (report) references.reserve(values.size()*5);
   for (std::size_t i = 0; i < values.size(); ++i) {
     float x = values[i],
           expected[]{Log(x), float(std::log1p(double(x))), Exp(x), Sqrt(x), Gamma(x)};
@@ -332,6 +361,7 @@ void Math(GPU& gpu) {
                      output[i * 5 + k], expected[k], (unsigned long long)ulps);
       if (x == 0 && (k == 1 || k == 3))
         Check(Cast<unsigned>(output[i * 5 + k]) == Cast<unsigned>(expected[k]), "Lost signed zero");
+      if (report) references.push_back(expected[k]);
     }
   }
   std::printf("Metric math: %zu inputs / %zu fields; max log/log1p/exp/sqrt/lgamma ULP "
@@ -340,6 +370,11 @@ void Math(GPU& gpu) {
               (unsigned long long)maximum[1], (unsigned long long)maximum[2],
               (unsigned long long)maximum[3], (unsigned long long)maximum[4]);
   Check(failures == 0, "Metric transcendental budget failed");
+  if (report) {
+    mc::Observation observed;
+    observed.actual.assign(output,output+values.size()*5); observed.reference=references;
+    report->Add(0,0,values.size(),1,1,0,0,0.f,values,{},{},{},{},observed);
+  }
 }
 void Survival() {
   constexpr std::size_t n = 65537;
@@ -363,6 +398,12 @@ void Survival() {
                   after.metric_reduction_passes == before.metric_reduction_passes + 2,
               "Survival final reduction missing");
         ++cases;
+        if (report) {
+          unsigned mode=weight==0.f ? 0 : weight==1e-40f ? 1 : weight==1.f ? 2 : 3;
+          mc::Observation observed;
+          observed.sums=actual; observed.analytic={expected,double(weight)*n};
+          report->Add(3,distribution,n,1,1,mode,accuracy,1.f,p,y,y,w,{},observed);
+        }
       }
     }
 }
@@ -384,9 +425,15 @@ void Guards() {
                 before.metric_final_readback_bytes + 16,
             "AFT NaN-bound metric did not use GPU sums");
       ++cases;
+      if (report) {
+        mc::Observation observed;
+        observed.sums=sum; observed.analytic={expected,5*double(weight)};
+        report->Add(4,distribution,p.size(),1,1,unsigned(weight),0,1.f,p,lower,upper,w,{},observed);
+      }
     }
   }
-  for (auto name : {"mlogloss", "merror"})
+  for (auto name : {"mlogloss", "merror"}) {
+    unsigned mode=0;
     for (float label : {-1.f, 3.f, NAN, INFINITY, -INFINITY, 2147483648.f}) {
       std::vector<float> p{.2, .3, .5}, y{label};
       bool bad = false;
@@ -399,18 +446,29 @@ void Guards() {
       Check(bad && metal::GetStatistics().metric_label_dispatches ==
                        before.metric_label_dispatches + 1,
             "Invalid label did not fail on GPU");
+      if (report) {
+        mc::Observation observed; observed.status=1;
+        report->Add(5,std::string(name)=="mlogloss" ? 11 : 12,1,3,1,mode,0,.5f,p,y,{},{},{},observed);
+      }
+      ++mode;
     }
+  }
   auto before = metal::GetStatistics();
-  for (auto name : names)
-    Check(metal::MetricSums(name, {}, {}, {}, 1) == std::array<double, 2>{0, 0},
-          "Empty metric differs");
+  for (unsigned kind=0; kind<13; ++kind) {
+    auto sum=metal::MetricSums(names[kind], {}, {}, {}, 1);
+    Check(sum == std::array<double, 2>{0, 0}, "Empty metric differs");
+    if (report) {
+      mc::Observation observed; observed.sums=sum;
+      report->Add(6,kind,0,1,1,0,0,.5f,{},{},{},{},{},observed);
+    }
+  }
   Check(metal::GetStatistics().metric_dispatches == before.metric_dispatches,
         "Empty metric dispatched");
 }
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
-      Check(argc == 2, "Pass production shader");
+      report = mc::ReportOption(argc,argv);
       GPU gpu(argv[1]);
       Math(gpu);
       for (unsigned kind = 0; kind < 13; ++kind) {
@@ -428,6 +486,7 @@ int main(int argc, char** argv) {
       }
       Survival();
       Guards();
+      if (report) report->Finish();
       std::printf("PASS CUDA metric formulas/reductions: %zu cases / %zu fields (%zu exact); "
                   "maximum reduction-bound ratio %.9g\n",
                   cases, fields, exact, max_reduction_ratio);

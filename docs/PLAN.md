@@ -160,14 +160,23 @@ checked independently against recorded CPU references and the original
 operation-specific bounds; identical wrong GPU outputs cannot pass. See the
 [statistics record](../validation/stats-contract-m3-run.json). CUDA compile/link
 passed in [run 42079045498](https://github.com/mmaaz-git/xgb-mps/actions/runs/42079045498);
-runtime validation and the separate metric and training-reduction corpora remain.
+runtime validation and the separate training-reduction corpora remain.
 The linalg extension now exports the complete 258-case corpus and two empty
 operations. Both Metal modes, all exported reference checks and 16 report-integrity
 tests pass. CUDA replays actual source consumers, explicitly gathers histogram
 labels into its supported contiguous layout, and records three Metal-only invalid
 input cases as outside-domain, without executing them or fabricating results.
-Its compiler/runtime gates remain; see the
+CUDA compile/link passed in [run 42083981584](https://github.com/mmaaz-git/xgb-mps/actions/runs/42083981584);
+runtime validation remains. See the
 [linalg record](../validation/linalg-contract-m3-run.json).
+The metric replay retains all 349 counted cases plus the math corpus, twelve
+label guards and thirteen empty calls: 375 records. Both Metal modes and the
+independent row/reduction checks pass. Each backend's reduction is checked using
+its own observed terms, with the original Neumaier reference and error bound.
+Eight undefined casts remain Metal-only guards under NUM-OP-36. The CUDA source
+policies/reducers are compiled without production registration or symbol changes;
+their compiler and host isolation gates are pending. See the
+[metric record](../validation/metric-contract-m3-run.json).
 Runners now address eleven contracts; six still lack dedicated runners, broader
 caller coverage remains, and none has actual NVIDIA execution evidence.
 
@@ -179,7 +188,7 @@ its contract until actual NVIDIA results have been reviewed.
 | Order | Remaining contract work | Required comparison |
 | --- | --- | --- |
 | 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
-| 2 | P5-N07 and training-reduction-association | Full statistics and linalg replays added; complete their compiler/runtime gates. Add the separate metric and training-reduction corpora under their declared term precision and association bounds. |
+| 2 | P5-N07 and training-reduction-association | Full statistics, linalg and metric replays added; complete outstanding compiler/runtime gates. Add training-reduction corpora under their declared term precision and association bounds. |
 | 3 | P5-N09/10/11: PR, ROC and ranking metrics | Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
 | Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |

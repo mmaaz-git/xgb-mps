@@ -10,6 +10,8 @@ math corpus. A fifth adds **P5-N04/05** observations from the full existing
 ranking-rounding, ranking-gradient, repeated unbiased-objective and primitive
 rounding boundary corpora. The numerical executable also has a **P5-N07** mode
 for the complete statistics API corpus and a separate linear-algebra mode.
+A sixth executable covers the complete metric-term/reduction corpus, including
+its previously uncounted math, label and empty-input checks.
 The other six numerical contracts and
 broader caller/integration comparisons remain work;
 these harnesses are not a full parity certificate.
@@ -89,7 +91,7 @@ results/cuda-comparison-build/cmake/cuda_numerical_contracts \
   results/cuda-observations.jsonl
 ```
 
-The build driver first compiles all five harness objects using the configured compiler,
+The build driver first compiles all six harness objects using the configured compiler,
 CCCL, architectures and arithmetic flags. It then checks/rebuilds production
 dependencies and links the executables. This exposes harness compiler errors
 before the expensive library build. It writes `build.json`, including terminal
@@ -747,8 +749,9 @@ are identical. Counts include every differing field; diagnostic JSON shows up to
 No overall full-execution or full-parity success is inferred from exclusions.
 
 Both Metal modes, all exported Metal reference checks and 16 synthetic integrity
-tests pass. C++ input round-trip and host view/API type checks pass. CUDA compiler
-validation and actual NVIDIA execution remain pending. No production code or
+tests pass. C++ input round-trip and host view/API type checks pass. CUDA compile/link
+passed in [run 42083981584](https://github.com/mmaaz-git/xgb-mps/actions/runs/42083981584);
+actual NVIDIA execution remains pending. No production code or
 original test tolerances changed.
 
 ```sh
@@ -763,3 +766,85 @@ all backing inputs and actual outputs, backend-specific execution statuses,
 the completion marker and exact EOF. Metal-only reference diagnostics serialize
 binary64 sums/magnitudes and the original FP32 cast separately; the published
 observations were produced on the M3, where `long double` is binary64.
+
+## Metric terms, reductions and guards
+
+`cuda_metric_contracts` consumes the complete existing `metal_metric_api` corpus.
+The [record](../validation/metric-contract-m3-run.json) retains **375 records**:
+287 ordinary metric cases, 32 quantile/expectile cases, 30 survival/ordered-NaN
+cases, one 100,057-input math corpus, twelve invalid-label checks and thirteen
+empty calls. Original generators, ordering and tolerances are unchanged. The
+native test still reports 349 counted cases and 15,628,618 row checks; the export
+also retains 500,285 math results, 724 sum fields and every status.
+
+```sh
+python3 scripts/compare_metric_contracts.py unpack \
+  validation/metric-contract-inputs-m3.bin.xz --output results/metric-inputs.bin
+results/cuda-comparison-build/cmake/cuda_metric_contracts \
+  results/metric-inputs.bin results/metric-cuda.bin
+python3 scripts/compare_metric_contracts.py compare \
+  validation/metric-contract-metal-m3.bin.xz results/metric-cuda.bin \
+  --output results/metric-comparison.json
+```
+
+The CUDA executable compiles the unchanged elementwise, multiclass and survival
+source policies/reducers through `tests/cuda_metric_source.h`. Registration
+expressions populate private, unregistered entries; hidden symbol visibility
+prevents these definitions from replacing library symbols. The build driver
+compares registered names/factory types with the ordinary numerical executable
+and checks the metric executable's defined dynamic symbols. These are host-only
+checks, separate from GPU execution. A host prototype passes on the M3; the
+corresponding CUDA compiler and host checks remain pending.
+
+Ordinary row policies and multiclass/survival reducers use the actual source
+functions. Pseudo-Huber, quantile and expectile terms separately evaluate the
+source expressions from their metric methods, then use the actual source
+reducer. They are not captures of those methods' private temporaries. Math
+observations invoke the CUDA float functions and `common::LogGamma`. Empty
+cases exercise source reducer boundaries without evaluating a loss or its
+constructor parameters; this does not claim constructor-parameter equivalence.
+
+Four finite invalid-label cases exercise CUDA's actual rejection path. Under
+the frozen audit's **NUM-OP-36**, the other eight use nonfinite or out-of-int32
+casts outside CUDA's defined contract. Their Metal checks and exact inputs are
+retained; CUDA marks them **not executed**, without fabricated sums. The planned
+CUDA execution therefore covers 367 cases, with eight explicit exclusions.
+
+Both GPUs are independently checked against the original CPU row/math references.
+Ordinary loss budgets remain zero or four ULP as specified by the native test;
+weights and quantile/expectile terms retain zero ULP. Math retains its
+`1/1/1/0/6` log/log1p/exp/sqrt/lgamma budgets and explicit signed-zero checks.
+Zero ULP uses the original numerical equality/NaN semantics, not universal bit
+identity. All GPU output bit differences remain review items.
+
+For each reduction, the comparator independently recomputes the original
+Neumaier sum and magnitude from **that backend's observed FP32 terms**. It also
+checks the recorded diagnostics against this recomputation. CUDA's reduction is
+not judged against Metal's terms when their primitive math differs. The original
+`32 * epsilon64 * sum_abs` reduction bound remains unchanged. Survival retains
+its analytic `2e-14` checks and exact weight sums; empty outputs remain numerically
+zero. References and analytic expectations occur only in Metal observations,
+never in the CUDA inputs.
+
+Both native modes and all exported Metal checks pass, alongside 18 report tests
+and six mocked build-driver tests. The updated CUDA-domain status policy
+reproduces both earlier Metal/input exports byte for byte. C++ input round trips
+are exact, and observation files are rejected as CUDA inputs. These checks are
+not NVIDIA execution evidence. Neither the CUDA compiler gate nor actual NVIDIA
+runtime comparison has completed for this metric extension.
+
+```sh
+bash scripts/test.sh --native metal_metric_api
+MTL_DEBUG_LAYER=1 results/metal_metric_api_test \
+  xgboost/src/common/metal_histogram.metal --report-prefix results/new-metric
+python3 scripts/compare_metric_contracts.py validate-metal results/new-metric.metal.bin
+```
+
+Use fresh output paths and retain `.bin.json`, runtime logs and `build.json`.
+The little-endian `XGBMET1\0` format requires all fixed identities, complete
+arrays, backend/domain statuses, a completion marker and exact EOF. Published
+XZ archives are lossless; raw-byte hashes are retained. The reader also accepts
+raw and gzip files. Comparison exits 1 for malformed reports or failed checks,
+and 2 for numerical/domain review, including exclusions when common-domain
+results agree. Every differing output field is counted; JSON gives up to 32
+examples per case/field while the binary reports retain every value.

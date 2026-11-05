@@ -9,6 +9,7 @@ import datetime
 import hashlib
 import json
 from pathlib import Path
+import re
 import shlex
 import subprocess
 
@@ -25,6 +26,11 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "tests/ranking_primitive_io.h",
           "tests/stats_contract_io.h",
           "tests/linalg_contract_io.h",
+          "tests/metric_contract_io.h", "tests/cuda_metric_source.h",
+          "tests/cuda_metric_contracts.cu", "tests/metric_registry_probe.h",
+          "tests/cuda_metric_reference.h",
+          "xgboost/src/metric/elementwise_metric.cu", "xgboost/src/metric/multiclass_metric.cu",
+          "xgboost/src/metric/survival_metric.cu",
           "scripts/build_cuda_comparison.py")
 
 
@@ -134,7 +140,38 @@ def main():
         binary = output / "cmake/cuda_numerical_contracts"
         binaries = {name: {"path": str(output / f"cmake/cuda_{name}_contracts"),
                            "sha256": sha(output / f"cmake/cuda_{name}_contracts")}
-                    for name in ("numerical", "aft", "rng", "math", "ranking")}
+                    for name in ("numerical", "aft", "rng", "math", "ranking", "metric")}
+        # Host-only checks, runnable on compiler CI without NVIDIA hardware.
+        # Verify both the real registry and dynamic symbol boundary: the metric
+        # probe must neither register alternate factories nor interpose bodies.
+        def capture(command, path):
+            record["commands"].append(command)
+            save()
+            print("RUN host isolation check", shlex.join(command), flush=True)
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+            path.write_text(result.stdout)
+            if result.stderr:
+                print(result.stderr, end="", flush=True)
+            if result.returncode:
+                raise RuntimeError(f"Host isolation command failed with exit {result.returncode}: {shlex.join(command)}")
+            return result.stdout
+        baseline_path, probe_path = output/"metric-registry-baseline.txt", output/"metric-registry-probe.txt"
+        baseline = capture([binaries["numerical"]["path"], "--metric-registry"], baseline_path)
+        probe = capture([binaries["metric"]["path"], "--metric-registry"], probe_path)
+        if baseline != probe or not any(line.startswith("rmse ") for line in baseline.splitlines()):
+            raise ValueError("Metric probe changed/omitted registered names or factory types")
+        symbols_path = output/"metric-defined-dynamic-symbols.txt"
+        symbols = capture(["nm", "-D", "--defined-only", "-C", binaries["metric"]["path"]], symbols_path)
+        exported_names = [re.sub(r"^\s*(?:[0-9a-fA-F]+\s+)?[A-Za-z?]\s+", "", line)
+                          for line in symbols.splitlines()]
+        metric_definition = r"^(?:(?:non-virtual|virtual) thunk to |(?:typeinfo(?: name)?|vtable|VTT) for |guard variable for )?xgboost::metric::"
+        if any(re.match(metric_definition, name) for name in exported_names):
+            raise ValueError("Metric source probe exports production metric definitions")
+        record["metric_source_isolation"] = {
+            "status": "passed", "gpu_execution": False,
+            "registry_entries": len(baseline.splitlines()),
+            "files": {str(path): sha(path) for path in (baseline_path, probe_path, symbols_path)}}
+        print("PASS host metric registry/factory identity and hidden source definitions; no GPU execution", flush=True)
         if (git("rev-parse", "HEAD:xgboost").decode().strip() != tree
                 or hashlib.sha256(git("diff", "HEAD", "--", "xgboost")).hexdigest() != diff
                 or {relative: sha(ROOT / relative) for relative in INPUTS} != inputs):
@@ -161,6 +198,8 @@ def main():
                 "results/stats-inputs.bin", str(output / "cuda-stats-observations.bin")]), flush=True)
         print("Linalg runtime command:", shlex.join([binaries["numerical"]["path"], "--linalg",
                 "results/linalg-inputs.bin", str(output / "cuda-linalg-observations.bin")]), flush=True)
+        print("Metric runtime command:", shlex.join([binaries["metric"]["path"], "results/metric-inputs.bin",
+                str(output / "cuda-metric-observations.bin")]), flush=True)
     except Exception as error:
         record.update(status="failed", error=str(error))
         raise
