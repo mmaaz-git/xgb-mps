@@ -13,6 +13,11 @@
 #include "../xgboost/src/common/hist_util.cuh"
 #include "../xgboost/src/common/quantile.cuh"
 #include "../xgboost/src/common/stats.cuh"
+#include "../xgboost/src/common/numeric.h"
+#include "../xgboost/src/common/optional_weight.h"
+#include "../xgboost/src/common/stats.h"
+#include "stats_contract_io.h"
+#include "xgboost/json.h"
 #include "numerical_contract_fixtures.h"
 #include "numerical_contract_report.h"
 
@@ -173,8 +178,87 @@ void Summary(Context const* ctx, fixture::Report& report, int exponent, bool rep
                {"ptr", {observed_ptr.begin(), observed_ptr.end()}}});
 }
 
+void Statistics(char const* input_path, char const* output_path) {
+  namespace sc = stats_contracts;
+  std::string metadata_path = std::string(output_path)+".json";
+  Check(!std::filesystem::exists(metadata_path), "Statistics metadata already exists");
+  int devices = 0; Cuda(cudaGetDeviceCount(&devices));
+  Check(devices > 0, "Actual NVIDIA GPU required; no skipped pass or CPU fallback");
+  Cuda(cudaSetDevice(0));
+  auto ctx = Context{}.MakeCUDA(0); ctx.Init({{"device","cuda:0"},{"nthread","2"}});
+  sc::InputReader input(input_path); sc::Writer report(output_path, sc::kCuda);
+  std::size_t fields = 0;
+  for (unsigned index = 0; index < sc::kCases; ++index) {
+    auto in = input.Next(); auto s = in.spec; sc::Observation observed;
+    if (s.kind == 0) {
+      xgboost::linalg::Matrix<float> values({s.rows, s.columns}, ctx.Device());
+      values.Data()->HostVector() = in.values;
+      HostDeviceVector<float> weights(in.weights, ctx.Device());
+      xgboost::linalg::Vector<float> actual;
+      auto capture = [&] {
+        if (s.rows) Check(actual.Data()->Device().IsCUDA() && !actual.Data()->HostCanRead(),
+                          "Statistics output is not resident on CUDA before observation");
+        for (auto value : actual.HostView().Values())
+          observed.actual.push_back(sc::Bits<std::uint32_t>(value));
+      };
+      common::Median(&ctx, values, weights, &actual); capture();
+      common::SampleMean(&ctx, values, &actual); capture();
+      common::Mean(&ctx, values.View(ctx.Device()).Slice(xgboost::linalg::All(), 0), &actual); capture();
+      unsigned status = 2;  // Weighted mean not called in mode zero.
+      if (s.mode) {
+        status = 0;
+        if (!s.rows || s.mode == 2) {
+          try { common::WeightedSampleMean(&ctx, values, weights, &actual); }
+          catch (std::exception const& error) {
+            Check(std::string(error.what()).find("weights must contain at least one non-zero value") != std::string::npos,
+                  "Unexpected CUDA weighted-mean exception");
+            status = 1;
+          }
+        } else {
+          common::WeightedSampleMean(&ctx, values, weights, &actual); capture();
+        }
+      }
+      observed.actual.push_back(status);
+    } else if (s.kind == 3) {
+      double value = common::SumOptionalWeights(&ctx, common::OptionalWeights{sc::Bits<float>(s.scalar)}, s.rows);
+      observed.actual.push_back(sc::Bits<std::uint64_t>(value));
+    } else {
+      HostDeviceVector<float> values(in.values, ctx.Device());
+      double generic = common::Reduce(&ctx, values);
+      auto weights = common::MakeOptionalWeights(ctx.Device(), values);
+      double optional = common::SumOptionalWeights(&ctx, weights, s.rows);
+      if (s.rows) Check(values.Device().IsCUDA() && values.DeviceCanRead(), "Reduction input is not CUDA-resident");
+      observed.actual = {sc::Bits<std::uint64_t>(generic), sc::Bits<std::uint64_t>(optional)};
+    }
+    Cuda(cudaDeviceSynchronize()); report.Add(in, observed); fields += observed.actual.size();
+    if ((index+1)%14 == 0 || index+1 == sc::kCases) {
+      std::printf("CUDA statistics %u/%u: family=%u rows=%u observed_fields=%zu\n", index+1, sc::kCases, s.kind, s.rows, fields);
+      std::fflush(stdout);
+    }
+  }
+  input.Finish(); report.Finish();
+  cudaDeviceProp gpu{}; Cuda(cudaGetDeviceProperties(&gpu, 0));
+  int driver = 0, runtime = 0; Cuda(cudaDriverGetVersion(&driver)); Cuda(cudaRuntimeGetVersion(&runtime));
+  using namespace xgboost;
+  Json meta{Object{}};
+  meta["status"] = String("completed-observations; comparison remains");
+  meta["suite"] = String("stats-v1"); meta["backend"] = String("cuda"); meta["device"] = String(gpu.name);
+  meta["compute_capability"] = String(std::to_string(gpu.major)+"."+std::to_string(gpu.minor));
+  meta["nvcc"] = String(std::to_string(__CUDACC_VER_MAJOR__)+"."+
+      std::to_string(__CUDACC_VER_MINOR__)+"."+std::to_string(__CUDACC_VER_BUILD__));
+  meta["driver"] = Integer(driver); meta["runtime"] = Integer(runtime);
+  meta["thrust_version"] = Integer(THRUST_VERSION); meta["cub_version"] = Integer(CUB_VERSION);
+  meta["cases"] = Integer(sc::kCases); meta["output_fields"] = Integer(fields);
+  meta["input_file"] = String(input_path); meta["observation_file"] = String(output_path);
+  meta["scope"] = String("Actual public statistics APIs; scalar optional weights and empty generic sums retain source host boundaries; no reference values supplied");
+  std::string text; Json::Dump(meta, &text);
+  std::ofstream stream{metadata_path}; stream.exceptions(std::ios::badbit | std::ios::failbit); stream << text << '\n';
+  std::printf("PASS CUDA statistics execution: %u cases / %zu fields; comparison remains\n", sc::kCases, fields);
+}
+
 int main(int argc, char** argv) {
   try {
+    if (argc == 4 && std::string(argv[1]) == "--statistics") { Statistics(argv[2], argv[3]); return 0; }
     Check(argc == 2, "Usage: cuda_numerical_contracts_test new-report.jsonl");
     int devices = 0;
     Cuda(cudaGetDeviceCount(&devices));

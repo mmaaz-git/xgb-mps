@@ -226,7 +226,7 @@
     "gpu_execution": false,
     "prior_public_objective_run": 42073244457,
     "prior_run_includes_primitives": false,
-    "scheduling": "Wait for live public-objective compiler run to finish before pushing compile-triggering changes."
+    "scheduling": "Next compiler build will include primitive and statistics extensions; prior public-objective build succeeded."
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -239,5 +239,6 @@
     "This is the existing primitive corpus; public-objective and low-level ranking consumers have separate reports.",
     "Compiler/contraction closure requires emitted-code and runtime evidence, beyond these primitive observations.",
     "Binary framing is not hardware authentication; preserve runtime metadata/logs and the matching build record."
-  ]
+  ],
+  "harness_commit": "c1fd41b7ae4bd3f333444e62d6a08d0d81c0a862"
 }

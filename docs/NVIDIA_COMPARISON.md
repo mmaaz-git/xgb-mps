@@ -8,8 +8,9 @@ inputs as the Metal numerical-contract test. A second native harness covers
 unweighted column sampling. A fourth exports the existing **P5-N03** primitive
 math corpus. A fifth adds **P5-N04/05** observations from the full existing
 ranking-rounding, ranking-gradient, repeated unbiased-objective and primitive
-rounding boundary corpora.
-The other seven numerical contracts and
+rounding boundary corpora. The numerical executable also has a **P5-N07** mode
+for the complete statistics API corpus.
+The other six numerical contracts and
 broader caller/integration comparisons remain work;
 these harnesses are not a full parity certificate.
 
@@ -483,8 +484,9 @@ Both full Metal groups and 17 synthetic report-integrity tests pass. Complete
 C++ input round trips preserve every byte; an independent host engine matches
 all 4,038 recorded parent RNG words. The original ordinary unbiased checks
 assert 118,368 serialized bias fields; the additional 160 batched bias fields
-are observations without a separate native bias oracle. CUDA compilation of
-this extension and actual NVIDIA execution remain pending. Reloads, changed
+are observations without a separate native bias oracle. CUDA compilation/linking
+passed in [run 42073244457](https://github.com/mmaaz-git/xgb-mps/actions/runs/42073244457);
+actual NVIDIA execution remains pending. Reloads, changed
 metadata shapes and other input/state combinations remain broader caller work.
 
 To regenerate the Metal observations with the original checks enabled:
@@ -559,6 +561,74 @@ backend kind and fixed case count, all input fields without native struct
 padding, then eight observed fields per case for Metal/CUDA reports. `RPRE`
 and the case count finish the file at exact EOF. CUDA rejects observation files
 as input. Gzip is packaging only; framing does not authenticate GPU provenance.
+
+## Statistics reductions, means and medians
+
+`cuda_numerical_contracts --statistics` replays the full `metal_stats_api` corpus
+through public `Median`, `SampleMean`, strided `Mean`, `WeightedSampleMean`,
+`Reduce` and `SumOptionalWeights` APIs. The
+[record](../validation/stats-contract-m3-run.json) contains **122 cases / 515
+observed fields**: 56 matrix cases, 63 generic/optional-weight reduction cases,
+two precision witnesses and one scalar-weight case. Every input bit is retained,
+including empty, nonfinite, subnormal, zero-weight and wide-exponent cases.
+
+CUDA generic sums use `plus<float>` despite returning double. Optional-weight
+sums use binary64 accumulation; scalar optional weights use the source's host
+multiply. Means also have distinct term and accumulator precision. The replay
+uses those APIs directly, transfers array weights to CUDA, and retains host
+publication where the source returns a scalar. Nonempty tensor results must be
+CUDA resident before observation. Expected weighted-mean rejections must carry
+the source's zero-total-weight error; unrelated exceptions fail the run.
+
+```sh
+python3 scripts/compare_stats_contracts.py unpack \
+  validation/stats-contract-inputs-m3.bin.gz --output results/stats-inputs.bin
+results/cuda-comparison-build/cmake/cuda_numerical_contracts --statistics \
+  results/stats-inputs.bin results/stats-cuda.bin
+python3 scripts/compare_stats_contracts.py compare \
+  validation/stats-contract-metal-m3.bin.gz results/stats-cuda.bin \
+  --output results/stats-comparison.json
+```
+
+The Metal observations include the original CPU reference values and compensated
+sum/magnitude diagnostics. **CUDA input files contain no references or expected
+outputs.** The comparator checks both GPU observations independently against
+the references, even when the GPUs agree with each other. It preserves the
+original FP32 mean tolerance, exact median checks, reduction classification
+checks and operation-specific forward-error bounds. Generic sums must also be
+widened FP32 values. All GPU-to-GPU bit differences remain review items,
+including differences within bounds and permitted NaN payload/signed-zero
+differences. The two-`FLT_MAX` optional-weight witness additionally checks the
+known exact binary64 sum; the original native test checked that it was finite.
+
+For wide-exponent generic sums, the original bound is
+`steps * eps / (1 - steps * eps) * sum_abs`, where `eps = 2^-23` and each repeated
+`ceil(n / 256)` level contributes eight steps. Optional-weight sums retain
+`32 * 2^-52 * sum_abs`. Other reduction modes retain exact numerical equality
+or matching NaN classification. The generic sum also checks the compensated
+reference in the original modes. These are the corpus's accepted bounds, not
+a universal error guarantee for every CUB architecture or reduction tree.
+
+Both original Metal execution and export mode pass, as do 17 synthetic integrity
+tests. All 515 exported Metal fields satisfy the comparator. C++ input round
+trip and host API type checks pass; CUDA compiler/runtime validation remains
+pending. This statistics replay does not cover the separate linalg, metric or
+training-reduction corpora.
+
+```sh
+bash scripts/test.sh --native metal_stats_api
+MTL_DEBUG_LAYER=1 results/metal_stats_api_test --report-prefix results/new-stats
+```
+
+Use fresh output paths and retain `.bin.json`, runtime logs and `build.json`.
+The `XGBSTA1\0` little-endian format in `tests/stats_contract_io.h` requires all
+122 parameter identities in order, complete input/observation arrays and exact
+EOF after `STAE` plus the case count. FP32 output/status words have zero upper
+32 bits; reductions retain binary64 words. Only Metal reports carry reference
+words and diagnostics. Exit `1` means invalid evidence or failed reference
+checks, `2` means other bit differences require review, and `0` means identical
+recorded GPU outputs that also pass those checks. Framing does not authenticate
+hardware execution.
 
 ## Production sketch, training and prediction comparison
 

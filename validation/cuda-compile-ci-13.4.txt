@@ -189,3 +189,15 @@ VERIFY-2 ranking-rounding consumer (terminal success, no NVIDIA execution):
   Ranking executable SHA256: 4cf1329e8774700b1c72ec3b28bb6519f9f7463463cb766466f4990d8b07aeb4
   CUDA library SHA256: a88efc41480ee88030711251c9b1fb4cd297a9356f02ca201eff10e7203c5bb7
   This run predates the public ranking-objective extension and does not validate it.
+
+VERIFY-2 public ranking objective extension (terminal success, no NVIDIA execution):
+  cee40209d55dcbd74a3538151b87a76c2c340d11: 42073244457, success,
+    completed 2026-11-05T17:40:17Z
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42073244457
+  Early nvCOMP probe, all five harness objects, 197 production steps and five links passed.
+  Artifact cuda-compile-evidence; local root results/cuda-compile-42073244457
+  Log SHA256: 243d50f84ee571629469e84c4ea0133e711c8afac556b45d0ae365db3bd13498
+  Build record SHA256: 009fcc0858a29ba5b158d7d6b5c89dec777daf81938f25553242f8e9bd894849
+  Ranking executable SHA256: c1b8f16076fc996e315c3a416f17e19007c85be5f444cb628b670c12fcb012ca
+  CUDA library SHA256: 44d0e7796ec178f270230831cabbacd0300c69c296e025117f9934cec5ce0d04
+  This run predates primitive rounding and statistics extensions; it does not validate them.

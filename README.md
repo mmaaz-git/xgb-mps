@@ -42,15 +42,16 @@ pointers and categorical state on GPU; subsequent work adds numerical witnesses.
 Next: finish the comparison harnesses and run them on NVIDIA.** Full parity
 remains unproven.
 
-The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) address ten of the
+The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) address eleven of the
 seventeen numerical contracts: quantile/sketch behavior, survival objectives,
-RNG and column sampling, primitive math, and ranking rounding/gradients/bias.
+RNG and column sampling, primitive math, ranking rounding/gradients/bias, and
+statistics reductions and means.
 Ranking replay now includes all **4,038 calls** from the existing gradient and
 repeated unbiased-objective suites, plus the separate primitive rounding boundary
 corpus. Metal observations are published with exact input bits and unchanged
-tolerances; the recent ranking replay extensions still need CUDA compiler
+tolerances; the primitive-rounding and statistics extensions still need CUDA compiler
 validation. Production pipeline comparisons also cover eight
-fixtures and full-size HIGGS quantile construction. Seven contracts still lack
+fixtures and full-size HIGGS quantile construction. Six contracts still lack
 dedicated runners, broader caller coverage remains, and **none of these runners
 has NVIDIA execution evidence yet**. Differences remain visible for review.
 

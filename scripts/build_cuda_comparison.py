@@ -23,6 +23,7 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "tests/ranking_rounding_io.h", "tests/cuda_ranking_contracts.cu",
           "tests/ranking_objective_io.h", "tests/ranking_objective_report.h",
           "tests/ranking_primitive_io.h",
+          "tests/stats_contract_io.h",
           "scripts/build_cuda_comparison.py")
 
 
@@ -155,6 +156,8 @@ def main():
                 "results/ranking-objective-inputs.bin", str(output / "cuda-ranking-objective-observations.bin")]), flush=True)
         print("Ranking primitive command:", shlex.join([binaries["ranking"]["path"], "--primitives",
                 "results/ranking-primitive-inputs.bin", str(output / "cuda-ranking-primitive-observations.bin")]), flush=True)
+        print("Statistics runtime command:", shlex.join([binaries["numerical"]["path"], "--statistics",
+                "results/stats-inputs.bin", str(output / "cuda-stats-observations.bin")]), flush=True)
     except Exception as error:
         record.update(status="failed", error=str(error))
         raise
