@@ -1,6 +1,6 @@
 {
   "task": "PORT-13",
-  "status": "passed-focused-Metal-CPU-acceptance; full regression running; current-revision CUDA compilation pending",
+  "status": "passed-focused-and-full-Metal-CPU-acceptance; current-revision CUDA compilation pending",
   "recorded_utc": "2026-11-05T22:14:53.578878+00:00",
   "production_commit": "41d4dc26cc23bf58357e59f986cbbf7aec0e2864",
   "production_tree": "145fdffbc52f59354bed55b96d184d9e50c23ff4",
@@ -72,17 +72,17 @@
   },
   "limits": [
     "Actual NVIDIA execution has not occurred. Source review is not CUDA runtime equivalence.",
-    "The full regression remains historical at 68c800e until the current job completes.",
     "Device maxBufferLength and uint32 kernel/index limits remain, including the sorting row*target limit.",
     "The shared-histogram 65,535-feature optimization threshold retains its fallback and was not changed.",
     "Extreme-width per-column quantization is memory-intensive: a separate four-row, 65,536-target scale/leaf probe took 7.03 seconds and had 4,890,447,832-byte peak footprint under Metal API validation; this is not a CPU/GPU speed comparison."
   ],
   "full_regression": {
-    "status": "running",
-    "session": "xgb-capacity-full",
-    "log": "results/capacity-full.log",
-    "summary": "results/capacity-full/summary.json",
-    "revision": "41d4dc26cc23bf58357e59f986cbbf7aec0e2864"
+    "status": "passed",
+    "record": "validation/output-capacity-full-m3-run.json",
+    "revision": "41d4dc26cc23bf58357e59f986cbbf7aec0e2864",
+    "native_groups": 106,
+    "python_passes": 3919,
+    "expected_skips": 2
   },
   "cuda_compilation": {
     "status": "pending push after existing run 42117995770 completes",

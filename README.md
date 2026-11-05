@@ -44,14 +44,13 @@ normalization semantics. Two native groups and 99 Python tests pass for this
 quantization and leaf accumulation. Two new native groups pass 8.8 million exact
 checks around that boundary; a complete 65,536-target vector tree also matches CPU
 and analytic predictions. [Capacity evidence](validation/output-capacity-m3-run.json).
-The full regression is running on this revision; the completed full milestone
-below remains at `68c800e`.
+The full native and Python regression also passes at `41d4dc2`.
 **Next: finish comparison harnesses and run them on NVIDIA.** Full parity remains
 unproven.
 
 | Validation stage | Current status |
 | --- | --- |
-| Local Metal/CPU acceptance | Passed for the audited implementation; details below |
+| Local Metal/CPU acceptance | Full regression passed at `41d4dc2`; details below |
 | CUDA compilation | [Linear build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537); the [grouped PR/AUC follow-up build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770). The later `41d4dc2` capacity fix awaits its build |
 | CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
 | Performance | Mixed; the latest full HIGGS run is slower on MPS |
@@ -132,19 +131,17 @@ check GPU execution. PyTorch and MLX are additional dependencies for their
 native-tensor tests. Optional federated tests require `brew install grpc protobuf`
 and run with `bash scripts/test_federated.sh` in separate build directories.
 
-Latest full regression covers `68c800e`: **103 native groups and 3,647 Python
-tests passed, with one expected skip**, plus CPU build/API/schema and nine updater
-checks. PyTorch and MLX GPU interop tests ran. The
-[record](validation/cuda-port11-m3.txt) includes commands, source hashes and limits.
-The optional federated suite also passed at this revision: 14 transport, sketch,
-and learner groups, including TLS, with all workers on the same M3. A subsequent
-focused run passed four native groups and 49 Python tests, including a new group
-with 21 explicit numerical witnesses. That 104th group passed separately from the
-103-group full run. Two capacity groups bring the current suite to 106; its full
-run is in progress. [Acceptance evidence](docs/LOCAL_ACCEPTANCE.md).
-A subsequent focused run expands that numerical group to **39 witnesses and
-3,491 exact checks**, adding threshold-precision boundaries for the shared
-[NVIDIA comparison](validation/cuda-comparison-threshold-m3.json).
+Latest full regression covers `41d4dc2`: **106 native groups and 3,919 Python
+tests passed, with two expected skips** for Linux-only loader behavior and the
+no-GPU negative check. PyTorch and MLX GPU interop tests ran. The
+[record](validation/output-capacity-full-m3-run.json) identifies the exact source,
+library and logs. Subsequent AUC observation preparation has 22 separate passing
+source/helper and mocked build-driver checks; its CUDA compilation is pending.
+
+The CPU-only build/API/schema and nine updater checks, plus 14 optional federated
+transport/sketch/learner groups, previously passed at `68c800e`. Those separate
+gates were not rerun for the capacity fix. Federated workers used the same M3,
+including TLS tests. [Historical acceptance evidence](docs/LOCAL_ACCEPTANCE.md).
 
 The [CUDA CI workflow](.github/workflows/cuda-compile.yml) separately checks that
 shared-code changes still compile with NVIDIA dependencies. Successful compilation

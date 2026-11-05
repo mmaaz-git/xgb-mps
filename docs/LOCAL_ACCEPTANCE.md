@@ -10,7 +10,11 @@ regression below remains historical. PORT-13 at `41d4dc2` corrects the five othe
 artificial output-width limits. Its two new native groups pass 8,847,360 exact
 checks and one Python test trains a complete 65,536-target vector tree, matching
 CPU and analytic predictions. [Focused evidence](../validation/output-capacity-m3-run.json).
-A full run of 106 native groups and the Python tests is in progress at `41d4dc2`.
+A full run at `41d4dc2` also passes **106 native groups and 3,919 Python tests**,
+with two expected skips (the Linux ELF loader check and the no-GPU negative
+check). [Full regression evidence](../validation/output-capacity-full-m3-run.json).
+The CPU-only build and optional federated records below remain at `68c800e`;
+they were not rerun as part of this later full native/Python run.
 
 **The ten implementation tasks and seventeen numerical contracts from the frozen
 audit now have local acceptance evidence, including a passing CUDA compile/link
