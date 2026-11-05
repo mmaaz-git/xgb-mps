@@ -1,5 +1,5 @@
 {
-  "status": "Metal corpus passed; CUDA compiler/link/host isolation rerun in progress after the nvCOMP loader fix; NVIDIA runtime absent",
+  "status": "Complete Metal corpus/reference checks and CUDA compile/link/host checks passed; NVIDIA execution pending",
   "suite": "metric-v1",
   "recorded_utc": "2026-11-05T19:08:50.389881+00:00",
   "scope": "Complete metal_metric_api corpus for P5-N07, including all previously uncounted math, invalid-label and empty-operation checks; this does not cover PR/ROC/ranking metric corpora.",
@@ -346,11 +346,61 @@
     "log": "results/verify2-metric-io-final.log"
   },
   "cuda_compile": {
-    "status": "in_progress",
+    "status": "passed-compile-link-and-host-checks",
     "gpu_execution": false,
     "run_id": 42100004279,
     "head": "b5ad541fb7f239f3f49537256765d7795e607f6a",
-    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42100004279"
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42100004279",
+    "finished_utc": "2026-11-05T20:22:57.076919+00:00",
+    "production_steps": 197,
+    "harness_objects": 6,
+    "linked_binaries": 6,
+    "verified_input_hashes": 35,
+    "nvcomp_loader_probe": {
+      "status": "passed",
+      "gpu_execution": false
+    },
+    "nvcomp_runtime_path": "/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13/libnvcomp.so.5.3.0.16\n/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13",
+    "metric_source_isolation": {
+      "status": "passed",
+      "gpu_execution": false,
+      "registry_entries": 24,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-baseline.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-probe.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-defined-dynamic-symbols.txt": "599daf66f208e7929a234db26b14838d909627adddc34cd1ed850d0dfdd1cc58"
+      }
+    },
+    "log_sha256": "d74d6b8447bd5856c78fd674969296c864f215a022b85b4b9c3b9295c799104a",
+    "build_record_sha256": "5b63a6a342cd5f71faf2303364b8e438092642bd5c77c2a33f1ed804c1cb1c67",
+    "library_sha256": "0512059347632844c568d050e7e5ef7e28a458b25e663162d39496d4d9a8aca5",
+    "binaries": {
+      "numerical": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_numerical_contracts",
+        "sha256": "387f6ed9fd56c288e0b1dc79d1fbcc00014134d6120addce1edfeaeffebd0a13"
+      },
+      "aft": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_aft_contracts",
+        "sha256": "f15c52b67ff6915109d01fc00786ae28105fb985d5d6954c151c1a321c850d26"
+      },
+      "rng": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_rng_contracts",
+        "sha256": "ce5a0aa414d808a2c27ec6f99295aa15ef4ff00acac2e223ac2808176ce6f2d7"
+      },
+      "math": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_math_contracts",
+        "sha256": "08c5f24ae6b8beca85b49d11866b40cfa3b496a11d9fe3e976ccd198d934ad4c"
+      },
+      "ranking": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_ranking_contracts",
+        "sha256": "6c8fdb86a1736037448c401ec39eb508d7653a456c059f3b67bb2e5fb226bc95"
+      },
+      "metric": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_metric_contracts",
+        "sha256": "705f33cf75f2afad3647edcbcacd32e1ffe861c482cedf8ec7448293c9d8b7b3"
+      }
+    },
+    "scope": "Includes metric and stump consumers; predates sampling consumer"
   },
   "cuda_runtime": {
     "status": "not_run",

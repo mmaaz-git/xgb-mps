@@ -803,8 +803,10 @@ six CUDA objects, all 197 production steps and six links completed in
 [run 42092645863](https://github.com/mmaaz-git/xgb-mps/actions/runs/42092645863).
 The run then failed before the registry check entered main: Linux could not load
 `libnvcomp.so.5`. Its failed log and exact source hashes are retained. The runtime
-search/dependency fix and early loader probe await CI verification; source
-isolation and NVIDIA execution remain unvalidated.
+search/dependency fix and early loader probe passed in
+[run 42100004279](https://github.com/mmaaz-git/xgb-mps/actions/runs/42100004279),
+along with all six consumers and the 24-entry host registry/factory and symbol
+isolation checks. NVIDIA execution remains unvalidated.
 
 Ordinary row policies and multiclass/survival reducers use the actual source
 functions. Pseudo-Huber, quantile and expectile terms separately evaluate the

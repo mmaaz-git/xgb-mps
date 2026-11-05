@@ -245,3 +245,18 @@ VERIFY-2 metric compiler run (failed host loader; no NVIDIA execution):
   Local Linux aarch64 regression with the actual CMake helper and synthetic libraries passed;
     both broken controls fail, corrected executable and probe load. Eight mocked driver tests pass.
   Evidence and limits: validation/cuda-nvcomp-loader-fix.json.
+
+VERIFY-2 metric/stump and nvCOMP loader correction (terminal success):
+  b5ad541fb7f239f3f49537256765d7795e607f6a:42100004279, completed 2026-11-05T20:22:57.076919+00:00
+  https://github.com/mmaaz-git/xgb-mps/actions/runs/42100004279
+  Six CUDA objects,197 production steps and six executable links passed.
+  All35 input hashes verified against the exact CI revision.
+  Actual nvCOMP host loader probe passed before production build.
+  Canonical runtime path: /usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13/libnvcomp.so.5.3.0.16
+/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13
+  Host metric registry/factory signatures:24 entries, identical between consumers.
+  Dynamic symbol check passed: no production metric definitions exported by probe.
+  Log SHA256: d74d6b8447bd5856c78fd674969296c864f215a022b85b4b9c3b9295c799104a
+  Build record SHA256: 5b63a6a342cd5f71faf2303364b8e438092642bd5c77c2a33f1ed804c1cb1c67
+  Library SHA256: 0512059347632844c568d050e7e5ef7e28a458b25e663162d39496d4d9a8aca5
+  This predates sampling; no NVIDIA kernels executed.

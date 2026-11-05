@@ -176,15 +176,15 @@ its own observed terms, with the original Neumaier reference and error bound.
 Eight undefined casts remain Metal-only guards under NUM-OP-36. The CUDA source
 policies/reducers are compiled without production registration or symbol changes;
 their compile/link steps completed, but the first host isolation command failed
-to load `libnvcomp.so.5` in run 42092645863. The loader correction awaits CI
-verification; host isolation and NVIDIA execution remain pending. See the
+to load `libnvcomp.so.5` in run 42092645863. The loader correction and host
+isolation checks passed in run 42100004279; NVIDIA execution remains pending. See the
 [metric record](../validation/metric-contract-m3-run.json).
 The root/stump extension preserves the complete 405-case corpus, including all
 11,964,810 gradient pairs, strided storage and guards. Normal and validation-layer
 Metal runs, independent reference checks, nine report-integrity tests and the C++
 input round trip pass. CUDA calls the actual stump implementation and separately
 replays its reduction to expose diagnostic sums; those are not private API sums.
-Its compiler/runtime gates remain pending. See the
+Its compiler gate passed in run 42100004279; NVIDIA execution remains pending. See the
 [stump record](../validation/stump-contract-m3-run.json).
 Runners now address eleven contracts; six still lack dedicated runners, broader
 caller coverage remains, and none has actual NVIDIA execution evidence.
