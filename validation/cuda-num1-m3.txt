@@ -1,0 +1,57 @@
+NUM-1 weighted-quantile threshold correction, 2026-11-05
+Source commit: 24048272cc0105f27c3b37823969a0b9a927b03c
+Hardware: local Apple M3, 10 GPU cores, 16 GB shared memory.
+
+Authority: CUDA stats.cuh WeightedQuantileSegOp keeps total*alpha and the
+lower_bound comparison in binary64 while the CDF remains FP32. Metal previously
+narrowed the threshold to float. CPU WeightedQuantile intentionally uses a float
+threshold, so CPU equality is not the correct oracle at this boundary.
+
+Fix: xgb_quantile_select keeps XGBDouble threshold and promotes each probed CDF
+value for xgb_dlt. No source formula, CDF order, CPU implementation, tolerance,
+or host/device payload boundary changed. No CPU fallback was added.
+
+Regression evidence before the fix:
+- results/num1-red-20261105: four test-setup failures, because numpy scalars in a
+  Python parameter list were serialized as numpy expressions. Fixed the new test
+  by passing Python floats; these failures are NOT counted as defect reproduction.
+- results/num1-red-v2-20261105: build-first run against unchanged production
+  shader; all four new Python cases failed at the expected selected-value check.
+  Single alpha expected [1], actual [0]; multiple alphas expected [0,1,1],
+  actual [0,0,1]. Both original and reversed input order reproduced the bug.
+
+Focused validation after the fix:
+  bash scripts/test.sh --native metal_quantile metal_stats_api \
+    metal_initialization_state_api --python tests/test_metal_quantiles.py \
+    tests/test_metal_initialization.py --log-dir results/num1-green-20261105
+  tmux session xgb-num1-green completed; all 9 build/compile/run steps passed.
+  The runner rebuilt the current library before execution.
+
+- Native initialization: PASS 265 storage cases / 5648 field checks / 3 rejected
+  calls. Includes 15 new weighted-boundary cases (five weight regimes times
+  disjoint/label-alias/weight-alias output) with 20 interleaved target requests.
+  Covers adjacent double/float alphas, strided/reversed target values, subnormal,
+  zero/signed-zero, and overflowing FP32 totals; exact selection and untouched
+  padding/input assertions. GPU counters and zero host staging/readback are
+  checked before CPU comparisons. Existing unweighted/empty/lifetime guards pass.
+- Distributed initialization: PASS worlds 2, 3 and 5, including empty workers.
+- Standalone quantile shader: PASS 240 cases / 4227960 stable records /
+  4227960 exact CDF entries / 8640 exact quantiles / 2140938 prefix values.
+  Replaced the mirrored FP32 weighted-threshold oracle with CUDA's double rule.
+- Production stats: PASS 56 median/mean API cases and 63 reduction cases /
+  14982576 values, including strided/empty/nonfinite inputs.
+- Python: PASS 34 tests, no skips. One existing expected warning for zero-weight
+  absolute-error initialization. Includes all four new exact public regressions
+  plus existing CPU-comparison fixtures where they agree.
+
+Build provenance and per-step commands/status: cuda-num1-m3-run.json.
+Library SHA256: 8c7af8907e15fdc93be59c31d0e81fddabae46ba85ca0acf447e10e37c0ca257
+Tested diff SHA256: c453c79e25417ebbaa07b713cb38a65f659c5bef7a61ef1fcd18935fef7397c0
+The diff hash was checked unchanged immediately before committing the tested
+four files. The record's baseline revision plus dirty diff is now source commit
+2404827. Only documentation/evidence updates follow that source commit.
+
+Limits: no NVIDIA execution, benchmark, new full suite or CPU-only build here.
+Only Metal shader arithmetic and test code changed. Cross-architecture compiler/
+math behavior, general weighted-CDF scan association and full integration remain
+VERIFY-1/2 gates. This closes NUM-1 locally; it does not close CUDA parity.

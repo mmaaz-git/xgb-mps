@@ -6,6 +6,10 @@ and objectives/metrics; the root reviewed shared sort/scan helpers and integrate
 the results. Reviewers cross-checked the two correctness findings and narrowed
 the numeric-threshold task to exclude already implemented categorical work.
 
+This is a frozen audit. Since publication, **NUM-1 was fixed at `2404827`** with
+focused local validation ([record](../validation/cuda-num1-m3.txt)). Nine audited
+implementation tasks remain; the [plan](PLAN.md) tracks current status.
+
 **The port is substantial but incomplete. This audit identifies 10 implementation
 tasks, including two correctness defects.** It does not support a completion
 percentage or a reliable calendar estimate. Full integration, NVIDIA execution

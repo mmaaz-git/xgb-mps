@@ -490,8 +490,8 @@
         "tests/metal_initialization_state_api.cc",
         "tests/metal_global_quantizer_api.cc"
       ],
-      "status": "audited-with-open-tasks",
-      "limits": "Host scalar publication/global denominators follow source. Parallel association and independent transcendental libraries are not NVIDIA bitwise guarantees. Confirmed audit tasks: NUM-1; see validation/cuda-caller-audit.json for source/acceptance.",
+      "status": "mapped-with-local-fix",
+      "limits": "Host scalar publication/global denominators follow source. Parallel association and independent transcendental libraries are not NVIDIA bitwise guarantees. NUM-1 fixed at 2404827; validation/cuda-num1-m3.txt records focused checks. Other numerical/external hardware limits remain.",
       "audited_operations": [
         "NUM-OP-01",
         "NUM-OP-02",
@@ -504,7 +504,8 @@
         "NUM-OP-09",
         "NUM-OP-10"
       ],
-      "open_tasks": [
+      "open_tasks": [],
+      "resolved_after_audit": [
         "NUM-1"
       ]
     },
@@ -611,8 +612,8 @@
         "tests/metal_initialization_state_api.cc",
         "tests/test_metal_quantiles.py"
       ],
-      "status": "audited-with-open-tasks",
-      "limits": " Confirmed audit tasks: NUM-1; see validation/cuda-caller-audit.json for source/acceptance.",
+      "status": "mapped-with-local-fix",
+      "limits": " NUM-1 fixed at 2404827; validation/cuda-num1-m3.txt records focused checks. Other numerical/external hardware limits remain.",
       "audited_operations": [
         "NUM-OP-08",
         "NUM-OP-09",
@@ -621,7 +622,8 @@
         "NUM-OP-21",
         "NUM-OP-25"
       ],
-      "open_tasks": [
+      "open_tasks": [],
+      "resolved_after_audit": [
         "NUM-1"
       ]
     },
@@ -1290,5 +1292,13 @@
   ],
   "review_record": "docs/REVIEW.md",
   "completion_plan": "docs/PLAN.md",
-  "caller_audit_summary": "docs/CUDA_AUDIT.md"
+  "caller_audit_summary": "docs/CUDA_AUDIT.md",
+  "resolved_after_audit": {
+    "NUM-1": {
+      "source_commit": "24048272cc0105f27c3b37823969a0b9a927b03c",
+      "status": "locally-validated",
+      "evidence": "validation/cuda-num1-m3.txt",
+      "limits": "NVIDIA execution remains VERIFY-2; frozen caller ledger is unchanged."
+    }
+  }
 }

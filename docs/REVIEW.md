@@ -81,5 +81,6 @@ The subsequent [caller/numerical audit](CUDA_AUDIT.md) is now published at froze
 revision `382f78c`: 174 logical operations and 1,078 classified lexical sites,
 with ten implementation tasks. It found two correctness defects and additional
 GPU-placement gaps. The [updated plan](PLAN.md) puts those correctness fixes
-before vector state work. Feature work stays paused; the bounded audit did not
-silently restart the unbounded porting loop.
+before vector state work. The user subsequently resumed implementation;
+NUM-1 is locally fixed at `2404827`, and PORT-9 is current. See the plan and
+[validation record](../validation/cuda-num1-m3.txt).

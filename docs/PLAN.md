@@ -1,7 +1,7 @@
 # Completion plan
 
 Updated 2026-11-05 after the [caller/numerical audit](CUDA_AUDIT.md).
-The bounded audit is complete; feature development remains paused. This is the work queue;
+The bounded audit is complete; the user resumed feature development. This is the work queue;
 chronological progress logs are not a second plan.
 
 ## Target and completion claims
@@ -24,10 +24,11 @@ Track three separate claims:
 
 The audit classified 174 logical operations and all 1,078 listed lexical sites
 across 42 families / 109 CUDA roots at `382f78c`. Sixteen missing/defective rows
-map to **10 implementation tasks** below. These unequal-sized rows are not a
+map to **10 implementation tasks** below; NUM-1 is now fixed and nine remain.
+These unequal-sized rows are not a
 completion percentage, and this bounded audit cannot prove the absence of
-unlisted defects. **When implementation resumes: NUM-1, then PORT-9, then vector
-state and the remaining GPU-placement tasks.** No new kernels were added during
+unlisted defects. **Current: PORT-9, then vector state and the remaining
+GPU-placement tasks.** No new kernels were added during
 classification.
 
 ## Ordered work queue
@@ -36,9 +37,9 @@ classification.
 | --- | --- | --- | --- |
 | CLEAN-1 | Review, concise docs, selected-test runner, reproduced API fixes | Complete | Findings published; history archived; all 100 native groups preserved; current library built first; diagnostic schemas agree; metadata alias regression passes |
 | PORT-4 | Classify frozen CUDA caller inventory | Classification complete | All 1,078 listed sites assigned; 174 logical rows have source/Metal/test references and dispositions; findings are separate tasks, not a parity certificate |
-| PORT-5 | Classify numerical-contract ledger | Classification complete; acceptance work remains | Seventeen contracts record authority, comparisons, limits and actions; NUM-1 remains open; required divergence fixtures and external comparisons remain VERIFY-1/2 work |
-| NUM-1 | Correct weighted-quantile threshold precision | Open; first correctness fix | Preserve binary64 comparison; `[0,1]` with weights `[1,9]`, alpha `float32(.1)` selects 1 in native/public paths; replace mirrored FP32 oracle; adjacent/exceptional/multi-request cases |
-| PORT-9 | Correct vector row validity after sampling | Open; after NUM-1 | Preserve actual sampler mask for selected zero-Hessian rows; cover no/uniform/MVS sampling, reduced gradients and empty pages; preserve separate scalar semantics |
+| PORT-5 | Classify numerical-contract ledger | Classification complete; acceptance work remains | Seventeen contracts record authority, comparisons, limits and actions; NUM-1 is locally fixed; required divergence fixtures and external comparisons remain VERIFY-1/2 work |
+| NUM-1 | Correct weighted-quantile threshold precision | Locally complete at `2404827` | Binary64 comparison and independent boundary/alias regressions pass; three native groups and 34 Python tests; [evidence](../validation/cuda-num1-m3.txt). NVIDIA comparison remains VERIFY-2 |
+| PORT-9 | Correct vector row validity after sampling | Current | Preserve actual sampler mask for selected zero-Hessian rows; cover no/uniform/MVS sampling, reduced gradients and empty pages; preserve separate scalar semantics |
 | PORT-1 | GPU vector root/child/model weights | Open; after correctness fixes | Finalize → persistent weights → root scale / model expansion / constraints / prediction-cache leaf gathers stays on Metal; growth preserves queued candidates; non-MPS CPU updater still uses host views |
 | PORT-2 | GPU selected categorical bitsets | Open; after PORT-1 | Vector category payload stays resident through workspace reuse, candidate queuing and model growth; numeric/one-hot/partition and alias cases pass |
 | PORT-3 | GPU exact vector node/child sums | Open; after PORT-1 | Integer selected-child and node sums stay resident through evaluation/propagation; no floating reconstruction; scalar source-defined publication unchanged |
@@ -86,7 +87,7 @@ disposition per operation:
 - missing operation, with a new task ID and acceptance case.
 
 Classification is complete for this frozen ledger; stop the broad audit and
-implement ticket by ticket when resumed. New findings update this queue
+implement ticket by ticket. New findings update this queue
 explicitly; they do not silently expand PORT-1 or reset completed work.
 “Mapped” is not a closure status.
 GPU-required work left on CPU cannot be closed as a platform adaptation, and

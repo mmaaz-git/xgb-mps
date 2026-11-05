@@ -31,7 +31,6 @@ not every branch's behavior.
 | PORT-1 | Vector weight producers, root learning-rate multiplication, model growth and alias snapshots still use host views/copies in baseline main. Quarantined draft is unvalidated and contains an unsafe non-MPS branch. |
 | PORT-2 | Selected vector categorical bitsets return to host candidates before model copying; CUDA retains device category storage. |
 | PORT-3 | Exact vector node/selected-child sums move through host containers; CUDA retains device node/split sums. |
-| NUM-1 | Weighted-quantile threshold narrows CUDA's binary64 comparison to FP32; a two-row production diagnostic selects the wrong value. |
 | PORT-9 | Vector leaf validity incorrectly uses zero Hessians instead of the actual sampler mask. |
 | PORT-6 | Sampled/allowed feature-ID payloads and consumers still use CPU arrays. |
 | PORT-7 | Native quantile row/group weights pass through host expansion/readback. |
@@ -41,7 +40,11 @@ not every branch's behavior.
 
 PORT-4/5 classification is complete for the frozen [audit](CUDA_AUDIT.md):
 174 logical operations, 1,078 assigned lexical sites, 17 numerical contracts.
-Sixteen missing/defective rows map to the ten tasks above. This is a finite
+Sixteen missing/defective rows mapped to ten tasks at the audit revision. NUM-1
+is now locally fixed at `2404827`, leaving the nine tasks above. Binary64
+threshold comparisons and independent boundary/alias regressions pass in three
+native groups and 34 Python tests; [evidence](../validation/cuda-num1-m3.txt).
+The frozen audit retains its original findings. This is a finite
 implementation queue, not proof that no unlisted defects remain. Numerical
 acceptance fixtures and NVIDIA comparisons remain separate verification work.
 

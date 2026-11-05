@@ -1,0 +1,199 @@
+{
+  "status": "passed",
+  "started_utc": "20261105T083020Z",
+  "finished_utc": "2026-11-05T08:30:49.238829+00:00",
+  "revision": "2c32b1d141d31092d3faaa4ce1ad018073cc48d8",
+  "working_tree": "M tests/metal_initialization_state_api.cc\n M tests/metal_quantile.mm\n M tests/test_metal_quantiles.py\n M xgboost/src/common/metal_histogram.metal",
+  "diff_sha256": "c453c79e25417ebbaa07b713cb38a65f659c5bef7a61ef1fcd18935fef7397c0",
+  "manifest_sha256": "5463ec839e83c2cee9038aa27b254db98ce46b18e3b7cdc12898bd2c85877387",
+  "library_sha256": "8c7af8907e15fdc93be59c31d0e81fddabae46ba85ca0acf447e10e37c0ca257",
+  "native_groups": [
+    "metal_initialization_state_api",
+    "metal_quantile",
+    "metal_stats_api"
+  ],
+  "python_selection": [
+    "tests/test_metal_quantiles.py",
+    "tests/test_metal_initialization.py"
+  ],
+  "steps": [
+    {
+      "name": "build-metal",
+      "command": [
+        "bash",
+        "scripts/build.sh"
+      ],
+      "environment": {},
+      "log": "001-build-metal.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 7.952005665982142
+    },
+    {
+      "name": "compile-metal_initialization_state_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_initialization_state_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_initialization_state_api_test"
+      ],
+      "environment": {},
+      "log": "002-compile-metal_initialization_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.3141941670328379
+    },
+    {
+      "name": "metal_initialization_state_api",
+      "command": [
+        ".venv/bin/python",
+        "tests/run_initialization_state_collective.py"
+      ],
+      "environment": {
+        "MTL_DEBUG_LAYER": "1",
+        "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+      },
+      "log": "003-metal_initialization_state_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 11.7351029580459
+    },
+    {
+      "name": "compile-metal_quantile",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-fobjc-arc",
+        "tests/metal_quantile.mm",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-o",
+        "results/metal_quantile_test"
+      ],
+      "environment": {},
+      "log": "004-compile-metal_quantile.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.8513230418320745
+    },
+    {
+      "name": "metal_quantile",
+      "command": [
+        "results/metal_quantile_test",
+        "xgboost/src/common/metal_histogram.metal"
+      ],
+      "environment": {},
+      "log": "005-metal_quantile.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.8090644169133157
+    },
+    {
+      "name": "compile-metal_stats_api",
+      "command": [
+        "clang++",
+        "-O2",
+        "-std=c++17",
+        "-ffp-contract=off",
+        "-DDMLC_CORE_USE_CMAKE",
+        "-DDMLC_LOG_CUSTOMIZE=1",
+        "-DXGBOOST_USE_METAL=1",
+        "-I",
+        "xgboost/include",
+        "-I",
+        "xgboost/dmlc-core/include",
+        "-I",
+        "build-metal/dmlc-core/include",
+        "-Xpreprocessor",
+        "-fopenmp",
+        "-I",
+        "/opt/homebrew/opt/libomp/include",
+        "tests/metal_stats_api.cc",
+        "-L",
+        "xgboost/lib",
+        "-lxgboost",
+        "-L",
+        "/opt/homebrew/opt/libomp/lib",
+        "-lomp",
+        "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+        "-o",
+        "results/metal_stats_api_test"
+      ],
+      "environment": {},
+      "log": "006-compile-metal_stats_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.7482419579755515
+    },
+    {
+      "name": "metal_stats_api",
+      "command": [
+        "results/metal_stats_api_test"
+      ],
+      "environment": {},
+      "log": "007-metal_stats_api.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 0.5327741249930114
+    },
+    {
+      "name": "linear-reference",
+      "command": [
+        "bash",
+        "tests/build_linear_reference.sh"
+      ],
+      "environment": {},
+      "log": "008-linear-reference.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 1.1336818339768797
+    },
+    {
+      "name": "pytest",
+      "command": [
+        ".venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_metal_quantiles.py",
+        "tests/test_metal_initialization.py",
+        "--require-metal"
+      ],
+      "environment": {},
+      "log": "009-pytest.log",
+      "status": "passed",
+      "exit_code": 0,
+      "seconds": 2.954914790811017
+    }
+  ],
+  "exit_code": 0,
+  "tested_source_commit": "24048272cc0105f27c3b37823969a0b9a927b03c",
+  "provenance_note": "Runner captured 2c32b1d plus dirty code/test diff. Its diff hash was verified unchanged immediately before committing exactly those four tested files as tested_source_commit. Per-step logs remain in the ignored results directory; aggregate results and limitations are in cuda-num1-m3.txt."
+}
