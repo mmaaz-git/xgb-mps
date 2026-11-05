@@ -51,7 +51,7 @@ unproven.
 | Validation stage | Current status |
 | --- | --- |
 | Local Metal/CPU acceptance | Full regression passed at `41d4dc2`; details below |
-| CUDA compilation | [Linear build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537); the [grouped PR/AUC follow-up build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770). The later `41d4dc2` capacity fix awaits its build |
+| CUDA compilation | [Linear build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537); the [grouped PR/AUC build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770). The [capacity fix and AUC capture build is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288) |
 | CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
 | Performance | Mixed; the latest full HIGGS run is slower on MPS |
 

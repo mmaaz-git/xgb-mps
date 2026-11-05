@@ -85,7 +85,10 @@
     "expected_skips": 2
   },
   "cuda_compilation": {
-    "status": "pending push after existing run 42117995770 completes",
+    "status": "queued",
+    "run_id": 42122113288,
+    "head": "ed8e433c9add6e3e73b6a9426bca45a9f581bd1e",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288",
     "gpu_execution": false
   }
 }

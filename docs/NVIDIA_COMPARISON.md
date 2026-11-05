@@ -1299,7 +1299,7 @@ retains the generated source and edit record, checks metric registry identity,
 and rejects exported metric definitions from the copy.
 
 Eight source/capture-helper checks and fourteen mocked build-driver checks pass
-locally. CUDA compilation of this preparation is pending; these host checks do
+locally. [CUDA compilation of this preparation is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288); these host checks do
 not prove CUDA execution or numerical agreement. The full 528-record Metal AUC
 corpus still needs its exporter, CUDA replay and comparison checks. Replay must
 also compare the instrumented results with calls to the original linked library.
