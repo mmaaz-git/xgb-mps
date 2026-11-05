@@ -52,13 +52,13 @@ evidence remains unavailable; full parity stays unproven.
 | Validation stage | Current status |
 | --- | --- |
 | Local Metal/CPU acceptance | Full regression passed at `41d4dc2`; details below |
-| CUDA compilation | [Capacity and AUC capture build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42123616995), including the helper fix. The [full AUC/ROC replay build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42126588731) |
+| CUDA compilation | [AUC/ROC and ranking replay build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698); artifacts verified. The [reader-change build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42133058442) |
 | CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
 | Performance | Mixed; the latest full HIGGS run is slower on MPS |
 
 The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) address twelve of the
 seventeen numerical contracts using shared inputs and saved Metal observations.
-Their AUC/ROC build passed; the [ranking sort/score build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698).
+Their AUC/ROC build passed; the [ranking sort/score build also passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698).
 These compiler checks do not execute CUDA kernels.
 
 **Remaining:** run the available comparisons on NVIDIA and resolve observed

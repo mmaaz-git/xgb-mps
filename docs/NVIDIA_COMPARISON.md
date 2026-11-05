@@ -95,7 +95,7 @@ results/cuda-comparison-build/cmake/cuda_numerical_contracts \
   results/cuda-observations.jsonl
 ```
 
-The build driver first compiles all six harness objects using the configured compiler,
+The build driver first compiles all eight harness objects using the configured compiler,
 CCCL, architectures and arithmetic flags. It then checks/rebuilds production
 dependencies and links the executables. This exposes harness compiler errors
 before the expensive library build. It writes `build.json`, including terminal
@@ -1457,7 +1457,7 @@ headers, truncation and wrong identities.
 
 [Run evidence](../validation/ranking-metric-m3-run.json) identifies the production
 library, source hashes, local logs and compressed Metal observations. CUDA
-compilation is running in [run 42129587698](https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698); NVIDIA execution remains pending for this extension. The production
+compilation passed and its artifacts were verified in [run 42129587698](https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698); NVIDIA execution remains pending for this extension. The production
 Metal implementation is unchanged.
 
 CUDA calls the original linked `PreScore`, `NDCGScore`, `MAPScore` and segmented

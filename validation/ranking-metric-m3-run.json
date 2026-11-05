@@ -1,5 +1,5 @@
 {
-  "status": "passed-local-export-reference-codec; CUDA compilation and NVIDIA execution pending",
+  "status": "passed-local-export-reference-codec-and-verified-CUDA-compilation; NVIDIA execution pending",
   "scope": "Complete unchanged metal_ranking_api corpus: 15 exact edge/order cases, 120 grouped sorts, 896 precision/NDCG/MAP scores. Ranking cache/label and public lifecycle corpora remain separate.",
   "baseline_revision": "ad5db7209075c007791c696050ed4776486ed27e",
   "production_tree": "145fdffbc52f59354bed55b96d184d9e50c23ff4",
@@ -102,11 +102,20 @@
     "binary_sha256": "1c7f9ca5167ad803266611b347230ed7206d630112b03f6b391f8931a26cf16e"
   },
   "cuda_compilation": {
-    "status": "in_progress",
+    "status": "passed-verified",
     "gpu_execution": false,
     "run_id": 42129587698,
     "head": "5a624dfd02f2812626e5031610a7237c07e91247",
-    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698"
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698",
+    "finished_utc": "2026-11-05T23:58:07.813325+00:00",
+    "production_steps": 197,
+    "linked_binaries": 8,
+    "verified_input_hashes": 85,
+    "log_sha256": "7c16e684f7a491e8c76cecede507372c5cd942862d1b767f07235eb7544c9e0e",
+    "build_record_sha256": "4a8a72b3ed7ce1ff679c2eb9903ef0a4fd83c3cf8cfeca39b70b15375255aad9",
+    "library_sha256": "5179e5232070987200039f20828be3cefe9df3636e82d205cfadc601d9230f5f",
+    "verification_record": "results/verified-cuda-42129587698.json",
+    "host_checks": "nvCOMP loading, metric/linear/AUC registry and symbol isolation, AUC source capture, and 10,005-case sampling RNG alignment passed"
   },
   "nvidia_execution": false,
   "adaptations": [

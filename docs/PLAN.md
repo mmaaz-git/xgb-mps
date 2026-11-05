@@ -92,7 +92,7 @@ separately without production changes. [CUDA run
 
 The ranking sort/score batch now preserves all 1,031 existing native cases and
 passes local export, independent reference, codec and integrity checks. Its CUDA
-compilation is running in run 42129587698. Remaining ranking coverage includes label/cache-generation,
+compilation passed and was verified in run 42129587698. Remaining ranking coverage includes label/cache-generation,
 public metric state/lifetime and plan corpora; this batch does not close P5-N11.
 Schedule additions under the immediate execution order above.
 See the [ranking comparison scope](NVIDIA_COMPARISON.md#ranking-metric-sort-and-score-corpus).
@@ -232,7 +232,7 @@ until actual NVIDIA results have been reviewed.
 | --- | --- | --- |
 | 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
 | 2 | P5-N07 and training-reduction-association | Full statistics, linalg, metric, root/stump, current CUDA-derived sampling, integer leaf/cache and linear operation corpora added; complete outstanding compiler/runtime gates. Full linear updater/selector and broader caller comparisons remain separate. |
-| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Complete grouped PR corpus exported and locally checked; CUDA build passed, runtime pending. Binary/multi-output PR/ROC and grouped ROC exports, CUDA replays and local validation pass; compilation passed in run 42126588731, NVIDIA execution remains. Ranking sort/score replay has local acceptance; its compilation is running in run 42129587698. Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
+| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Complete grouped PR corpus exported and locally checked; CUDA build passed, runtime pending. Binary/multi-output PR/ROC and grouped ROC exports, CUDA replays and local validation pass; compilation passed in run 42126588731, NVIDIA execution remains. Ranking sort/score replay has local acceptance; its compilation passed and was verified in run 42129587698. Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
 | Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |
 

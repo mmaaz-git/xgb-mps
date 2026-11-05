@@ -373,3 +373,15 @@ Log SHA256: 77458e099af8aacb89006d5fc69d939dfde948a74f34135bd51859a5a1c12121
 Build record SHA256: 1be55c5f7408658c40ef9c332310356f6a121888c846f6baa09c17e6019d2d3f
 Library SHA256: 8807f2e68571510c250abef8f080b30e587496f03b9b9b7f353618169f49f450
 No NVIDIA GPU execution. Ranking metric extension run 42129587698 is separate and in progress.
+
+Verified ranking sort/score replay build: run 42129587698
+Head: 5a624dfd02f2812626e5031610a7237c07e91247
+URL: https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698
+Finished UTC: 2026-11-05T23:58:07.813325+00:00
+PASS: 85 input hashes, 197 production steps, eight comparison objects and executable links.
+PASS: nvCOMP loading; metric/linear/AUC registry, symbol and source isolation; 10,005 host RNG cases.
+Log SHA256: 7c16e684f7a491e8c76cecede507372c5cd942862d1b767f07235eb7544c9e0e
+Build record SHA256: 4a8a72b3ed7ce1ff679c2eb9903ef0a4fd83c3cf8cfeca39b70b15375255aad9
+Library SHA256: 5179e5232070987200039f20828be3cefe9df3636e82d205cfadc601d9230f5f
+Verifier: results/verify-cuda-ranking-metric.py; result: results/verified-cuda-42129587698.json.
+No NVIDIA GPU execution. Reader-change build 42133058442 is separate and running.
