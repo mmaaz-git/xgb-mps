@@ -951,7 +951,30 @@ class DMatrix:  # pylint: disable=too-many-instance-attributes,too-many-public-m
         feature_weights: Optional[ArrayLike] = None,
     ) -> None:
         """Set meta info for DMatrix.  See doc string for :py:obj:`xgboost.DMatrix`."""
+        from ._metal import capture_tensors
         from .data import dispatch_meta_backend
+
+        # A single export can supply several metadata fields. Retain it once
+        # across all setters, as for aliased custom-gradient inputs.
+        (
+            label,
+            weight,
+            base_margin,
+            group,
+            qid,
+            label_lower_bound,
+            label_upper_bound,
+            feature_weights,
+        ) = capture_tensors(
+            label,
+            weight,
+            base_margin,
+            group,
+            qid,
+            label_lower_bound,
+            label_upper_bound,
+            feature_weights,
+        )
 
         if label is not None:
             self.set_label(label)
@@ -1644,18 +1667,13 @@ class QuantileDMatrix(DMatrix, _RefMixIn):
         max_quantile_blocks: Optional[int],
         **meta: Any,
     ) -> None:
-        from ._metal import is_metal
+        from ._metal import capture_tensors, is_metal
         from ._metal import transform as transform_metal
         from .data import _is_dlpack, _transform_dlpack
 
         # A single-batch iterator consumes metadata more than once. Retain one
         # managed export so a caller-supplied DLPack capsule is consumed once.
-        meta = {
-            name: transform_metal(value, allow_tensor_shape=True)
-            if is_metal(value)
-            else value
-            for name, value in meta.items()
-        }
+        meta = dict(zip(meta, capture_tensors(*meta.values())))
         if is_metal(data):
             data = transform_metal(data)
         elif _is_dlpack(data):

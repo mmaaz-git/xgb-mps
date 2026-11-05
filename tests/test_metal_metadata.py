@@ -76,6 +76,76 @@ def test_metadata_matrix_capsules_and_shapes(metal, name, field):
 
 
 @pytest.mark.parametrize("name", ["torch", "mlx"])
+@pytest.mark.parametrize("kind", ["ordinary", "set_info", "quantile", "external"])
+@pytest.mark.parametrize("field", ["weight", "base_margin"])
+@pytest.mark.parametrize("versioned", [False, True])
+def test_aliased_metadata_capsule(metal, name, kind, field, versioned):
+    values = np.arange(1, 14, dtype=np.float32)
+    raw = producer(name, values)
+    features = np.arange(39, dtype=np.float32).reshape(13, 3)
+    exports = []
+
+    def metadata():
+        kwargs = {"max_version": (1, 0)} if versioned else {}
+        capsule = raw.__dlpack__(**kwargs)
+        exports.append(capsule)
+        return {"label": capsule, field: capsule}
+
+    class AliasedPages(xgb.DataIter):
+        def __init__(self):
+            self.used = False
+            super().__init__(on_host=True, min_cache_page_bytes=0)
+
+        def reset(self):
+            self.used = False
+
+        def next(self, input_data):
+            if self.used:
+                return False
+            # Each callback exports once; both metadata fields share that export.
+            # Independent callbacks must not reuse a consumed raw capsule.
+            input_data(data=features, **metadata())
+            self.used = True
+            return True
+
+    before = xgb.metal_info()
+    if kind == "ordinary":
+        matrix = xgb.DMatrix(features, nthread=2, **metadata())
+    elif kind == "set_info":
+        matrix = xgb.DMatrix(features, nthread=2)
+        matrix.set_info(**metadata())
+    elif kind == "quantile":
+        matrix = xgb.QuantileDMatrix(
+            features, device="mps", max_bin=17, nthread=2, **metadata()
+        )
+    else:
+        iterator = AliasedPages()
+        matrix = xgb.ExtMemQuantileDMatrix(
+            iterator, device="mps", max_bin=17, nthread=2
+        )
+        del iterator
+    after = xgb.metal_info()
+    assert after["tensor_imports"] >= before["tensor_imports"] + 2
+    # Feature input is deliberately a host array, so quantile construction can
+    # stage it. Check the native metadata publication counters specifically.
+    assert after["metadata_host_copy_bytes"] == before["metadata_host_copy_bytes"]
+    assert (
+        after["metadata_shared_output_bytes"] - before["metadata_shared_output_bytes"]
+        >= 2 * values.nbytes
+    )
+    # Imported metadata owns its snapshot after the producer and callback die.
+    raw[:] = 0
+    del raw
+    gc.collect()
+    np.testing.assert_array_equal(matrix.get_label(), values)
+    np.testing.assert_array_equal(matrix.get_float_info(field), values)
+    for capsule in exports:
+        with pytest.raises(ValueError, match="already been consumed"):
+            matrix.set_info(label=capsule)
+    np.testing.assert_array_equal(matrix.get_label(), values)
+
+
+@pytest.mark.parametrize("name", ["torch", "mlx"])
 @pytest.mark.parametrize("field", FIELDS)
 def test_metadata_empty(metal, name, field):
     matrix = xgb.DMatrix(np.ones((0, 3)), nthread=2)
