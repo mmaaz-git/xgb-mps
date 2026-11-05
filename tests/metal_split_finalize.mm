@@ -18,6 +18,121 @@ void Check(bool ok, char const* text) {
 bool Bits(void const* a, void const* b, std::size_t n) { return std::memcmp(a, b, n) == 0; }
 ref::Floating Pair(GradientPairPrecise v) { return {v.GetGrad(), v.GetHess()}; }
 std::size_t checked = 0, fields = 0;
+// Test threshold materialization independently of the split-scoring oracle:
+// candidates are already selected, and CUDA's source expressions define the bits.
+void Thresholds(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue) {
+  NSError* error = nil;
+  auto pipeline = [device newComputePipelineStateWithFunction:
+                               [library newFunctionWithName:@"xgb_feature_split_winners"]
+                                                       error:&error];
+  Check(pipeline != nil, "Missing selected-threshold pipeline");
+  auto upload = [&](void const* source, std::size_t bytes) {
+    auto buffer = [device newBufferWithLength:std::max<std::size_t>(bytes, 16)
+                                      options:MTLResourceStorageModeShared];
+    std::memset(buffer.contents, 0xa5, buffer.length);
+    if (source && bytes) std::memcpy(buffer.contents, source, bytes);
+    return buffer;
+  };
+  auto complete = [&](id<MTLCommandBuffer> command) {
+    [command commit];
+    [command waitUntilCompleted];
+    Check(command.status == MTLCommandBufferStatusCompleted, "Threshold command failed");
+  };
+  std::vector<std::uint32_t> patterns{
+      0u, 0x80000000u, 1u, 0x80000001u, 0x007fffffu, 0x807fffffu,
+      0x00800000u, 0x80800000u, 0x3f800000u, 0xbf800000u, 0x7f7fffffu, 0xff7fffffu,
+      0x7f800000u, 0xff800000u, 0x7fc12345u, 0xffc54321u};
+  constexpr unsigned bins = 33;
+  std::vector<std::uint32_t> values;
+  for (unsigned i = 0; i < bins; ++i) values.push_back(patterns[i % patterns.size()]);
+  for (unsigned i = 0; i < bins; ++i) values.push_back(patterns[(bins - 1 - i) % patterns.size()]);
+  std::uint32_t ptr[]{0, 0, bins, 2 * bins};
+  std::size_t checked = 0;
+  for (std::uint32_t multi : {0u, 1u}) for (bool private_buffer : {false, true})
+    for (bool no_values : {false, true}) {
+      @autoreleasepool {
+        std::vector<metal::SplitNodeResult> nodes;
+        std::vector<metal::SplitFinalizeFeature> features;
+        std::vector<metal::QuantizedSplitTask> scalar_tasks;
+        std::vector<metal::QuantizedMultiSplitTask> vector_tasks;
+        std::vector<metal::QuantizedSplitResult> scalar;
+        std::vector<metal::QuantizedMultiSplitResult> vector;
+        std::vector<std::uint32_t> expected;
+        auto add = [&](unsigned feature, unsigned kind, int bin, unsigned left, bool valid) {
+          nodes.emplace_back();
+          nodes.back().winner = valid ? features.size() : 0xffffffffu;
+          features.push_back({feature, 0, 0});
+          scalar_tasks.emplace_back(); vector_tasks.emplace_back();
+          scalar_tasks.back().kind = vector_tasks.back().kind = kind;
+          scalar.emplace_back(); vector.emplace_back();
+          scalar.back().bin = vector.back().bin = bin;
+          scalar.back().default_left = vector.back().default_left = left;
+          std::uint32_t bits = 0x7fc00000u;
+          if (valid && kind != 2) {
+            if (kind == 1 || (multi && !left)) bits = values[ptr[feature] + bin];
+            else bits = bin == 0 ? 0xff800000u : values[ptr[feature] + bin - 1];
+          }
+          expected.push_back(bits);
+        };
+        for (unsigned f : {1u, 2u}) for (unsigned kind : {0u, 1u, 2u})
+          for (unsigned left : {0u, 1u}) for (unsigned bin = 0; bin < bins; ++bin)
+            if (!no_values || (kind == 2 && (bin == 0 || bin + 1 == bins)))
+              add(f, kind, bin, left, true);
+        // Invalid/root-only nodes must not index feature/cut/candidate payloads.
+        add(0xffffffffu, 0, -1, 0, false);
+        std::reverse(nodes.begin(), nodes.end());
+        std::reverse(expected.begin(), expected.end());
+        auto n = upload(nodes.data(), nodes.size() * sizeof(nodes[0]));
+        auto f = upload(features.data(), features.size() * sizeof(features[0]));
+        auto cuts = upload(ptr, sizeof(ptr));
+        auto tasks = multi ? upload(vector_tasks.data(), vector_tasks.size() * sizeof(vector_tasks[0]))
+                           : upload(scalar_tasks.data(), scalar_tasks.size() * sizeof(scalar_tasks[0]));
+        auto candidates = multi ? upload(vector.data(), vector.size() * sizeof(vector[0]))
+                                : upload(scalar.data(), scalar.size() * sizeof(scalar[0]));
+        auto data = upload(no_values ? nullptr : values.data(), no_values ? 0 : values.size() * 4);
+        if (private_buffer) {
+          auto destination = [device newBufferWithLength:data.length options:MTLResourceStorageModePrivate];
+          auto command = [queue commandBuffer];
+          auto blit = [command blitCommandEncoder];
+          [blit copyFromBuffer:data sourceOffset:0 toBuffer:destination destinationOffset:0 size:data.length];
+          [blit endEncoding];
+          complete(command);
+          data = destination;
+        }
+        auto output = upload(nullptr, (nodes.size() + 2) * sizeof(metal::FeatureSplitResult));
+        auto command = [queue commandBuffer];
+        auto e = [command computeCommandEncoder];
+        [e setComputePipelineState:pipeline];
+        [e setBuffer:n offset:0 atIndex:0];
+        [e setBuffer:f offset:0 atIndex:1];
+        [e setBuffer:cuts offset:0 atIndex:2];
+        [e setBuffer:tasks offset:0 atIndex:3];
+        [e setBuffer:candidates offset:0 atIndex:4];
+        [e setBuffer:output offset:sizeof(metal::FeatureSplitResult) atIndex:5];
+        [e setBytes:&multi length:sizeof(multi) atIndex:6];
+        [e setBuffer:data offset:0 atIndex:7];
+        [e dispatchThreads:MTLSizeMake(nodes.size(), 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+        complete(command);
+        auto result = static_cast<metal::FeatureSplitResult const*>(output.contents) + 1;
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+          std::uint32_t bits;
+          std::memcpy(&bits, &result[i].split_value, sizeof(bits));
+          Check(bits == expected[i], "CUDA selected-threshold bit mismatch");
+          auto winner = nodes[i].winner;
+          Check(result[i].feature == (winner == 0xffffffffu ? 0xffffffffu : features[winner].feature),
+                "Winner metadata changed during threshold materialization");
+          ++checked;
+        }
+        auto* guard = static_cast<std::uint32_t const*>(output.contents);
+        for (std::size_t i = 0; i < sizeof(metal::FeatureSplitResult) / 4; ++i)
+          Check(guard[i] == 0xa5a5a5a5u &&
+                    guard[(nodes.size() + 1) * sizeof(metal::FeatureSplitResult) / 4 + i] == 0xa5a5a5a5u,
+                "Threshold output guard overwritten");
+      }
+    }
+  std::printf("PASS %zu exact selected thresholds, shared/private cuts, invalid/partition no-load cases\n", checked);
+}
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
@@ -38,6 +153,7 @@ int main(int argc, char** argv) {
                                         error:&error];
       Check(pipeline != nil, "Missing finalization kernel");
       auto queue = [device newCommandQueue];
+      Thresholds(device, lib, queue);
       auto upload = [&](void const* p, std::size_t n) {
         auto b = [device newBufferWithLength:std::max<std::size_t>(n, 32)
                                      options:MTLResourceStorageModeShared];

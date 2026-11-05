@@ -745,7 +745,7 @@ class MetalSplitWorkspace final : public SplitWorkspace {
   id<MTLBuffer> scales, integer_children;
   id<MTLBuffer> node_input, feature_input, node_parents, node_results, node_weights;
   id<MTLBuffer> gathered_bounds;
-  id<MTLBuffer> category_input, category_cuts, category_output, category_error;
+  id<MTLBuffer> category_input, category_output, category_error;
   id<MTLBuffer> feature_ids, feature_lengths, feature_segments, feature_offsets,
       feature_error, feature_selected;
   std::size_t candidate_count{0};
@@ -10426,7 +10426,7 @@ void BuildSplitCategories(Span<float const> cuts, Span<SplitCategoryTask const> 
     auto& rt = GetRuntime();
     auto count = tasks.size() * words_per_node;
     auto requests = Scratch(rt, &scratch->category_input, tasks.size_bytes(), tasks.data());
-    auto values = Scratch(rt, &scratch->category_cuts, cuts.size_bytes(), cuts.data());
+    auto values = BindFeatureInput(rt, cuts.data(), cuts.size_bytes());
     auto bits = Scratch(rt, &scratch->category_output, count * sizeof(std::uint32_t));
     std::uint32_t zero = 0;
     auto error = Scratch(rt, &scratch->category_error, sizeof(zero), &zero);
@@ -10442,7 +10442,7 @@ void BuildSplitCategories(Span<float const> cuts, Span<SplitCategoryTask const> 
     [encoder setBuffer:scratch->input offset:0 atIndex:1];
     [encoder setBuffer:scratch->output offset:0 atIndex:2];
     [encoder setBuffer:scratch->order offset:0 atIndex:3];
-    [encoder setBuffer:values offset:0 atIndex:4];
+    [encoder setBuffer:values.buffer offset:values.offset atIndex:4];
     [encoder setBuffer:bits offset:0 atIndex:5];
     [encoder setBytes:&p length:sizeof(p) atIndex:6];
     [encoder setBuffer:error offset:0 atIndex:7];
@@ -10911,13 +10911,13 @@ void EvaluateQuantizedMultiSplits(
 
 void EvaluateFeatureSplits(
     Span<HistogramInput const> histograms, Span<Span<bst_feature_t const> const> features,
-    Span<std::uint32_t const> cut_ptrs, Span<FeatureType const> types,
+    Span<std::uint32_t const> cut_ptrs, Span<float const> cut_values, Span<FeatureType const> types,
     Span<std::int32_t const> monotone, std::uint32_t onehot, std::uint32_t category_limit,
     Span<GradientPairInt64 const> parents, Span<GradientPairPrecise const> precise_parents,
     Span<SplitBounds const> bounds, SplitParameters const& parameters, bool vector_leaf,
     std::vector<SplitNodeResult>* results, std::vector<FeatureSplitResult>* selected,
     std::vector<SplitNodeWeights>* weights, SplitWorkspace* workspace) {
-  static_assert(sizeof(FeatureSplitResult) == 112);
+  static_assert(sizeof(FeatureSplitResult) == 112 && offsetof(FeatureSplitResult, split_value) == 12);
   CHECK(workspace && results && selected);
   auto scratch = static_cast<MetalSplitWorkspace*>(workspace);
   scratch->ResetCandidates();
@@ -10965,6 +10965,7 @@ void EvaluateFeatureSplits(
     if (weights) weights->clear();
     return;
   }
+  CHECK_EQ(cut_values.size(), histogram_bins);
   @autoreleasepool {
     auto& rt = GetRuntime();
     struct FeatureParams {
@@ -10982,6 +10983,7 @@ void EvaluateFeatureSplits(
                             static_cast<std::uint32_t>(count), 0};
     };
     auto cuts = BindFeatureInput(rt, cut_ptrs.data(), cut_ptrs.size_bytes());
+    auto values = BindFeatureInput(rt, cut_values.data(), cut_values.size_bytes());
     auto type = BindFeatureInput(rt, types.data(), types.size_bytes());
     auto constraints = BindFeatureInput(rt, monotone.data(), monotone.size_bytes());
     auto ids = Scratch(rt, &scratch->feature_ids, count * sizeof(bst_feature_t));
@@ -11099,6 +11101,7 @@ void EvaluateFeatureSplits(
     [e setBuffer:scratch->output offset:0 atIndex:4];
     [e setBuffer:out offset:0 atIndex:5];
     [e setBytes:&multi length:sizeof(multi) atIndex:6];
+    [e setBuffer:values.buffer offset:values.offset atIndex:7];
     [e dispatchThreads:MTLSizeMake(nodes.size(), 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [e endEncoding];
     CompleteOperation(command, nullptr, &split_gpu_time_ns);

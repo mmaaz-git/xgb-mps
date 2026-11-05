@@ -6842,7 +6842,7 @@ kernel void xgb_feature_split_tasks(
   }
 }
 struct FeatureSplitResult {
-  uint feature, kind, cut_begin, padding;
+  uint feature, kind, cut_begin, split_bits;
   QuantizedSplitResult scalar;
   QuantizedMultiSplitResult vector;
 };
@@ -6851,10 +6851,12 @@ kernel void xgb_feature_split_winners(
     device const SplitFinalizeFeature* features [[buffer(1)]],
     device const uint* cuts [[buffer(2)]], device const uchar* tasks [[buffer(3)]],
     device const uchar* candidates [[buffer(4)]], device FeatureSplitResult* output [[buffer(5)]],
-    constant uint& multi [[buffer(6)]], uint node [[thread_position_in_grid]]) {
+    constant uint& multi [[buffer(6)]], device const uint* values [[buffer(7)]],
+    uint node [[thread_position_in_grid]]) {
   uint winner = nodes[node].winner;
   FeatureSplitResult selected{};
   selected.feature = 0xffffffffu;
+  selected.split_bits = 0x7fc00000u;  // Invalid candidates and partition metadata: quiet NaN.
   if (winner != 0xffffffffu) {
     selected.feature = features[winner].feature;
     selected.cut_begin = cuts[selected.feature];
@@ -6864,6 +6866,15 @@ kernel void xgb_feature_split_winners(
     } else {
       selected.kind = reinterpret_cast<device const QuantizedSplitTask*>(tasks)[winner].kind;
       selected.scalar = reinterpret_cast<device const QuantizedSplitResult*>(candidates)[winner];
+    }
+    if (selected.kind != 2) {
+      uint bin = uint(multi ? selected.vector.bin : selected.scalar.bin);
+      // Scalar CUDA scans are exclusive in both missing directions. Vector
+      // forward scans use the current cut; backward scans use its lower bound.
+      bool lower_edge = selected.kind == 0 && (!multi || selected.vector.missing);
+      selected.split_bits = lower_edge && bin == 0
+                                ? 0xff800000u
+                                : values[selected.cut_begin + bin - uint(lower_edge)];
     }
   }
   output[node] = selected;

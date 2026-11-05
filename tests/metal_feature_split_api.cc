@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <vector>
@@ -84,6 +85,12 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
     caches.push_back(std::move(cache));
   }
   auto workspace = metal::MakeSplitWorkspace();
+  auto cut_values = index.cut.Values();
+  std::vector<float> padded_cuts{-123.f};
+  padded_cuts.insert(padded_cuts.end(), cut_values.begin(), cut_values.end());
+  padded_cuts.push_back(456.f);
+  HostDeviceVector<float> resident_cuts(padded_cuts, device);
+  auto cut_span = resident_cuts.ConstDeviceSpan().subspan(1, bins);
   auto reference_workspace = metal::MakeSplitWorkspace();
   auto stored = metal::MakeSplitWeightStorage(targets);
   std::vector<std::pair<unsigned, std::vector<metal::SplitNodeWeights>>> expected_weights;
@@ -163,14 +170,20 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
     auto resident_bounds = metal::GatherSplitBounds(
         node_ids, targets, constrained ? bound_state->Lower() : Span<float const>{},
         constrained ? bound_state->Upper() : Span<float const>{}, workspace.get());
-    metal::EvaluateFeatureSplits(inputs, features, ptr, types, monotone, onehot, 4,
+    metal::EvaluateFeatureSplits(inputs, features, ptr, cut_span, types, monotone, onehot, 4,
                                  resident_parents.ConstDeviceSpan(), resident_fp.ConstDeviceSpan(),
                                  resident_bounds, parameters, vector_leaf, &actual, &selected, nullptr,
                                  workspace.get());
     std::vector<metal::SplitWeightCopy> copies;
     for (unsigned node = 0; node < sets.size(); ++node) copies.push_back({node, repeat * 300 + node});
     stored->Store(*workspace, copies);  // GPU consumer before inspecting any result payload.
+    std::vector<metal::SplitCategoryTask> categories;
+    for (unsigned node = 0; node < sets.size(); ++node)
+      if (actual[node].winner != 0xffffffffu && selected[node].kind)
+        categories.push_back({actual[node].winner, selected[node].cut_begin});
+    metal::BuildSplitCategories(cut_span, categories, 1, nullptr, workspace.get());
     auto after = metal::GetStatistics();
+    Check(!resident_cuts.HostCanRead(), "Winner/category handling requested a cut host mirror");
     Check(after.split_bounds_gather_dispatches == before.split_bounds_gather_dispatches + 1 &&
               after.split_bounds_gather_values - before.split_bounds_gather_values == sets.size() * targets &&
               after.split_bounds_host_copy_bytes == before.split_bounds_host_copy_bytes &&
@@ -202,12 +215,21 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
       auto winner = expected[node].winner;
       if (winner == 0xffffffffu) {
         Check(selected[node].feature == 0xffffffffu, "Invalid winner published a feature");
+        Check(std::isnan(selected[node].split_value), "Invalid winner published a threshold");
       } else {
         auto f = final_features[winner].feature;
         Check(selected[node].feature == f && selected[node].kind == kinds[winner] &&
                   selected[node].cut_begin == ptr[f], "Selected GPU metadata differs");
         if (vector_leaf) Same(selected[node].vector, vector_results[winner], "Vector split differs");
         else Same(selected[node].scalar, scalar_results[winner], "Scalar split differs");
+        auto bin = vector_leaf ? vector_results[winner].bin : scalar_results[winner].bin;
+        auto lower_edge = kinds[winner] == 0 &&
+                          (!vector_leaf || vector_results[winner].default_left);
+        float value = std::numeric_limits<float>::quiet_NaN();
+        if (kinds[winner] != 2)
+          value = lower_edge && bin == 0 ? -std::numeric_limits<float>::infinity()
+                                         : cut_values[ptr[f] + bin - unsigned(lower_edge)];
+        Same(selected[node].split_value, value, "CUDA selected threshold bits differ");
       }
       expected_weights.push_back({repeat * 300 + node,
           {weights.begin() + node * targets, weights.begin() + (node + 1) * targets}});
@@ -221,7 +243,7 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
       HostDeviceVector<bst_feature_t> invalid(1, 4, device);
       invalid_features[0] = invalid.ConstDeviceSpan();
       auto reject = [&](auto const& ids, auto const& cuts, auto const& feature_types) {
-        Reject([&] { metal::EvaluateFeatureSplits(inputs, ids, cuts, feature_types, monotone,
+        Reject([&] { metal::EvaluateFeatureSplits(inputs, ids, cuts, cut_span, feature_types, monotone,
             onehot, 4, resident_parents.ConstDeviceSpan(), resident_fp.ConstDeviceSpan(),
             node_bounds, parameters, vector_leaf, &actual, &selected, nullptr, workspace.get()); });
       };
@@ -235,10 +257,15 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
       auto invalid_types = types;
       invalid_types[2] = static_cast<FeatureType>(2);
       reject(features, ptr, invalid_types);
+      Reject([&] { metal::EvaluateFeatureSplits(inputs, features, ptr, cut_span.first(bins - 1),
+          types, monotone, onehot, 4, resident_parents.ConstDeviceSpan(), resident_fp.ConstDeviceSpan(),
+          node_bounds, parameters, vector_leaf, &actual, &selected, nullptr, workspace.get()); });
     }
     ++cases;
   }
   workspace.reset();
+  Check(resident_cuts.ConstHostVector() == padded_cuts,
+        "Winner/category handling changed cut values or offset guards");
   for (auto const& [node, expected] : expected_weights) {
     auto base = stored->Base(node), left = stored->Left(node), right = stored->Right(node);
     for (unsigned t = 0; t < targets; ++t) {

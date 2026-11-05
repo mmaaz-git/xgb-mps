@@ -30,6 +30,7 @@
 #include "../../common/metal_constraints.h"
 #include "../../common/metal_model.h"
 #include "../../common/metal_split.h"
+#include "../../common/metal_vector.h"
 #endif
 
 namespace xgboost::common::metal {
@@ -335,10 +336,11 @@ class HistEvaluator {
       common::Span<std::int32_t const> constraints;
       if (evaluator.has_constraint) constraints = {evaluator.constraints, ptr.size() - 1};
       auto final_bounds = tree_evaluator_.GatherBounds(node_ids, metal_workspace_.get());
+      auto cut_values = common::metal::ConstDeviceSpan(cut.cut_values_);
       common::metal::EvaluateFeatureSplits(
-          inputs, resident_features, ptr, feature_types, constraints, param_->max_cat_to_onehot,
-          param_->max_cat_threshold, parents, final_parents, final_bounds, parameters, false,
-          &finalized, &selected, &node_weights, metal_workspace_.get());
+          inputs, resident_features, ptr, cut_values, feature_types, constraints,
+          param_->max_cat_to_onehot, param_->max_cat_threshold, parents, final_parents, final_bounds,
+          parameters, false, &finalized, &selected, &node_weights, metal_workspace_.get());
       std::vector<common::metal::SplitCategoryTask> category_tasks;
       std::vector<std::size_t> category_slot(entries.size());
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
@@ -353,7 +355,7 @@ class HistEvaluator {
               : static_cast<std::uint32_t>(
                     common::CatBitField::ComputeStorageSize(cut.MaxCategory() + 1));
       std::vector<std::uint32_t> category_bits;
-      common::metal::BuildSplitCategories(cut.Values(), category_tasks, category_words,
+      common::metal::BuildSplitCategories(cut_values, category_tasks, category_words,
                                           &category_bits, metal_workspace_.get());
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
         auto i = finalized[entry].winner;
@@ -362,16 +364,8 @@ class HistEvaluator {
         auto f = selected[entry].feature;
         auto nid = entries[entry].nid;
         auto const& task = selected[entry];
-        float split;
-        if (task.kind == 2)
-          split = std::numeric_limits<float>::quiet_NaN();
-        else if (task.kind == 0)
-          split = r.bin == 0 ? -std::numeric_limits<float>::infinity()
-                             : cut.Values()[ptr[f] + r.bin - 1];
-        else
-          split = cut.Values()[ptr[f] + r.bin];
         SplitEntry candidate;
-        candidate.Update(finalized[entry].loss_chg, f, split, r.default_left, task.kind != 0,
+        candidate.Update(finalized[entry].loss_chg, f, task.split_value, r.default_left, task.kind != 0,
                          GradStats{r.left_sum}, GradStats{r.right_sum});
         if (task.kind) {
           auto begin = category_bits.begin() + category_slot[entry] * category_words;
@@ -836,10 +830,11 @@ class HistMultiEvaluator {
       std::vector<common::metal::SplitNodeResult> finalized;
       std::vector<common::metal::FeatureSplitResult> selected;
       auto final_bounds = tree_evaluator_.GatherBounds(node_ids, metal_workspace_.get());
+      auto cut_values = common::metal::ConstDeviceSpan(cut.cut_values_);
       common::metal::EvaluateFeatureSplits(
-          inputs, resident_features, ptr, feature_types, constraints, param_->max_cat_to_onehot,
-          param_->max_cat_threshold, sums.integers, sums.precise, final_bounds, parameters, true,
-          &finalized, &selected, nullptr, metal_workspace_.get());
+          inputs, resident_features, ptr, cut_values, feature_types, constraints,
+          param_->max_cat_to_onehot, param_->max_cat_threshold, sums.integers, sums.precise,
+          final_bounds, parameters, true, &finalized, &selected, nullptr, metal_workspace_.get());
       std::vector<common::metal::SplitSumCopy> sum_copies;
       std::vector<common::metal::SplitWeightCopy> weight_copies;
       std::vector<common::metal::SplitCategoryCopy> category_copies;
@@ -856,7 +851,7 @@ class HistMultiEvaluator {
               ? 0u
               : static_cast<std::uint32_t>(
                     common::CatBitField::ComputeStorageSize(cut.MaxCategory() + 1));
-      common::metal::BuildSplitCategories(cut.Values(), category_tasks, category_words,
+      common::metal::BuildSplitCategories(cut_values, category_tasks, category_words,
                                           nullptr, metal_workspace_.get());
       for (std::size_t entry = 0; entry < entries.size(); ++entry) {
         auto i = finalized[entry].winner;
@@ -865,19 +860,12 @@ class HistMultiEvaluator {
         auto f = selected[entry].feature;
         auto nid = entries[entry].nid;
         auto const& task = selected[entry];
-        float split;
-        if (task.kind == 2)
-          split = std::numeric_limits<float>::quiet_NaN();
-        else if (task.kind == 0 && r.default_left)
-          split = common::HistogramCuts::NumericBinLowerBound(ptr, cut.Values(), f, ptr[f] + r.bin);
-        else
-          split = cut.Values()[ptr[f] + r.bin];
         SplitEntryContainer<std::vector<GradientPairPrecise>> candidate;
         // Driver validity/ordering use scalar loss, feature and depth only.
         auto left = linalg::MakeVec(DeviceOrd::CPU(), common::Span<GradientPairPrecise const>{});
         auto right = left;
-        candidate.Update(finalized[entry].loss_chg, f, split, r.default_left, task.kind != 0, left,
-                         right);
+        candidate.Update(finalized[entry].loss_chg, f, task.split_value, r.default_left,
+                         task.kind != 0, left, right);
         if (entries[entry].split.Update(candidate)) {
           sum_copies.push_back({i, static_cast<std::uint32_t>(nid)});
           entries[entry].child_hessians = {finalized[entry].left_hess,
