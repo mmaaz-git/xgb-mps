@@ -244,9 +244,13 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "not_started",
+    "status": "in_progress",
     "gpu_execution": false,
-    "reason": "Waiting for corrected sampling run42103889374 before pushing this build-triggering batch; that run predates integer leaves"
+    "run_id": 42107942460,
+    "head": "97832fc3a68c6683f91e75825ac82848dcb3c9e1",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42107942460",
+    "declared_input_hashes": 59,
+    "scope": "Both integer leaf and cache consumers; six binaries"
   },
   "cuda_runtime": {
     "status": "not_run",
