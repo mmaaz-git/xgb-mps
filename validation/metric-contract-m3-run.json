@@ -346,10 +346,13 @@
     "log": "results/verify2-metric-io-final.log"
   },
   "cuda_compile": {
-    "status": "not_run",
+    "status": "in_progress",
     "gpu_execution": false,
     "previous_run": 42083981584,
-    "previous_run_includes_metric": false
+    "previous_run_includes_metric": false,
+    "run_id": 42092645863,
+    "head": "7e0f91c1a59967b6f6323026dce2a1dd5362b4a1",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42092645863"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -370,5 +373,6 @@
     "Comparison returns1for malformed reports/reference failures, otherwise2for numerical/domain review, including exclusions even when all common-domain outputs agree.",
     "The report format and hashes preserve data/provenance but do not authenticate GPU hardware. Retain matching runtime metadata/logs and build records.",
     "Lossless XZ archives replace only newly created, uncommitted gzip copies. Raw hashes and complete inputs/results are unchanged."
-  ]
+  ],
+  "harness_commit": "7e0f91c1a59967b6f6323026dce2a1dd5362b4a1"
 }
