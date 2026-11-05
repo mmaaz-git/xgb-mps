@@ -1,5 +1,6 @@
-// Direct calls to the vendored library's CUDA AUC implementation. No source
-// inclusion, registration replacement, private access or formula rewrite.
+// Grouped PR calls the linked CUDA library directly. A separate namespace copy
+// prepares observation boundaries for the binary/multi-output comparison; its
+// generated source and arithmetic-preservation record are retained by CI.
 #include <cuda_runtime.h>
 #include <cub/version.cuh>
 #include <thrust/version.h>
@@ -8,6 +9,9 @@
 #include "../xgboost/src/metric/auc.h"
 #include "grouped_pr_contract_io.h"
 #include "xgboost/json.h"
+#include "metric_registry_probe.h"
+#include "auc_capture.cuh"
+#include "auc_probe.inc"
 
 namespace gp = grouped_pr;
 using namespace xgboost;
@@ -35,6 +39,10 @@ std::vector<double> Observe(Context const& ctx,std::vector<float> const& p,
 }
 int main(int argc,char** argv) {
   try {
+    if (argc == 2 && std::string(argv[1]) == "--metric-registry") {
+      MetricRegistrySignature();
+      return 0;
+    }
     gp::Require(argc==4 && std::string(argv[1])=="--grouped-pr",
                 "Usage: cuda_auc_contracts --grouped-pr input-only.bin new-cuda.bin");
     std::string metadata=std::string(argv[3])+".json";

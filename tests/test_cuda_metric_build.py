@@ -15,6 +15,8 @@ ROOT=Path(__file__).parents[1]
 def build(tmp_path,monkeypatch):
     spec=importlib.util.spec_from_file_location("cuda_driver",ROOT/"scripts/build_cuda_comparison.py")
     driver=importlib.util.module_from_spec(spec); spec.loader.exec_module(driver)
+    probe_spec=importlib.util.spec_from_file_location("auc_probe_driver",ROOT/"scripts/prepare_auc_probe.py")
+    probe_module=importlib.util.module_from_spec(probe_spec); probe_spec.loader.exec_module(probe_module)
     targets=re.search(r"foreach\(contract ([^)]+)\)",(ROOT/"tests/cuda_comparison/CMakeLists.txt").read_text()).group(1).split()
     assert targets==["numerical","aft","rng","math","ranking","metric","linear","auc"]
     for name in driver.INPUTS:
@@ -36,6 +38,7 @@ def build(tmp_path,monkeypatch):
                 return SimpleNamespace(stdout="partial diagnostic\n",stderr="loader failure retained\n",returncode=1)
             text="rmse factory_signature\n"
             if state["bad"]=="registry" and args[0].endswith("cuda_metric_contracts"): text="rmse changed_factory\n"
+            if state["bad"]=="auc-registry" and args[0].endswith("cuda_auc_contracts"): text="rmse changed_factory\n"
             if state["bad"]=="empty": text=""
             return SimpleNamespace(stdout=text,stderr="",returncode=0)
         if args[0]=="nm":
@@ -43,6 +46,8 @@ def build(tmp_path,monkeypatch):
             # definition. Actual metric methods/vtables must remain hidden.
             if args[-1].endswith('cuda_linear_contracts'):
                 text="00000001 T xgboost::linear::GPUCoordinateUpdater::UpdateResidual()\n" if state['bad']=='linear-symbols' else "00000001 W thrust::Kernel<xgboost::linear::GPUCoordinateUpdater>()\n"
+            elif args[-1].endswith('cuda_auc_contracts'):
+                text="00000001 T xgboost::metric::auc_probe::BinaryPRAUC()\n" if state['bad']=='auc-symbols' else "00000001 W thrust::Kernel<xgboost::metric::auc_probe::PairPlus>()\n"
             else:
                 text="00000001 T xgboost::metric::EvalRowRMSE()\n" if state["bad"]=="symbols" else "00000001 W thrust::Kernel<xgboost::metric::EvalRowRMSE>()\n"
             return SimpleNamespace(stdout=text,stderr="",returncode=0)
@@ -56,6 +61,9 @@ def build(tmp_path,monkeypatch):
             return SimpleNamespace(stdout=text,stderr="",returncode=0)
         if "-S" in args:
             p=Path(args[args.index("-B")+1]); p.mkdir(); (p/"compile_commands.json").write_text("[]")
+            generated,metadata=probe_module.generate((tmp_path/'xgboost/src/metric/auc.cu').read_bytes())
+            (p/'auc_probe.inc').write_bytes(generated)
+            (p/'auc_probe.inc.json').write_text(json.dumps(metadata))
         elif args[2]==str(cmake):
             (cmake/"lib").mkdir(); (cmake/"lib/libxgboost.so").write_bytes(b"fake library")
         elif "--target" not in args:
@@ -78,7 +86,7 @@ def test_eight_binaries_complete_hashes_and_host_only_isolation_gate(build):
     assert not any("--metric-registry" in c for c in state["calls"])
     record=run("link")
     assert record["status"]=="passed-compile-link" and not record["gpu_execution"]
-    assert len(record["binaries"])==8 and len(record["inputs"])==71
+    assert len(record["binaries"])==8 and len(record["inputs"])==73
     assert {'tests/grouped_pr_contract_io.h','tests/cuda_auc_contracts.cu',
             'xgboost/src/metric/auc.cu','xgboost/src/metric/auc.h'} <= set(record['inputs'])
     auc=(root/'tests/cuda_auc_contracts.cu').read_text()
@@ -101,7 +109,9 @@ def test_eight_binaries_complete_hashes_and_host_only_isolation_gate(build):
             "xgboost/src/metric/survival_metric.cu"} <= set(record["inputs"])
     isolation=record["metric_source_isolation"]
     assert isolation["status"]=="passed" and not isolation["gpu_execution"] and len(isolation["files"])==3
-    assert sum("--metric-registry" in c for c in state["calls"])==2
+    assert sum("--metric-registry" in c for c in state["calls"])==3
+    isolation=record['auc_source_isolation']
+    assert isolation['status']=='passed' and not isolation['gpu_execution'] and len(isolation['files'])==4
     assert any(c[0]=="nm" for c in state["calls"])
     isolation=record['linear_source_isolation']
     assert isolation['status']=='passed' and not isolation['gpu_execution'] and len(isolation['files'])==3
@@ -118,7 +128,8 @@ def test_eight_binaries_complete_hashes_and_host_only_isolation_gate(build):
     assert '-Xcompiler=-fvisibility=hidden -Xcompiler=-fvisibility-inlines-hidden' in cmake
     workflow=(ROOT/'.github/workflows/cuda-compile.yml').read_text()
     for name in ('metric-registry-baseline.txt','metric-registry-probe.txt','metric-defined-dynamic-symbols.txt',
-                 'linear-registry-baseline.txt','linear-registry-probe.txt','linear-defined-dynamic-symbols.txt','sampling-rng-alignment.txt'):
+                 'linear-registry-baseline.txt','linear-registry-probe.txt','linear-defined-dynamic-symbols.txt','sampling-rng-alignment.txt',
+                 'auc-registry-probe.txt','auc-defined-dynamic-symbols.txt','cmake/auc_probe.inc','cmake/auc_probe.inc.json'):
         assert f'results/cuda-comparison-build/{name}' in workflow
 
 
@@ -126,12 +137,18 @@ def test_eight_binaries_complete_hashes_and_host_only_isolation_gate(build):
                                         ("symbols","exports production metric"),("source","changed after object"),
                                         ("sampling-rng","Sampling RNG alignment check"),
                                         ("linear-registry","Linear probe changed/omitted"),
-                                        ("linear-symbols","exports production linear")])
+                                        ("linear-symbols","exports production linear"),
+                                        ("auc-registry","AUC source probe changed"),
+                                        ("auc-symbols","AUC source probe exports"),
+                                        ("auc-source","AUC source observation provenance")])
 def test_isolation_and_source_mismatch_retain_failure(build,bad,pattern):
     run,state,root,output,driver=build
     run("compile"); state["bad"]=bad
     if bad=="source":
         with (root/"tests/cuda_metric_source.h").open("a") as stream: stream.write("// changed\n")
+    if bad=="auc-source":
+        path=output/'cmake/auc_probe.inc'
+        path.write_text(path.read_text().replace('float fp = (1.0 - label) * w;', 'float fp = (1.0f - label) * w;',1))
     with pytest.raises(ValueError,match=pattern): run("link")
     record=json.loads((output/"build.json").read_text())
     assert record["status"]=="failed" and not record["gpu_execution"]

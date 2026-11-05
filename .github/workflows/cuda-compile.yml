@@ -7,6 +7,8 @@ on:
       - "xgboost/**"
       - "scripts/ci_cuda_build.sh"
       - "scripts/build_cuda_comparison.py"
+      - "scripts/prepare_auc_probe.py"
+      - "tests/auc_capture.cuh"
       - "tests/cuda_numerical_contracts.cu"
       - "tests/cuda_aft_contracts.cu"
       - "tests/aft_contract_io.h"
@@ -52,6 +54,8 @@ on:
       - "xgboost/**"
       - "scripts/ci_cuda_build.sh"
       - "scripts/build_cuda_comparison.py"
+      - "scripts/prepare_auc_probe.py"
+      - "tests/auc_capture.cuh"
       - "tests/cuda_numerical_contracts.cu"
       - "tests/cuda_aft_contracts.cu"
       - "tests/aft_contract_io.h"
@@ -141,6 +145,10 @@ jobs:
             results/cuda-comparison-build/linear-registry-baseline.txt
             results/cuda-comparison-build/linear-registry-probe.txt
             results/cuda-comparison-build/linear-defined-dynamic-symbols.txt
+            results/cuda-comparison-build/auc-registry-probe.txt
+            results/cuda-comparison-build/auc-defined-dynamic-symbols.txt
+            results/cuda-comparison-build/cmake/auc_probe.inc
+            results/cuda-comparison-build/cmake/auc_probe.inc.json
             results/cuda-comparison-build/sampling-rng-alignment.txt
             results/cuda-comparison-build/cmake/compile_commands.json
             results/cuda-comparison-build/cmake/CMakeCache.txt

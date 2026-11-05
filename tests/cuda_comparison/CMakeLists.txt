@@ -6,7 +6,16 @@ project(XgbCudaComparison LANGUAGES CXX CUDA)
 find_package(CUDAToolkit 12.9 REQUIRED)
 find_package(CCCL CONFIG REQUIRED)
 find_package(OpenMP REQUIRED COMPONENTS CXX)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 separate_arguments(openmp_flags NATIVE_COMMAND "${OpenMP_CXX_FLAGS}")
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../../scripts/prepare_auc_probe.py"
+    --source "${XGB_SOURCE_DIR}/src/metric/auc.cu"
+    --output "${CMAKE_CURRENT_BINARY_DIR}/auc_probe.inc"
+  COMMAND_ERROR_IS_FATAL ANY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_LIST_DIR}/../../scripts/prepare_auc_probe.py"
+  "${XGB_SOURCE_DIR}/src/metric/auc.cu")
 if(XGB_USE_NVCOMP)
   # Linking libxgboost by path loses the production CMake target's dependency
   # information. Import the same optional package so its nonstandard library
@@ -35,7 +44,12 @@ foreach(contract numerical aft rng math ranking metric linear auc)
   target_compile_options(${object} PRIVATE
     --expt-extended-lambda --expt-relaxed-constexpr --default-stream=per-thread
     -Xfatbin=-compress-all)
-  if(contract STREQUAL "metric" OR contract STREQUAL "linear")
+  if(contract STREQUAL "auc")
+    # Retain original relative include lookup for the generated source copy.
+    target_include_directories(${object} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}"
+      "${XGB_SOURCE_DIR}/src/metric")
+  endif()
+  if(contract STREQUAL "metric" OR contract STREQUAL "linear" OR contract STREQUAL "auc")
     # Source policy/reducer probes must not interpose on the production library.
     target_compile_options(${object} PRIVATE
       -Xcompiler=-fvisibility=hidden -Xcompiler=-fvisibility-inlines-hidden)

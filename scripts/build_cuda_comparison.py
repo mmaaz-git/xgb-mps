@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import importlib.util
 
 ROOT = Path(__file__).resolve().parents[1]
 INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_report.h",
@@ -36,6 +37,7 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "xgboost/src/linear/updater_gpu_coordinate.cu", "xgboost/src/linear/coordinate_common.h",
           "xgboost/src/linear/param.h", "xgboost/include/xgboost/linear_updater.h",
           "tests/grouped_pr_contract_io.h", "tests/cuda_auc_contracts.cu",
+          "tests/auc_capture.cuh", "scripts/prepare_auc_probe.py",
           "xgboost/src/metric/auc.cu", "xgboost/src/metric/auc.h",
           "xgboost/src/tree/gpu_hist/histogram.cu", "xgboost/src/tree/gpu_hist/histogram.cuh",
           "xgboost/src/tree/gpu_hist/feature_groups.cu", "xgboost/src/tree/gpu_hist/feature_groups.cuh",
@@ -197,6 +199,30 @@ def main():
             "registry_entries": len(baseline.splitlines()),
             "files": {str(path): sha(path) for path in (baseline_path, probe_path, symbols_path)}}
         print("PASS host metric registry/factory identity and hidden source definitions; no GPU execution", flush=True)
+        auc_paths = (output/"auc-registry-probe.txt", output/"auc-defined-dynamic-symbols.txt")
+        auc_registry = capture([binaries["auc"]["path"], "--metric-registry"], auc_paths[0])
+        if auc_registry != baseline:
+            raise ValueError("AUC source probe changed metric registration/factory types")
+        auc_symbols = capture(["nm", "-D", "--defined-only", "-C", binaries["auc"]["path"]], auc_paths[1])
+        auc_names = [re.sub(r"^\s*(?:[0-9a-fA-F]+\s+)?[A-Za-z?]\s+", "", line)
+                     for line in auc_symbols.splitlines()]
+        if any(re.match(metric_definition, name) for name in auc_names):
+            raise ValueError("AUC source probe exports production/probe metric definitions")
+        generated = output/"cmake/auc_probe.inc"
+        generated_record = generated.with_suffix(".inc.json")
+        source_record = json.loads(generated_record.read_text())
+        probe_spec = importlib.util.spec_from_file_location("auc_source_probe", ROOT/"scripts/prepare_auc_probe.py")
+        probe_module = importlib.util.module_from_spec(probe_spec)
+        probe_spec.loader.exec_module(probe_module)
+        expected_source, expected_record = probe_module.generate((ROOT/"xgboost/src/metric/auc.cu").read_bytes())
+        if (source_record["source_sha256"] != inputs["xgboost/src/metric/auc.cu"]
+                or source_record != expected_record or generated.read_bytes() != expected_source):
+            raise ValueError("AUC source observation provenance differs from build inputs")
+        record["auc_source_isolation"] = {
+            "status": "passed", "gpu_execution": False,
+            "registry_entries": len(auc_registry.splitlines()),
+            "files": {str(path): sha(path) for path in (*auc_paths, generated, generated_record)}}
+        print("PASS host AUC registry identity, hidden source copy and generated-source provenance; no GPU execution", flush=True)
         linear_paths = (output/"linear-registry-baseline.txt", output/"linear-registry-probe.txt",
                         output/"linear-defined-dynamic-symbols.txt")
         linear_baseline = capture([binaries["numerical"]["path"], "--linear-registry"], linear_paths[0])

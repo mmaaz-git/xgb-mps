@@ -1282,3 +1282,25 @@ python3 scripts/compare_grouped_pr_contracts.py validate-metal results/new-group
 This covers grouped PR only. Binary/multi-output AUC, their pathological prefix
 diagnostics, grouped ROC, public metric caller combinations and the remaining
 ranking metrics are separate work; P5-N09/10/11 are not closed by this batch.
+
+## Binary and multi-output AUC observation preparation
+
+The CUDA comparison build now prepares a separate `auc_probe` namespace copy of
+the pinned `src/metric/auc.cu`. `scripts/prepare_auc_probe.py` preserves the source
+arithmetic and inserts eight readback hooks for terms, prefixes, original PR
+totals, curve results and normalization inputs. It checks the original source
+hash and reconstructs its exact bytes from the edit record. Production source
+and the grouped-PR library calls are unchanged.
+
+`tests/auc_capture.cuh` records actual producer buffers, with explicit presence
+flags for stages the source skips. Enabled capture adds device synchronization
+and host copies; it is a test instrument, not a performance measurement. CI
+retains the generated source and edit record, checks metric registry identity,
+and rejects exported metric definitions from the copy.
+
+Eight source/capture-helper checks and fourteen mocked build-driver checks pass
+locally. CUDA compilation of this preparation is pending; these host checks do
+not prove CUDA execution or numerical agreement. The full 528-record Metal AUC
+corpus still needs its exporter, CUDA replay and comparison checks. Replay must
+also compare the instrumented results with calls to the original linked library.
+This preparation does not increase the count of completed comparison contracts.
