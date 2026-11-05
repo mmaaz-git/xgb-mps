@@ -1,0 +1,54 @@
+PORT-12 focused AUC capacity acceptance
+Production commit: 4a0581351fe63dc980fea439167ed320884d59de
+Metal library SHA256: ded194b703e6e21371cd799b080e0f9569cb36f75ee153d0eff11b5789f6d507
+No NVIDIA execution; full regression milestone remains 68c800e.
+
+OBSERVED normalization rejection: [13:52:37] /Users/maaz/Documents/xgb-mps/xgboost/src/common/metal_histogram.mm:6074: Check failed: summaries.size() / 3 <= 65535 (65536 vs. 65535) : 
+Stack trace:
+  [bt] (0) 1   libxgboost.3.4.2.dylib              0x00000001035dddf8 dmlc::LogMessageFatal::~LogMessageFatal() + 124
+  [bt] (1) 2   libxgboost.3.4.2.dylib              0x0000000103a94198 xgboost::common::metal::NormalizeAUC(xgboost::common::Span<double const, 18446744073709551615ul>) + 420
+  [bt] (2) 3   auc-wide-before                     0x0000000102aa7cbc main + 64
+  [bt] (3) 4   dyld                                0x000000018c1c04e4 start + 6992
+
+
+OBSERVED ROC rejection: [13:52:37] /Users/maaz/Documents/xgb-mps/xgboost/src/common/metal_histogram.mm:5933: Check failed: targets <= 65535 (65536 vs. 65535) : 
+Stack trace:
+  [bt] (0) 1   libxgboost.3.4.2.dylib              0x00000001035dddf8 dmlc::LogMessageFatal::~LogMessageFatal() + 124
+  [bt] (1) 2   libxgboost.3.4.2.dylib              0x0000000103a92ed4 xgboost::common::metal::(anonymous namespace)::AUC(xgboost::linalg::TensorView<float const, 2>, xgboost::linalg::TensorView<float const, 2>, xgboost::common::Span<float const, 18446744073709551615ul>, bool, bool, void*, unsigned long, bool, xgboost::common::metal::AUCTrace*) + 1164
+  [bt] (2) 3   libxgboost.3.4.2.dylib              0x0000000103a92a3c xgboost::common::metal::ROCAUC(xgboost::linalg::TensorView<float const, 2>, xgboost::linalg::TensorView<float const, 2>, xgboost::common::Span<float const, 18446744073709551615ul>, bool, xgboost::common::Span<xgboost::common::metal::ROCAUCSums, 18446744073709551615ul>) + 88
+  [bt] (3) 4   auc-wide-before                     0x0000000102aa7d54 main + 216
+  [bt] (4) 5   dyld                                0x000000018c1c04e4 start + 6992
+
+
+
+After fix:
+PASS four exact CUDA binary AUC degenerate/cast contracts
+PASS 30 GPU normalization/metadata cases and one malformed shape error
+PASS wide auc: 65535 outputs, actual 0.5
+PASS wide aucpr: 65535 outputs, actual 0.60228427314698574
+PASS wide auc: 65536 outputs, actual 0.50000762939453125
+PASS wide aucpr: 65536 outputs, actual 0.60229034180736862
+PASS wide auc: 65537 outputs, actual 0.5
+PASS wide aucpr: 65537 outputs, actual 0.6022858338573196
+PASS six wide ROC/PR cases / 1179660 analytic and public-CPU/MPS fields
+PASS 486 production ROC-AUC cases / 7607088 score-label pairs, 420 independent weighted-pair checks; layouts, ties, weights and three-level scans
+PASS 486 production PR-AUC cases / 7607088 score-label pairs, 519 long-double integral checks; maximum CUDA-source difference 1.65978342e-14
+PASS extreme-weight PR integral 1; upstream CPU 1
+PASS 1690464 exact terms / 1690464 bounded prefixes / 78 source-integral curves (15 NaN); max prefix/bound 0.168983743, integral/bound 0.0197548906
+PASS world1 rank0: 172 AUC state cases / 392552 fields / 5 rejected calls
+PASS world2 rank0: 96 AUC state cases / 192 fields / 0 rejected calls
+PASS world2 rank1: 96 AUC state cases / 192 fields / 0 rejected calls
+PASS 2 local AUC workers
+PASS world3 rank0: 96 AUC state cases / 192 fields / 0 rejected calls
+PASS world3 rank1: 96 AUC state cases / 192 fields / 0 rejected calls
+PASS world3 rank2: 96 AUC state cases / 192 fields / 0 rejected calls
+PASS 3 local AUC workers
+PASS world5 rank0: 96 AUC state cases / 192 fields / 0 rejected calls
+PASS world5 rank1: 96 AUC state cases / 192 fields / 0 rejected calls
+PASS world5 rank2: 96 AUC state cases / 192 fields / 0 rejected calls
+PASS world5 rank3: 96 AUC state cases / 192 fields / 0 rejected calls
+PASS world5 rank4: 96 AUC state cases / 192 fields / 0 rejected calls
+PASS 5 local AUC workers
+Existing Python AUC suite: 97 passed.
+..                                                                       [100%]
+2 passed, 97 deselected in 0.48s

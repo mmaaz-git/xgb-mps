@@ -35,12 +35,14 @@ gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
 **not a completion percentage or proof of parity**. See the
 [findings and evidence](docs/CUDA_AUDIT.md) and [ordered plan](docs/PLAN.md).
 All ten tasks are locally complete. The [local acceptance report](docs/LOCAL_ACCEPTANCE.md)
-connects every fix and all 17 numerical contracts to passing fixtures and states
-the remaining limits. The latest production change (`68c800e`) initializes sketch
-pointers and categorical state on GPU; subsequent work adds numerical witnesses.
-**The production backend has passed local acceptance and CUDA compilation.
-Next: finish the comparison harnesses and run them on NVIDIA.** Full parity
-remains unproven.
+connects every original fix and all 17 numerical contracts to passing fixtures
+and states the remaining limits. Further review found an unnecessary AUC limit:
+`4a05813` now supports more than 65,535 outputs and matches CUDA's empty
+normalization semantics. Two native groups and 99 Python tests pass for this
+[focused fix](validation/auc-capacity-m3-run.json). The full regression milestone
+below remains at `68c800e`.
+**Next: review the remaining capacity guards, finish comparison harnesses and
+run them on NVIDIA.** Full parity remains unproven.
 
 | Validation stage | Current status |
 | --- | --- |

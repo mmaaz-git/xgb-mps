@@ -1,0 +1,274 @@
+{
+  "status": "passed-focused-Metal-CPU-acceptance; CUDA compilation and NVIDIA runtime pending",
+  "recorded_utc": "2026-11-05T21:59:16.712501+00:00",
+  "task": "PORT-12",
+  "production_commit": "4a0581351fe63dc980fea439167ed320884d59de",
+  "production_tree": "ec48320f9cd63814b5f33a2f9c48df93b2258846",
+  "parent_production_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "library_sha256": "ded194b703e6e21371cd799b080e0f9569cb36f75ee153d0eff11b5789f6d507",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "problem": "AUC and normalization rejected more than 65,535 outputs; normalization also rejected empty summaries although CUDA ScaleOutputs returns NaN.",
+  "reproduction": {
+    "status": "observed_before_fix",
+    "source": "results/auc-wide-before.cc",
+    "log": "results/auc-wide-before.log",
+    "failures": [
+      "NormalizeAUC at 65,536 outputs",
+      "ROCAUC at 65,536 outputs"
+    ]
+  },
+  "changes": [
+    "AUC target shape guard uses the actual 32-bit kernel field limit instead of 65,535.",
+    "NormalizeAUC count and loop index are 64-bit; empty reductions execute on GPU and return NaN.",
+    "Arithmetic, reduction association, input placement and malformed-triplet rejection are unchanged."
+  ],
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T215418Z",
+    "revision": "df013d3bb6fdadde2d99e994afe7bff24837effd",
+    "working_tree": "M tests/metal_auc_api.cc\n M xgboost/src/common/metal_histogram.metal\n M xgboost/src/common/metal_histogram.mm",
+    "diff_sha256": "07751205e5417b98fb3ab8de42877b0a8b2532e5db1cc19e04051bbecb50a34a",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {},
+    "native_groups": [
+      "metal_auc_state_api",
+      "metal_auc_api"
+    ],
+    "python_selection": [
+      "tests/test_metal_auc.py"
+    ],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 8.570108333136886
+      },
+      {
+        "name": "compile-metal_auc_state_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_auc_state_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_auc_state_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_auc_state_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.0607169589493424
+      },
+      {
+        "name": "metal_auc_state_api",
+        "command": [
+          ".venv/bin/python",
+          "tests/run_auc_state_collective.py"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1",
+          "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+        },
+        "log": "003-metal_auc_state_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 8.336798334028572
+      },
+      {
+        "name": "compile-metal_auc_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_auc_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_auc_api_test"
+        ],
+        "environment": {},
+        "log": "004-compile-metal_auc_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.165508417179808
+      },
+      {
+        "name": "metal_auc_api",
+        "command": [
+          "results/metal_auc_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "005-metal_auc_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 2.7965878329705447
+      },
+      {
+        "name": "linear-reference",
+        "command": [
+          "bash",
+          "tests/build_linear_reference.sh"
+        ],
+        "environment": {},
+        "log": "006-linear-reference.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.125302999978885
+      },
+      {
+        "name": "pytest",
+        "command": [
+          ".venv/bin/python",
+          "-m",
+          "pytest",
+          "-q",
+          "tests/test_metal_auc.py",
+          "--require-metal"
+        ],
+        "environment": {
+          "PYTHONPATH": "/Users/maaz/Documents/xgb-mps/xgboost/python-package"
+        },
+        "log": "007-pytest.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 3.223398541100323
+      }
+    ],
+    "library_sha256": "ded194b703e6e21371cd799b080e0f9569cb36f75ee153d0eff11b5789f6d507",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T21:54:45.392369+00:00"
+  },
+  "verified_tested_diff_sha256": "07751205e5417b98fb3ab8de42877b0a8b2532e5db1cc19e04051bbecb50a34a",
+  "native_acceptance": {
+    "groups": 2,
+    "widths": [
+      65535,
+      65536,
+      65537
+    ],
+    "wide_roc_pr_cases": 6,
+    "wide_analytic_and_cpu_mps_fields": 1179660,
+    "normalization_and_metadata_cases": 30,
+    "largest_normalization_outputs": 262145,
+    "malformed_normalization_rejections": 1,
+    "original_roc_cases": 486,
+    "original_pr_cases": 486,
+    "score_label_pairs_per_metric": 7607088,
+    "independent_pair_checks": 420,
+    "independent_integral_checks": 519,
+    "exact_terms": 1690464,
+    "bounded_prefixes": 1690464,
+    "source_integral_curves": 78,
+    "source_nan_curves": 15,
+    "max_prefix_error_fraction": 0.168983743,
+    "max_integral_error_fraction": 0.0197548906,
+    "state_worlds": [
+      1,
+      2,
+      3,
+      5
+    ],
+    "state_worker_cases": 1132,
+    "state_fields": 394472,
+    "state_rejections": 5,
+    "domain": "All workers on the same M3; wide output tests are local, not distributed wide-output runs."
+  },
+  "python_acceptance": {
+    "existing": 97,
+    "new_end_to_end": 2,
+    "total": 99,
+    "new_cases": "Zero-round CPU/MPS learners evaluate supplied base margins through the public Python API with 65,536 labels/outputs; both auc andaucpr.",
+    "scope": "No claim that training 65,536-target trees is enabled; other operations retain separate capacity guards."
+  },
+  "source_sha256": {
+    "tests/metal_auc_api.cc": "80a4ae83e61aed856f0523cc0bd666ecf342fa08ad4a33036fcde48e657919e9",
+    "xgboost/src/common/metal_histogram.mm": "0a5eee1a11af3c4ec4129d49c34e7cfc5b05fe5ffc735c1f74214fc18a4041b9",
+    "xgboost/src/common/metal_histogram.metal": "dfb7e700031e9515763806abadcee08736ed2e973d3dc1873ace45bce9129eaa",
+    "tests/test_metal_auc.py": "04e9e22f5023cf796132241309a299e9203bd0bf73d999640ad1f216a75d08b8",
+    "tests/metal_auc_state_api.cc": "22463e96492347c17f73eefde01200cf0f3df43843ffae84208c64dd67c8ab0d",
+    "tests/run_auc_state_collective.py": "df75d1072d23d52978cd6419ab038f5e6f0aa84734b0dc1892d3ad40eb744a32",
+    "xgboost/src/metric/auc.cu": "760e940b441b75ad9d03b52ad552a4398ce65bf6415feaca54530bdd7724ea60",
+    "xgboost/src/metric/auc.cc": "eea119e06b13ee9732f718118da826defaa843ca7f5f728d34c450e0f5dedd9b",
+    "tests/native_tests.json": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33"
+  },
+  "log_sha256": {
+    "results/auc-wide-before.cc": "7ea14d5cfbc3614faef7c1695587b5dcccb2e55e007ab09895c704c8b4812a9b",
+    "results/auc-wide-before.log": "41dca9a28dc18f315eb0e8497781f77a0dc417917d2bc5bd331929981030d361",
+    "results/auc-wide.log": "64e521035fa7b3581d9fb2aae9254da720fee4374331b4897ca67dfff730c0cf",
+    "results/auc-wide-native/summary.json": "cdf56d20ce7950e60b4f269ef25ad14b3888a78048921967f4b9133482fc5fd8",
+    "results/auc-wide-python-public.log": "233d0c40fc124fce4d0c422bc7cbdd92adb85e09701cce9ad1c9acee298f6bdf",
+    "results/auc-wide-native/001-build-metal.log": "48f07645f90c97f3555c0b1dad89cf6038266e7464e3775f95db90b8e92af6a7",
+    "results/auc-wide-native/002-compile-metal_auc_state_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/auc-wide-native/003-metal_auc_state_api.log": "ecb5ddab75b3e8cfc219ac16ea08a0fdc7c597a17f33a78b81861ae6e1658d9b",
+    "results/auc-wide-native/004-compile-metal_auc_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/auc-wide-native/005-metal_auc_api.log": "e05022be58e3ac67449b48cbde32d06044121b329443317508bb60916a95aafe",
+    "results/auc-wide-native/006-linear-reference.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/auc-wide-native/007-pytest.log": "3e81e71e91b80eeb0675d8b9d6cb86e55ec544b1bb52b7dbc55543efc4c8304e"
+  },
+  "cuda_compile": {
+    "status": "not_started",
+    "gpu_execution": false,
+    "reason": "Active linear run42113854537 predates this Metal-only production fix"
+  },
+  "limits": [
+    "No NVIDIA runtime equivalence established.",
+    "The full 103-native/3647-Python milestone remains historical at 68c800e; this record is the focused acceptance of the subsequent AUC change.",
+    "AUC still uses 32-bit sort/shape indices and hardware allocation limits; this does not claim unlimited output counts.",
+    "Five remaining 65,535 output guards in gradient columns, leaf sums, gradient sums, means and quantiles require separate capacity review (PORT-13).",
+    "The 65,535 feature threshold in shared-histogram selection has a fallback path and is not an input rejection."
+  ]
+}

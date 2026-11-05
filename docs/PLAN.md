@@ -27,8 +27,10 @@ across 42 families / 109 CUDA roots at `382f78c`. Sixteen missing/defective rows
 map to **10 implementation tasks** below; all ten are locally fixed and validated.
 These unequal-sized rows are not a
 completion percentage, and this bounded audit cannot prove the absence of
-unlisted defects. **VERIFY-1 local acceptance is complete. Next: VERIFY-2 and PERF-1.** No new kernels were added during
-classification.
+unlisted defects. **VERIFY-1 local acceptance is complete for its frozen scope.**
+Subsequent comparison preparation exposed the AUC capacity issue below;
+PORT-12 is locally fixed and PORT-13 is the next implementation review, alongside
+VERIFY-2. No new kernels were added during classification.
 
 ## Ordered work queue
 
@@ -47,12 +49,15 @@ classification.
 | PORT-8 | GPU split-bound gathers | Locally complete at `ed5afcf`; CUDA compile passed at `0409c7f` | GPU gather/snapshot/feature/finalizer chain and root consumers; 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port8-m3.txt). Unsupported reduced-gradient/monotone refit restriction unchanged |
 | PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA compile passed at `bf1ebea` | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
 | PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA compile passed at `bf1ebea` | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
+| PORT-12 | AUC output capacity and empty normalization | Locally complete at `4a05813`; new CUDA compile pending | Removed the artificial 65,535-output cap; 64-bit normalization accepts empty summaries as NaN. Six wide ROC/PR cases, unchanged ordinary/pathological corpus, state/collective checks and 99 Python tests pass; [evidence](../validation/auc-capacity-m3-run.json) |
+| PORT-13 | Reconcile remaining output capacity guards | Open: five guard sites identified; no blanket cap removal | Compare CUDA limits and actual storage/dispatch widths for gradient columns, leaf sums, gradient sums, means and quantiles. Remove unsupported restrictions with boundary/caller tests, or document a demonstrated platform constraint. The shared-histogram feature threshold has a fallback and is not an input rejection. |
 | VERIFY-1 | Integration at a fixed revision | Locally complete; NVIDIA execution remains separate | [Acceptance report](LOCAL_ACCEPTANCE.md) maps all 17 contracts and 16 original gap rows; full Metal/CPU/federated evidence at `68c800e`, focused numerical fixtures at `0c66454`; CUDA compile passed at `bf1ebea` |
 | VERIFY-2 | NVIDIA execution comparison | Runners addressing twelve contracts and production sketch/training/prediction added; grouped PR replay also added; external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; five contracts still need additional runners and broader caller coverage remains; publish differences, not just compiler success |
 | PERF-1 | Profile/optimize a frozen benchmark matrix | Full HIGGS repeated at `68c800e`; ordinary strict equivalence failed, common-cut 100-round diagnostic passes | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
 
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
-while hardware is unavailable. Cross-Apple-hardware claims also require actual runs.
+while hardware is unavailable. PORT-12/13 follow concrete source/input coverage
+findings. Cross-Apple-hardware claims also require actual runs.
 
 ## Next bounded work: NVIDIA comparison and performance
 

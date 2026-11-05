@@ -2,6 +2,12 @@
 
 Updated 2026-11-05. Production source: `68c800e`; numerical fixtures: `0c66454`.
 
+This report describes that historical acceptance milestone. A later production
+fix, PORT-12 at `4a05813`, removes an artificial AUC output limit and changes empty
+normalization to return NaN. Its two native groups and 99 Python tests have
+[separate focused evidence](../validation/auc-capacity-m3-run.json); the full
+regression below has not been rerun on that later production revision.
+
 **The ten implementation tasks and seventeen numerical contracts from the frozen
 audit now have local acceptance evidence, including a passing CUDA compile/link
 gate. VERIFY-1 is complete. Full CUDA parity is not established.** No NVIDIA execution
@@ -24,8 +30,8 @@ findings describe `382f78c`, not current implementation status.
 | CUDA compile/link | [Run 42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238) at `bf1ebea` passed all 197 steps, including the final shared-library link. CUDA, NCCL, nvCOMP and federated consumers compiled on a CPU runner. |
 | NVIDIA execution | Not run. Portable inputs and source oracles exist; NVIDIA harness integration and actual hardware runs remain VERIFY-2. |
 
-The production Git tree and Metal library SHA256 are unchanged from the full
-run. All 103 existing native manifest entries and profiles are unchanged. The
+At this milestone, the production Git tree and Metal library SHA256 were unchanged
+from the full run. All 103 existing native manifest entries and profiles were unchanged. The
 104th group passed separately; **there was no single 104-group full invocation**.
 The execution record retains the tested manifest hash and the committed hash:
 only JSON formatting changed after the focused run, with parsed equality checked.

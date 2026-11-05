@@ -69,6 +69,15 @@ The frozen audit retains its original findings. This is a finite
 implementation queue, not proof that no unlisted defects remain. Numerical
 acceptance is recorded in the [local acceptance report](LOCAL_ACCEPTANCE.md); NVIDIA comparisons remain open.
 
+Subsequent AUC comparison preparation found a capacity gap outside those ten
+tasks. PORT-12 (`4a05813`) removes the artificial 65,535-output AUC limit and makes
+empty normalization return NaN, as CUDA's reduction does. Native and Python
+checks exercise 65,536 outputs through the public metric/learner paths. The
+[focused record](../validation/auc-capacity-m3-run.json) preserves the failing
+baseline and exact tested source. Five other output-size guards remain for
+PORT-13 review; this does not enable arbitrary-width training or establish
+unlimited buffer/index capacity.
+
 Scalar control fields, topology, serialization and finalizers that CUDA itself
 runs on the host are not missing kernels merely because they access host memory.
 MPS execution currently shares CPU storage defaults, making caller-level review
