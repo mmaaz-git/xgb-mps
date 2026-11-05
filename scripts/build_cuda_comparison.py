@@ -15,7 +15,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_report.h",
           "tests/cuda_numerical_contracts.cu", "tests/cuda_comparison/CMakeLists.txt",
-          "scripts/build_cuda_comparison.py")
+          "tests/cuda_comparison/nvcomp_link_check.cc", "scripts/build_cuda_comparison.py")
 
 
 def sha(path):
@@ -98,12 +98,12 @@ def main():
         configure = ["cmake", "-S", str(ROOT / "tests/cuda_comparison"), "-B", str(output / "cmake"),
                      "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
                      f"-DXGB_SOURCE_DIR={ROOT / 'xgboost'}", f"-DXGB_BINARY_DIR={build}",
-                     f"-DXGB_LIBRARY={library}"]
+                     f"-DXGB_LIBRARY={library}", f"-DXGB_USE_NVCOMP={cache.get('USE_NVCOMP', 'OFF')}"]
         # Use the production build's compiler, CCCL, architectures and arithmetic
         # flags, instead of silently compiling the template trace with defaults
         # from another toolkit or a different fast-math/FMA configuration.
         for key in ("CMAKE_CUDA_COMPILER", "CMAKE_CUDA_HOST_COMPILER", "CMAKE_CUDA_ARCHITECTURES",
-                    "CMAKE_CUDA_FLAGS", "CMAKE_CUDA_FLAGS_RELEASE", "CCCL_DIR"):
+                    "CMAKE_CUDA_FLAGS", "CMAKE_CUDA_FLAGS_RELEASE", "CCCL_DIR", "nvcomp_DIR"):
             if key in cache:
                 configure.append(f"-D{key}={cache[key]}")
         if args.phase != "link":
