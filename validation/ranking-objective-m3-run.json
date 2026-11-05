@@ -1,0 +1,349 @@
+{
+  "status": "Complete Metal gradient/unbiased corpora and interchange checks passed; public-objective CUDA compile and execution pending",
+  "suite": "ranking-objective-v1",
+  "scope": "Existing full public ranking-gradient and repeated unbiased-objective corpora for P5-N05; includes NDCG, changing predictions, parent RNG and batched cases.",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T165501Z",
+    "revision": "1c84dbb0ea991638dbc7893604d8863f3664e5dc",
+    "working_tree": "M .github/workflows/cuda-compile.yml\n M scripts/build_cuda_comparison.py\n M tests/cuda_ranking_contracts.cu\n M tests/metal_ranking_gradient_api.cc\n M tests/metal_ranking_unbiased_api.cc\n?? tests/ranking_objective_io.h\n?? tests/ranking_objective_report.h",
+    "diff_sha256": "4cf5f5d1f70d4b4bd3fe3fae122d0ae98ec0194edeb2fca9ff82baeebd73fc1a",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/ranking_objective_io.h": "d3776f5ea05d018086b746b6c8d1be51df85e24022793c061e59153594e5f0a5",
+      "tests/ranking_objective_report.h": "44a035fa3e78f46f0c2c50eb77e7b9c3f6f1dd98ad417d36b9b6b8dd6c21ce6e"
+    },
+    "native_groups": [
+      "metal_ranking_gradient_api",
+      "metal_ranking_unbiased_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.7161194998770952
+      },
+      {
+        "name": "compile-metal_ranking_gradient_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_ranking_gradient_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_ranking_gradient_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_ranking_gradient_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.78756416705437
+      },
+      {
+        "name": "metal_ranking_gradient_api",
+        "command": [
+          "results/metal_ranking_gradient_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_ranking_gradient_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 9.77981520886533
+      },
+      {
+        "name": "compile-metal_ranking_unbiased_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_ranking_unbiased_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_ranking_unbiased_api_test"
+        ],
+        "environment": {},
+        "log": "004-compile-metal_ranking_unbiased_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.7249106669332832
+      },
+      {
+        "name": "metal_ranking_unbiased_api",
+        "command": [
+          "results/metal_ranking_unbiased_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "005-metal_ranking_unbiased_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 8.52929870900698
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T16:55:23.897036+00:00"
+  },
+  "native_summary_path": "results/verify2-ranking-objectives-native/summary.json",
+  "native_summary_sha256": "c3f0a2605087ae4fc9f04a0ee843a01fcad0c4834fbe59bf8b439ab5c2a7c035",
+  "tested_patch_paths": [
+    ".github/workflows/cuda-compile.yml",
+    "scripts/build_cuda_comparison.py",
+    "tests/cuda_ranking_contracts.cu",
+    "tests/metal_ranking_gradient_api.cc",
+    "tests/metal_ranking_unbiased_api.cc"
+  ],
+  "tested_patch_sha256": "4cf5f5d1f70d4b4bd3fe3fae122d0ae98ec0194edeb2fca9ff82baeebd73fc1a",
+  "tested_tracked_patch_matches_current_source": true,
+  "source_sha256": {
+    ".github/workflows/cuda-compile.yml": "9e9daddd4104f99268c2bc4bb62c3435f49d6a76dbbe6e94f95a79d7ec85bebc",
+    "scripts/build_cuda_comparison.py": "f68b300c3533696b70746cb36cbceee8cbdff7ae94e4299fb442fa0ad3680920",
+    "tests/cuda_ranking_contracts.cu": "34c9624c6bc0f0fad1dcca2b895a5720cd20f5696859a231be3a3a2177b381ef",
+    "tests/metal_ranking_gradient_api.cc": "7d663fc7cc1e7337018d2526e8c2033f700839faaa0bace8229afaab4239dd77",
+    "tests/metal_ranking_unbiased_api.cc": "3e977a9c0f636710339bdaae821efe09c66f036e9853d0a1b6b490e6235272bd",
+    "tests/ranking_objective_io.h": "d3776f5ea05d018086b746b6c8d1be51df85e24022793c061e59153594e5f0a5",
+    "tests/ranking_objective_report.h": "44a035fa3e78f46f0c2c50eb77e7b9c3f6f1dd98ad417d36b9b6b8dd6c21ce6e",
+    "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+    "scripts/compare_ranking_objectives.py": "5810489e12d6b2e74be4698a67a5d80dd835748a91ec8a381b5d051bf7b825bc",
+    "tests/test_ranking_objective_reports.py": "cc34404eb2005194040b68751da921dd8f7254588b31570571b3369e8c1b36cd",
+    "tests/cuda_ranking_reference.h": "cd25c0268553856bec4814392c5e4356747627fad2fc578197b4f2b9e648b423"
+  },
+  "export_driver": "results/run-verify2-ranking-objectives.sh",
+  "export_driver_sha256": "37b821a565d04fdc6c77d1dcef6cff45bf847d05cef442d150eece02f5f42eaa",
+  "export_log": "results/verify2-ranking-objectives.log",
+  "export_log_sha256": "741ce35369c2c4cdd3985aae7e175d6bda2847d4c67f665bf9122c6535d2ce16",
+  "export_driver_exit_code": 0,
+  "export_environment": {
+    "MTL_DEBUG_LAYER": "1",
+    "DYLD_LIBRARY_PATH": "/opt/homebrew/opt/libomp/lib"
+  },
+  "corpora": {
+    "gradient": {
+      "artifacts": {
+        "inputs": {
+          "path": "validation/ranking-gradient-inputs-m3.bin.gz",
+          "compressed_bytes": 5676347,
+          "compressed_sha256": "58eadc5a7efef56b6abfa8bf749f02c9cea55d7a4a9e2c99b647b472644586ed",
+          "raw_bytes": 19706744,
+          "raw_sha256": "e6d1b3d0be959e6c092de0e3bfafce06cf7056a20e74a5c42271f27bccddc73e"
+        },
+        "metal": {
+          "path": "validation/ranking-gradient-metal-m3.bin.gz",
+          "compressed_bytes": 14842214,
+          "compressed_sha256": "3c982490b92254aa2c81947f60a6bd97b9d003c9ebd74c6871d2074f51d45b34",
+          "raw_bytes": 39266112,
+          "raw_sha256": "0379d2ea74f64544316175b9b066f4dcf3aa6d7c17edd5a7b521923f900c412e"
+        }
+      },
+      "counts": {
+        "calls": 1442,
+        "sequences": 1442,
+        "rows": 2444200,
+        "gradient_fields": 4888400,
+        "bias_fields": 0,
+        "parent_rng_words": 1442,
+        "batched_calls": 2
+      },
+      "parent_rng_exact": true,
+      "cpp_input_roundtrip_exact": true,
+      "cpp_observations_rejected": true
+    },
+    "unbiased": {
+      "artifacts": {
+        "inputs": {
+          "path": "validation/ranking-unbiased-inputs-m3.bin.gz",
+          "compressed_bytes": 7144752,
+          "compressed_sha256": "6833e39c5f161c2b7575f2c476b905bdaadc89da5dea4ee59b235faf575f3fc6",
+          "raw_bytes": 23927024,
+          "raw_sha256": "a046a239e043b94fa02e569def2769085ef6477b0f569402b33bfa1e4891c5ee"
+        },
+        "metal": {
+          "path": "validation/ranking-unbiased-metal-m3.bin.gz",
+          "compressed_bytes": 25060529,
+          "compressed_sha256": "e39b043c8f0fa5f17b44ae8d8a091c3652c27a8c26752e645617e39f7a9b1b56",
+          "raw_bytes": 48010880,
+          "raw_sha256": "3ccd6c3ff4c4c30b3628327f8ee57da939d6d70e387d5fd7c1ad6baaa939c7e0"
+        }
+      },
+      "counts": {
+        "calls": 2596,
+        "sequences": 866,
+        "rows": 2949920,
+        "gradient_fields": 5899840,
+        "bias_fields": 118528,
+        "parent_rng_words": 2596,
+        "batched_calls": 4
+      },
+      "parent_rng_exact": true,
+      "cpp_input_roundtrip_exact": true,
+      "cpp_observations_rejected": true
+    }
+  },
+  "total_counts": {
+    "calls": 4038,
+    "sequences": 2308,
+    "rows": 5394120,
+    "gradient_fields": 10788240,
+    "bias_fields": 118528,
+    "parent_rng_words": 4038,
+    "batched_calls": 6,
+    "observed_fields": 10910806
+  },
+  "native_checks": {
+    "original_case_generation_references_residency_counters_and_tolerances_unchanged": true,
+    "gradient": {
+      "calls": 1442,
+      "rows": 2444200,
+      "raw_pairs": 43810880,
+      "exact_gradient_pairs": 2444200,
+      "maximum_scaled_error": 0,
+      "subnormal_fields_checked": 504543,
+      "batched_calls": 2,
+      "rows_per_batched_call": 327680
+    },
+    "unbiased_ordinary": {
+      "calls": 2592,
+      "sequences": 864,
+      "rows": 852768,
+      "serialized_bias_fields_checked": 118368,
+      "exact_gradient_fields": 1705535,
+      "maximum_scaled_gradient_error": 1.69500709e-07,
+      "maximum_scaled_bias_error": 0
+    },
+    "unbiased_batched": {
+      "calls": 4,
+      "sequences": 2,
+      "rows_per_call": 524288,
+      "maximum_scaled_gradient_error": 0,
+      "topk_batches_per_call": 2,
+      "mean_batches_per_call": 4,
+      "additional_serialized_bias_fields_observed": 160,
+      "bias_oracle_limit": "The original batched checks assert gradients and residency, not serialized bias; these 160 fields are newly captured observations."
+    },
+    "ordinary_tolerance": "2e-6 + 2e-5 * abs(reference)",
+    "gradient_suite_subnormal_tolerance": "2 * 2^-149 + 2e-5 * abs(reference); retained in GPU comparison when either output is a nonzero subnormal",
+    "unbiased_subnormal_policy": "Original ordinary tolerance retained; no new strict-subnormal claim for this suite."
+  },
+  "cuda_consumer": {
+    "path": "Actual ObjFunction::Create/Configure/GetGradient/SaveConfig on cuda:0",
+    "executions_planned": 4038,
+    "sequences": 2308,
+    "state": "Fresh objective and MetaInfo only at iteration zero; both reused across later calls, with original predictions and unchanged label/weight bits.",
+    "initial_bias": "Production iteration-zero initialization; input-only files contain no Metal bias or expected outputs.",
+    "continued_bias": "Retain actual objective binary64 state; serialized FP32 observations are never fed back.",
+    "parent_rng": "Seed each call from its original seed; mean consumes one parent word, topk none. Capture next word from a clone; independent host engine verifies consumption.",
+    "device_requirement": "Accessible NVIDIA GPU required; outputs must be CUDA-resident and not host-readable before observation.",
+    "execution_count_limit": "One execution per public objective call. Race repetitions remain in the separate 64-case rounding consumer."
+  },
+  "interchange_checks": {
+    "log": "results/verify2-ranking-objective-io.log",
+    "log_sha256": "5af6ff0e3af59799046de2d357a0e219e605681ddab07e69c708cc150a4e07f0",
+    "cpp_probe": "results/verify2-ranking-objectives-io.cc",
+    "cpp_probe_sha256": "84a1cbc7125a6cde56480563d581034709834db969f2164e4ce7408ab793de3f",
+    "cpp_complete_input_roundtrips": "Both byte-identical",
+    "cpp_observation_files_rejected_as_input": true,
+    "cpp_continued_label_bit_change_rejected": true,
+    "incomplete_output_rejected_by_python": true,
+    "input_bits_match_observation_input_bits": true,
+    "parent_rng_probe": "results/verify2-ranking-objective-rng.cc",
+    "parent_rng_probe_sha256": "8bc86466e8a87389440193f14f4f4ad60f9569a3e68222e1a2b8284326842451",
+    "parent_rng_words_checked": 4038,
+    "parent_rng_exact": true,
+    "parent_rng_scope": "Independent std::mt19937 host check of recorded Metal parent states; no NVIDIA execution."
+  },
+  "integrity_tests": {
+    "command": "PYTHONPATH=xgboost/python-package DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib .venv/bin/python -m pytest -q tests/test_ranking_objective_reports.py",
+    "scope": "Synthetic reports only; no NVIDIA execution",
+    "passed": 17,
+    "seconds": 1.36,
+    "log": "results/verify2-ranking-objective-report-tests.log",
+    "log_sha256": "b548cefdc2945976877c7e149627dcea561b743f1bf6c648d2efdd09239c04b5"
+  },
+  "cuda_build_driver_check": {
+    "status": "Passed mocked five-binary compile/link lifecycle and new-header source hashes; no NVCC or GPU execution",
+    "source": "results/verify2-ranking-objective-build-mock.py",
+    "source_sha256": "040d121dab1e2991c040877bcf56a04ae1996c21d21973cc296e40d6ae5be8dc",
+    "log": "results/verify2-ranking-objective-build-mock.log",
+    "log_sha256": "7ff377ecd2348b0a7f6f4fb080de5219170d128a6a2f3fd8b309162a5bb5c0aa"
+  },
+  "cuda_compile": {
+    "status": "not_run",
+    "gpu_execution": false,
+    "previous_rounding_run": 42067452564,
+    "previous_run_includes_public_objectives": false
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command_template": "results/cuda-comparison-build/cmake/cuda_ranking_contracts --objectives INPUT_ONLY.bin NEW_CUDA_OUTPUT.bin"
+  },
+  "limits": [
+    "No actual NVIDIA execution has occurred; compiler success alone cannot close CUDA parity.",
+    "All bit differences remain review items, including signed zeros, matching NaN classifications and errors within unchanged ordinary tolerances.",
+    "Classification changes, parent RNG differences and tolerance failures return failure; unbiased race effects are not automatically waived.",
+    "SaveConfig exposes FP32 bias values. Matching serialized bias does not establish identical hidden binary64 state.",
+    "Covers the original sampled public lifecycles; reloads, changed metadata shapes and other native-input/state combinations remain broader caller work.",
+    "Separate primitive-rounding boundaries still need a matching CUDA runner.",
+    "Report framing cannot authenticate hardware; retain actual build/runtime metadata and logs."
+  ]
+}

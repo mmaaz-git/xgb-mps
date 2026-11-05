@@ -38,25 +38,20 @@ All ten tasks are locally complete. The [local acceptance report](docs/LOCAL_ACC
 connects every fix and all 17 numerical contracts to passing fixtures and states
 the remaining limits. The latest production change (`68c800e`) initializes sketch
 pointers and categorical state on GPU; subsequent work adds numerical witnesses.
-**Local verification is complete, including CUDA compilation. Next: NVIDIA
-execution comparisons and current-source performance work.** Full parity remains
-unproven.
+**The production backend has passed local acceptance and CUDA compilation.
+Next: finish the comparison harnesses and run them on NVIDIA.** Full parity
+remains unproven.
 
-The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) cover 39 shared threshold,
-CDF and sketch-order witnesses, plus 96 survival-objective cases with 316,683
-rows. A ranking RNG runner adds the existing 659,200 draws and 9,068,696 raw
-pairs, training RNG streams, unweighted column shuffles and sampling hierarchies.
-The primitive-math runner adds **1,942,163 observed fields** for binary64
-arithmetic/casts, exp/log/erf and FP32 hypot/tanh, preserving the existing Metal
-inputs and tolerances. A ranking-rounding runner retains all 64 existing cases,
-including gradients, MAP prefixes, bias updates and CUDA's shared-factor race.
-Runners now address ten of the seventeen numerical contracts; seven still lack
-dedicated runners, and broader caller coverage remains, including the full
-ranking-gradient and repeated unbiased-objective suites.
-Production sketch/training/prediction comparisons
-also cover eight fixtures and full-size HIGGS quantile construction. Metal
-observations are published; NVIDIA execution is still required. Differences
-remain visible for review.
+The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) address ten of the
+seventeen numerical contracts: quantile/sketch behavior, survival objectives,
+RNG and column sampling, primitive math, and ranking rounding/gradients/bias.
+Ranking replay now includes all **4,038 calls** from the existing gradient and
+repeated unbiased-objective suites. Metal observations are published with exact
+input bits and unchanged tolerances; the new public-objective replay still needs
+CUDA compiler validation. Production pipeline comparisons also cover eight
+fixtures and full-size HIGGS quantile construction. Seven contracts still lack
+dedicated runners, broader caller coverage remains, and **none of these runners
+has NVIDIA execution evidence yet**. Differences remain visible for review.
 
 `tree_method="exact"` is unsupported on MPS. For linear GPU training, use
 `booster="gblinear", updater="coord_descent"`; the default `shotgun` updater

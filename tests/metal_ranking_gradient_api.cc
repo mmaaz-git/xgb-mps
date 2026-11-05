@@ -12,6 +12,7 @@
 
 #include "../xgboost/src/common/metal_histogram.h"
 #include "cuda_ranking_reference.h"
+#include "ranking_objective_report.h"
 #include "xgboost/context.h"
 #include "xgboost/data.h"
 #include "xgboost/objective.h"
@@ -20,8 +21,9 @@ using namespace xgboost;
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
-int main() {
+int main(int argc, char** argv) {
   try {
+    auto report = ranking_objective::ReportOption(argc, argv, ranking_objective::kGradient);
     Context cpu, gpu;
     cpu.Init({{"device", "cpu"}, {"nthread", "2"}});
     gpu.Init({{"device", "mps"}, {"nthread", "2"}});
@@ -73,8 +75,9 @@ int main() {
 
       go->Configure(args);
       linalg::Matrix<GradientPair> expected, actual;
-      cpu.Rng().seed(17891u + cases);
-      gpu.Rng().seed(17891u + cases);
+      auto parent_seed = static_cast<std::uint32_t>(17891u + cases);
+      cpu.Rng().seed(parent_seed);
+      gpu.Rng().seed(parent_seed);
       cuda_reference::RankingReference reference(objective, args, info);
       reference.Gradient(preds, info, mean ? static_cast<std::uint32_t>(cpu.Rng()()) : 0,
                          &expected);
@@ -112,6 +115,8 @@ int main() {
           }
         }
       }
+      if (report) report->Add(objective, args, &gpu, info, preds, &actual, go.get(),
+                              cases, 0, batched, mode, parent_seed);
       ++cases;
       rows += n;
       pair_count += expected_pairs;
@@ -139,6 +144,7 @@ int main() {
     Check(subnormals > 0, "Subnormal gradient cases were not exercised");
     std::printf("Checked %zu subnormal gradient/Hessian fields with a two-ULP absolute tolerance\n",
                 subnormals);
+    if (report) report->Finish();
   } catch (std::exception const& e) {
     std::fprintf(stderr, "%s\n", e.what());
     return 1;

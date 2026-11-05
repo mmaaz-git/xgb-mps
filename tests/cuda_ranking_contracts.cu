@@ -16,6 +16,7 @@
 #include "../xgboost/src/objective/lambdarank_obj.h"
 #include "xgboost/json.h"
 #include "ranking_rounding_io.h"
+#include "ranking_objective_report.h"
 
 using namespace xgboost;
 namespace rr = ranking_rounding;
@@ -110,8 +111,77 @@ rr::Observation Observe(Context const* ctx, rr::Input const& in) {
   return out;
 }
 
+void RunObjectives(char const* input_path, char const* output_path) {
+  namespace ro = ranking_objective;
+  std::string metadata_path = std::string(output_path)+".json";
+  rr::Require(!std::filesystem::exists(metadata_path), "Objective metadata already exists");
+  int devices = 0; Cuda(cudaGetDeviceCount(&devices));
+  rr::Require(devices > 0, "Actual NVIDIA GPU required; no skipped pass or CPU fallback");
+  Cuda(cudaSetDevice(0)); auto ctx = Context{}.MakeCUDA(0);
+  ro::InputReader input(input_path); ro::Writer report(output_path, 2, input.Suite());
+  std::unique_ptr<MetaInfo> info;
+  std::unique_ptr<ObjFunction> objective;
+  std::size_t rows = 0, sequences = 0;
+  for (std::size_t index = 0; index < input.Size(); ++index) {
+    auto in = input.Next(); auto const& s = in.spec;
+    if (s.iteration == 0) {
+      // Preserve the original lifecycle: one objective/cache/MetaInfo per
+      // sequence, reused for every later iteration without importing bias.
+      objective.reset(); info = std::make_unique<MetaInfo>();
+      ctx.Init({{"device", "cuda:0"}, {"nthread", s.batched ? "8" : "2"}});
+      info->num_row_ = s.rows; info->group_ptr_ = s.group_ptr;
+      info->labels.Data()->HostVector() = in.labels; info->labels.Reshape(s.rows, 1);
+      info->labels.SetDevice(ctx.Device()); info->weights_.HostVector() = in.weights;
+      objective.reset(ObjFunction::Create(ro::Objective(s.objective), &ctx));
+      objective->Configure(ro::Arguments(s)); ++sequences;
+    }
+    rr::Require(info && objective, "Objective state missing for continued sequence");
+    HostDeviceVector<float> predictions(in.predictions, ctx.Device());
+    ctx.Rng().seed(s.seed);
+    linalg::Matrix<GradientPair> gradients;
+    objective->GetGradient(predictions, *info, s.iteration, &gradients);
+    rr::Require(gradients.Data()->Device().IsCUDA() && gradients.Data()->DeviceCanWrite() &&
+                !gradients.Data()->HostCanRead(), "Objective gradients are not resident CUDA outputs");
+    Cuda(cudaDeviceSynchronize());
+    auto observed = ro::Observe(&ctx, objective.get(), &gradients, s);
+    RandomEngine rng(s.seed);
+    if (s.mean) static_cast<void>(rng());
+    rr::Require(observed.next_rng == static_cast<std::uint32_t>(rng()),
+                "Public objective consumed an unexpected number of parent RNG draws");
+    report.Add(in, observed); rows += s.rows;
+    if ((index+1)%60 == 0 || s.batched || index+1 == input.Size()) {
+      std::printf("CUDA objective %zu/%zu: sequence=%u iteration=%u rows=%u cumulative=%zu\n",
+                  index+1, input.Size(), s.sequence, s.iteration, s.rows, rows); std::fflush(stdout);
+    }
+  }
+  input.Finish(); report.Finish();
+  cudaDeviceProp gpu{}; Cuda(cudaGetDeviceProperties(&gpu, 0));
+  int driver = 0, runtime = 0;
+  Cuda(cudaDriverGetVersion(&driver)); Cuda(cudaRuntimeGetVersion(&runtime));
+  Json meta{Object{}};
+  meta["status"] = String("completed-observations; comparison remains");
+  meta["suite"] = String("ranking-objective-v1"); meta["corpus"] = String(input.Suite() ? "unbiased" : "gradient");
+  meta["backend"] = String("cuda"); meta["device"] = String(gpu.name);
+  meta["compute_capability"] = String(std::to_string(gpu.major)+"."+std::to_string(gpu.minor));
+  meta["nvcc"] = String(std::to_string(__CUDACC_VER_MAJOR__)+"."+
+      std::to_string(__CUDACC_VER_MINOR__)+"."+std::to_string(__CUDACC_VER_BUILD__));
+  meta["driver"] = Integer(driver); meta["runtime"] = Integer(runtime);
+  meta["thrust_version"] = Integer(THRUST_VERSION); meta["cub_version"] = Integer(CUB_VERSION);
+  meta["calls"] = Integer(input.Size()); meta["sequences"] = Integer(sequences); meta["rows"] = Integer(rows);
+  meta["input_file"] = String(input_path); meta["observation_file"] = String(output_path);
+  meta["bias_initialization"] = String("Production iter=0 initialization; subsequent state stays in the objective; no Metal bias inputs");
+  std::string text; Json::Dump(meta, &text);
+  std::ofstream stream{metadata_path}; stream.exceptions(std::ios::badbit | std::ios::failbit);
+  stream << text << '\n';
+  std::printf("PASS %zu public CUDA objective calls / %zu sequences / %zu rows; comparison remains\n",
+              input.Size(), sequences, rows);
+}
+
 int main(int argc, char** argv) {
   try {
+    if (argc == 4 && std::string(argv[1]) == "--objectives") {
+      RunObjectives(argv[2], argv[3]); return 0;
+    }
     rr::Require(argc == 3, "Usage: cuda_ranking_contracts input-only.bin new-cuda-observations.bin");
     std::string metadata_path = std::string(argv[2])+".json";
     rr::Require(!std::filesystem::exists(metadata_path), "Ranking metadata already exists");

@@ -10,6 +10,7 @@
 
 #include "../xgboost/src/common/metal_histogram.h"
 #include "cuda_ranking_reference.h"
+#include "ranking_objective_report.h"
 #include "xgboost/context.h"
 #include "xgboost/data.h"
 #include "xgboost/json.h"
@@ -18,7 +19,7 @@ using namespace xgboost;
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
-void CheckBatched() {
+void CheckBatched(ranking_objective::Exporter* report) {
   Context cpu, gpu;
   cpu.Init({{"device", "cpu"}, {"nthread", "8"}});
   gpu.Init({{"device", "mps"}, {"nthread", "8"}});
@@ -42,8 +43,9 @@ void CheckBatched() {
     go->Configure(args);
     cuda_reference::RankingReference reference("rank:pairwise", args, info);
     for (int iteration = 0; iteration < 2; ++iteration) {
-      cpu.Rng().seed(12345 + iteration);
-      gpu.Rng().seed(12345 + iteration);
+      auto parent_seed = static_cast<std::uint32_t>(12345 + iteration);
+      cpu.Rng().seed(parent_seed);
+      gpu.Rng().seed(parent_seed);
       linalg::Matrix<GradientPair> expected, actual;
       reference.Gradient(predictions, info,
                          method == "mean" ? static_cast<std::uint32_t>(cpu.Rng()()) : 0, &expected);
@@ -74,6 +76,8 @@ void CheckBatched() {
           Check(std::isfinite(x) && std::abs(x - y) <= 2e-6 + 2e-5 * std::abs(y),
                 "Batched unbiased gradient differs");
         }
+      if (report) report->Add("rank:pairwise", args, &gpu, info, predictions, &actual, go.get(),
+                              method == "mean", iteration, true, 0, parent_seed);
       std::printf(
           "PASS batched unbiased %s iteration %d / %zu rows / %llu batches; max scaled error "
           "%.9g\n",
@@ -84,9 +88,10 @@ void CheckBatched() {
     }
   }
 }
-int main() {
+int main(int argc, char** argv) {
   try {
-    CheckBatched();
+    auto report = ranking_objective::ReportOption(argc, argv, ranking_objective::kUnbiased);
+    CheckBatched(report.get());
     Context cpu, gpu;
     cpu.Init({{"device", "cpu"}, {"nthread", "2"}});
     gpu.Init({{"device", "mps"}, {"nthread", "2"}});
@@ -125,8 +130,9 @@ int main() {
                   go->Configure(args);
                   cuda_reference::RankingReference reference(objective, args, info);
                   for (int iteration = 0; iteration < 3; ++iteration) {
-                    cpu.Rng().seed(8912 + cases);
-                    gpu.Rng().seed(8912 + cases);
+                    auto parent_seed = static_cast<std::uint32_t>(8912 + cases);
+                    cpu.Rng().seed(parent_seed);
+                    gpu.Rng().seed(parent_seed);
                     linalg::Matrix<GradientPair> expected, actual;
                     reference.Gradient(
                         pred, info, method == "mean" ? static_cast<std::uint32_t>(cpu.Rng()()) : 0,
@@ -183,6 +189,8 @@ int main() {
                         }
                       }
                     }
+                    if (report) report->Add(objective, args, &gpu, info, pred, &actual, go.get(),
+                                            2+cases/3, iteration, false, mode, parent_seed);
                     ++cases;
                     rows += values.size();
                     // Feed exactly the same changing predictions to both objective states.
@@ -200,6 +208,7 @@ int main() {
         "PASS %zu unbiased calls / %zu rows / %zu bias values / %zu exact gradient fields; maximum "
         "scaled gradient error %.9g, bias error %.9g\n",
         cases, rows, bias_values, exact, max_gradient_error, max_bias_error);
+    if (report) report->Finish();
   } catch (std::exception const& e) {
     std::fprintf(stderr, "%s\n", e.what());
     return 1;

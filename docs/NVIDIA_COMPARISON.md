@@ -7,7 +7,8 @@ inputs as the Metal numerical-contract test. A second native harness covers
 **P5-N06** ranking RNG and raw pairs plus **training-rng-modern** streams and
 unweighted column sampling. A fourth exports the existing **P5-N03** primitive
 math corpus. A fifth adds **P5-N04/05** observations from the full existing
-ranking-rounding corpus. The other seven numerical contracts and
+ranking-rounding, ranking-gradient and repeated unbiased-objective corpora.
+The other seven numerical contracts and
 broader caller/integration comparisons remain work;
 these harnesses are not a full parity certificate.
 
@@ -385,10 +386,9 @@ These cases do not waive gradient or prefix checks. Exit `1` means invalid
 evidence or a declared comparison failure, `2` means differences require review,
 and `0` means bit-identical outputs on these recorded executions.
 
-This runner covers the complete existing rounding corpus, **not** the full
-`metal_ranking_gradient_api` and `metal_ranking_unbiased_api` corpora, the separate
-primitive-rounding boundary test, or public objective wrapper/state behavior.
-Those remain work, including NDCG, repeated objective calls and batched storage.
+This mode covers the complete existing rounding corpus. The public-objective
+mode below covers the gradient and unbiased suites, including NDCG and repeated
+state. The separate primitive-rounding boundary test still needs CUDA coverage.
 No NVIDIA execution result is available yet. Fourteen synthetic integrity tests,
 a C++ input round trip and the unchanged Metal rounding checks pass locally.
 
@@ -409,6 +409,98 @@ row-major FP32 gradients, row-major FP64 MAP prefixes if applicable, and both
 FP64 updated bias vectors. `RNDE` plus the uint32 case count finishes the file.
 The fixed corpus uses eight pairs, seed `0xffffffff`, bias norm `1.5` and group
 pointers `[0, 0, 128, 128, 128+largest, 129+largest]`.
+
+## Public ranking objective sequences
+
+`cuda_ranking_contracts --objectives` replays every call from
+`metal_ranking_gradient_api` and `metal_ranking_unbiased_api` through the actual
+CUDA `ObjFunction` registry, configuration, gradient and serialization APIs.
+The [run record](../validation/ranking-objective-m3-run.json) retains exact input
+bits, source/library hashes and the unchanged native checks.
+
+| Corpus | Calls / sequences | Rows | Observations |
+| --- | --- | --- | --- |
+| Gradient | 1,442 / 1,442 | 2,444,200 | 4,888,400 gradient/Hessian fields; 1,442 parent RNG words |
+| Unbiased | 2,596 / 866 | 2,949,920 | 5,899,840 gradient/Hessian fields; 118,528 serialized bias fields; 2,596 parent RNG words |
+
+Both corpora retain pairwise/NDCG/MAP, top-k/mean, normalization settings, query
+sizes, weights and label modes. The totals include two gradient calls with
+327,680 rows each and four unbiased calls with 524,288 rows each. The ordinary
+unbiased sequences each retain three iterations with their original changing
+predictions; the two batched sequences retain two iterations each.
+
+CUDA creates a fresh objective and `MetaInfo` only at the start of a sequence.
+Subsequent calls reuse both, preserving the objective's actual binary64 bias
+state. Input files contain predictions, labels, query boundaries, weights,
+parameters and seeds; **no Metal bias state or expected outputs are supplied**.
+Iteration zero initializes bias through production code. Results must be CUDA
+resident before host observation. Each call checks parent RNG consumption:
+one draw for mean sampling, none for top-k. Reading the next word from an engine
+copy leaves the real engine unchanged.
+
+Run both corpora after compiling the extended ranking executable:
+
+```sh
+python3 scripts/compare_ranking_objectives.py unpack \
+  validation/ranking-gradient-inputs-m3.bin.gz --output results/ranking-gradient-inputs.bin
+results/cuda-comparison-build/cmake/cuda_ranking_contracts --objectives \
+  results/ranking-gradient-inputs.bin results/ranking-gradient-cuda.bin
+python3 scripts/compare_ranking_objectives.py compare \
+  validation/ranking-gradient-metal-m3.bin.gz results/ranking-gradient-cuda.bin \
+  --output results/ranking-gradient-comparison.json
+
+python3 scripts/compare_ranking_objectives.py unpack \
+  validation/ranking-unbiased-inputs-m3.bin.gz --output results/ranking-unbiased-inputs.bin
+results/cuda-comparison-build/cmake/cuda_ranking_contracts --objectives \
+  results/ranking-unbiased-inputs.bin results/ranking-unbiased-cuda.bin
+python3 scripts/compare_ranking_objectives.py compare \
+  validation/ranking-unbiased-metal-m3.bin.gz results/ranking-unbiased-cuda.bin \
+  --output results/ranking-unbiased-comparison.json
+```
+
+Use new output paths. Retain both `.bin.json` runtime metadata files, logs and
+the matching `build.json`. The reader rejects observation files as CUDA inputs,
+changed label/weight bits within a sequence, missing/reordered calls, malformed
+shapes and incomplete/trailing data. The comparator requires matching input
+bits and exact parent RNG words. Ordinary gradient and serialized bias budgets
+remain `2e-6 + 2e-5 * abs(Metal)`. The gradient suite additionally retains its
+strict `2 * 2^-149 + 2e-5 * abs(Metal)` budget whenever either output is a
+nonzero subnormal. Classification changes fail; every other bit difference
+remains a review item, including signed zeros and differences within tolerance.
+Exit codes are `1` for invalid evidence or failed checks, `2` for other
+differences requiring review, and `0` for identical recorded outputs.
+
+`SaveConfig` exposes FP32 bias arrays, not the full internal binary64 state.
+The report identifies the first differing iteration and whether the preceding
+serialized bias differs, without treating matching serialization as proof of
+identical internal state. CUDA's shared-factor race can affect later unbiased
+iterations; it does not automatically waive a failed comparison. This mode
+executes each call once; the separate rounding mode provides repeated fresh
+executions for race characterization.
+
+Both full Metal groups and 17 synthetic report-integrity tests pass. Complete
+C++ input round trips preserve every byte; an independent host engine matches
+all 4,038 recorded parent RNG words. The original ordinary unbiased checks
+assert 118,368 serialized bias fields; the additional 160 batched bias fields
+are observations without a separate native bias oracle. CUDA compilation of
+this extension and actual NVIDIA execution remain pending. Reloads, changed
+metadata shapes and other input/state combinations remain broader caller work.
+
+To regenerate the Metal observations with the original checks enabled:
+
+```sh
+bash scripts/test.sh --native metal_ranking_gradient_api metal_ranking_unbiased_api
+MTL_DEBUG_LAYER=1 results/metal_ranking_gradient_api_test --report-prefix results/new-gradient
+MTL_DEBUG_LAYER=1 results/metal_ranking_unbiased_api_test --report-prefix results/new-unbiased
+```
+
+The versioned little-endian format is defined in `tests/ranking_objective_io.h`
+and independently checked by `scripts/compare_ranking_objectives.py`. Its
+`XGBROB1\0` header identifies backend kind, corpus and complete call count;
+each call carries a fixed parameter identity and all input words. Observations
+append FP32 gradient/Hessian and serialized bias words plus the next parent RNG
+word. `ROBE`, corpus ID and call count terminate the file at exact EOF. Gzip is
+packaging only. Valid framing alone does not authenticate GPU execution.
 
 ## Production sketch, training and prediction comparison
 
