@@ -92,12 +92,14 @@ namespace detail {
       auto send_off = offset[send_rank];
       auto send_size = sizes[send_rank];
       auto send_seg = erased_result.subspan(send_off, send_size);
+      if (send_seg.empty()) return Success();
       return next_ch->SendAll(send_seg);
     } << [&] {
       auto recv_rank = (rank + world - r - 1) % world;
       auto recv_off = offset[recv_rank];
       auto recv_size = sizes[recv_rank];
       auto recv_seg = erased_result.subspan(recv_off, recv_size);
+      if (recv_seg.empty()) return Success();
       return prev_ch->RecvAll(recv_seg.data(), recv_seg.size_bytes());
     } << [&] {
       return prev_ch->Block();

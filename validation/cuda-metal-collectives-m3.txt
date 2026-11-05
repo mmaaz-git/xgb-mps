@@ -1,0 +1,78 @@
+Metal fixed collectives — Apple M3, 2026-11-04 local
+==================================================
+Scope: new MPS collective backend; distributed training remains disabled.
+
+Source authority:
+- Vendored collective/coll.cu numeric type dispatch and bytewise allgather/fold.
+- NVIDIA NCCL scalar reductions at commit
+  3e46c089f4ae4732722a419eb6096aead7e47a30, src/device/reduce_kernel.h.
+- NVIDIA CUDA half comparison documentation: number-preferred NaNs and signed zero.
+- Existing XGBoost TCP/ring/binomial-tree transport.
+
+Implementation:
+- Explicit MPS payload views select a separate Metal backend. CPU control values
+  retain CPU dispatch. Federated MPS calls remain explicitly unsupported.
+- Numeric sum/min/max: F2/F4/F8, I1/I4/I8, U1/U4/U8. Numeric I2/U2/F16 rejected.
+  GPU software FP64, FP16 conversion/subnormal handling, wrapping integer sums.
+- Bytewise AND/OR/XOR bypass numeric type restrictions, as in CUDA. GPU-owned
+  allgather buffer, then rank-ordered GPU reduction.
+- Numeric reduce-scatter/allgather with owned GPU receive scratch; small arrays
+  use allgather and a GPU fold. Network completion precedes GPU consumption.
+- Broadcast, fixed allgather, variable ring/broadcast allgather. Variable local
+  copies run on GPU; typed wrapper keeps output ownership on MPS. Overlapping
+  local copies use a GPU snapshot. Empty segments skip zero-byte socket work.
+- Shared allocations are CPU-addressable; actual TCP networking remains on host.
+  No CPU arithmetic or resident-payload vector mirror in the new Metal paths.
+- Separate collective counters avoid changing the existing Statistics ABI.
+
+Focused validation:
+- Initial build passed.
+- v1: numeric/bytewise reductions passed with two workers; variable gather exposed
+  shared RingAllgatherV submitting zero-byte socket work. Fixed the shared helper
+  and added CPU empty-segment regressions. No distributed guards were removed.
+- v2: 1/2/3/4-worker primitive tests passed.
+- v3/v4: exhaustive half encodings exposed native host min with signaling NaNs
+  disagreeing with CUDA's documented number-preferred rule. Corrected the scalar
+  reference to specify that rule; no widened tolerance or CPU production fallback.
+- v5: extended raw arithmetic and worker suite passed.
+- v6: disconnected-peer failure propagated and scratch was released; tracker
+  cleanup reported its intentional missing-worker timeout. Runner now explicitly
+  handles that expected tracker shutdown failure.
+- Final shader also quiets the both-NaN min/max result. Tests require quiet NaNs;
+  finite/infinite output comparisons are exact bits, not approximate tolerances.
+
+Final native suite (also run by scripts/test.sh):
+  world1 rank0: 643 cases / 1,639,454 fields
+  world2 each: 592 cases /   935,388 fields / 11 invalid calls rejected
+  world3 each: 597 cases / 1,132,828 fields / 11 invalid calls rejected
+  world4 each: 602 cases / 1,330,392 fields / 11 invalid calls rejected
+  Total: 6,026 cases / 12,230,282 fields / 99 invalid calls rejected.
+  Separate two-worker disconnected-peer test passed, including buffer cleanup.
+  All 65,536 half encodings; random full-exponent FP32/FP64/integer inputs;
+  NaNs, infinities, signed zero, subnormals, wrapping sums; short/uneven/large
+  payloads; empty workers; all roots; both variable gather algorithms; arbitrary
+  byte offsets and sentinels; overlapping GPU copies; CPU/MPS ownership handoffs.
+  Device counters require GPU arithmetic/copies and zero resident-payload staging.
+  CPU empty-segment regression passed. Metal API validation enabled.
+
+Full regression: PASS, exit 0.
+  2026-11-05T02:04:58Z–02:13:55Z (8 minutes 57 seconds).
+  All 97 native groups rebuilt and passed, including the new suite above.
+  Python: 3,426 passed, one expected skip, 638 warnings, 204.78 seconds.
+  CPU-only: configuration, 34 incremental build steps and device/native input/
+    output/quantile/cache API checks passed.
+  No production or test edits followed the full run.
+Driver/log: results/run-collective-full-v1.sh, results/collective-full-v1.log.
+Focused logs: results/collective-build-v1.log, collective-focused-v1.log through
+  collective-focused-v6.log. Native test: tests/metal_collective_api.cc;
+  runner: tests/run_metal_collective.py.
+
+Limits and next work:
+- Variable-size AllreduceV and resident sketch pack/merge/prune/load remain open.
+- Global quantization and integer histogram/root/leaf consumers still need
+  integration. Source-defined host quantizer control reductions stay on host.
+- AUC's existing host-summary fallback and other consumers remain to be audited.
+- Federated MPS, asynchronous stream behavior, cross-machine transport, other
+  Apple GPUs and execution comparisons on NVIDIA remain unverified/unimplemented.
+- No GPU-direct/NCCL transport, exact NVIDIA topology/order, or speedup claim.
+  NaN payload bits are not an execution-equivalence claim.

@@ -26,6 +26,7 @@ class Coll : public std::enable_shared_from_this<Coll> {
   virtual ~Coll() noexcept(false) {}  // NOLINT
 
   virtual Coll* MakeCUDAVar();
+  virtual Coll* MakeMPSVar();
 
   /**
    * @brief Allreduce

@@ -14,7 +14,27 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **SHAP arithmetic follows CUDA's recurrence and operation order**.
+Latest step: **Metal has a collective backend for multiple workers**. Numeric
+sum/min/max reductions and bytewise AND/OR/XOR run on GPU; broadcast, allgather
+and variable-size allgather use shared Metal buffers with the existing TCP
+transport. Local copies run on Metal. CPU control values keep their CPU backend.
+
+The new suite passes **6,026 cases across 1/2/3/4 local workers**, checking
+**12,230,282 fields**, all CUDA-supported numeric types, empty workers, uneven
+buffers, exact scalar arithmetic and ownership. It includes all 65,536 half bit
+patterns, rejects 99 invalid calls and verifies failure propagation after a peer
+disconnects. Device counters verify GPU reductions/copies and zero staging for
+resident payloads. Full regression passes **97 native groups**, **3,426 Python
+tests with one expected skip**, and the CPU-only build/API checks.
+[Collective validation](validation/cuda-metal-collectives-m3.txt).
+
+**Distributed MPS training remains disabled.** Variable-size sketch reduction,
+global quantization, histogram/root/leaf reductions and other collective
+consumers still need integration. Federated MPS communication and asynchronous
+stream support also remain open. This uses host networking, not NCCL/GPU-direct
+transport, and makes no new speedup or NVIDIA execution-equivalence claim.
+
+Previous step: **SHAP arithmetic follows CUDA's recurrence and operation order**.
 Tree weights are applied to leaf payloads before traversal. Branch probabilities
 now enter each quadrature basis, edge extraction follows the CUDA expressions,
 and the eight-point reduction uses CUDA's 4/2/1 association. Contributions and
@@ -1468,7 +1488,9 @@ in `validation/benchmark-v1-m3.json` through `benchmark-v4-m3.json` for inspecti
 - [x] Evaluate every AFT gradient row on GPU; validate upstream expressions and report sensitive-tail numerical differences.
 - [x] Port multiclass class-prior initialization, shared vector arithmetic and scalar FP32 mean accumulation.
 - [ ] Finish quantile construction, objective coverage and generic state operations.
-- [ ] Complete asynchronous stream interoperability and distributed GPU collectives.
+- [x] Add Metal fixed reductions, broadcast and fixed/variable allgather with local-worker tests.
+- [ ] Port variable-size sketch reduction and integrate distributed GPU training consumers.
+- [ ] Complete federated communication and asynchronous stream interoperability.
 - [ ] Validate across Apple GPU generations and broader real datasets.
 - [ ] Reach complete CUDA-operation coverage and competitive training performance.
 

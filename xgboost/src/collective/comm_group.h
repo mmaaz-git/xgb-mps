@@ -21,6 +21,7 @@ class CommGroup {
 
   std::shared_ptr<Coll> backend_;
   mutable std::shared_ptr<Coll> gpu_coll_;  // lazy initialization
+  mutable std::shared_ptr<Coll> metal_coll_;
 
   CommGroup(std::shared_ptr<Comm> comm, std::shared_ptr<Coll> coll)
       : comm_{std::dynamic_pointer_cast<HostComm>(comm)}, backend_{std::move(coll)} {

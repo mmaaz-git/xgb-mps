@@ -26,6 +26,7 @@
 #include "metal_adapter.h"
 #include "metal_auc.h"
 #include "metal_category.h"
+#include "metal_collective.h"
 #include "metal_vector.h"
 #include "metal_constraints.h"
 #include "metal_cuda_sketch.h"
@@ -327,6 +328,7 @@ class Runtime {
       metadata_qid_mark_pipeline, metadata_qid_starts_pipeline, metadata_qid_counts_pipeline;
   id<MTLComputePipelineState> initialization_store_pipeline, vector_center_pipeline;
   id<MTLComputePipelineState> vector_fill_pipeline, vector_equal_pipeline, metadata_gather_pipeline;
+  id<MTLComputePipelineState> collective_reduce_pipeline;
   id<MTLComputePipelineState> ellpack_symbols_pipeline, ellpack_pack_pipeline,
       ellpack_copy_pipeline, ellpack_count_pipeline, ellpack_unpack_pipeline;
   id<MTLComputePipelineState> ellpack_adapter_pipeline, ellpack_null_pipeline, ellpack_csr_pipeline;
@@ -427,6 +429,7 @@ class Runtime {
       vector_center_pipeline = make_pipeline(@"xgb_vector_center");
       vector_fill_pipeline = make_pipeline(@"xgb_vector_fill");
       vector_equal_pipeline = make_pipeline(@"xgb_vector_equal");
+      collective_reduce_pipeline = make_pipeline(@"xgb_collective_reduce");
       metadata_gather_pipeline = make_pipeline(@"xgb_metadata_gather");
       metadata_validate_pipeline = make_pipeline(@"xgb_metadata_validate");
       metadata_qid_mark_pipeline = make_pipeline(@"xgb_metadata_qid_mark");
@@ -2252,6 +2255,117 @@ BorrowedMemory VectorInput(Runtime const& rt, void const* data, std::size_t byte
 }  // namespace
 
 std::unique_ptr<VectorBuffer> MakeVectorBuffer() { return std::make_unique<MetalVectorBuffer>(); }
+
+namespace {
+std::atomic<std::uint64_t> collective_reductions{0}, collective_copies{0},
+    collective_input{0}, collective_output{0}, collective_staging{0}, collective_time{0};
+
+BorrowedMemory CollectiveInput(Runtime const& rt, Span<std::int8_t const> input) {
+  auto view = TryBorrowMemory(rt.device, input.data(), input.size(), 1);
+  if (view.buffer) {
+    collective_input.fetch_add(input.size(), std::memory_order_relaxed);
+  } else {
+    view = {Upload(rt, input.data(), input.size()), 0};
+    collective_staging.fetch_add(input.size(), std::memory_order_relaxed);
+  }
+  return view;
+}
+}  // namespace
+
+CollectiveStatistics GetCollectiveStatistics() {
+  return {collective_reductions.load(), collective_copies.load(), collective_input.load(),
+          collective_output.load(), collective_staging.load(), collective_time.load()};
+}
+
+void CollectiveCopy(Span<std::int8_t const> input, Span<std::int8_t> output) {
+  CHECK_EQ(input.size(), output.size());
+  if (input.empty() || input.data() == output.data()) return;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto in = CollectiveInput(rt, input);
+    auto out = TryBorrowMemory(rt.device, output.data(), output.size(), 1);
+    bool shared = out.buffer != nil;
+    if (!shared) out = {Allocate(rt, output.size()), 0};
+    auto command = [rt.queue commandBuffer];
+    auto blit = [command blitCommandEncoder];
+    // Snapshot overlapping views on the GPU before writing the destination.
+    id<MTLBuffer> temporary = nil;
+    if (MemoryRangesOverlap(input.data(), input.size(), output.data(), output.size())) {
+      temporary = Allocate(rt, input.size());
+      [blit copyFromBuffer:in.buffer sourceOffset:in.offset toBuffer:temporary
+        destinationOffset:0 size:input.size()];
+      in = {temporary, 0};
+    }
+    [blit copyFromBuffer:in.buffer sourceOffset:in.offset toBuffer:out.buffer
+      destinationOffset:out.offset size:input.size()];
+    [blit endEncoding];
+    CompleteOperation(command, &collective_copies, &collective_time);
+    if (shared) {
+      collective_output.fetch_add(output.size(), std::memory_order_relaxed);
+    } else {
+      std::memcpy(output.data(), out.buffer.contents, output.size());
+      collective_staging.fetch_add(output.size(), std::memory_order_relaxed);
+    }
+  }
+}
+
+void CollectiveReduce(Span<std::int8_t const> input, Span<std::int8_t> output,
+                      ArrayInterfaceHandler::Type type, collective::Op op,
+                      std::size_t ranks, bool initialize) {
+  CHECK_GT(ranks, 0);
+  CHECK_EQ(input.size() / ranks, output.size());
+  CHECK_EQ(input.size() % ranks, 0);
+  auto operation = static_cast<std::uint32_t>(op);
+  CHECK_LE(operation, 5);
+  std::uint32_t width = 0;
+  using H = ArrayInterfaceHandler;
+  if (operation >= 3) {
+    width = 1;
+    type = H::kU1;
+  } else {
+    switch (type) {
+      case H::kF2: width = 2; break;
+      case H::kF4: case H::kI4: case H::kU4: width = 4; break;
+      case H::kF8: case H::kI8: case H::kU8: width = 8; break;
+      case H::kI1: case H::kU1: width = 1; break;
+      default: LOG(FATAL) << "Unsupported Metal collective numeric type.";
+    }
+  }
+  CHECK_EQ(output.size() % width, 0);
+  CHECK(!MemoryRangesOverlap(input.data(), input.size(), output.data(), output.size()));
+  if (output.empty()) return;
+  @autoreleasepool {
+    auto& rt = GetRuntime();
+    auto in = CollectiveInput(rt, input);
+    auto out = TryBorrowMemory(rt.device, output.data(), output.size(), 1);
+    bool shared = out.buffer != nil;
+    if (!shared) {
+      out = {initialize ? Allocate(rt, output.size()) : Upload(rt, output.data(), output.size()), 0};
+      if (!initialize) collective_staging.fetch_add(output.size(), std::memory_order_relaxed);
+    }
+    struct {
+      std::uint64_t count, ranks;
+      std::uint32_t type, operation, width, initialize;
+    } p{output.size() / width, ranks, static_cast<std::uint32_t>(type), operation, width,
+        static_cast<std::uint32_t>(initialize)};
+    auto command = [rt.queue commandBuffer];
+    auto e = [command computeCommandEncoder];
+    [e setComputePipelineState:rt.collective_reduce_pipeline];
+    [e setBuffer:in.buffer offset:in.offset atIndex:0];
+    [e setBuffer:out.buffer offset:out.offset atIndex:1];
+    [e setBytes:&p length:sizeof(p) atIndex:2];
+    [e dispatchThreads:MTLSizeMake(std::min<std::size_t>(p.count, 1 << 20), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    [e endEncoding];
+    CompleteOperation(command, &collective_reductions, &collective_time);
+    if (shared) {
+      collective_output.fetch_add(output.size(), std::memory_order_relaxed);
+    } else {
+      std::memcpy(output.data(), out.buffer.contents, output.size());
+      collective_staging.fetch_add(output.size(), std::memory_order_relaxed);
+    }
+  }
+}
 
 bool EqualBytes(Span<std::byte const> lhs, Span<std::byte const> rhs) {
   if (lhs.size() != rhs.size()) return false;

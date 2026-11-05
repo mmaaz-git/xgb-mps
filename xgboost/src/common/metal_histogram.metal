@@ -8193,3 +8193,87 @@ kernel void xgb_vector_center(device uint* values [[buffer(0)]],
   using namespace xgb_metric_math;
   values[ulong(row)*stride] = (F{values[ulong(row)*stride]} - F{mean[0]}).bits;
 }
+
+// NCCL's scalar sum/min/max contract, with software binary64 on Apple GPUs.
+// Numerical ring order is transport-dependent, as it is in NCCL. Bytewise
+// allreduce instead folds ranks 0..world-1, matching coll.cu explicitly.
+struct CollectiveParams {
+  ulong count, ranks;
+  uint type, operation, width, initialize;
+};
+inline ulong xgb_collective_load(device const uchar* ptr, ulong index, uint width) {
+  ulong bits = 0;
+  for (uint j = 0; j < width; ++j) bits |= ulong(ptr[index * width + j]) << (8 * j);
+  return bits;
+}
+inline uint xgb_half_to_float_bits(uint h) {
+  uint sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 31u, frac = h & 1023u;
+  if (exponent == 31) return sign | 0x7f800000u | (frac << 13);
+  if (!exponent) {
+    if (!frac) return sign;
+    int e = -14;
+    while (!(frac & 1024u)) { frac <<= 1; --e; }
+    return sign | (uint(e + 127) << 23) | ((frac & 1023u) << 13);
+  }
+  return sign | ((exponent + 112u) << 23) | (frac << 13);
+}
+inline uint xgb_float_to_half_bits(uint f) {
+  uint sign = (f >> 16) & 0x8000u, exponent = (f >> 23) & 255u, frac = f & 0x7fffffu;
+  if (exponent == 255) return sign | 0x7c00u | (frac ? 0x200u | (frac >> 13) : 0u);
+  int e = int(exponent) - 127;
+  if (e > 15) return sign | 0x7c00u;
+  if (e < -25) return sign;
+  uint sig = frac | 0x800000u;
+  uint shift = e < -14 ? uint(-e - 1) : 13u;
+  uint rounded = sig >> shift, remainder = sig & ((1u << shift) - 1u);
+  uint midpoint = 1u << (shift - 1);
+  rounded += uint(remainder > midpoint || (remainder == midpoint && (rounded & 1u)));
+  return sign | (e < -14 ? rounded : (uint(e + 14) << 10) + rounded);
+}
+inline ulong xgb_collective_float_extreme(ulong a, ulong b, ulong sign, ulong inf, uint op) {
+  ulong aa = a & ~sign, bb = b & ~sign;
+  // fmin/fmax (and CUDA __hmin/__hmax) choose the number when just one is NaN.
+  // Both NaNs produce a quiet NaN, never an incoming signaling encoding.
+  if (aa > inf && bb > inf) return sign == 0x8000ul ? 0x7ffful : inf | ((sign - inf) >> 1);
+  if (aa > inf) return b;
+  if (bb > inf) return a;
+  if (!aa && !bb) return op == 1 ? (a | b) : (a & b);
+  bool less = ((a ^ b) & sign) ? bool(a & sign) : ((a & sign) ? aa > bb : aa < bb);
+  return op == 1 ? (less ? a : b) : (less ? b : a);
+}
+inline ulong xgb_collective_op(ulong a, ulong b, CollectiveParams p) {
+  if (p.operation == 3) return a & b;
+  if (p.operation == 4) return a | b;
+  if (p.operation == 5) return a ^ b;
+  if (p.type <= 2) {
+    if (p.operation != 2) {
+      ulong sign = p.type == 0 ? 0x8000ul : (p.type == 1 ? 0x80000000ul : kDoubleSign);
+      ulong inf = p.type == 0 ? 0x7c00ul : (p.type == 1 ? 0x7f800000ul : kDoubleInf);
+      return xgb_collective_float_extreme(a, b, sign, inf, p.operation);
+    }
+    if (p.type == 2) return xgb_dadd({a}, {b}).bits;
+    if (p.type == 1)
+      return as_type<uint>(xgb_fadd_preserve(as_type<float>(uint(a)), as_type<float>(uint(b))));
+    float sum = as_type<float>(xgb_half_to_float_bits(uint(a))) +
+                as_type<float>(xgb_half_to_float_bits(uint(b)));
+    return xgb_float_to_half_bits(as_type<uint>(sum));
+  }
+  // Unsigned arithmetic defines two's-complement wrapping without signed UB.
+  ulong mask = p.width == 8 ? ~0ul : (1ul << (8 * p.width)) - 1;
+  if (p.operation == 2) return (a + b) & mask;
+  ulong sign = (p.type == 4 || p.type == 6 || p.type == 7) ? 1ul << (8 * p.width - 1) : 0;
+  bool less = (a ^ sign) < (b ^ sign);
+  return p.operation == 1 ? (less ? a : b) : (less ? b : a);
+}
+kernel void xgb_collective_reduce(device const uchar* input [[buffer(0)]],
+                                   device uchar* output [[buffer(1)]],
+                                   constant CollectiveParams& p [[buffer(2)]],
+                                   uint tid [[thread_position_in_grid]],
+                                   uint threads [[threads_per_grid]]) {
+  for (ulong i = tid; i < p.count; i += threads) {
+    ulong result = xgb_collective_load(p.initialize ? input : output, i, p.width);
+    for (ulong rank = p.initialize ? 1 : 0; rank < p.ranks; ++rank)
+      result = xgb_collective_op(result, xgb_collective_load(input, rank * p.count + i, p.width), p);
+    for (uint j = 0; j < p.width; ++j) output[i * p.width + j] = uchar(result >> (8 * j));
+  }
+}

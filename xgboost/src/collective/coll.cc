@@ -148,4 +148,11 @@ Coll* Coll::MakeCUDAVar() {
 }
 #endif
 
+#if !defined(XGBOOST_USE_METAL)
+Coll* Coll::MakeMPSVar() {
+  LOG(FATAL) << "Metal is required for MPS communication.";
+  return nullptr;
+}
+#endif
+
 }  // namespace xgboost::collective

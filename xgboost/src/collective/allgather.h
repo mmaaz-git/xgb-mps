@@ -162,7 +162,7 @@ template <typename T>
 
   return backend->AllgatherV(
       ctx, comm.Ctx(ctx, data.Device()), erased, common::Span{sizes.data(), sizes.size()},
-      s_segments, data.Device().IsCUDA() ? recv->DeviceSpan() : recv->HostSpan(),
+      s_segments, data.Device().IsCPU() ? recv->HostSpan() : recv->DeviceSpan(),
       data.Device().IsCUDA() ? AllgatherVAlgo::kBcast : AllgatherVAlgo::kRing);
 }
 

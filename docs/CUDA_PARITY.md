@@ -106,7 +106,7 @@ must be reported rather than hidden by widening test tolerances.
 | Gradient layout copies and Hessian extraction | `gbm/gbtree.cu`, `tree/updater_gpu_hist.cu`, `tree/updater_quantile_hist.cc` | Metal bit-preserving target-column copies, sampling-buffer layout conversion, reduced-value-gradient copies and unsampled Hessian extraction; guarded host sharing or staged snapshots for aliases. Allocation and other state manipulation remain host |
 | Vector model-buffer copies and learning-rate scaling | `tree/multi_target_tree_model.cu` | Metal blit copies for base/child weights and category storage, and GPU FP32 learning-rate products for new child weights. Host model allocation/growth and metadata remain; buffers use guarded synchronous host-memory sharing or staging |
 | Device arrays, scans, sorts, reductions, random generation | `common/*.cu`, `common/*.cuh` | Histogram/metric/gradient reductions, generic float and optional-weight sums, checked exact scans, category/quantile-row sorting, stable column radix sorting, stable grouped ranking sorting, recursive integer/binary64 prefix scans and sampling-specific random generation implemented; other general Metal primitives missing |
-| Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/aggregator.cuh` | Distributed `mps` training rejected |
+| Distributed GPU collectives | `collective/comm.cu`, `collective/coll.cu`, `collective/allreduce_v.cuh`, `collective/aggregator.cuh` | Metal numeric/bytewise fixed reductions, broadcast and fixed/variable allgather over shared buffers and host TCP; 1/2/3/4-worker tests. Variable-size reduction and training consumers remain open; distributed `mps` training still rejected |
 | CUDA array interface / CuPy / cuDF / CUDA streams | `c_api/c_api.cu`, `data/device_adapter.cu` | Metal DLPack tensors and native columnar tables feed ordinary/quantile constructors, iterators and inplace prediction/CPU fallback through owned GPU snapshots. Metadata imports use GPU conversion/validation/grouping; custom gradients use GPU typed pair packing. Explicit `output_device="mps"` returns owned GPU predictions, including leaves and SHAP, with legacy/versioned DLPack exports to PyTorch/MLX. Public prediction result pointers retain synchronized shared Metal storage; native output snapshots avoid intermediate host mirrors, while NumPy copies explicitly. Known runtimes synchronize; generic producers/consumers must finish writes. Portable stream handshakes and end-to-end device ownership remain open. NVIDIA-specific interfaces cannot consume Metal memory |
 | CUDA contexts, allocators, stream lifetimes | `common/cuda_*`, `common/device_*`, `common/host_device_vector.cu` | Owned shared Metal vector allocations with CUDA-derived access states, GPU fills/copies/growth and lazy host mirrors; native float metadata uses them. Reused queues/histograms/workspaces and guarded host views remain. The execution context still defaults generic state to host storage; remaining consumers, persistent end-to-end ownership and asynchronous scheduling are unfinished |
 
@@ -151,8 +151,10 @@ show which consumers and edge cases have actually been exercised.
 The remaining work includes a complete CUDA operation/arithmetic audit and GPU
 collective integration. SHAP leaf weighting, basis recurrence, edge/pair expressions and eight-point
 reduction association now follow the CUDA source, as recorded below; NVIDIA
-compiler behavior and cross-tree atomic scheduling remain unverified. Distributed sketch reduction also needs the GPU collective
-path. CUDA/NVIDIA execution comparison and testing on other Apple hardware remain
+compiler behavior and cross-tree atomic scheduling remain unverified. Fixed Metal
+collectives now exist, but variable-size sketch reduction, global quantization and
+histogram/root/leaf consumers still need integration. Federated MPS collectives
+and asynchronous streams remain open. CUDA/NVIDIA execution comparison and testing on other Apple hardware remain
 separate validation requirements; local passing tests cannot establish them.
 
 Further performance work includes reducing synchronization and improving external
@@ -4148,3 +4150,63 @@ No production or test edits followed the full run.
 [Validation record](../validation/cuda-metal-shap-source-m3.txt).
 GPU collective integration, remaining CUDA operation/arithmetic audits and
 cross-hardware validation remain open. No benchmark was run for this step.
+
+
+### Metal collective backend and local-worker transport
+
+`CommGroup` now selects a distinct Metal backend for explicit MPS payload views.
+Generic MPS contexts still expose CPU to existing generic consumers, so CPU
+control scalars continue using the CPU backend. This does not remove distributed
+training guards or silently reinterpret CPU payloads as Metal.
+
+Implemented operations:
+
+- Numeric sum/min/max for the types accepted by `coll.cu::GetNCCLType`: FP16,
+  FP32, FP64, signed/unsigned 8-, 32- and 64-bit integers. Numeric 16-bit integers
+  and extended floats are rejected, as in CUDA. FP64 uses existing GPU software
+  arithmetic; FP16 conversion preserves subnormals and round-to-nearest-even.
+- Bytewise AND/OR/XOR across all payload types, including floating-point bytes,
+  before numeric type dispatch. The allgather plus rank-ordered GPU fold follows
+  `coll.cu::BitwiseAllReduce`.
+- Numeric ring reduce-scatter/allgather, with a rank-ordered small-array path,
+  owned Metal receive scratch and GPU reductions between communication steps.
+  NCCL selects its own topology/order; this is not a bitwise NVIDIA-run claim.
+- Broadcast, fixed allgather, and variable allgather using ring or broadcast.
+  The local variable-gather copy runs on GPU, and the typed wrapper preserves
+  device output ownership. Empty segments bypass zero-byte socket submissions;
+  that fix is shared with CPU ring allgather and has a CPU regression check.
+
+Apple shared allocations are CPU-addressable. GPU producers complete before TCP
+sends, and receives finish before GPU consumers. There are no CPU arithmetic
+reductions or payload-vector mirrors in these Metal paths. Networking itself is
+host TCP; this is not an implementation of NCCL or GPU-direct transport. The
+current backend is synchronous. Guarded host views can stage when they cannot be
+borrowed; resident-payload tests require zero staging bytes.
+
+Arithmetic authority is the vendored CUDA dispatch plus NVIDIA's
+[NCCL scalar reduction source](https://github.com/NVIDIA/nccl/blob/3e46c089f4ae4732722a419eb6096aead7e47a30/src/device/reduce_kernel.h)
+and [half min/max contract](https://docs.nvidia.com/cuda/archive/12.2.2/cuda-math-api/group__CUDA__MATH____HALF__COMPARISON.html).
+Tests compare exact finite/infinite bits and quiet-NaN classification, with
+explicit signed-zero and number-preferred NaN rules. Random full-exponent inputs
+exposed a signaling-NaN difference in the host reference's native minimum; the
+reference now specifies CUDA's documented policy rather than relying on that
+host instruction. GPU arithmetic was not replaced with a CPU calculation.
+
+The new native group exercises 1/2/3/4 localhost workers, all numeric and bytewise
+types, empty/short/uneven/large buffers, arbitrary byte offsets, sentinels,
+CPU/MPS handoffs, overlapping local GPU copies, both allgather-v algorithms,
+99 invalid calls and a deliberately disconnected peer. It includes exhaustive
+half encodings and random FP32/FP64/integer operands with independent native
+scalar arithmetic. GPU counters assert actual reduction/copy dispatches and no
+resident-payload staging. The ordinary workers pass 6,026 cases and 12,230,282
+field checks. Full regression passes all 97 native groups, 3,426 Python tests
+(one expected skip), and the CPU-only build/API checks.
+
+Variable-size `AllreduceV` and resident sketch pack/merge/prune/load are next.
+Global quantizer scales and integer histogram/root/leaf reductions must then be
+connected before distributed training is enabled. CUDA intentionally aggregates
+quantizer bounds and row counts on the host (`gpu_hist/quantiser.cu`); that control
+work does not require a GPU collective to match the source. AUC's earlier host-summary
+fallback, other consumers, federated transport, cross-machine testing and NVIDIA
+execution validation remain open. No benchmark or performance claim accompanies
+this change. See the [validation record](../validation/cuda-metal-collectives-m3.txt).
