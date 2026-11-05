@@ -238,9 +238,13 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "fix_ready_for_ci",
+    "status": "in_progress",
     "gpu_execution": false,
-    "reason": "Joint numerical object failed in the cache accessor adapter; typed device functor correction ready"
+    "run_id": 42108648407,
+    "head": "aee649cd547be9d0c2814c15eddbbe4f60251159",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42108648407",
+    "declared_input_hashes": 59,
+    "scope": "Leaf/cache consumers with corrected typed cache accessor functor; six binaries"
   },
   "cuda_runtime": {
     "status": "not_run",
