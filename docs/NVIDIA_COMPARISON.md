@@ -6,7 +6,8 @@ inputs as the Metal numerical-contract test. A second native harness covers
 **P5-N02**, using the complete AFT corpus described below. A third covers
 **P5-N06** ranking RNG and raw pairs plus **training-rng-modern** streams and
 unweighted column sampling. A fourth exports the existing **P5-N03** primitive
-math corpus. The other nine numerical contracts and
+math corpus. A fifth adds **P5-N04/05** observations from the full existing
+ranking-rounding corpus. The other seven numerical contracts and
 broader caller/integration comparisons remain work;
 these harnesses are not a full parity certificate.
 
@@ -85,7 +86,7 @@ results/cuda-comparison-build/cmake/cuda_numerical_contracts \
   results/cuda-observations.jsonl
 ```
 
-The build driver first compiles all four harness objects using the configured compiler,
+The build driver first compiles all five harness objects using the configured compiler,
 CCCL, architectures and arithmetic flags. It then checks/rebuilds production
 dependencies and links the executables. This exposes harness compiler errors
 before the expensive library build. It writes `build.json`, including terminal
@@ -323,6 +324,92 @@ use only the low 32 bits. `MEND` and the uint32 mask finish the file; trailing
 bytes are rejected. Partial Metal exports use masks 3, 4 and 8; packing and CUDA
 execution require all groups. Gzip is packaging only.
 
+## Ranking rounding, gradients and bias updates
+
+`cuda_ranking_contracts` consumes the exact inputs from all 64 cases in
+`metal_ranking_rounding_api`: pairwise/MAP, top-k/mean sampling, normalization
+on/off, largest queries of 257/65,537 rows and four existing bias/label modes.
+The empty queries, soft binary labels, extreme weights, zero bias and small-bias
+cases remain. The [inputs](../validation/ranking-rounding-inputs-m3.bin.gz)
+contain predictions, labels, five group weights and the initial binary64 bias
+vectors. They contain no expected outputs.
+
+The [Metal export](../validation/ranking-rounding-metal-m3.bin.gz) retains
+**6,345,280 result/diagnostic fields**: 4,227,328 gradient/Hessian fields,
+2,113,664 MAP prefix fields, 2,560 updated bias values, 1,600 query-statistic
+fields and 128 scalar fields. The [run record](../validation/ranking-rounding-m3-run.json)
+includes unchanged checks for 121 untracked-cost maxima, 16 combined-weight
+witnesses and 48 global factors different from the last query's factor.
+This existing low-level Metal test supplies the CPU cache's `WeightNorm`;
+the CUDA consumer computes its own cache normalization from the same weights.
+
+CUDA invokes the vendored `LambdaRankGetGradientPairwise/MAP` and
+`LambdaRankUpdatePositionBias`, with production caches, sorts, pair generation,
+CUB reductions and atomic accumulation. It reads the actual cached gradient
+rounding factors, shared cost factor and MAP prefixes. Query normalization,
+combined weights and individual cost factors are **separate source-expression
+evaluations using retained production reduction results**; they are not captures
+of otherwise private temporary expressions or overwritten query writes.
+
+Each smaller case executes 32 times with freshly initialized cache, gradients,
+cost buffers and bias vectors; each larger case executes once: **1,056 planned
+CUDA executions**. Every repetition's full outputs are retained. The CUDA source
+allows multiple queries to write its shared cost factor. Metal's declared
+policy is the deterministic maximum, so the comparator records observed CUDA
+winners and distinct complete outputs without demanding a unique race winner.
+These repetitions cannot enumerate all possible race outcomes.
+
+```sh
+python3 scripts/compare_ranking_contracts.py unpack \
+  validation/ranking-rounding-inputs-m3.bin.gz --output results/ranking-inputs.bin
+results/cuda-comparison-build/cmake/cuda_ranking_contracts \
+  results/ranking-inputs.bin results/ranking-cuda.bin
+python3 scripts/compare_ranking_contracts.py compare \
+  validation/ranking-rounding-metal-m3.bin.gz results/ranking-cuda.bin \
+  --output results/ranking-comparison.json
+```
+
+Retain `ranking-cuda.bin.json`, the runtime log and matching `build.json` with
+both reports. The comparison enforces identical input bits, case order, shapes,
+all repetitions and exact EOF. Hardware provenance still requires reviewing
+the build/runtime records; valid binary framing does not authenticate GPU execution.
+
+The existing rounding-test limits remain: gradients use `2e-5 * max(1, abs(ref))`,
+MAP prefixes and comparable bias updates `2e-12`, normalization `2e-7`, and
+gradient/Hessian rounding plus combined FP32 weights require exact bits.
+All bit differences, including those
+within these limits, remain review items. Shared-factor differences and their
+dependent bias outputs require review, as do the zero-bias cases whose cost
+rounding uses nonfinite `frexp` inputs with unspecified NVIDIA exponents.
+These cases do not waive gradient or prefix checks. Exit `1` means invalid
+evidence or a declared comparison failure, `2` means differences require review,
+and `0` means bit-identical outputs on these recorded executions.
+
+This runner covers the complete existing rounding corpus, **not** the full
+`metal_ranking_gradient_api` and `metal_ranking_unbiased_api` corpora, the separate
+primitive-rounding boundary test, or public objective wrapper/state behavior.
+Those remain work, including NDCG, repeated objective calls and batched storage.
+No NVIDIA execution result is available yet. Fourteen synthetic integrity tests,
+a C++ input round trip and the unchanged Metal rounding checks pass locally.
+
+To regenerate the Metal exports:
+
+```sh
+bash scripts/test.sh --native metal_ranking_rounding_api
+MTL_DEBUG_LAYER=1 results/metal_ranking_rounding_api_test --report-prefix results/new-ranking
+```
+
+The little-endian format starts with `XGBRND1\0`, uint32 backend kind (`0` inputs,
+`1` Metal, `2` CUDA) and 64 cases. Each case stores eight uint32 words: objective,
+mean flag, normalization flag, largest query, mode, rows, bias positions and
+repetition count. Input arrays follow as FP32 prediction/label/weight bits and
+FP64 initial bias bits. Each observation starts with a uint32 repetition index,
+two FP64 scalars, five query records (four FP32 fields and one FP64 factor),
+row-major FP32 gradients, row-major FP64 MAP prefixes if applicable, and both
+FP64 updated bias vectors. `RNDE` plus the uint32 case count finishes the file.
+The fixed corpus uses eight pairs, seed `0xffffffff`, bias norm `1.5` and group
+pointers `[0, 0, 128, 128, 128+largest, 129+largest]`.
+
 ## Production sketch, training and prediction comparison
 
 `scripts/compare_gpu_pipeline.py` complements the numerical witnesses with fresh
@@ -374,6 +461,6 @@ same model bit for bit. HIGGS dispatched five sketch batches, and its cuts and
 first predictive tree exactly reproduce the earlier full benchmark. The
 [run record](../validation/gpu-pipeline-m3-run.json) includes hashes, commands,
 the initial validator error and 18 passing synthetic integrity tests. NVIDIA
-results are still absent. These integration cases do not close the ten
-remaining numerical contracts or cover external memory, native device inputs,
+results are still absent. These integration cases do not close the numerical
+contracts or cover external memory, native device inputs,
 distributed execution and all other caller combinations.

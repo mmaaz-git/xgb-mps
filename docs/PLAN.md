@@ -48,7 +48,7 @@ classification.
 | PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA compile passed at `bf1ebea` | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
 | PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA compile passed at `bf1ebea` | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
 | VERIFY-1 | Integration at a fixed revision | Locally complete; NVIDIA execution remains separate | [Acceptance report](LOCAL_ACCEPTANCE.md) maps all 17 contracts and 16 original gap rows; full Metal/CPU/federated evidence at `68c800e`, focused numerical fixtures at `0c66454`; CUDA compile passed at `bf1ebea` |
-| VERIFY-2 | NVIDIA execution comparison | Runners addressing eight contracts and production sketch/training/prediction added; Metal evidence published, external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; nine contracts lack dedicated runners and broader caller coverage remains; publish differences, not just compiler success |
+| VERIFY-2 | NVIDIA execution comparison | Runners addressing ten contracts and production sketch/training/prediction added; Metal evidence published, external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; seven contracts lack dedicated runners and broader caller coverage remains, including ranking gradients/unbiased objectives; publish differences, not just compiler success |
 | PERF-1 | Profile/optimize a frozen benchmark matrix | Full HIGGS repeated at `68c800e`; ordinary strict equivalence failed, common-cut 100-round diagnostic passes | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
 
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
@@ -122,7 +122,15 @@ unchanged; GPU-to-GPU math differences require review, even at one ULP. See the
 [run record](../validation/math-contract-m3-run.json). CUDA compilation and
 execution of this new consumer remain pending. This does not close P5-N12's
 compiler/contraction requirement or establish universal error bounds.
-Runners now address eight contracts; nine still lack dedicated runners, broader
+The ranking-rounding runner adds P5-N04/05 observations from all 64 existing
+cases: 6,345,280 result/diagnostic fields. The Metal export and 14 synthetic
+integrity tests pass. CUDA calls the production gradient and bias-update
+consumers, with 32 fresh repetitions of each smaller case to characterize the
+shared-factor race. Its compile/runtime validation remains pending. The
+[record](../validation/ranking-rounding-m3-run.json) distinguishes cached fields
+from separately evaluated source diagnostics. The broader gradient and repeated
+unbiased-objective suites still need matching exports and consumers.
+Runners now address ten contracts; seven still lack dedicated runners, broader
 caller coverage remains, and none has actual NVIDIA execution evidence.
 
 Continue VERIFY-2 in the following bounded batches. Reuse the accepted Metal
@@ -132,7 +140,7 @@ its contract until actual NVIDIA results have been reviewed.
 
 | Order | Remaining contract work | Required comparison |
 | --- | --- | --- |
-| 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Preserve query-race observations, signed truncation, raw normalization and combined weights; extend the existing RNG/pair runner's consumer coverage |
+| 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Complete compiler/runtime validation of the 64-case rounding runner; export the full gradient and repeated unbiased-objective corpora, including NDCG and batched cases. Retain the separate primitive-rounding boundaries. |
 | 2 | P5-N07 and training-reduction-association | Stats, linalg, metric and training reductions under their declared term precision and association bounds |
 | 3 | P5-N09/10/11: PR, ROC and ranking metrics | Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |

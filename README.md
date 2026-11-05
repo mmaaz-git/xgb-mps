@@ -48,8 +48,11 @@ rows. A ranking RNG runner adds the existing 659,200 draws and 9,068,696 raw
 pairs, training RNG streams, unweighted column shuffles and sampling hierarchies.
 The primitive-math runner adds **1,942,163 observed fields** for binary64
 arithmetic/casts, exp/log/erf and FP32 hypot/tanh, preserving the existing Metal
-inputs and tolerances. Runners now address eight of the seventeen numerical
-contracts; nine still lack dedicated runners, and broader caller coverage remains.
+inputs and tolerances. A ranking-rounding runner retains all 64 existing cases,
+including gradients, MAP prefixes, bias updates and CUDA's shared-factor race.
+Runners now address ten of the seventeen numerical contracts; seven still lack
+dedicated runners, and broader caller coverage remains, including the full
+ranking-gradient and repeated unbiased-objective suites.
 Production sketch/training/prediction comparisons
 also cover eight fixtures and full-size HIGGS quantile construction. Metal
 observations are published; NVIDIA execution is still required. Differences

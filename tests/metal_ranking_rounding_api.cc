@@ -7,6 +7,7 @@
 
 #include "../xgboost/src/common/metal_ranking.h"
 #include "cuda_ranking_reference.h"
+#include "ranking_rounding_io.h"
 using namespace xgboost;
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
@@ -15,8 +16,18 @@ bool Close(double a, double b, double tol = 2e-12) {
   return a == b || (std::isnan(a) && std::isnan(b)) ||
          std::abs(a - b) <= tol * std::max(1., std::abs(b));
 }
-int main() {
+int main(int argc, char** argv) {
   try {
+    Check(argc == 1 || (argc == 3 && std::string(argv[1]) == "--report-prefix"),
+          "Usage: metal_ranking_rounding_api_test [--report-prefix new-prefix]");
+    std::unique_ptr<ranking_rounding::Writer> inputs, report;
+    if (argc == 3) {
+      std::string prefix = argv[2];
+      Check(!std::filesystem::exists(prefix+".inputs.bin") &&
+            !std::filesystem::exists(prefix+".metal.bin"), "Use a new report prefix");
+      inputs = std::make_unique<ranking_rounding::Writer>(prefix+".inputs.bin", 0);
+      report = std::make_unique<ranking_rounding::Writer>(prefix+".metal.bin", 1);
+    }
     std::mt19937 rng(39281);
     std::size_t cases = 0, fields = 0, prefixes = 0, untracked = 0, combined = 0,
                 global_not_last = 0;
@@ -67,6 +78,17 @@ int main() {
               if (mode == 3) {
                 positive.back() = 1e-12;
                 negative[0] = 1e-8;
+              }
+              ranking_rounding::Input exported;
+              if (report) {
+                exported.shape = {objective == "rank:map", mean, normalized, largest,
+                                  static_cast<std::uint32_t>(mode),
+                                  static_cast<std::uint32_t>(info.num_row_),
+                                  static_cast<std::uint32_t>(positive.size())};
+                exported.predictions = pred.ConstHostVector();
+                exported.labels = info.labels.Data()->ConstHostVector();
+                exported.weights = info.weights_.ConstHostVector();
+                exported.positive = positive; exported.negative = negative;
               }
               reference.SetBias(positive, negative);
               linalg::Matrix<GradientPair> expected;
@@ -129,6 +151,19 @@ int main() {
                           Close(negative[i], reference.Negative()[i]),
                       "Binary64 bias state differs");
               }
+              if (report) {
+                ranking_rounding::Observation observed;
+                observed.global_cost_rounding = factor; observed.weight_norm = cache.WeightNorm();
+                for (auto g : stats)
+                  observed.groups.push_back({g.normalization, g.gradient_rounding,
+                      g.hessian_rounding, g.weight, g.cost_rounding});
+                for (auto g : output) {
+                  observed.gradients.push_back(g.GetGrad()); observed.gradients.push_back(g.GetHess());
+                }
+                for (auto p : prefix) observed.prefix.insert(observed.prefix.end(), p.begin(), p.end());
+                observed.positive = positive; observed.negative = negative;
+                inputs->Case(exported); report->Case(exported); report->Observe(observed);
+              }
               ++cases;
               if (cases % 8 == 0) {
                 std::printf(
@@ -142,6 +177,7 @@ int main() {
                 global_not_last);
     Check(untracked && combined && global_not_last,
           "Untracked-cost/combined-weight/global-bound fixtures missing");
+    if (report) { inputs->Finish(); report->Finish(); }
     std::printf(
         "PASS %zu production cases / %zu bounds / %zu prefixes; %zu untracked maxima, %zu "
         "combined-weight witnesses, %zu global-not-last factors\n",

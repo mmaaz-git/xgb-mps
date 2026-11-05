@@ -1,0 +1,251 @@
+{
+  "status": "Metal full rounding corpus and report integrity passed; new CUDA ranking compiler/runtime validation pending",
+  "suite": "ranking-rounding-v1",
+  "scope": "All 64 existing ranking-rounding cases for P5-N04/05; broader gradient/unbiased/primitive corpora remain",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T162436Z",
+    "revision": "1ee1896b1a9a9f1d6138522d512d1142fbfe22db",
+    "working_tree": "M .github/workflows/cuda-compile.yml\n M scripts/build_cuda_comparison.py\n M tests/cuda_comparison/CMakeLists.txt\n M tests/metal_ranking_rounding_api.cc\n?? tests/cuda_ranking_contracts.cu\n?? tests/ranking_rounding_io.h",
+    "diff_sha256": "d772800cd2d84c373d50553d362042d203ada341f7e1f14511f7b1bed77b4e8b",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/cuda_ranking_contracts.cu": "9ed60e6a76b6d5bc99a5b1e7f18a2df4f87c39315d83573aa746dc666c177c96",
+      "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895"
+    },
+    "native_groups": [
+      "metal_ranking_rounding_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.7810084999073297
+      },
+      {
+        "name": "compile-metal_ranking_rounding_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_ranking_rounding_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_ranking_rounding_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_ranking_rounding_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.6714040420483798
+      },
+      {
+        "name": "metal_ranking_rounding_api",
+        "command": [
+          "results/metal_ranking_rounding_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_ranking_rounding_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 8.711206000065431
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T16:24:47.751340+00:00"
+  },
+  "native_summary_path": "results/verify2-ranking-rounding-native/summary.json",
+  "native_summary_sha256": "46449c6ee08496835794cf0aecae20b0db75a9a29f708376a1235899df55abfb",
+  "tested_patch_paths": [
+    ".github/workflows/cuda-compile.yml",
+    "scripts/build_cuda_comparison.py",
+    "tests/cuda_comparison/CMakeLists.txt",
+    "tests/metal_ranking_rounding_api.cc"
+  ],
+  "tested_patch_sha256": "d772800cd2d84c373d50553d362042d203ada341f7e1f14511f7b1bed77b4e8b",
+  "tested_tracked_patch_matches_current_source": true,
+  "tested_untracked_inputs_match_current_source": true,
+  "harness_input_sha256": {
+    ".github/workflows/cuda-compile.yml": "240c4edc7c9284d86ab1448d97d00d87b713d38af2d496f3a5ca137c4e6ac85e",
+    "scripts/build_cuda_comparison.py": "604ac3f5716264a6ebc7c474ee02fda100d6ebc728b5158b5fce8f86cf483ad7",
+    "tests/cuda_comparison/CMakeLists.txt": "91ca294ab18dc51b073fc9ad83e46fea3c8ceea6da28a9bc155af04a1997ec76",
+    "tests/metal_ranking_rounding_api.cc": "bedb430a2a33b4ea9e4ebfb1e5e84a2286ce1ab4298c15cfea443a44f1f8e15f",
+    "tests/cuda_ranking_contracts.cu": "9ed60e6a76b6d5bc99a5b1e7f18a2df4f87c39315d83573aa746dc666c177c96",
+    "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+    "scripts/compare_ranking_contracts.py": "eace196a0187679913fac4a0ef2f854cc800f1e1e7b4d478f7ad1058c3532d54",
+    "tests/test_ranking_contract_reports.py": "8a939f8ad0434ddf057596abf327fa5bac831e6250c7d95ec301d9a150a815ef",
+    "tests/cuda_ranking_reference.h": "cd25c0268553856bec4814392c5e4356747627fad2fc578197b4f2b9e648b423",
+    "tests/cuda_ranking_rounding.h": "21321e0f868c6c4e071773c05d423aa07a06bc8ecdae4da026a9e861fbcf7d74",
+    "tests/cuda_ranking_pairs.h": "16aaaf56f3be14a2d253cbd681c830f35df7f52c5290d87b0988ab17de489636"
+  },
+  "export": {
+    "command": "MTL_DEBUG_LAYER=1 results/metal_ranking_rounding_api_test --report-prefix results/verify2-ranking-rounding",
+    "driver": "results/run-verify2-ranking-rounding.sh",
+    "driver_sha256": "b5ca48e4789707ed607792d85dded9210a3a69159c5f82a13f6161a938c964e1",
+    "log": "results/verify2-ranking-rounding.log",
+    "log_sha256": "71fba8c4881740121df2285cdd0f57ef5b201fb520ea7050567121383e3c1fab",
+    "exit_code": 0,
+    "artifacts": {
+      "inputs": {
+        "path": "validation/ranking-rounding-inputs-m3.bin.gz",
+        "compressed_bytes": 1495821,
+        "compressed_sha256": "783768be76a4252eaa3e087a5f6d311d220e7ef2a1437b65f093cfafbf428af1",
+        "raw_bytes": 16933144,
+        "raw_sha256": "f427949c0c4cfbcc32ee751c981391f695b5fcbcc3bb825d26f38d0cb582bbaa"
+      },
+      "metal": {
+        "path": "validation/ranking-rounding-metal-m3.bin.gz",
+        "compressed_bytes": 10779644,
+        "compressed_sha256": "41170e42567b24af37d07f806989b80e61ab6aa1398a9915b3fb1cf983f8d39d",
+        "raw_bytes": 50781208,
+        "raw_sha256": "d3d19eb7f87c1a9879e7fb5317cf0fd954ff6f630bb3dc6c440d63288b6c17ef"
+      }
+    },
+    "counts": {
+      "cases": 64,
+      "rows": 2113664,
+      "gradients": 4227328,
+      "prefix_fields": 2113664,
+      "bias_fields": 2560,
+      "group_fields": 1600,
+      "scalar_fields": 128,
+      "cuda_executions_planned": 1056,
+      "total_metal_output_fields": 6345280
+    }
+  },
+  "metal_results": {
+    "unchanged_cases": 64,
+    "bounds_checked": 1600,
+    "prefix_fields_checked": 2113664,
+    "untracked_cost_maxima": 121,
+    "combined_weight_witnesses": 16,
+    "global_not_last_query_factors": 48,
+    "original_tolerances_unchanged": true,
+    "gradient_tolerance": "2e-5 * max(1, abs(reference))",
+    "prefix_and_bias_tolerance": "2e-12 * max(1, abs(reference))",
+    "normalization_tolerance": "2e-7 * max(1, abs(reference))",
+    "rounding_and_combined_weights": "exact; original direct equality checks unchanged",
+    "weight_norm_boundary": "Existing low-level Metal test supplies the CPU cache WeightNorm. CUDA computes its own production cache WeightNorm from identical weights."
+  },
+  "input_preservation": "Only optional reporting added; original RNG generation/consumption, case order, GPU API call, independent reference, counters and checks unchanged.",
+  "cuda_consumer": {
+    "gradient_paths": [
+      "obj::cuda_impl::LambdaRankGetGradientPairwise",
+      "obj::cuda_impl::LambdaRankGetGradientMAP"
+    ],
+    "bias_path": "obj::cuda_impl::LambdaRankUpdatePositionBias",
+    "state": "Fresh cache, gradients, cost buffers and input bias for each repetition",
+    "cases": 64,
+    "executions_planned": 1056,
+    "repetitions": "32 for each of 32 smaller cases; 1 for each of 32 larger cases",
+    "actual_cached_fields": [
+      "gradient_rounding",
+      "hessian_rounding",
+      "global_cost_rounding",
+      "MAP prefixes"
+    ],
+    "separate_source_diagnostics": [
+      "normalization from production retained sum_lambda",
+      "combined weight from actual CUDA cache WeightNorm",
+      "per-query cost factor from production retained max_cost and input minimum bias"
+    ],
+    "source_race_preserved": true
+  },
+  "interchange_checks": {
+    "input_and_observation_bits_match": true,
+    "cpp_roundtrip": "byte-identical full input-only corpus",
+    "cpp_roundtrip_sha256": "f427949c0c4cfbcc32ee751c981391f695b5fcbcc3bb825d26f38d0cb582bbaa",
+    "cpp_rejects_observations_as_inputs": true,
+    "probe_source": "results/verify2-ranking-roundtrip.cc",
+    "probe_source_sha256": "e5830dbdacf89d5de4df1908e898f8b0ffa413a1160f43b25baf8edf9afcfe4c",
+    "log": "results/verify2-ranking-roundtrip.log",
+    "log_sha256": "bcf9f4cecba8723354685454e3a7a0aa2594384bc22624f2a655452f14b2f970"
+  },
+  "integrity_tests": {
+    "command": "PYTHONPATH=xgboost/python-package DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib .venv/bin/python -m pytest -q tests/test_ranking_contract_reports.py",
+    "scope": "Synthetic reports only; no NVIDIA execution",
+    "passed": 14,
+    "seconds": 1.76,
+    "log": "results/verify2-ranking-report-tests.log",
+    "log_sha256": "0bd2621ad1ffa8fb17111c5e4f6d681a4cbac8671eb16a322e4434f3d8ee8e01",
+    "negative_test_assertion_correction": {
+      "log": "results/verify2-ranking-report-tests-count-failure.log",
+      "log_sha256": "03284f7e78d5dd932bc86025f4173f4ee12c9d8a31937c95f4d6f72e7454dff7",
+      "detail": "Synthetic exact-field test initially expected 2 failures after changing the one Metal baseline. Correct count is 33: 32 affected CUDA repetitions plus the separate rounding-field change. Corrected test expectation; comparator behavior was retained."
+    }
+  },
+  "cuda_host_api_syntax_probe": {
+    "status": "passed clang++ -fsyntax-only; constructors, mutable-to-const views and actual CUDA API signatures, not NVCC/device compilation",
+    "source": "results/verify2-ranking-types.cc",
+    "source_sha256": "4e16e819d6dfe9580572601802b6f232cbc652cb834298da14be25ae1a098ed4",
+    "exit_code": 0
+  },
+  "cuda_build_driver_check": {
+    "status": "passed mocked five-binary compile/link lifecycle and new source hashes; no NVCC or GPU execution",
+    "source": "results/verify2-ranking-build-mock.py",
+    "source_sha256": "98cd36a1da5988fb82a0061527cfc0f8f091294b943f93f2d38cde7f01c4cffd",
+    "log": "results/verify2-ranking-build-mock.log",
+    "log_sha256": "16e0e97441e03530e57ab8e5e12437d59e7bd195f81129eebda29ad3f7583440",
+    "initial_setup_failure": "Mock temporary root used macOS /var symlink spelling instead of canonical /private/var. Driver correctly rejected a different checkout. Fixed mock root.resolve(), then reran successfully; no production code change.",
+    "initial_log": "results/verify2-ranking-build-mock-initial.log"
+  },
+  "cuda_compile": {
+    "status": "pending",
+    "gpu_execution": false,
+    "prior_math_run": 42062682076,
+    "prior_math_run_includes_ranking": false
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "results/cuda-comparison-build/cmake/cuda_ranking_contracts results/ranking-inputs.bin results/ranking-cuda.bin"
+  },
+  "limits": [
+    "No actual NVIDIA execution has occurred.",
+    "This low-level consumer corpus does not replace full gradient/unbiased objective suites, NDCG, repeated objective state, batched storage or the separate primitive-rounding boundaries.",
+    "Per-query CUDA cost factors are separate source evaluations from retained production maxima; shared factor is the actual cached winner.",
+    "A finite number of fresh executions cannot enumerate all source race outcomes.",
+    "Different shared factors and dependent bias outputs remain review items, not automatically accepted equivalence.",
+    "Mode 2 zero-bias nonfinite-exponent cost behavior is a separate domain policy. Gradients/prefixes retain ordinary checks.",
+    "Full input/framing validation is not hardware authentication; retain actual runtime metadata/logs with matching build record."
+  ]
+}

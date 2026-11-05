@@ -20,7 +20,7 @@ if(XGB_USE_NVCOMP)
 endif()
 
 add_custom_target(cuda_comparison_objects)
-foreach(contract numerical aft rng math)
+foreach(contract numerical aft rng math ranking)
   set(object cuda_${contract}_objects)
   set(binary cuda_${contract}_contracts)
   add_library(${object} OBJECT ../cuda_${contract}_contracts.cu)
