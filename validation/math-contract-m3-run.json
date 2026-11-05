@@ -1,5 +1,5 @@
 {
-  "status": "Metal exports and report integrity passed; new CUDA math compiler and runtime validation pending",
+  "status": "Metal exports and report integrity passed; CUDA math compile job in progress; NVIDIA execution absent",
   "suite": "math-v1",
   "scope": "P5-N03 existing primitive corpus; not full P5-N12 compiler/contraction or objective/metric coverage",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
@@ -304,10 +304,15 @@
     "log_sha256": "2a34e5e77d6f02c04396be8ca533f3c849e251e64b38a421920d764a31259b6d"
   },
   "cuda_compile": {
-    "status": "pending",
+    "status": "in_progress",
     "gpu_execution": false,
     "prior_rng_run": 42058206746,
-    "prior_rng_run_includes_math": false
+    "prior_rng_run_includes_math": false,
+    "run_id": 42062682076,
+    "job_id": 127368356226,
+    "head": "69d95e2ed18c9aab31e15534b70d2d08ffd621ac",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42062682076",
+    "last_observed_utc": "2026-11-05T16:17:31.838725+00:00"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -320,5 +325,6 @@
     "Exact arithmetic/casts except reported both-NaN payload differences. Math classification changes fail; other non-NaN differences require review.",
     "Original adaptive source-expression cases pass but are not exported by this runner.",
     "Comparison validates framing and input identity, not hardware authenticity; retain runtime metadata, logs and matching build record."
-  ]
+  ],
+  "harness_commit": "69d95e2ed18c9aab31e15534b70d2d08ffd621ac"
 }

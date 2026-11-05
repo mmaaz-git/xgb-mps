@@ -125,6 +125,24 @@ compiler/contraction requirement or establish universal error bounds.
 Runners now address eight contracts; nine still lack dedicated runners, broader
 caller coverage remains, and none has actual NVIDIA execution evidence.
 
+Continue VERIFY-2 in the following bounded batches. Reuse the accepted Metal
+corpora and invoke the corresponding vendored CUDA consumers; publish complete
+inputs and observations with each batch. A runner's completion does not close
+its contract until actual NVIDIA results have been reviewed.
+
+| Order | Remaining contract work | Required comparison |
+| --- | --- | --- |
+| 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Preserve query-race observations, signed truncation, raw normalization and combined weights; extend the existing RNG/pair runner's consumer coverage |
+| 2 | P5-N07 and training-reduction-association | Stats, linalg, metric and training reductions under their declared term precision and association bounds |
+| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
+| 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
+| Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |
+
+After these batches, reconcile broader caller combinations against the frozen
+operation ledger, including weighted sampling and the objective/metric paths
+outside each primitive corpus. If NVIDIA hardware becomes available, run the
+ready quantile/training comparison first and process concrete discrepancies.
+
 PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
 Freeze the accepted source and workload parameters; inspect prior outputs before
 running repeated CPU/MPS HIGGS, wide, sparse and vector benchmarks. Separate
