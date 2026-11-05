@@ -65,7 +65,8 @@ execution remains pending.
 The sampling extension now preserves all 199 current CUDA-derived sampling
 records, including 54 calls across persistent sampler lifetimes. Its Metal
 observations and reference checks pass; eight undefined CUDA conversion cases
-are explicit exclusions. Its CUDA compiler and runtime checks are pending. See
+are explicit exclusions. Its [CUDA build](https://github.com/mmaaz-git/xgb-mps/actions/runs/42103165520)
+is running; NVIDIA execution remains pending. See
 the [sampling record](validation/sampling-contract-m3-run.json).
 Production pipeline comparisons also cover eight
 fixtures and full-size HIGGS quantile construction. Six contracts still lack

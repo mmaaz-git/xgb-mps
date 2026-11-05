@@ -283,9 +283,11 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "not_started",
+    "status": "in_progress",
     "gpu_execution": false,
-    "reason": "Waiting for existing run42100004279 before pushing build-triggering changes; that run predates sampling"
+    "run_id": 42103165520,
+    "head": "6b9231280768dcc17cb7ee302a020725aa511e86",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42103165520"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -301,5 +303,6 @@
     "Eight undefined CUDA conversion cases are explicit exclusions, never successful CUDA rejection observations.",
     "Integer leaf/cache/linear reductions and broader training caller combinations remain separate work.",
     "Only Apple M3 GPU execution; host/mock/codec checks do not constitute NVIDIA evidence."
-  ]
+  ],
+  "harness_commit": "33ca04bd0c8f688650048b96384fbd75f689a8fe"
 }

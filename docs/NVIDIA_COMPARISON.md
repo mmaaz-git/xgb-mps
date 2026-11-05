@@ -892,8 +892,9 @@ even when both observations satisfy their independent reference checks.
 Normal and Metal-validation export runs pass. All **4,455 Metal output fields**
 validate independently; nine synthetic integrity tests and six mocked build-driver
 tests pass. The C++ reader reproduces the full input file byte for byte and
-rejects observation files as input. CUDA compilation and NVIDIA execution are
-pending; see the [run record](../validation/stump-contract-m3-run.json). This
+rejects observation files as input. CUDA compilation and host checks passed in
+run 42100004279; NVIDIA execution is pending. See the
+[run record](../validation/stump-contract-m3-run.json). This
 extends P5-N07 coverage without completing another numerical contract.
 
 ```sh

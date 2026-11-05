@@ -335,7 +335,7 @@
     "driver_sha256": "84b4a4e16091e375a2ed7569e50074c26f6fcd04a3ef4da09e723f1b4b27d8ab",
     "baseline_signature_sha256": "2a1d1ed1a0794422702425f95cf306faad4abe2c6f938cbff2a7817f81e3e41a",
     "probe_signature_sha256": "2a1d1ed1a0794422702425f95cf306faad4abe2c6f938cbff2a7817f81e3e41a",
-    "scope": "Actual source helper access and three CPU reducer checks; identical registered names/factory types with and without formal source header on AppleClang. Not NVCC or NVIDIA execution; CUDA host/symbol gates remain pending"
+    "scope": "Actual source helper access and three CPU reducer checks; identical registered names/factory types with and without formal source header on AppleClang. Not NVCC or NVIDIA execution; CUDA host/symbol gates subsequently passed in run42100004279"
   },
   "codec_check": {
     "status": "passed",
@@ -411,7 +411,7 @@
     "planned_output_fields_excluding_status": 16129627
   },
   "limits": [
-    "No NVIDIA runtime execution has occurred. CUDA compilation and the CUDA-linked host registry/dynamic-symbol gates for this extension remain pending.",
+    "No NVIDIA runtime execution has occurred. CUDA compilation and host registry/dynamic-symbol gates passed in run42100004279.",
     "NUM-OP-36 defines nonfinite/out-of-int32 label casts as outside the CUDA domain. All eight Metal guard observations are retained; CUDA marks them not executed and writes no fabricated sums. Four finite invalid-label cases exercise source rejection.",
     "Zero-ULP original checks include numeric signed-zero equality and matching NaN classifications; they do not imply every raw bit agrees. GPU-to-GPU differences remain review items.",
     "CUDA compiles actual elementwise/multiclass/survival policy and reducer bodies from unchanged source. Private registration entries and hidden definitions must pass host isolation gates before build success.",
@@ -585,7 +585,7 @@
       "production_steps": 197,
       "linked_binaries": 6,
       "host_isolation": "not executed: baseline binary loader exited127 before its main function",
-      "fix": "Resolve the nvCOMP shared-object symlink for runtime search and retain a direct ELF dependency; add early host-only loader probe. Verification pending."
+      "fix": "Resolve the nvCOMP shared-object symlink for runtime search and retain a direct ELF dependency; add early host-only loader probe. Verified in subsequent run42100004279."
     }
   ]
 }
