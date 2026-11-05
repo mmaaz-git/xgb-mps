@@ -16,12 +16,14 @@
 #include "../xgboost/src/common/metal_gradient.h"
 #include "../xgboost/src/common/metal_histogram.h"
 #include "../xgboost/src/common/metal_sketch.h"
+#include "../xgboost/src/common/metal_training.h"
 #include "../xgboost/src/data/adapter.h"
 #include "../xgboost/src/tree/param.h"
 #include "../xgboost/src/tree/tree_view.h"
 #include "xgboost/gradient.h"
 #include "xgboost/task.h"
 #include "xgboost/tree_updater.h"
+#include "cuda_gradient_reference.h"
 
 using namespace xgboost;
 namespace metal = common::metal;
@@ -216,6 +218,70 @@ void WeightFallback() {
   ++cases;
 }
 
+void VectorLeafSampling() {
+  constexpr std::uint32_t seed = 71;
+  for (std::size_t rows : {0u, 1u, 257u})
+    for (std::size_t targets : {1u, 3u})
+      for (unsigned method = 0; method < 3; ++method)
+        for (float fraction : {0.f, .7f, 1.f}) {
+          if (!method && fraction != 1.f) continue;
+          current = "vector leaf sampling/" + std::to_string(rows) + "/" +
+                    std::to_string(targets) + "/" + std::to_string(method) + "/" +
+                    std::to_string(fraction);
+          std::vector<cuda_reference::Pair> source(rows * targets);
+          std::vector<GradientPair> pairs(source.size());
+          for (std::size_t r = 0; r < rows; ++r)
+            for (std::size_t t = 0; t < targets; ++t) {
+              // Every Hessian is zero, with some all-zero gradient rows too.
+              float g = r % 3 ? float(int(r % 17) - 8) * float(t + 1) / 8 : 0.f;
+              source[r * targets + t] = {g, 0};
+              pairs[r * targets + t] = {g, 0};
+            }
+          cuda_reference::GradientSampling reference(source, rows, targets, fraction, seed);
+          HostDeviceVector<GradientPair> gradients(pairs, DeviceOrd::MPS());
+          auto view = linalg::MakeTensorView(DeviceOrd::MPS(), gradients.DeviceSpan(), rows, targets);
+          auto state = metal::MakeQuantizedGradients(view);
+          if (method == 1) state->SampleUniform(fraction, seed);
+          if (method == 2) state->SampleGradient(fraction, seed);
+          state->ApplySampling(view);
+          // Sampling decisions must survive float replay/reuse, exactly as
+          // CUDA's retained seed/norm/threshold state does.
+          gradients.Fill(GradientPair{});
+          HostDeviceVector<bst_node_t> positions(rows + 2, -91, DeviceOrd::MPS());
+          auto output = positions.DeviceSpan().subspan(1, rows);
+          auto indices = metal::MakeDeviceRows();
+          auto before = metal::GetStatistics();
+          std::vector<bst_node_t> expected(rows, -91);
+          for (unsigned page = 0; page < 3; ++page) {
+            auto base = page == 2 ? rows / 2 : 0;
+            auto count = page == 0 ? 0 : page == 1 ? rows / 2 : rows - base;
+            bst_node_t node = page == 1 ? 3 : 7;
+            indices->Reset(count, base);
+            std::vector<metal::LeafRange> leaves;
+            if (count) leaves.push_back({0, count, node, 0});
+            indices->LeafPositions(leaves, view, output, state.get());
+            for (std::size_t r = base; r < base + count; ++r) {
+              float probability = method == 2 && fraction < 1.f
+                                      ? cuda_reference::Probability(reference.norms[r], reference.threshold)
+                                      : fraction;
+              expected[r] = cuda_reference::Selected(seed, r, probability) ? node : ~node;
+            }
+          }
+          NoTransfers(before);
+          auto after = metal::GetStatistics();
+          Check(after.leaf_partition_dispatches - before.leaf_partition_dispatches ==
+                    (rows / 2 != 0) + (rows != 0), "Leaf finalization dispatch count");
+          Check(after.leaf_shared_output_bytes - before.leaf_shared_output_bytes == rows * sizeof(bst_node_t),
+                "Leaf positions did not stay in GPU output storage");
+          Owned(positions);
+          auto actual = positions.ConstHostSpan();
+          Check(actual.front() == -91 && actual.back() == -91, "Position guard overwritten");
+          for (std::size_t r = 0; r < rows; ++r)
+            Check(actual[r + 1] == expected[r], "CUDA sampler membership differs");
+          ++cases;
+        }
+}
+
 void Updater(bool approx, unsigned targets, bool reduced, unsigned forest, unsigned sampling,
              bool missing) {
   current = "updater/" + std::to_string(approx) + "/" + std::to_string(targets) + "/" +
@@ -251,9 +317,14 @@ void Updater(bool approx, unsigned targets, bool reduced, unsigned forest, unsig
     auto seed = [&](linalg::Matrix<GradientPair>* tensor) {
       auto host = tensor->HostView();
       for (std::size_t r = 0; r < rows; ++r)
-        for (std::size_t t = 0; t < host.Shape(1); ++t)
+        for (std::size_t t = 0; t < host.Shape(1); ++t) {
           host(r, t) = {float(int(r % 17) - 8) * float(t + 1) / 8.f,
                         1.f + float((r + round) % 7) / 4.f};
+          // CUDA vector positions retain selected rows even if every Hessian
+          // is zero. Include zero and nonzero gradients, also for reduced trees.
+          if (gpu && targets > 1 && r % 7 == 0)
+            host(r, t) = {r % 2 ? host(r, t).GetGrad() : 0.f, 0.f};
+        }
       if (gpu) tensor->View(DeviceOrd::MPS());
     };
     seed(&gradients.gpair);
@@ -309,6 +380,7 @@ int main() {
     Context ctx;
     ctx.Init({{"device", "mps"}, {"nthread", "2"}});
     GroupCopies(ctx);
+    VectorLeafSampling();
     WeightFallback();
     for (auto rows : {0u, 1u, 257u, 4097u})
       for (unsigned layout = 0; layout < 3; ++layout)

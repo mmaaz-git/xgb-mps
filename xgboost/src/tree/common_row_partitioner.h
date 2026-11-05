@@ -25,6 +25,9 @@
 #include "xgboost/linalg.h"               // for TensorView
 #include "xgboost/span.h"                 // for Span
 
+namespace xgboost::common::metal {
+class QuantizedGradients;
+}
 namespace xgboost::tree {
 
 static constexpr size_t kPartitionBlockSize = 2048;
@@ -264,7 +267,8 @@ class CommonRowPartitioner {
   template <typename TreeView>
   void LeafPartition(Context const* ctx, TreeView const& tree,
                      linalg::MatrixView<GradientPair const> gpair,
-                     common::Span<bst_node_t> out_position) const {
+                     common::Span<bst_node_t> out_position,
+                     common::metal::QuantizedGradients const* sampling = nullptr) const {
 #if defined(XGBOOST_USE_METAL)
     if (ctx->IsMPS()) {
       std::vector<common::metal::LeafRange> leaves;
@@ -276,7 +280,7 @@ class CommonRowPartitioner {
           leaves.push_back(
               {static_cast<std::uint64_t>(begin), begin + rows.Size(), rows.node_id, 0});
         }
-      row_set_collection_.metal_rows->LeafPositions(std::move(leaves), gpair, out_position);
+      row_set_collection_.metal_rows->LeafPositions(std::move(leaves), gpair, out_position, sampling);
       return;
     }
 #endif

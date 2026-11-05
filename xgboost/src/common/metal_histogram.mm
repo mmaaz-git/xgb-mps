@@ -921,6 +921,16 @@ class MetalLeafSums final : public LeafSums {
   }
 };
 
+struct LeafSamplingParams {
+  // 0 retains scalar Hessian validity; 1/2/3 replay none/uniform/gradient sampling.
+  std::uint32_t method{0}, seed{0};
+  float probability{1.f};
+  std::uint32_t padding{0};
+};
+static_assert(sizeof(LeafSamplingParams) == 16);
+void BindLeafSampling(id<MTLComputeCommandEncoder> encoder, QuantizedGradients const* sampling,
+                      id<MTLBuffer> fallback);
+
 class MetalRows final : public DeviceRows {
   Runtime& rt_{GetRuntime()};
   id<MTLBuffer> rows_, saved_rows_, ranks_;
@@ -1195,10 +1205,11 @@ class MetalRows final : public DeviceRows {
 
   void LeafPositions(std::vector<LeafRange> leaves,
                      linalg::MatrixView<GradientPair const> gradients,
-                     Span<bst_node_t> output) override {
+                     Span<bst_node_t> output, QuantizedGradients const* sampling) override {
     if (!size_) return;
     CHECK_GE(output.size(), base_ + size_);
     CHECK_GE(gradients.Shape(0), base_ + size_);
+    if (sampling) CHECK_EQ(sampling->Rows(), gradients.Shape(0));
     std::sort(leaves.begin(), leaves.end(), [](auto const& a, auto const& b) {
       // Empty leaves must precede a nonempty leaf starting at the same offset.
       return a.begin < b.begin || (a.begin == b.begin && a.end < b.end);
@@ -1255,6 +1266,7 @@ class MetalRows final : public DeviceRows {
       [encoder setBuffer:g.buffer offset:g.offset atIndex:2];
       [encoder setBuffer:out.buffer offset:out.offset atIndex:3];
       [encoder setBytes:&p length:sizeof(p) atIndex:4];
+      BindLeafSampling(encoder, sampling, leaf_buffer);
       [encoder dispatchThreads:MTLSizeMake(size_, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [encoder endEncoding];
@@ -1516,6 +1528,8 @@ struct CudaUniformParams {
 static_assert(sizeof(CudaUniformParams) == 40);
 
 class MetalQuantizedGradients final : public QuantizedGradients {
+  friend void BindLeafSampling(id<MTLComputeCommandEncoder>, QuantizedGradients const*,
+                               id<MTLBuffer>);
   Runtime& rt_;
   std::size_t rows_;
   float probability_{1.f};
@@ -1684,6 +1698,28 @@ class MetalQuantizedGradients final : public QuantizedGradients {
     }
   }
 };
+
+void BindLeafSampling(id<MTLComputeCommandEncoder> encoder, QuantizedGradients const* sampling,
+                      id<MTLBuffer> fallback) {
+  LeafSamplingParams parameters;
+  // All slots are bound for Metal validation, including unused scalar/uniform
+  // inputs. No row payload or MVS threshold is read by the host here.
+  auto norms = fallback, state = fallback;
+  if (sampling) {
+    auto source = static_cast<MetalQuantizedGradients const*>(sampling);
+    parameters.method = source->gradient_sampling_ ? 3 : source->probability_ < 1.f ? 2 : 1;
+    parameters.seed = source->seed_;
+    parameters.probability = source->probability_;
+    if (source->gradient_sampling_) {
+      norms = source->norms_;
+      state = source->sampling_state_;
+      CHECK(norms && state);
+    }
+  }
+  [encoder setBytes:&parameters length:sizeof(parameters) atIndex:5];
+  [encoder setBuffer:norms offset:0 atIndex:6];
+  [encoder setBuffer:state offset:0 atIndex:7];
+}
 
 class MetalHistogram final : public Histogram {
   Runtime& rt_;

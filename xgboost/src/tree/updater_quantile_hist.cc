@@ -335,6 +335,13 @@ class MultiTargetHistBuilder {
     p_out_position->Resize(gpair.Shape(0));
     auto positions = ctx_->IsMPS() ? p_out_position->DeviceSpan() : p_out_position->HostSpan();
     for (auto const &part : partitioner_) {
+#if defined(XGBOOST_USE_METAL)
+      if (ctx_->IsMPS()) {
+        CHECK(quantized_);
+        part.LeafPartition(ctx_, tree.HostMtView(), gpair, positions, quantized_.get());
+        continue;
+      }
+#endif
       part.LeafPartition(ctx_, tree.HostMtView(), gpair, positions);
     }
     monitor_->Stop(__func__);

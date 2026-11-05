@@ -12,6 +12,7 @@ namespace xgboost {
 class GHistIndexMatrix;
 namespace common::metal {
 class LeafSums;
+class QuantizedGradients;
 // Immutable GPU copy owned by the corresponding gradient-index page. Destruction
 // and explicit invalidation follow the source page, including external memory.
 class QuantizedPage {
@@ -44,7 +45,8 @@ class DeviceRows {
   virtual void CopyToHost(Span<bst_idx_t> output) const = 0;
   virtual void LeafPositions(std::vector<LeafRange> leaves,
                              linalg::MatrixView<GradientPair const> gradients,
-                             Span<bst_node_t> output) = 0;
+                             Span<bst_node_t> output,
+                             QuantizedGradients const* sampling = nullptr) = 0;
   virtual void AddLeafGradients(Span<LeafSumSegment const> leaves,
                                 linalg::MatrixView<GradientPair const> gradients,
                                 LeafSums* output) = 0;

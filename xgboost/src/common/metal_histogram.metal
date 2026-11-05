@@ -639,11 +639,26 @@ struct LeafPositionParams {
   ulong rows, base, stride0, stride1;
   uint targets, leaves;
 };
+struct LeafSamplingParams {
+  uint method, seed;
+  float probability;
+  uint padding;
+};
+struct CudaMvsState {
+  int exponent;
+  atomic_uint error, index;
+  float threshold;
+};
+inline float xgb_cuda_mvs_probability(float norm, float threshold);
+inline bool xgb_cuda_mvs_selected(float probability, uint seed, ulong row);
 kernel void xgb_leaf_positions(device const ulong* rows [[buffer(0)]],
                                device const LeafRange* leaves [[buffer(1)]],
                                device const uint2* gradients [[buffer(2)]],
                                device int* positions [[buffer(3)]],
                                constant LeafPositionParams& p [[buffer(4)]],
+                               constant LeafSamplingParams& sampling [[buffer(5)]],
+                               device const float* norms [[buffer(6)]],
+                               device const CudaMvsState& state [[buffer(7)]],
                                uint tid [[thread_position_in_grid]]) {
   if (ulong(tid) >= p.rows) return;
   uint lo = 0, hi = p.leaves;
@@ -656,10 +671,16 @@ kernel void xgb_leaf_positions(device const ulong* rows [[buffer(0)]],
   }
   ulong row = rows[tid];
   bool invalid = true;
-  for (uint t = 0; t < p.targets; ++t)
-    // Metal float comparisons can flush a nonzero subnormal Hessian to zero.
-    // Only the two signed-zero encodings denote a sampled-out row.
-    invalid = invalid && (gradients[row * p.stride0 + t * p.stride1].y & 0x7fffffffu) == 0;
+  if (sampling.method == 0) {
+    for (uint t = 0; t < p.targets; ++t)
+      // Preserve the scalar signed-zero test without flushing subnormals.
+      invalid = invalid && (gradients[row * p.stride0 + t * p.stride1].y & 0x7fffffffu) == 0;
+  } else {
+    // CUDA vector FinalizePosition uses SamplingInfo, independently of Hessians.
+    float probability = sampling.method == 3 ? xgb_cuda_mvs_probability(norms[row], state.threshold)
+                         : sampling.method == 2 ? sampling.probability : 1.f;
+    invalid = !xgb_cuda_mvs_selected(probability, sampling.seed, row);
+  }
   int node = leaves[lo].node;
   positions[row - p.base] = invalid ? ~node : node;
 }
@@ -6120,11 +6141,6 @@ inline XGBDouble xgb_positive_dfma(XGBDouble a, XGBDouble b, XGBDouble c) {
 struct CudaMvsParams {
   ulong rows;
   uint targets, sample_rows;
-};
-struct CudaMvsState {
-  int exponent;
-  atomic_uint error, index;
-  float threshold;
 };
 kernel void xgb_cuda_mvs_term(device const ulong2* pairs [[buffer(0)]],
                               device const GradientScale& scale [[buffer(1)]],
