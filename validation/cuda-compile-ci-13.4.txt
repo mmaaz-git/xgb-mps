@@ -1,0 +1,53 @@
+CUDA compile/link CI — first successful configuration
+2026-11-05 UTC
+
+Result: PASS, 197/197 build steps including final libxgboost.so.3.4.2 link.
+Revision: b8ad69d2750f40e1aba3ab5ff4733f7d5741a322
+Run: https://github.com/mmaaz-git/xgb-mps/actions/runs/41978324629
+Job: compile, 06:07:36–06:25:20 UTC, success.
+Build script: 06:09:12–06:25:16 UTC.
+
+Configuration:
+  GitHub-hosted Ubuntu 24.04 CPU runner; no NVIDIA GPU execution.
+  NVIDIA CUDA 13.4.2-devel Ubuntu 24.04 container, immutable manifest:
+  sha256:7005688f5eaa5a9aaa9e555f546107c4454446a543347fd48b0bdb63ea027ad2
+  NVCC 13.4.92; GNU C/C++ 13.3.0; CMake 3.28.3; Release; architecture 80.
+  USE_CUDA=ON, USE_METAL=OFF, USE_NCCL=ON, BUILD_WITH_SHARED_NCCL=ON,
+  USE_NVCOMP=ON, PLUGIN_FEDERATED=ON, USE_OPENMP=ON; parallelism 2.
+  NCCL 2.31.2-1+cuda13.4 (the pinned container's held version).
+  nvCOMP 5.3.0.16-1, libgrpc++-dev 1.51.1-4.1build5,
+  protobuf-compiler 3.21.12-8.2ubuntu0.4 (CMake library version 3.21.12).
+  A separate NVCC compile probe includes common/random.cuh and static_asserts
+  DefaultRng == cuda::std::philox4x64. The modern branch targeted by Metal is
+  therefore compiled, rather than the older Thrust random fallback.
+
+Initial terminal failures and fixes:
+  41977126433: apt attempted to replace held NCCL packages. Keep the immutable
+    image's NCCL installation; add missing libprotobuf-dev.
+  41977330547: CMake could not find nvCOMP's versioned package directory.
+    Set nvcomp_DIR to the package's actual installed CMake directory.
+  41977632903: nvCOMP 6 removed the Snappy temporary-size Async APIs used by the
+    vendored CUDA source. Pin compatible nvCOMP 5.3 instead of rewriting the
+    CUDA codec solely for a newer optional dependency. Official 5.3 package
+    headers were inspected to verify both APIs before rerunning.
+  Each prior job was terminal before the corrected commit triggered another.
+
+Nonfatal diagnostics:
+  Existing thrust::make_constant_iterator calls are deprecated by CUDA 13.4.
+  CMake 3.28 does not use the CMAKE_POLICY_VERSION_MINIMUM compatibility option.
+  No compilation or linker errors remain in the successful run.
+
+Evidence:
+  Workflow: .github/workflows/cuda-compile.yml
+  Driver: scripts/ci_cuda_build.sh
+  Artifact: cuda-compile-evidence (build log, CMakeCache, CMakeConfigureLog).
+  Local log: results/cuda-compile-41978324629/results/cuda-compile-ci.log
+  Log SHA256: f8d0afe9065a174cef14117749610bfc8672e02e3a32158c0b8274a3b48bbe7b
+  Official dependency sources:
+  https://catalog.ngc.nvidia.com/orgs/nvidia/containers/cuda/13.4.2-devel-ubuntu24.04
+  https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/
+
+This validates compilation/linking at the listed revision/configuration only.
+No NVIDIA runtime tests, performance measurements, other CUDA versions or other
+GPU architectures are represented. Metal arithmetic/runtime correctness remains
+covered separately by the local Apple M3 suites and documented numerical limits.

@@ -1,0 +1,885 @@
+{
+  "schema_version": 1,
+  "upstream_version": "3.4.2",
+  "upstream_import": "22a84e0538e8c8db8d517c610b393bd5799a05d5",
+  "audit_revision": "5b7629da4bcb60d4944cdb6aa3531e4f499d5f46",
+  "scope": "CUDA translation units and headers under vendored src and plugin, grouped by operations and consumers; not an exhaustive symbol/branch proof.",
+  "completeness": "not_proven",
+  "source_files": 109,
+  "implementation_bodies": [
+    "xgboost/src/common/metal_histogram.mm",
+    "xgboost/src/common/metal_histogram.metal"
+  ],
+  "latest_local_regression": "validation/cuda-metal-native-gradient-storage-m3.txt",
+  "groups": [
+    {
+      "id": "native-api",
+      "operations": "Native dense/columnar matrices; custom gradient pairs; native prediction placement; build information",
+      "cuda_sources": [
+        "xgboost/src/c_api/c_api.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/c_api/c_api.cc",
+        "xgboost/src/common/metal_gradient.h",
+        "xgboost/src/common/metal_output.h"
+      ],
+      "tests": [
+        "tests/metal_gradient_import_api.mm",
+        "tests/test_metal_gradient_import.py",
+        "tests/metal_prediction_result_api.cc",
+        "tests/test_metal_output.py",
+        "tests/test_metal_updater.py"
+      ],
+      "status": "mapped",
+      "limits": "Native Metal descriptors replace CUDA array-interface pointers. Native custom gradients retain device-authoritative Metal output even for CPU learners; host gradient arrays retain upstream CPU packing. CUDA device-selection guards are backend-specific; Metal ordinal validation is in Context."
+    },
+    {
+      "id": "tensor-adapters",
+      "operations": "Typed/strided tensors, masks, categorical columns, proxy setup and producer completion",
+      "cuda_sources": [
+        "xgboost/src/data/array_interface.cu",
+        "xgboost/src/data/device_adapter.cu",
+        "xgboost/src/data/device_adapter.cuh",
+        "xgboost/src/data/proxy_dmatrix.cu",
+        "xgboost/src/data/proxy_dmatrix.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/data/proxy_dmatrix.cc",
+        "xgboost/src/common/metal_tensor.h",
+        "xgboost/src/common/metal_adapter.h",
+        "xgboost/python-package/xgboost/_metal.py"
+      ],
+      "tests": [
+        "tests/metal_tensor_api.mm",
+        "tests/metal_columnar_api.mm",
+        "tests/test_metal_tensor.py",
+        "tests/test_metal_columnar.py"
+      ],
+      "status": "mapped-with-scheduling-difference",
+      "limits": "Torch/MLX producers are synchronized; raw producers must provide completed buffers. CUDA stream events have no portable Metal stream-pointer counterpart. Scheduling is synchronous, not CUDA-equivalent."
+    },
+    {
+      "id": "ordinary-import",
+      "operations": "Native sparse entry filtering, row counts/prefixes, CSR packing and ordinary matrix creation",
+      "cuda_sources": [
+        "xgboost/src/data/simple_dmatrix.cu",
+        "xgboost/src/data/simple_dmatrix.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/data/simple_dmatrix.cc",
+        "xgboost/src/common/metal_tensor.h"
+      ],
+      "tests": [
+        "tests/metal_tensor_csr_api.mm",
+        "tests/test_metal_ordinary_tensor.py"
+      ],
+      "status": "partial-host-storage",
+      "limits": "CONFIRMED GAP: CUDA CopyToSparsePage sets the device for both arrays and packs entries through DeviceSpan. Metal CopyTensorToSparsePage uses host destination spans. CUDA explicitly publishes a host row-offset mirror to read the nonzero count; that mirror is intentional, but persistent entry storage remains missing. CudaSketchOnDMatrix and compressed PushCSR also request host entry spans; migrate these consumers together with the importer."
+    },
+    {
+      "id": "metadata",
+      "operations": "Typed metadata import/validation, query IDs, slicing, copy/extend and equality",
+      "cuda_sources": [
+        "xgboost/src/data/data.cu",
+        "xgboost/src/data/metainfo.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/data/data.cc",
+        "xgboost/src/common/metal_metadata.h",
+        "xgboost/src/common/metal_vector.h"
+      ],
+      "tests": [
+        "tests/metal_metadata_api.mm",
+        "tests/metal_vector_api.cc",
+        "tests/test_metal_metadata.py",
+        "tests/test_metal_vector_state.py"
+      ],
+      "status": "mapped",
+      "limits": "Public ordinary DMatrix row slicing uses the host SparsePage path upstream too. Internal metadata gather is GPU tested; host group-size prefix and serialization are intentional."
+    },
+    {
+      "id": "category-dictionaries",
+      "operations": "Typed dictionary sort/search, recoding, device dictionary copies and sorted-index lifetime",
+      "cuda_sources": [
+        "xgboost/src/data/cat_container.cu",
+        "xgboost/src/data/cat_container.cuh",
+        "xgboost/src/encoder/ordinal.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/data/cat_container.cc",
+        "xgboost/src/data/cat_container.h",
+        "xgboost/src/common/metal_category.h"
+      ],
+      "tests": [
+        "tests/metal_category_api.cc",
+        "tests/metal_category_state_api.cc",
+        "tests/test_metal_category_names.py",
+        "tests/test_metal_columnar.py"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "quantile-frontends",
+      "operations": "In-memory and external quantile adapters, reference cuts, batch concatenation and bin assignment",
+      "cuda_sources": [
+        "xgboost/src/data/extmem_quantile_dmatrix.cu",
+        "xgboost/src/data/iterative_dmatrix.cu",
+        "xgboost/src/data/quantile_dmatrix.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/data/metal_quantile.h",
+        "xgboost/src/data/iterative_dmatrix.cc",
+        "xgboost/src/data/extmem_quantile_dmatrix.cc",
+        "xgboost/src/common/metal_adapter.h"
+      ],
+      "tests": [
+        "tests/metal_adapter_api.cc",
+        "tests/metal_ellpack_adapter_api.cc",
+        "tests/test_metal_input.py",
+        "tests/test_metal_disk_ellpack.py"
+      ],
+      "status": "mapped",
+      "limits": "Input-device inference and explicit fork construction options differ; CuPy CSR/CSC is unsupported in upstream Python and is not a missing native Metal interface."
+    },
+    {
+      "id": "sketches",
+      "operations": "Raw/adaptor quantile sketches: weights, sort, scan, categories, summaries, merge/prune and final cuts",
+      "cuda_sources": [
+        "xgboost/src/common/hist_util.cu",
+        "xgboost/src/common/hist_util.cuh",
+        "xgboost/src/common/quantile.cu",
+        "xgboost/src/common/quantile.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/metal_cuda_sketch.h",
+        "xgboost/src/common/metal_cuda_sketch.cc",
+        "xgboost/src/common/metal_quantile.h"
+      ],
+      "tests": [
+        "tests/metal_cuda_sketch_api.cc",
+        "tests/metal_sketch_ingest_api.cc",
+        "tests/metal_sketch_collective_api.cc",
+        "tests/test_metal_sketch.py"
+      ],
+      "status": "mapped",
+      "limits": "GPU summary operations and CUDA-derived rank rules are covered. Scan association, sorting ties and rank repair remain documented numerical audit boundaries; final host cut publication matches CUDA."
+    },
+    {
+      "id": "ellpack",
+      "operations": "Compressed pages, adaptive dense/sparse representations, copies/concatenation and CPU conversion",
+      "cuda_sources": [
+        "xgboost/src/data/ellpack_page.cu",
+        "xgboost/src/data/ellpack_page.cuh",
+        "xgboost/src/data/gradient_index.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/metal_ellpack.h",
+        "xgboost/src/data/gradient_index.cc",
+        "xgboost/src/common/metal_data.h"
+      ],
+      "tests": [
+        "tests/metal_ellpack_api.cc",
+        "tests/metal_ellpack_csr_api.cc",
+        "tests/metal_compressed_consumers_api.cc",
+        "tests/test_metal_inmemory_ellpack.py"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "external-cache",
+      "operations": "Disk/host external caches, prefetch, compressed page IO, regeneration and lifetime",
+      "cuda_sources": [
+        "xgboost/src/data/ellpack_page_raw_format.cu",
+        "xgboost/src/data/ellpack_page_source.cu",
+        "xgboost/src/data/sparse_page_dmatrix.cu",
+        "xgboost/src/data/sparse_page_source.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/data/metal_page_source.h",
+        "xgboost/src/data/sparse_page_dmatrix.cc",
+        "xgboost/src/common/metal_storage.h",
+        "xgboost/src/common/metal_ellpack.h"
+      ],
+      "tests": [
+        "tests/metal_ellpack_io_api.cc",
+        "tests/metal_ordinary_ellpack_api.cc",
+        "tests/test_metal_disk_ellpack.py",
+        "tests/test_metal_external_host.py"
+      ],
+      "status": "mapped",
+      "limits": "Host/private Metal cache policies implement the data lifecycle; CUDA mmap advice/VMM/preload scheduling are not reproduced as CUDA APIs. External staging performance remains open."
+    },
+    {
+      "id": "snappy",
+      "operations": "Optional sparse-cache Snappy compression, headers, copy/literal decoding and decompression",
+      "cuda_sources": [
+        "xgboost/src/common/device_compression.cu",
+        "xgboost/src/common/device_compression.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/metal_snappy.h",
+        "xgboost/src/common/metal_ellpack.h"
+      ],
+      "tests": [
+        "tests/metal_snappy_api.cc"
+      ],
+      "status": "mapped",
+      "limits": "Metal compute replaces nvCOMP and NVIDIA decompression-engine APIs. Internal block layout is port-specific; decoded payloads and rejection behavior are checked."
+    },
+    {
+      "id": "vector-storage",
+      "operations": "Typed host/device access states, fill/copy/resize/concatenate and lazy host mirrors",
+      "cuda_sources": [
+        "xgboost/src/common/host_device_vector.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/host_device_vector_metal.cc",
+        "xgboost/src/common/metal_vector.h"
+      ],
+      "tests": [
+        "tests/metal_vector_api.cc",
+        "tests/test_metal_vector_state.py"
+      ],
+      "status": "mapped",
+      "limits": "Typed bit-preserving storage is covered. A storage implementation existing does not prove every consumer uses it; vector-tree model buffers and ordinary native matrix entries remain confirmed gaps."
+    },
+    {
+      "id": "resources",
+      "operations": "GPU/host allocation, pinned buffers, grow-only storage, mmap resources and buffer lifetime",
+      "cuda_sources": [
+        "xgboost/src/common/cuda_pinned_allocator.cu",
+        "xgboost/src/common/device_vector.cu",
+        "xgboost/src/common/device_vector.cuh",
+        "xgboost/src/common/ref_resource_view.cuh",
+        "xgboost/src/common/resource.cu",
+        "xgboost/src/common/resource.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/metal_vector.h",
+        "xgboost/src/common/metal_memory.h",
+        "xgboost/src/common/metal_storage.h",
+        "xgboost/src/data/metal_page_source.h"
+      ],
+      "tests": [
+        "tests/metal_memory_api.mm",
+        "tests/metal_vector_api.cc",
+        "tests/metal_ellpack_io_api.cc"
+      ],
+      "status": "backend-adapted",
+      "limits": "Metal shared/private buffers and retained owners replace CUDA allocators, VMM and managed-memory advice. Resource/copy/lifetime consumers are tested; reservation and migration scheduling differ. RMM itself is CUDA-specific, not a Metal allocator."
+    },
+    {
+      "id": "runtime",
+      "operations": "Device context, stream completion, launch/error helpers, cached allocations and debug support",
+      "cuda_sources": [
+        "xgboost/src/common/common.cu",
+        "xgboost/src/common/cuda_context.cuh",
+        "xgboost/src/common/device_debug.cuh",
+        "xgboost/src/common/device_helpers.cu",
+        "xgboost/src/common/device_helpers.cuh",
+        "xgboost/src/context.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/context.cc",
+        "xgboost/src/common/metal_histogram.mm",
+        "xgboost/src/common/metal_memory.h",
+        "xgboost/src/common/metal_vector.h"
+      ],
+      "tests": [
+        "tests/metal_memory_api.mm",
+        "tests/metal_vector_api.cc",
+        "tests/test_metal.py"
+      ],
+      "status": "backend-adapted",
+      "limits": "CUDA runtime and debug helpers are backend support, not separate public learning operations. Metal uses command buffers and synchronous completion. Exhaustive helper-caller auditing remains necessary."
+    },
+    {
+      "id": "sort-scan-primitives",
+      "operations": "Segmented sorting, sequences, scans, run-length encoding, compaction and trapezoid scheduling",
+      "cuda_sources": [
+        "xgboost/src/common/algorithm.cuh",
+        "xgboost/src/common/threading_utils.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/metal_ranking.h",
+        "xgboost/src/common/metal_cuda_sketch.h",
+        "xgboost/src/common/metal_linalg.h",
+        "xgboost/src/common/metal_metadata.h"
+      ],
+      "tests": [
+        "tests/metal_ranking_cache_api.cc",
+        "tests/metal_cuda_sketch_api.cc",
+        "tests/metal_linalg_api.cc",
+        "tests/metal_metadata_api.mm"
+      ],
+      "status": "caller-audit-open",
+      "limits": "Consumer-specific Metal kernels replace Thrust/CUB templates. This maps tested ranking/sketch/metadata/class-prior consumers, not a general replacement CUDA STL API. All template call sites still need reconciliation."
+    },
+    {
+      "id": "random",
+      "operations": "Uniform row sampling, weighted columns and source random distributions",
+      "cuda_sources": [
+        "xgboost/src/common/random.cu",
+        "xgboost/src/common/random.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/random.h",
+        "xgboost/src/common/metal_sampling.h",
+        "xgboost/src/common/metal_training.h"
+      ],
+      "tests": [
+        "tests/metal_column_sampling_api.cc",
+        "tests/test_metal_column_sampling.py",
+        "tests/test_metal_sampling.py"
+      ],
+      "status": "mapped",
+      "limits": "Targets modern CUDA Philox4x64; the old Thrust fallback is a different stream. Unweighted column shuffle uses its separate Thrust-derived stream."
+    },
+    {
+      "id": "generic-reductions",
+      "operations": "FP32 sums, binary64 optional weights, means/weighted means and medians/quantiles",
+      "cuda_sources": [
+        "xgboost/src/common/numeric.cu",
+        "xgboost/src/common/optional_weight.cu",
+        "xgboost/src/common/stats.cu",
+        "xgboost/src/common/stats.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/numeric.cc",
+        "xgboost/src/common/stats.cc",
+        "xgboost/src/common/metal_reduction.h",
+        "xgboost/src/common/metal_quantile.h"
+      ],
+      "tests": [
+        "tests/metal_stats_api.cc",
+        "tests/metal_initialization_state_api.cc",
+        "tests/metal_global_quantizer_api.cc"
+      ],
+      "status": "mapped",
+      "limits": "Host scalar publication/global denominators follow source. Parallel association and independent transcendental libraries are not NVIDIA bitwise guarantees."
+    },
+    {
+      "id": "linalg",
+      "operations": "Class-prior small histograms, scaling, logarithms, centering and elementwise consumers",
+      "cuda_sources": [
+        "xgboost/src/common/linalg_op.cu",
+        "xgboost/src/common/linalg_op.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/linalg_op.h",
+        "xgboost/src/common/metal_linalg.h",
+        "xgboost/src/common/metal_ops.h"
+      ],
+      "tests": [
+        "tests/metal_linalg_api.cc",
+        "tests/metal_initialization_state_api.cc",
+        "tests/metal_objective_state_api.cc"
+      ],
+      "status": "mapped",
+      "limits": "Production Transform/ElementWiseKernel/TransformKernel callers are reconciled in validation/cuda-metal-transform-callers.txt. Specialized Metal operations replace CUDA C++ lambda launchers; this does not certify every Thrust/CUB helper or numerical equality."
+    },
+    {
+      "id": "regression-objectives",
+      "operations": "Regression/logistic/gamma/squared-log/pseudo-Huber/Poisson/Tweedie/expectile/absolute gradients, validation and transforms",
+      "cuda_sources": [
+        "xgboost/src/objective/regression_obj.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/objective/regression_obj.cu",
+        "xgboost/src/common/metal_ops.h",
+        "xgboost/src/common/metal_leaf.h"
+      ],
+      "tests": [
+        "tests/metal_objective_api.cc",
+        "tests/metal_adaptive_api.cc",
+        "tests/metal_base_score_api.cc",
+        "tests/metal_objective_state_api.cc"
+      ],
+      "status": "mapped",
+      "limits": "Cox gradient and prediction exponential are host code upstream; its base-score log-margin converter dispatches Metal. Absolute/expectile host finalizers are intentional. Objective arithmetic is detailed in CUDA_PARITY.md."
+    },
+    {
+      "id": "hinge-multiclass",
+      "operations": "Hinge/multiclass gradients, label checks, softmax/argmax and class-prior initialization",
+      "cuda_sources": [
+        "xgboost/src/objective/hinge.cu",
+        "xgboost/src/objective/multiclass_obj.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/objective/hinge.cu",
+        "xgboost/src/objective/multiclass_obj.cu",
+        "xgboost/src/common/metal_ops.h",
+        "xgboost/src/common/metal_linalg.h"
+      ],
+      "tests": [
+        "tests/metal_multiclass_api.cc",
+        "tests/metal_initialization_api.cc",
+        "tests/metal_objective_state_api.cc"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "quantile-objective",
+      "operations": "Quantile gradients, weighted initialization, prediction sorting and adaptive leaf updates",
+      "cuda_sources": [
+        "xgboost/src/objective/quantile_obj.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/objective/quantile_obj.cu",
+        "xgboost/src/common/metal_ops.h",
+        "xgboost/src/common/metal_leaf.h",
+        "xgboost/src/common/metal_quantile.h"
+      ],
+      "tests": [
+        "tests/metal_adaptive_api.cc",
+        "tests/metal_initialization_state_api.cc",
+        "tests/test_metal_quantiles.py"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "aft",
+      "operations": "All AFT gradient rows, clipping/limits, PDF/CDF expressions and base-score/prediction transforms",
+      "cuda_sources": [
+        "xgboost/src/objective/aft_obj.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/objective/aft_obj.cu",
+        "xgboost/src/common/metal_survival.h"
+      ],
+      "tests": [
+        "tests/metal_survival_api.cc",
+        "tests/metal_aft_source.mm",
+        "tests/metal_objective_state_api.cc",
+        "tests/test_metal_survival.py"
+      ],
+      "status": "mapped-with-numerical-differences",
+      "limits": "All rows run on GPU, but sensitive-tail CPU numerical equivalence fails for part of the retained corpus (see cuda-aft-device-m3.txt). Expression/primitive checks are separate evidence, not an all-rows CPU equivalence claim."
+    },
+    {
+      "id": "ranking",
+      "operations": "Ranking caches/order, NDCG/MAP pairs, Philox sampling, gradients, normalization and unbiased learning",
+      "cuda_sources": [
+        "xgboost/src/common/deterministic.cuh",
+        "xgboost/src/common/ranking_utils.cu",
+        "xgboost/src/common/ranking_utils.cuh",
+        "xgboost/src/objective/lambdarank_obj.cu",
+        "xgboost/src/objective/lambdarank_obj.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/objective/lambdarank_obj.cc",
+        "xgboost/src/common/ranking_utils.h",
+        "xgboost/src/common/metal_ranking.h"
+      ],
+      "tests": [
+        "tests/metal_ranking_gradient_api.cc",
+        "tests/metal_ranking_pairs_api.cc",
+        "tests/metal_ranking_unbiased_api.cc",
+        "tests/metal_ranking_gradient_state_api.cc"
+      ],
+      "status": "mapped-with-numerical-differences",
+      "limits": "Source cost-factor race and nonfinite frexp inputs have explicit deterministic policies. Compiler contraction, scan/reduction association and long-run model differences remain documented limits."
+    },
+    {
+      "id": "metrics",
+      "operations": "Elementwise, multiclass and survival metric row formulas, validation, sums and scalar publication",
+      "cuda_sources": [
+        "xgboost/src/metric/elementwise_metric.cu",
+        "xgboost/src/metric/multiclass_metric.cu",
+        "xgboost/src/metric/survival_metric.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/metric/elementwise_metric.cu",
+        "xgboost/src/metric/multiclass_metric.cu",
+        "xgboost/src/metric/survival_metric.cu",
+        "xgboost/src/common/metal_ops.h"
+      ],
+      "tests": [
+        "tests/metal_metric_api.mm",
+        "tests/metal_metric_state_api.cc",
+        "tests/test_metal_quantile_metrics.py"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "ranking-metrics",
+      "operations": "Precision, NDCG and MAP ordering/prefixes/weights and cached ideal scores",
+      "cuda_sources": [
+        "xgboost/src/metric/rank_metric.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/metric/rank_metric.cc",
+        "xgboost/src/common/metal_ranking.h"
+      ],
+      "tests": [
+        "tests/metal_ranking_api.cc",
+        "tests/metal_ranking_metric_state_api.cc"
+      ],
+      "status": "mapped",
+      "limits": "Source arithmetic and degenerate queries are covered; reduction/scan association is architecture-dependent."
+    },
+    {
+      "id": "auc",
+      "operations": "Binary/multiclass/grouped ROC and PR-AUC, summaries, normalization and distributed aggregation",
+      "cuda_sources": [
+        "xgboost/src/metric/auc.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/metric/auc.cc",
+        "xgboost/src/common/metal_auc.h"
+      ],
+      "tests": [
+        "tests/metal_auc_api.cc",
+        "tests/metal_auc_state_api.cc",
+        "tests/metal_ranking_pr_api.cc",
+        "tests/metal_ranking_roc_api.cc"
+      ],
+      "status": "mapped-with-numerical-differences",
+      "limits": "Grouped ROC uses count-based accumulation rather than CUDA pair-scan association. Source pair terms and edge behavior are checked; cross-architecture floating-point equality is not established."
+    },
+    {
+      "id": "gbtree",
+      "operations": "Per-group gradient copies, DART batch/inplace increments and tree-booster consumers",
+      "cuda_sources": [
+        "xgboost/src/gbm/gbtree.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/gbm/gbtree.cc",
+        "xgboost/src/common/metal_gradient.h",
+        "xgboost/src/common/metal_predictor.h"
+      ],
+      "tests": [
+        "tests/metal_gradient_state_api.cc",
+        "tests/metal_prediction_state_api.cc",
+        "tests/test_metal_updater.py"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "prediction",
+      "operations": "Output initialization, batch/inplace/leaf traversal, scalar/vector/category inputs, margins and caches",
+      "cuda_sources": [
+        "xgboost/src/predictor/gpu_data_accessor.cuh",
+        "xgboost/src/predictor/gpu_predictor.cu",
+        "xgboost/src/predictor/predictor.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/predictor/cpu_predictor.cc",
+        "xgboost/src/predictor/predictor.cc",
+        "xgboost/src/common/metal_predictor.h",
+        "xgboost/src/common/metal_prediction_model.h",
+        "xgboost/src/common/metal_input.h"
+      ],
+      "tests": [
+        "tests/metal_prediction_state_api.cc",
+        "tests/metal_prediction_model_api.cc",
+        "tests/metal_prediction_result_api.cc",
+        "tests/test_metal_prediction.py"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "shap",
+      "operations": "Exact contributions/interactions, leaf weights, path/basis construction and GPU accumulation",
+      "cuda_sources": [
+        "xgboost/src/predictor/interpretability/shap.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/predictor/cpu_predictor.cc",
+        "xgboost/src/common/metal_shap.h"
+      ],
+      "tests": [
+        "tests/metal_shap_api.cc",
+        "tests/test_metal_shap.py"
+      ],
+      "status": "mapped",
+      "limits": "Source expression order and eight-point sums are checked. Cross-tree atomics and NVIDIA compiler behavior are unverified. Approximate SHAP and source host compression retain CPU execution."
+    },
+    {
+      "id": "linear",
+      "operations": "Coordinate-descent reductions/residual updates and five host selector strategies",
+      "cuda_sources": [
+        "xgboost/src/linear/updater_gpu_coordinate.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/linear/updater_coordinate.cc",
+        "xgboost/src/common/metal_linear.h"
+      ],
+      "tests": [
+        "tests/metal_linear_api.cc",
+        "tests/test_metal_linear.py"
+      ],
+      "status": "mapped",
+      "limits": "FP32 arithmetic follows CUDA; CUB association/contraction remains a limit. Selectors, scalar weight updates, CSC preparation and linear prediction remain host upstream."
+    },
+    {
+      "id": "constraints",
+      "operations": "Feature-interaction group unions/query/reset and GPU monotonic bounds",
+      "cuda_sources": [
+        "xgboost/src/tree/constraints.cu",
+        "xgboost/src/tree/constraints.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/tree/constraints.h",
+        "xgboost/src/tree/split_evaluator.h",
+        "xgboost/src/common/metal_constraints.h"
+      ],
+      "tests": [
+        "tests/metal_interaction_api.cc",
+        "tests/metal_bound_state_api.cc",
+        "tests/test_metal_interaction_constraints.py"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "stumps",
+      "operations": "Newton stump gradient reduction and unregularized root weights",
+      "cuda_sources": [
+        "xgboost/src/tree/fit_stump.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/tree/fit_stump.cc",
+        "xgboost/src/common/metal_reduction.h"
+      ],
+      "tests": [
+        "tests/metal_initialization_state_api.cc",
+        "tests/metal_global_quantizer_api.cc"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "quantization-sampling",
+      "operations": "Global sign bounds, integer quantizers, uniform masks, gradient thresholds and value-gradient replay",
+      "cuda_sources": [
+        "xgboost/src/tree/gpu_hist/quantiser.cu",
+        "xgboost/src/tree/gpu_hist/quantiser.cuh",
+        "xgboost/src/tree/gpu_hist/sampler.cu",
+        "xgboost/src/tree/gpu_hist/sampler.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/metal_gradient.h",
+        "xgboost/src/common/metal_sampling.h",
+        "xgboost/src/common/metal_training.h"
+      ],
+      "tests": [
+        "tests/metal_quantized_state_api.cc",
+        "tests/metal_gradient_sampling_api.cc",
+        "tests/metal_global_quantizer_api.cc",
+        "tests/test_metal_sampling.py"
+      ],
+      "status": "mapped",
+      "limits": "Modern Philox target; global scales are source-defined. Reduction association and nonfinite policies are recorded in the detailed ledger."
+    },
+    {
+      "id": "histograms",
+      "operations": "Quantized dense/sparse histogram accumulation, subtraction/cache and feature-group launch scheduling",
+      "cuda_sources": [
+        "xgboost/src/tree/gpu_hist/feature_groups.cu",
+        "xgboost/src/tree/gpu_hist/feature_groups.cuh",
+        "xgboost/src/tree/gpu_hist/histogram.cu",
+        "xgboost/src/tree/gpu_hist/histogram.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/tree/hist/histogram.h",
+        "xgboost/src/common/metal_histogram.h",
+        "xgboost/src/common/metal_gradient.h"
+      ],
+      "tests": [
+        "tests/metal_integer_cache_api.cc",
+        "tests/metal_training_state_api.cc",
+        "tests/test_metal_storage.py"
+      ],
+      "status": "mapped",
+      "limits": "Metal launch tiling replaces CUDA feature grouping. Integer totals/cache semantics are checked; scheduling and throughput are not identical."
+    },
+    {
+      "id": "scalar-splits",
+      "operations": "Numeric/categorical scalar split scans, missing direction, gains, weights and expansion state",
+      "cuda_sources": [
+        "xgboost/src/tree/gpu_hist/evaluate_splits.cu",
+        "xgboost/src/tree/gpu_hist/evaluate_splits.cuh",
+        "xgboost/src/tree/gpu_hist/evaluator.cu",
+        "xgboost/src/tree/gpu_hist/expand_entry.cu",
+        "xgboost/src/tree/gpu_hist/expand_entry.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/tree/hist/evaluate_splits.h",
+        "xgboost/src/common/metal_split.h",
+        "xgboost/src/common/metal_constraints.h"
+      ],
+      "tests": [
+        "tests/test_metal_cuda_splits.py",
+        "tests/test_metal_split_categories.py",
+        "tests/test_metal_split_finalize.py"
+      ],
+      "status": "mapped",
+      "limits": "Integer scans and CUDA-derived candidate ordering have independent source oracles; expansion metadata is host orchestration."
+    },
+    {
+      "id": "vector-splits",
+      "operations": "Multi-target split evaluation, per-target sums, reduced split/value gradients and category candidates",
+      "cuda_sources": [
+        "xgboost/src/tree/gpu_hist/multi_evaluate_splits.cu",
+        "xgboost/src/tree/gpu_hist/multi_evaluate_splits.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/tree/hist/evaluate_splits.h",
+        "xgboost/src/common/metal_split.h"
+      ],
+      "tests": [
+        "tests/test_metal_cuda_multi_splits.py",
+        "tests/test_metal_split_categories.py",
+        "tests/test_metal_split_finalize.py"
+      ],
+      "status": "mapped",
+      "limits": "GPU arithmetic/state is mapped; persistent final vector-tree model containers are a separate confirmed gap."
+    },
+    {
+      "id": "partition",
+      "operations": "Stable row partition, compressed-page reads and leaf-position output",
+      "cuda_sources": [
+        "xgboost/src/tree/gpu_hist/row_partitioner.cu",
+        "xgboost/src/tree/gpu_hist/row_partitioner.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/tree/common_row_partitioner.h",
+        "xgboost/src/common/metal_training.h"
+      ],
+      "tests": [
+        "tests/metal_training_state_api.cc",
+        "tests/metal_compressed_consumers_api.cc"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "leaf-refit",
+      "operations": "Reduced-gradient sampling replay, leaf/page integer sums and final weights",
+      "cuda_sources": [
+        "xgboost/src/tree/gpu_hist/leaf_sum.cu",
+        "xgboost/src/tree/gpu_hist/leaf_sum.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/common/metal_leaf.h",
+        "xgboost/src/common/metal_gradient.h"
+      ],
+      "tests": [
+        "tests/metal_leaf_fitting_api.cc",
+        "tests/metal_integer_leaf_api.cc",
+        "tests/test_metal_leaf_fitting.py"
+      ],
+      "status": "mapped",
+      "limits": ""
+    },
+    {
+      "id": "vector-model",
+      "operations": "Batched model weight/category copies, root assignment and learning-rate scaling",
+      "cuda_sources": [
+        "xgboost/src/tree/multi_target_tree_model.cu"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/tree/multi_target_tree_model.cc",
+        "xgboost/src/common/metal_model.h"
+      ],
+      "tests": [
+        "tests/metal_model_state_api.cc",
+        "tests/test_metal_model_state.py"
+      ],
+      "status": "partial-host-storage",
+      "limits": "CONFIRMED GAP: MPS CopyBatch/ApplyLearningRate use HostSpan/ConstHostSpan and host alias snapshots. CUDA selects DeviceSpan and device-to-device copies. SetRoot tests only IsCUDA. GPU arithmetic tests do not establish persistent Metal model storage."
+    },
+    {
+      "id": "tree-updaters",
+      "operations": "Hist/approx scalar/vector learners, forests, cache updates, adaptive leaves and manual selection",
+      "cuda_sources": [
+        "xgboost/src/tree/updater_gpu_common.cuh",
+        "xgboost/src/tree/updater_gpu_hist.cu",
+        "xgboost/src/tree/updater_gpu_hist.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/tree/updater_quantile_hist.cc",
+        "xgboost/src/tree/updater_approx.cc",
+        "xgboost/src/gbm/gbtree.cc"
+      ],
+      "tests": [
+        "tests/metal_training_state_api.cc",
+        "tests/test_metal_updater.py",
+        "tests/test_metal_distributed_training.py"
+      ],
+      "status": "mapped",
+      "limits": "Common updater classes dispatch Metal. Manual names and configuration lifetime are covered. Pipeline completeness still depends on the open vector-model storage and caller audits."
+    },
+    {
+      "id": "fixed-collectives",
+      "operations": "Fixed allreduce/broadcast/allgather and variable allgather, arithmetic and backend state",
+      "cuda_sources": [
+        "xgboost/src/collective/aggregator.cuh",
+        "xgboost/src/collective/coll.cu",
+        "xgboost/src/collective/coll.cuh",
+        "xgboost/src/collective/comm.cu",
+        "xgboost/src/collective/comm.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/collective/coll_metal.cc",
+        "xgboost/src/common/metal_collective.h"
+      ],
+      "tests": [
+        "tests/metal_collective_api.cc",
+        "tests/metal_integer_collective_api.cc",
+        "tests/test_metal_distributed_training.py"
+      ],
+      "status": "mapped",
+      "limits": "Shared Metal payloads use TCP transport and GPU local arithmetic, replacing NCCL transport. Multiple local workers are tested; cross-machine and NVIDIA comparisons are not."
+    },
+    {
+      "id": "variable-collectives",
+      "operations": "Ordered variable payload reductions and distributed sketch merging",
+      "cuda_sources": [
+        "xgboost/src/collective/allreduce_v.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/src/collective/allreduce_v_metal.h",
+        "xgboost/src/common/metal_cuda_sketch.h"
+      ],
+      "tests": [
+        "tests/metal_sketch_collective_api.cc",
+        "tests/test_metal_distributed_sketch.py"
+      ],
+      "status": "mapped",
+      "limits": "TCP tree order and federated ascending host-fallback order are tested separately with non-associative witnesses."
+    },
+    {
+      "id": "federated",
+      "operations": "Federated fixed collectives, shared RPC ordering, GPU ordered sketch fallback and learners",
+      "cuda_sources": [
+        "xgboost/plugin/federated/federated_coll.cu",
+        "xgboost/plugin/federated/federated_coll.cuh",
+        "xgboost/plugin/federated/federated_comm.cu",
+        "xgboost/plugin/federated/federated_comm.cuh"
+      ],
+      "metal_dispatch_and_interfaces": [
+        "xgboost/plugin/federated/federated_coll_metal.cc",
+        "xgboost/src/collective/allreduce_v_metal.h"
+      ],
+      "tests": [
+        "tests/metal_federated_api.cc",
+        "tests/metal_sketch_collective_api.cc",
+        "tests/test_metal_distributed_training.py"
+      ],
+      "status": "mapped",
+      "limits": "Fixed arithmetic executes on the server as with CUDA. Server type/operator restrictions are preserved; local-process and TLS tests are not cross-machine fault-tolerance evidence."
+    }
+  ],
+  "caller_audit_records": [
+    "validation/cuda-metal-transform-callers.txt"
+  ]
+}

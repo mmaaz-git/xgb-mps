@@ -1,0 +1,57 @@
+CUDA transform/linalg caller audit — 2026-11-05 UTC
+Runtime source inspected: 5b7629da4bcb60d4944cdb6aa3531e4f499d5f46.
+This is source-dispatch evidence, not a new execution or numerical-equivalence test.
+
+Scope/search:
+  Production src and plugin .cc/.h/.cu/.cuh, excluding upstream test-only callers.
+  common::Transform<>, ElementWiseKernel, TransformIdxKernel, TransformKernel,
+  VecScaMul, VecScaDiv, LogE and SmallHistogram.
+  Generic template definitions/internal dispatch are not separate learning ops.
+  CUDA lambda launchers themselves cannot compile arbitrary C++ lambdas as Metal;
+  actual production callers dispatch specialized Metal kernels instead.
+
+28 common::Transform / linalg::ElementWiseKernel use sites outside helper definitions:
+  regression_obj.cu (15): regression gradients and prediction transforms,
+    pseudo-Huber/absolute/expectile/Poisson/gamma/Tweedie gradients, expectile
+    initializer/transform, base-margin conversion and target-mean broadcast.
+    GetGradient/PredTransform branches select specialized Metal operations.
+    ProbToMarginImpl's callers are ProbToLogMargin and RegLossObj::ProbToMargin;
+    both return through the Metal base-score converter before invoking it.
+    Expectile initialization dispatches InitExpectileGradients in an if/else;
+    the following host scalar mean/finalizer also runs on host upstream.
+    Tweedie initialization dispatches BroadcastTargets in an if/else.
+  quantile_obj.cu (3): gradient/transform branches return through Metal before
+    either the CUDA-specialized or generic fallback loop.
+  aft_obj.cu (3): GetGradient selects Metal before templated GetGradientImpl;
+    prediction/base-margin transforms use SurvivalTransform.
+  multiclass_obj.cu (3): gradients and softmax/argmax use dedicated Metal branches.
+  hinge.cu (2): gradient and prediction transformation use dedicated Metal branches.
+  split_evaluator.h (2): scalar/vector monotonic updates use metal_bounds_->Update;
+    source-defined host constraint metadata is not a missing GPU lambda launch.
+
+Additional linalg operations:
+  multiclass_obj.cu::InitEstimation uses Center before the unqualified
+    TransformKernel call; class counts use the Metal SmallHistogram branch.
+  linalg_op.h::VecScaMul/LogE dispatch VectorArithmetic before TransformKernel;
+    VecScaDiv delegates to VecScaMul with source double reciprocal semantics.
+  data.cu::CopyTensorInfoImpl uses cuda_impl::TransformIdxKernel for native
+    typed/strided metadata. The Metal public metadata path dispatches SetMetadata
+    directly, with device storage and typed tensor conversion; host array imports
+    keep their explicit cpu_impl loop.
+  Cox gradients and its prediction exponential remain host in upstream source;
+    Cox ProbToMargin goes through the already covered log-margin converter.
+
+Existing execution evidence (rerun by standard native/Python regression):
+  tests/metal_objective_api.cc, metal_objective_state_api.cc,
+    metal_initialization_api.cc, metal_initialization_state_api.cc,
+    metal_survival_api.cc, metal_adaptive_api.cc,
+    metal_linalg_api.cc, metal_bound_state_api.cc, metal_metadata_api.mm;
+  tests/test_metal_objectives.py, test_metal_quantiles.py,
+    test_metal_survival.py and model/training integration tests.
+  These independently check arithmetic and storage consumers. Their numerical
+  limits (especially AFT tails) are recorded separately; a dispatch audit does
+  not remove those limits.
+
+No missing Metal launcher was identified among this defined set of callers.
+The broader Thrust/CUB scan/sort/helper inventory still needs reconciliation.
+This record does not certify all CUDA operations or NVIDIA runtime equivalence.

@@ -14,7 +14,31 @@ comparisons are checks where the algorithms agree.** Some earlier kernels follow
 CPU-specific algorithms and still need alignment with CUDA. No NVIDIA execution
 comparison has been performed; local tests cannot establish measured CUDA equivalence.
 
-Latest step: **explicit tree updater selection works with MPS**. Common hist and
+Latest step: **native custom gradients retain Metal-owned storage**. GPU inputs
+now produce device-authoritative gradient pairs even when the learner uses CPU,
+matching CUDA's input-device placement. Empty/reused outputs and aliased producers
+are covered; CPU consumers explicitly request a host view. This closes the storage
+gap behind an already implemented packing kernel.
+
+Focused checks pass **343 native cases / 338,833 checks**, with zero packed-output
+host-copy bytes, and **243 Python tests** covering native gradients and updater
+consumers. Full regression passes **100 native groups**, **3,554 Python tests
+with one expected skip**, standard CPU-only build/API checks and nine pure-CPU
+configuration tests. Optional federated learners pass **520 cases / 13,056 CPU
+prediction checks**, including mutual TLS, plus their CPU-only build.
+[Native gradient storage validation](validation/cuda-metal-native-gradient-storage-m3.txt).
+
+The new [operation evidence map](docs/CUDA_OPERATION_MAP.md) links **42 operation
+families / 109 CUDA source/header files** to Metal dispatches and tests. File
+coverage is an inventory check, not proof of parity. Confirmed remaining storage
+gaps are ordinary native matrix entries and vector-tree weights/category buffers;
+generic helper callers and numerical boundaries still need reconciliation.
+A separate [CUDA compile workflow](.github/workflows/cuda-compile.yml) now checks
+the NVIDIA code with NCCL, nvCOMP and federated support. Its first run passes
+all **197 compile/link steps** with CUDA 13.4.92. It does not run GPU tests.
+[Compiler evidence](validation/cuda-compile-ci-13.4.txt).
+
+Previous step: **explicit tree updater selection works with MPS**. Common hist and
 approx updater names use their existing Metal implementations; `grow_gpu_hist`
 and `grow_gpu_approx` resolve to those same paths on MPS. Refresh/prune sequences
 keep their upstream CPU execution. Manual selection overrides `tree_method`,
