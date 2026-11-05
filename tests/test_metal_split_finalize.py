@@ -31,6 +31,10 @@ def test_gpu_split_finalization_and_bounds(metal, strategy, constrained, growth)
     assert after["split_bounds_dispatches"] - before["split_bounds_dispatches"] == (counts[0] if constrained else 0)
     assert after["split_bounds_init_dispatches"] - before["split_bounds_init_dispatches"] == (
         len(trees(model)) if constrained else 0)
+    if strategy == "multi_output_tree":
+        assert after["split_weight_store_dispatches"] > before["split_weight_store_dispatches"]
+        for key in ["split_weight_readback_bytes", "model_host_copy_bytes"]:
+            assert after[key] == before[key]
     cpu = xgb.Booster(params={"device": "cpu"}, model_file=model.save_raw())
     np.testing.assert_array_equal(model.predict(d), cpu.predict(d))
 

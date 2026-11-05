@@ -162,7 +162,30 @@ void Invalid() {
             before.model_scale_dispatches == after.model_scale_dispatches,
         "Invalid or empty operation dispatched work");
 }
-void Tree(std::size_t targets, float eta) {
+void ResidentAliases(std::size_t count) {
+  std::vector<std::uint32_t> expected(count * 3);
+  for (std::size_t i = 0; i < expected.size(); ++i) expected[i] = Pattern(i);
+  HostDeviceVector<std::uint32_t> buffer(expected, DeviceOrd::MPS());
+  auto data = buffer.DeviceSpan();
+  auto original = expected;
+  std::copy_n(original.begin() + count, count, expected.begin());
+  std::copy_n(original.begin(), count, expected.begin() + count);
+  std::vector<metal::ModelCopy> copies{{data.data() + count, 0, count},
+                                       {data.data(), count, count}};
+  auto before = metal::GetStatistics();
+  metal::CopyModelBuffer(data.data(), data.size(), copies, metal::ModelBufferKind::kWeights);
+  auto after = metal::GetStatistics();
+  Check(buffer.DeviceCanWrite() && !buffer.HostCanRead(), "Alias lost device authority");
+  Check(after.model_host_copy_bytes == before.model_host_copy_bytes &&
+            after.vector_upload_bytes == before.vector_upload_bytes &&
+            after.vector_readback_bytes == before.vector_readback_bytes,
+        "Resident aliases copied payload through CPU memory");
+  Check(after.model_snapshot_bytes - before.model_snapshot_bytes == 2 * count * 4,
+        "Resident alias snapshots missing");
+  Check(buffer.ConstHostVector() == expected, "Resident alias snapshot mismatch");
+  ++copy_cases;
+}
+void Tree(std::size_t targets, float eta, bool resident = false) {
   Context ctx;
   ctx.Init({{"device", "mps"}, {"nthread", "1"}});
   RegTree tree(targets, 3);
@@ -172,9 +195,23 @@ void Tree(std::size_t targets, float eta) {
     left[i] = float(i + 1) * .375f;
     right[i] = float(i + 1) * -.625f;
   }
-  tree.SetRoot(linalg::MakeVec(DeviceOrd::CPU(), common::Span<float const>{base}), 100.f);
+  HostDeviceVector<float> gpu_base(base, DeviceOrd::MPS()), gpu_left(left, DeviceOrd::MPS()),
+      gpu_right(right, DeviceOrd::MPS());
+  auto root_before = metal::GetStatistics();
+  tree.SetRoot(
+      linalg::MakeVec(resident ? DeviceOrd::MPS() : DeviceOrd::CPU(),
+                      resident ? gpu_base.ConstDeviceSpan() : common::Span<float const>{base}),
+      100.f);
+  if (resident) {
+    auto after = metal::GetStatistics();
+    Check(after.vector_upload_bytes == root_before.vector_upload_bytes &&
+              after.vector_readback_bytes == root_before.vector_readback_bytes &&
+              after.model_host_copy_bytes == root_before.model_host_copy_bytes,
+          "Native root copied weights through CPU memory");
+  }
   std::vector<float> expected = base;
   std::vector<std::uint32_t> cats{0x7fc12345, 0xffa54321, 0x80000000, 0xffffffff};
+  HostDeviceVector<std::uint32_t> gpu_cats(cats, DeviceOrd::MPS());
   std::vector<std::uint32_t> expected_cats;
   auto stats = metal::GetStatistics();
   for (auto nodes : {std::vector<bst_node_t>{0}, {2, 1}, {6, 3}}) {
@@ -183,11 +220,17 @@ void Tree(std::size_t targets, float eta) {
     tree::ExpandBatch batch{eta};
     // After the first expansion, source categories alias the old model. The
     // following growth must snapshot them before HostDeviceVector reallocates.
-    auto source_cats = expected_cats.empty()
-                           ? common::Span<std::uint32_t const>{cats}
-                           : tree.GetCategoriesMatrix(DeviceOrd::CPU()).categories.subspan(0, 4);
+    auto source_cats =
+        expected_cats.empty()
+            ? (resident ? gpu_cats.ConstDeviceSpan() : common::Span<std::uint32_t const>{cats})
+            : tree.GetCategoriesMatrix(resident ? DeviceOrd::MPS() : DeviceOrd::CPU())
+                  .categories.subspan(0, 4);
     for (std::size_t i = 0; i < nodes.size(); ++i) {
-      batch.Push(nodes[i], i % 3, .5f, i % 2, base, left, right, 5.f, 20., 30., source_cats);
+      batch.Push(nodes[i], i % 3, .5f, i % 2,
+                 resident ? gpu_base.ConstDeviceSpan() : common::Span<float const>{base},
+                 resident ? gpu_left.ConstDeviceSpan() : common::Span<float const>{left},
+                 resident ? gpu_right.ConstDeviceSpan() : common::Span<float const>{right}, 5.f,
+                 20., 30., source_cats);
       std::copy(base.begin(), base.end(), expected.begin() + nodes[i] * targets);
       for (std::size_t t = 0; t < targets; ++t) {
         expected[(old_nodes + i * 2) * targets + t] = left[t] * eta;
@@ -195,7 +238,20 @@ void Tree(std::size_t targets, float eta) {
       }
       expected_cats.insert(expected_cats.end(), cats.begin(), cats.end());
     }
+    auto before_expand = metal::GetStatistics();
     tree.Expand(&ctx, batch);
+    if (resident) {
+      auto after_expand = metal::GetStatistics();
+      Check(after_expand.vector_upload_bytes == before_expand.vector_upload_bytes &&
+                after_expand.vector_readback_bytes == before_expand.vector_readback_bytes &&
+                after_expand.model_host_copy_bytes == before_expand.model_host_copy_bytes,
+            "Native model expansion copied payload through CPU memory");
+      // Validate after the entire growth chain, so CPU inspection cannot make
+      // the next expansion accidentally succeed using a fresh host mirror.
+      if (nodes != std::vector<bst_node_t>{6, 3}) continue;
+      Check(after_expand.model_snapshot_bytes > stats.model_snapshot_bytes,
+            "Category growth did not snapshot GPU aliases");
+    }
     // Serialization requires finalized leaves; keep the growing tree partial.
     std::unique_ptr<RegTree> finalized{tree.Copy()};
     finalized->GetMultiTargetTree()->SetLeaves();
@@ -230,6 +286,7 @@ int main() {
         for (bool unaligned : {false, true})
           for (bool alias : {false, true}) Copies(n, kind, unaligned, alias);
     ReadOnlySource();
+    for (auto n : {1ul, 33ul, 257ul, 4097ul}) ResidentAliases(n);
     std::puts("Model bit copies, aliases, staging and guards passed");
     for (auto n : {0ul, 1ul, 33ul, 257ul, 65537ul})
       for (auto eta : {0u, 0x80000000u, 1u, 0x80000001u, 0x007fffffu, 0x00800000u, 0x3e99999au,
@@ -239,7 +296,8 @@ int main() {
     Invalid();
     std::puts("Model FP32 products, guards and invalid-input rejection passed");
     for (auto targets : {2ul, 3ul, 17ul, 129ul})
-      for (float eta : {0.f, .3f, 1.f, Float(0x00800001)}) Tree(targets, eta);
+      for (float eta : {0.f, .3f, 1.f, Float(0x00800001)})
+        for (bool resident : {false, true}) Tree(targets, eta, resident);
     std::printf("PASS: %zu copy cases, %zu scale cases / %zu products, %zu growing trees\n",
                 copy_cases, scale_cases, scaled, tree_cases);
   } catch (std::exception const& e) {

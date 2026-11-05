@@ -123,12 +123,23 @@ void Evaluators() {
             rw[t] = std::ldexp(float(int(t % 7) - 3), t % 2 ? 0 : -145);
           }
           lw[0] = -0.f;
+          HostDeviceVector<float> resident_left(lw, DeviceOrd::MPS()),
+              resident_right(rw, DeviceOrd::MPS());
           before = metal::GetStatistics();
           if (multi) {
             auto left = linalg::MakeVec(lw.data(), lw.size());
             auto right = linalg::MakeVec(rw.data(), rw.size());
             cpu.AddSplit(ids[0], ids[1], ids[2], 0, left, right);
-            gpu.AddSplit(ids[0], ids[1], ids[2], 0, left, right);
+            gpu.AddSplit(ids[0], ids[1], ids[2], 0,
+                          linalg::MakeVec(DeviceOrd::MPS(), resident_left.ConstDeviceSpan()),
+                          linalg::MakeVec(DeviceOrd::MPS(), resident_right.ConstDeviceSpan()));
+            auto after = metal::GetStatistics();
+            Check(after.vector_readback_bytes == before.vector_readback_bytes &&
+                      after.vector_upload_bytes == before.vector_upload_bytes &&
+                      after.model_host_copy_bytes == before.model_host_copy_bytes,
+                  "Bound consumer copied vector weights through host memory");
+            Check(!resident_left.HostCanRead() && !resident_right.HostCanRead(),
+                  "Bound consumer requested a weight host mirror");
           } else {
             cpu.AddSplit(ids[0], ids[1], ids[2], 0, lw[0], rw[0]);
             gpu.AddSplit(ids[0], ids[1], ids[2], 0, lw[0], rw[0]);

@@ -442,15 +442,17 @@ kernel void xgb_predict(
 
 struct LeafParams {
   ulong rows, stride;
-  uint targets, padding;
+  uint targets, mapped;
 };
 kernel void xgb_add_leaf(device const int* ids [[buffer(0)]],
                          device const float* weights [[buffer(1)]],
                          device float* output [[buffer(2)]], constant LeafParams& p [[buffer(3)]],
+                         device const int* leaf_mapping [[buffer(4)]],
                          uint row [[thread_position_in_grid]]) {
   if (ulong(row) >= p.rows) return;
   int encoded = ids[row];
   uint leaf = uint(encoded >= 0 ? encoded : ~encoded);
+  if (p.mapped) leaf = uint(leaf_mapping[leaf]);
   for (uint k = 0; k < p.targets; ++k) {
     ulong out = ulong(row) * p.stride + k;
     output[out] = xgb_fadd_preserve(output[out], weights[ulong(leaf) * p.targets + k]);
@@ -6880,6 +6882,23 @@ kernel void xgb_finalize_split_nodes(
     }
     output[node_id] = {winner, loss, gain.bits, ph.bits, lh.bits, rh.bits};
   }
+}
+
+// Gather finalized AoS results into persistent CUDA-style node Base/Left/Right
+// views. Integer loads/stores preserve all weight bits, including subnormals.
+kernel void xgb_store_split_weights(device const uint4* source [[buffer(0)]],
+                                     device const SplitFinalizeNode* nodes [[buffer(1)]],
+                                     device const uint2* copies [[buffer(2)]],
+                                     device uint* output [[buffer(3)]],
+                                     constant uint& targets [[buffer(4)]],
+                                     uint2 i [[thread_position_in_grid]]) {
+  if (i.x >= targets) return;
+  uint2 copy = copies[i.y];
+  uint4 weight = source[nodes[copy.x].parent_begin + i.x];
+  ulong begin = ulong(copy.y) * 3 * targets + i.x;
+  output[begin] = weight.x;
+  output[begin + targets] = weight.y;
+  output[begin + 2 * targets] = weight.z;
 }
 
 // CUDA DeviceUVector::resize preserves the prefix and fills the new tail with

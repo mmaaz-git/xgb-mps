@@ -132,6 +132,22 @@ struct SplitNodeResult {
 struct SplitNodeWeights {
   float base, left, right, padding{0};
 };
+// Persistent CUDA-style Base/Left/Right weight views, indexed by node ID. Store
+// gathers the latest finalized GPU results; views survive until the next Store
+// that grows storage, or destruction. No weight payload is read on the CPU.
+struct SplitWeightCopy {
+  std::uint32_t source, node;
+};
+class SplitWeightStorage {
+ public:
+  virtual ~SplitWeightStorage() = default;
+  virtual void Store(SplitWorkspace const& workspace, Span<SplitWeightCopy const> copies) = 0;
+  virtual Span<float const> Base(std::uint32_t node) const = 0;
+  virtual Span<float const> Left(std::uint32_t node) const = 0;
+  virtual Span<float const> Right(std::uint32_t node) const = 0;
+};
+std::unique_ptr<SplitWeightStorage> MakeSplitWeightStorage(std::uint32_t targets);
+// A null weights destination retains finalized weights only in the workspace.
 void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
                         Span<SplitFinalizeFeature const> features,
                         Span<GradientPairPrecise const> parents, Span<SplitBounds const> bounds,

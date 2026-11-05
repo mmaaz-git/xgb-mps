@@ -15,12 +15,14 @@
 #include "../xgboost/src/common/categorical.h"
 #include "../xgboost/src/common/metal_gradient.h"
 #include "../xgboost/src/common/metal_histogram.h"
+#include "../xgboost/src/common/metal_model.h"
 #include "../xgboost/src/common/metal_split.h"
 #include "../xgboost/src/data/gradient_index.h"
 
 using namespace xgboost;
 namespace metal = common::metal;
 std::size_t direct_nodes = 0, words_checked = 0, api_calls = 0;
+std::size_t weight_fields = 0, weight_storage_cases = 0;
 void Check(bool ok, char const* text) {
   if (!ok) throw std::runtime_error(text);
 }
@@ -173,6 +175,85 @@ void Direct(id<MTLDevice> device, id<MTLCommandQueue> queue, id<MTLComputePipeli
   }
 }
 
+void WeightStorage(unsigned targets, metal::SplitWorkspace* workspace,
+                   std::vector<GradientPairPrecise> const& sums,
+                   std::vector<GradientPairPrecise> const& children) {
+  std::vector<metal::SplitFinalizeNode> nodes;
+  std::vector<metal::SplitFinalizeFeature> features;
+  std::vector<GradientPairPrecise> parents;
+  for (unsigned k = 0; k < 3; ++k) {
+    nodes.push_back({k, k + 1, k * targets, targets});
+    features.push_back({k, 0, 2 * k * targets});
+    parents.insert(parents.end(), sums.begin(), sums.end());
+  }
+  std::vector<metal::SplitBounds> bounds(parents.size(), {-INFINITY, INFINITY});
+  std::vector<metal::SplitNodeResult> result;
+  auto storage = metal::MakeSplitWeightStorage(targets);
+  auto before = metal::GetStatistics();
+  metal::FinalizeSplitNodes(nodes, features, parents, bounds, {1, 0, 0, 0}, true, &result,
+                            nullptr, workspace);
+  std::vector<metal::SplitWeightCopy> copies{{2, 5}, {0, 0}, {1, 17}};
+  storage->Store(*workspace, copies);
+  for (unsigned k = 0; k < 3; ++k)
+    Check(result[k].winner == k, "Weight-storage fixture did not produce a split");
+  // Independent CPU weight expression for this unbounded, lambda=1 fixture.
+  auto weight = [](GradientPairPrecise p) { return float(-p.GetGrad() / (p.GetHess() + 1.)); };
+  std::vector<float> expected;
+  for (unsigned k : {0u, 2u}) {
+    for (auto p : sums) expected.push_back(weight(p));
+    for (unsigned t = 0; t < 2 * targets; ++t)
+      expected.push_back(weight(children[2 * k * targets + t]));
+  }
+  // Reuse the workspace, overwrite one node, and grow past 256 node IDs. The
+  // previously queued nodes must survive with their original finalized weights.
+  metal::SplitFinalizeNode root{0, 0, 0, targets};
+  std::vector<GradientPairPrecise> root_sum(targets, {12., 3.});
+  std::vector<metal::SplitBounds> root_bounds(targets, {-INFINITY, INFINITY});
+  metal::FinalizeSplitNodes({&root, 1}, {}, root_sum, root_bounds, {1, 0, 0, 0}, true,
+                            &result, nullptr, workspace);
+  copies = {{0, 257}, {0, 17}};
+  storage->Store(*workspace, copies);
+  for (unsigned k = 0; k < 2; ++k) {
+    expected.insert(expected.end(), targets, -3.f);
+    expected.insert(expected.end(), 2 * targets, 0.f);
+  }
+  auto invalid_before = metal::GetStatistics();
+  Reject([&] { storage->Base(1); });
+  Reject([&] { storage->Store(*workspace, std::vector<metal::SplitWeightCopy>{{1, 0}}); });
+  Reject([&] { storage->Store(*workspace, std::vector<metal::SplitWeightCopy>{{0, 0}, {0, 0}}); });
+  Reject([&] { metal::MakeSplitWeightStorage(targets + 1)->Store(*workspace, copies); });
+  Reject([&] { metal::MakeSplitWeightStorage(0); });
+  storage->Store(*workspace, {});
+  metal::FinalizeSplitNodes({}, {}, {}, {}, {1, 0, 0, 0}, true, &result, nullptr, workspace);
+  Reject([&] { storage->Store(*workspace, copies); });
+  Check(metal::GetStatistics().split_weight_store_dispatches ==
+            invalid_before.split_weight_store_dispatches, "Invalid storage request dispatched");
+  // Consume every view on the GPU before the first CPU payload comparison.
+  HostDeviceVector<float> consumer(expected.size(), 0.f, DeviceOrd::MPS());
+  std::vector<metal::ModelCopy> gather;
+  for (unsigned node : {0u, 5u, 17u, 257u})
+    for (auto view : {storage->Base(node), storage->Left(node), storage->Right(node)})
+      gather.push_back({view.data(), gather.size() * targets, targets});
+  metal::CopyModelBuffer(consumer.DeviceSpan().data(), consumer.Size(), gather,
+                         metal::ModelBufferKind::kWeights);
+  metal::ScaleModelWeights(consumer.DeviceSpan(), .25f);
+  auto after = metal::GetStatistics();
+  Check(after.split_weight_store_dispatches - before.split_weight_store_dispatches == 2,
+        "Weight store dispatch count");
+  Check(after.split_weight_readback_bytes == before.split_weight_readback_bytes &&
+            after.model_host_copy_bytes == before.model_host_copy_bytes &&
+            after.vector_upload_bytes == before.vector_upload_bytes &&
+            after.vector_readback_bytes == before.vector_readback_bytes,
+        "Weight pipeline copied resident payload through CPU memory");
+  Check(consumer.DeviceCanWrite() && !consumer.HostCanRead(), "Weight consumer is not resident");
+  for (auto& value : expected) value *= .25f;
+  auto const& actual = consumer.ConstHostVector();
+  Check(std::memcmp(actual.data(), expected.data(), expected.size() * sizeof(float)) == 0,
+        "Queued/overwritten/grown GPU weights differ from CPU expression");
+  weight_fields += expected.size();
+  ++weight_storage_cases;
+}
+
 void Production(bool multi, unsigned targets) {
   Context ctx;
   ctx.Init({{"device", "mps"}, {"nthread", "1"}});
@@ -240,6 +321,7 @@ void Production(bool multi, unsigned targets) {
       metal::EvaluateQuantizedSplits(inputs, scalar, {1, 0, 0, 0}, &sr, sorted, ws.get());
   };
   evaluate(&order);
+  if (multi) WeightStorage(targets, ws.get(), sums, child);
   std::vector<metal::SplitCategoryTask> requests{
       {2, 2 + 2 * n}, {1, 2 + n}, {0, UINT32_MAX}, {2, 2 + 2 * n}};
   unsigned words = 16;
@@ -332,8 +414,10 @@ int main(int argc, char** argv) {
                       words_checked, api_calls);
         }
       }
-      std::printf("PASS %zu category slots, %zu exact words, %zu successful production API calls\n",
-                  direct_nodes, words_checked, api_calls);
+      Production(true, 129);
+      std::printf("PASS %zu category slots, %zu exact words, %zu successful production API calls; "
+                  "%zu weight-storage chains / %zu exact weight fields\n",
+                  direct_nodes, words_checked, api_calls, weight_storage_cases, weight_fields);
     } catch (std::exception const& e) {
       std::fprintf(stderr, "%s\n", e.what());
       return 1;

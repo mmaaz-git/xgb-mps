@@ -295,14 +295,34 @@ void LeafCase(Context const& gpu, std::size_t rows, unsigned targets, std::size_
   ref->PredictFromLeafIds(ids, trees,
                           {{expected.data() + 1, rows * stride}, shape, strides, DeviceOrd::CPU()});
   Resident(&ids[0]);
+  // CUDA SetLeaves publishes host leaf storage too. Publish that model once;
+  // the prediction consumer must then use its compact GPU weights and mapping.
+  if (targets > 1 && rows) (void)tree::MultiTargetTreeView{DeviceOrd::MPS(), false, tree.get()};
   auto before = metal::GetStatistics();
   obj->PredictFromLeafIds(
       ids, trees,
       {actual.DeviceSpan().subspan(1, rows * stride), shape, strides, DeviceOrd::MPS()});
   NoTransfers(before);
+  if (targets > 1 && rows) {
+    auto after = metal::GetStatistics();
+    Check(after.prediction_shared_input_bytes - before.prediction_shared_input_bytes ==
+              (rows + 2 * targets + 3) * sizeof(float),
+          "Leaf cache did not bind compact GPU weights and node mapping");
+  }
   Owned(actual);
   Check(!ids[0].HostCanRead(), "Leaf IDs read on host");
   Compare(actual.ConstHostSpan(), expected);
+  if (!rows) {
+    ++shape[1];
+    Reject([&] {
+      ref->PredictFromLeafIds(ids, trees,
+                              {{expected.data(), std::size_t{0}}, shape, strides, DeviceOrd::CPU()});
+    });
+    Reject([&] {
+      obj->PredictFromLeafIds(ids, trees,
+                              {actual.DeviceSpan().subspan(1, 0), shape, strides, DeviceOrd::MPS()});
+    });
+  }
   ++cases;
 }
 void LearnerCase(Context const& gpu, char const* objective, bool vector) {
@@ -382,23 +402,25 @@ struct Mapping {
     if (data && data != MAP_FAILED) munmap(data, bytes);
   }
 };
-void LeafBindings(unsigned targets, bool padded) {
+void LeafBindings(unsigned targets, bool padded, bool mapped) {
   constexpr std::size_t rows = 33;
   auto stride = targets + (padded ? 2 : 0);
   auto count = rows * stride;
   std::vector<std::int32_t> ids(rows);
-  std::vector<float> weights(3 * targets), initial(count, -.125f);
+  std::vector<float> weights((mapped ? 2 : 3) * targets), initial(count, -.125f);
+  std::vector<std::int32_t> leaf_mapping{0, 1, 0};
   for (std::size_t i = 0; i < rows; ++i) ids[i] = i % 3 == 0 ? ~1 : i % 3 == 1 ? 1 : 2;
   for (std::size_t i = 0; i < weights.size(); ++i) weights[i] = float(i + 1) / 8;
-  for (unsigned mode = 0; mode < 6; ++mode) {
+  for (unsigned mode = 0; mode < (mapped ? 8u : 6u); ++mode) {
     current = "leaf bindings/" + std::to_string(targets) + "/" + std::to_string(padded) + "/" +
-              std::to_string(mode);
+              std::to_string(mapped) + "/" + std::to_string(mode);
     std::vector<std::int32_t> padded_ids(rows + 2, -91);
     std::copy(ids.begin(), ids.end(), padded_ids.begin() + 1);
     HostDeviceVector<std::int32_t> ibuf{padded_ids, DeviceOrd::MPS()};
     std::vector<float> padded_weights(weights.size() + 2, -91.f);
     std::copy(weights.begin(), weights.end(), padded_weights.begin() + 1);
     HostDeviceVector<float> wbuf{padded_weights, DeviceOrd::MPS()};
+    HostDeviceVector<std::int32_t> mbuf{leaf_mapping, DeviceOrd::MPS()};
     std::vector<std::uint32_t> storage(count + 8, 0xabababab);
     HostDeviceVector<std::uint32_t> output{storage, DeviceOrd::MPS()};
     auto bytes = reinterpret_cast<char*>(output.DevicePointer());
@@ -406,6 +428,8 @@ void LeafBindings(unsigned targets, bool padded) {
     std::memcpy(out, initial.data(), count * 4);
     common::Span<std::int32_t const> in = ibuf.DeviceSpan().subspan(1, rows);
     common::Span<float const> leaf = wbuf.DeviceSpan().subspan(1, weights.size());
+    common::Span<std::int32_t const> node_mapping = mapped ? mbuf.ConstDeviceSpan()
+                                                         : common::Span<std::int32_t const>{};
     Mapping mapping;
     if (mode == 1)
       in = {static_cast<std::int32_t const*>(mapping.ReadOnly(ids.data(), rows * 4)), rows};
@@ -420,18 +444,32 @@ void LeafBindings(unsigned targets, bool padded) {
       std::memcpy(out, weights.data(), weights.size() * 4);
       leaf = {out, weights.size()};
     }
+    if (mode == 6)
+      node_mapping = {static_cast<std::int32_t const*>(
+                          mapping.ReadOnly(leaf_mapping.data(), leaf_mapping.size() * 4)),
+                      leaf_mapping.size()};
+    if (mode == 7) {
+      std::memcpy(out, leaf_mapping.data(), leaf_mapping.size() * 4);
+      node_mapping = {reinterpret_cast<std::int32_t const*>(out), leaf_mapping.size()};
+    }
     std::vector<float> expected(count);
     std::memcpy(expected.data(), out, count * 4);
-    metal::AddLeafValues(ids, weights, targets, stride, expected);
+    for (std::size_t row = 0; row < rows; ++row) {
+      auto node = ids[row] >= 0 ? ids[row] : ~ids[row];
+      auto index = mapped ? leaf_mapping[node] : node;
+      for (unsigned t = 0; t < targets; ++t)
+        expected[row * stride + t] += weights[index * targets + t];
+    }
     auto guard = std::vector<char>(bytes, bytes + storage.size() * 4);
     std::memcpy(guard.data() + (reinterpret_cast<char*>(out) - bytes), expected.data(), count * 4);
     auto before = metal::GetStatistics();
-    metal::AddLeafValues(in, leaf, targets, stride, {out, count});
+    metal::AddLeafValues(in, leaf, targets, stride, {out, count}, node_mapping);
     auto after = metal::GetStatistics();
     Check(after.prediction_host_input_bytes - before.prediction_host_input_bytes ==
               (mode == 1   ? rows * 4
                : mode == 2 ? weights.size() * 4
                : mode == 5 ? count * 4
+               : mode == 6 ? leaf_mapping.size() * 4
                            : 0),
           "Leaf input fallback bytes");
     Check(after.prediction_host_output_bytes - before.prediction_host_output_bytes ==
@@ -440,14 +478,29 @@ void LeafBindings(unsigned targets, bool padded) {
     Check(after.prediction_device_copy_bytes - before.prediction_device_copy_bytes ==
               (mode == 3   ? rows * 4
                : mode == 4 ? weights.size() * 4
+               : mode == 7 ? leaf_mapping.size() * 4
                            : 0),
           "Leaf alias snapshot bytes");
+    // Aliased encoded IDs can be NaN bit patterns when interpreted as the
+    // initial prediction. Arithmetic preserves NaN classification, not payload.
+    // Finite results, padding and guards still require exact bits.
+    for (std::size_t row = 0; row < rows; ++row)
+      for (unsigned t = 0; t < targets; ++t) {
+        auto index = row * stride + t;
+        if (!std::isnan(expected[index])) continue;
+        float value;
+        auto address = reinterpret_cast<char*>(out) + index * sizeof(float);
+        std::memcpy(&value, address, sizeof(value));
+        Check(std::isnan(value), "Leaf arithmetic lost NaN");
+        std::memcpy(guard.data() + (address - bytes), address, sizeof(value));
+      }
     Check(!std::memcmp(bytes, guard.data(), guard.size()), "Leaf publication/padding/guards");
     Check(!std::memcmp(ibuf.ConstHostSpan().data(), padded_ids.data(), padded_ids.size() * 4),
           "Leaf IDs changed");
     Check(
         !std::memcmp(wbuf.ConstHostSpan().data(), padded_weights.data(), padded_weights.size() * 4),
         "Leaf weights changed");
+    Check(mbuf.ConstHostVector() == leaf_mapping, "Leaf mapping changed");
     ++cases;
   }
 }
@@ -526,13 +579,14 @@ int main() {
       std::fflush(stdout);
     }
     for (auto rows : {0, 1, 33, 65537})
-      for (unsigned targets : {1, 3})
+      for (unsigned targets : {1, 2, 3, 17})
         for (bool padded : {false, true}) LeafCase(gpu, rows, targets, targets + (padded ? 2 : 0));
     for (auto rows : {0, 33})
       for (unsigned groups : {1, 3})
         for (bool scalar : {false, true}) InitialOnly(gpu, rows, groups, scalar);
-    for (unsigned targets : {1, 3})
-      for (bool padded : {false, true}) LeafBindings(targets, padded);
+    for (unsigned targets : {1, 3, 17})
+      for (bool padded : {false, true})
+        for (bool mapped : {false, true}) LeafBindings(targets, padded, mapped);
     LearnerCase(gpu, "reg:squarederror", false);
     LearnerCase(gpu, "reg:squarederror", true);
     LearnerCase(gpu, "binary:logistic", false);

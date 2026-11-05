@@ -47,8 +47,9 @@
 #include "xgboost/tree_updater.h"            // for TreeUpdater, TreeUpdaterReg, XGBOOST_REGISTE...
 
 #if defined(XGBOOST_USE_METAL)
-#include "../common/metal_reduction.h"
 #include "../common/metal_leaf.h"
+#include "../common/metal_model.h"
+#include "../common/metal_reduction.h"
 #endif
 
 namespace xgboost::tree {
@@ -276,9 +277,19 @@ class MultiTargetHistBuilder {
 
     float root_sum_hess = 0.0f;
     auto weight = evaluator_->InitRoot(h_root_sum, quantized_root, &root_sum_hess);
-    auto weight_t = weight.HostView();
-    std::transform(linalg::cbegin(weight_t), linalg::cend(weight_t), linalg::begin(weight_t),
-                   [&](float w) { return w * param_->learning_rate; });
+    // This is the common CPU updater even if manually selected with a CUDA
+    // context. Only the explicit Metal branch below consumes a device view.
+    auto weight_t = weight.View(ctx_->IsMPS() ? DeviceOrd::MPS() : DeviceOrd::CPU());
+#if defined(XGBOOST_USE_METAL)
+    if (ctx_->IsMPS()) {
+      common::metal::ScaleModelWeights(weight_t.Values().subspan(0, weight_t.Size()),
+                                       param_->learning_rate);
+    } else
+#endif
+    {
+      std::transform(linalg::cbegin(weight_t), linalg::cend(weight_t), linalg::begin(weight_t),
+                     [&](float w) { return w * param_->learning_rate; });
+    }
 
     // Compute root sum_hess by summing hessians across all targets
     if (!ctx_->IsMPS()) {

@@ -46,7 +46,7 @@ struct CopyBatchItem {
 template <typename T>
 void CopyBatch(Context const* ctx, std::size_t size, std::vector<CopyBatchItem<T>> const& copies,
                HostDeviceVector<T>* out) {
-  out->SetDevice(ctx->Device());
+  out->SetDevice(ctx->IsMPS() ? DeviceOrd::MPS() : ctx->Device());
 #if defined(XGBOOST_USE_CUDA)
   if (ctx->IsCUDA()) {
     (void)out->DeviceSpan();
@@ -69,10 +69,10 @@ void CopyBatch(Context const* ctx, std::size_t size, std::vector<CopyBatchItem<T
   if (ctx->IsMPS()) {
     static_assert(sizeof(T) == sizeof(std::uint32_t));
     static_assert(std::is_same_v<T, float> || std::is_same_v<T, tree::CatWordT>);
-    auto old = out->ConstHostSpan();
+    auto old = out->DeviceSpan();
     // A batch can refer to the old model. Snapshot aliases before Resize can
     // invalidate those spans, and before any GPU copy writes a destination.
-    std::vector<std::vector<T>> snapshots(copies.size());
+    std::vector<std::unique_ptr<common::metal::ModelSnapshot>> snapshots(copies.size());
     std::vector<common::metal::ModelCopy> operations;
     operations.reserve(copies.size());
     for (std::size_t i = 0; i < copies.size(); ++i) {
@@ -82,14 +82,13 @@ void CopyBatch(Context const* ctx, std::size_t size, std::vector<CopyBatchItem<T
       bool alias = !source.empty() && !old.empty() &&
                    (a >= b ? a - b < old.size_bytes() : b - a < source.size_bytes());
       if (alias) {
-        snapshots[i].resize(source.size());
-        std::memcpy(snapshots[i].data(), source.data(), source.size_bytes());
-        source = common::Span<T const>{snapshots[i]};
+        snapshots[i] = common::metal::SnapshotModelBuffer(source.data(), source.size());
+        source = {static_cast<T const*>(snapshots[i]->Data()), source.size()};
       }
       operations.push_back({source.data(), copies[i].dst_offset, source.size()});
     }
     out->Resize(size);
-    common::metal::CopyModelBuffer(out->HostSpan().data(), size, operations,
+    common::metal::CopyModelBuffer(out->DeviceSpan().data(), size, operations,
                                    std::is_same_v<T, float>
                                        ? common::metal::ModelBufferKind::kWeights
                                        : common::metal::ModelBufferKind::kCategories);
@@ -105,7 +104,7 @@ void CopyBatch(Context const* ctx, std::size_t size, std::vector<CopyBatchItem<T
 
 void ApplyLearningRate(Context const* ctx, std::size_t offset, std::size_t size, float eta,
                        HostDeviceVector<float>* values) {
-  values->SetDevice(ctx->Device());
+  values->SetDevice(ctx->IsMPS() ? DeviceOrd::MPS() : ctx->Device());
 #if defined(XGBOOST_USE_CUDA)
   if (ctx->IsCUDA()) {
     tree::cuda_impl::ApplyLearningRate(ctx, values->DeviceSpan().subspan(offset, size), eta);
@@ -113,13 +112,13 @@ void ApplyLearningRate(Context const* ctx, std::size_t offset, std::size_t size,
   }
 #endif  // defined(XGBOOST_USE_CUDA)
 
-  auto out = values->HostSpan().subspan(offset, size);
 #if defined(XGBOOST_USE_METAL)
   if (ctx->IsMPS()) {
-    common::metal::ScaleModelWeights(out, eta);
+    common::metal::ScaleModelWeights(values->DeviceSpan().subspan(offset, size), eta);
     return;
   }
 #endif
+  auto out = values->HostSpan().subspan(offset, size);
   std::transform(out.cbegin(), out.cend(), out.begin(),
                  [eta](float weight) { return weight * eta; });
 }
@@ -192,7 +191,17 @@ void MultiTargetTree::SetRoot(linalg::VectorView<float const> weight, float sum_
     CHECK(weight.Contiguous());
     curt::MemcpyAsync(out_weight.data(), weight.Values().data(), out_weight.size_bytes(),
                       curt::DefaultStream());
-  } else {
+  }
+#if defined(XGBOOST_USE_METAL)
+  else if (weight.Device().IsMPS()) {
+    CHECK(weight.Contiguous());
+    common::metal::ModelCopy copy{weight.Values().data(), RegTree::kRoot * weight.Size(),
+                                  weight.Size()};
+    common::metal::CopyModelBuffer(weights_.DeviceSpan().data(), weights_.Size(), {&copy, 1},
+                                   common::metal::ModelBufferKind::kWeights);
+  }
+#endif
+  else {
     auto out_weight = weights_.HostSpan().subspan(RegTree::kRoot * weight.Size(), weight.Size());
     for (std::size_t i = 0, n = weight.Size(); i < n; ++i) {
       out_weight[i] = weight(i);

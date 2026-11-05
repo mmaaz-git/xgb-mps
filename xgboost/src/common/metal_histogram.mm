@@ -90,6 +90,9 @@ std::atomic<std::uint64_t> interaction_reset_dispatches{0}, interaction_split_di
     interaction_query_dispatches{0}, interaction_buffer_growths{0}, interaction_gpu_time_ns{0};
 std::atomic<std::uint64_t> model_weight_copy_dispatches{0}, model_category_copy_dispatches{0},
     model_copy_words{0}, model_scale_dispatches{0}, model_state_gpu_time_ns{0};
+std::atomic<std::uint64_t> split_weight_store_dispatches{0}, split_weight_readback_bytes{0},
+    model_host_copy_bytes{0}, model_snapshot_bytes{0};
+std::atomic<std::uint64_t> prediction_shared_input_bytes{0};
 std::atomic<std::uint64_t> leaf_sum_init_dispatches{0}, leaf_sum_dispatches{0},
     leaf_weight_dispatches{0}, leaf_fitting_gpu_time_ns{0};
 std::atomic<std::uint64_t> linear_gradient_dispatches{0}, linear_residual_dispatches{0},
@@ -244,7 +247,7 @@ class Runtime {
   id<MTLComputePipelineState> quantized_multi_split_pipeline;
   id<MTLComputePipelineState> split_finalize_pipeline, split_bounds_pipeline,
       split_bounds_init_pipeline;
-  id<MTLComputePipelineState> model_scale_pipeline;
+  id<MTLComputePipelineState> model_scale_pipeline, split_weight_store_pipeline;
   id<MTLComputePipelineState> split_category_pipeline;
   id<MTLComputePipelineState> interaction_restore_pipeline, interaction_split_pipeline,
       interaction_input_pipeline, interaction_filter_pipeline, interaction_scatter_pipeline;
@@ -399,6 +402,7 @@ class Runtime {
       quantized_split_pipeline = make_pipeline(@"xgb_evaluate_quantized_splits");
       quantized_multi_split_pipeline = make_pipeline(@"xgb_evaluate_quantized_multi_splits");
       split_finalize_pipeline = make_pipeline(@"xgb_finalize_split_nodes");
+      split_weight_store_pipeline = make_pipeline(@"xgb_store_split_weights");
       split_bounds_pipeline = make_pipeline(@"xgb_update_split_bounds");
       split_bounds_init_pipeline = make_pipeline(@"xgb_init_split_bounds");
       model_scale_pipeline = make_pipeline(@"xgb_scale_model_weights");
@@ -729,6 +733,7 @@ class MetalSplitWorkspace final : public SplitWorkspace {
   std::size_t candidate_count{0};
   std::size_t candidate_child_count{0};
   bool vector_candidates{false};
+  std::vector<SplitFinalizeNode> finalized_nodes;
   std::vector<BufferHolder> metadata;
 };
 id<MTLBuffer> Scratch(Runtime const& rt, id<MTLBuffer> __strong* buffer, std::size_t bytes,
@@ -2283,7 +2288,12 @@ Statistics GetStatistics() {
           category_state_staging_bytes.load(std::memory_order_relaxed),
           prediction_model_pack_dispatches.load(std::memory_order_relaxed),
           prediction_model_shared_input_bytes.load(std::memory_order_relaxed),
-          prediction_model_staging_bytes.load(std::memory_order_relaxed)};
+          prediction_model_staging_bytes.load(std::memory_order_relaxed),
+          split_weight_store_dispatches.load(std::memory_order_relaxed),
+          split_weight_readback_bytes.load(std::memory_order_relaxed),
+          model_host_copy_bytes.load(std::memory_order_relaxed),
+          model_snapshot_bytes.load(std::memory_order_relaxed),
+          prediction_shared_input_bytes.load(std::memory_order_relaxed)};
 }
 
 namespace {
@@ -2626,7 +2636,9 @@ void GatherRows(Span<float const> input, std::size_t rows, std::size_t columns,
 namespace {
 BorrowedMemory PredictionInput(Runtime const& rt, void const* data, std::size_t bytes) {
   auto input = TryBorrowMemory(rt.device, data, bytes, 4);
-  if (!input.buffer) {
+  if (input.buffer) {
+    prediction_shared_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
+  } else {
     input = {Upload(rt, data, bytes), 0};
     prediction_host_input_bytes.fetch_add(bytes, std::memory_order_relaxed);
   }
@@ -3129,6 +3141,42 @@ void RecodeCategories(enc::HostColumnsView original, Span<std::int32_t const> so
   orig->Recode(sorted, *next, mapping);
 }
 
+namespace {
+class MetalModelSnapshot final : public ModelSnapshot {
+ public:
+  id<MTLBuffer> buffer;
+  explicit MetalModelSnapshot(id<MTLBuffer> value) : buffer{value} {}
+  void const* Data() const override { return buffer.contents; }
+};
+id<MTLBuffer> SnapshotModelWords(void const* source, std::size_t words) {
+  CHECK(source || !words);
+  auto& rt = GetRuntime();
+  CHECK_LE(words, rt.device.maxBufferLength / 4);
+  @autoreleasepool {
+    auto bytes = words * 4;
+    auto output = Allocate(rt, bytes);
+    if (bytes) {
+      auto input = TryBorrowMemory(rt.device, source, bytes, 4);
+      if (!input.buffer) {
+        input = {Upload(rt, source, bytes), 0};
+        model_host_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+      }
+      auto command = [rt.queue commandBuffer];
+      auto blit = [command blitCommandEncoder];
+      [blit copyFromBuffer:input.buffer sourceOffset:input.offset toBuffer:output
+        destinationOffset:0 size:bytes];
+      [blit endEncoding];
+      CompleteOperation(command, nullptr, &model_state_gpu_time_ns);
+      model_snapshot_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+    return output;
+  }
+}
+}  // namespace
+std::unique_ptr<ModelSnapshot> SnapshotModelBuffer(void const* source, std::size_t words) {
+  return std::make_unique<MetalModelSnapshot>(SnapshotModelWords(source, words));
+}
+
 void CopyModelBuffer(void* output, std::size_t words, Span<ModelCopy const> copies,
                      ModelBufferKind kind) {
   CHECK(kind == ModelBufferKind::kWeights || kind == ModelBufferKind::kCategories);
@@ -3149,12 +3197,16 @@ void CopyModelBuffer(void* output, std::size_t words, Span<ModelCopy const> copi
     end = range.second;
   }
   if (!copied) return;
+  std::vector<std::unique_ptr<ModelSnapshot>> snapshots;
   @autoreleasepool {
     auto& rt = GetRuntime();
     auto bytes = words * sizeof(std::uint32_t);
     auto out = TryBorrowMemory(rt.device, output, bytes, alignof(std::uint32_t));
     bool copy_out = !out.buffer;
-    if (copy_out) out = {Upload(rt, output, bytes), 0};
+    if (copy_out) {
+      out = {Upload(rt, output, bytes), 0};
+      model_host_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
     std::vector<BorrowedMemory> sources;
     sources.reserve(copies.size());
     // Retain every source, including snapshots of aliases, until completion.
@@ -3164,10 +3216,16 @@ void CopyModelBuffer(void* output, std::size_t words, Span<ModelCopy const> copi
         sources.push_back({});
         continue;
       }
-      auto in = MemoryRangesOverlap(copy.source, size, output, bytes)
-                    ? BorrowedMemory{}
-                    : TryBorrowMemory(rt.device, copy.source, size, alignof(std::uint32_t));
-      if (!in.buffer) in = {Upload(rt, copy.source, size), 0};
+      auto source = copy.source;
+      if (MemoryRangesOverlap(source, size, output, bytes)) {
+        snapshots.push_back(SnapshotModelBuffer(source, copy.count));
+        source = snapshots.back()->Data();
+      }
+      auto in = TryBorrowMemory(rt.device, source, size, alignof(std::uint32_t));
+      if (!in.buffer) {
+        in = {Upload(rt, source, size), 0};
+        model_host_copy_bytes.fetch_add(size, std::memory_order_relaxed);
+      }
       sources.push_back(in);
     }
     auto command = [rt.queue commandBuffer];
@@ -3188,7 +3246,10 @@ void CopyModelBuffer(void* output, std::size_t words, Span<ModelCopy const> copi
                       kind == ModelBufferKind::kWeights ? &model_weight_copy_dispatches
                                                         : &model_category_copy_dispatches,
                       &model_state_gpu_time_ns);
-    if (copy_out) std::memcpy(output, out.buffer.contents, bytes);
+    if (copy_out) {
+      std::memcpy(output, out.buffer.contents, bytes);
+      model_host_copy_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
     model_copy_words.fetch_add(copied, std::memory_order_relaxed);
   }
 }
@@ -3201,7 +3262,10 @@ void ScaleModelWeights(Span<float> weights, float eta) {
     auto& rt = GetRuntime();
     auto out = TryBorrowMemory(rt.device, weights.data(), weights.size_bytes(), alignof(float));
     bool copy_out = !out.buffer;
-    if (copy_out) out = {Upload(rt, weights.data(), weights.size_bytes()), 0};
+    if (copy_out) {
+      out = {Upload(rt, weights.data(), weights.size_bytes()), 0};
+      model_host_copy_bytes.fetch_add(weights.size_bytes(), std::memory_order_relaxed);
+    }
     struct {
       std::uint32_t count, eta;
     } p{static_cast<std::uint32_t>(weights.size()), 0};
@@ -3217,7 +3281,10 @@ void ScaleModelWeights(Span<float> weights, float eta) {
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
     CompleteOperation(command, &model_scale_dispatches, &model_state_gpu_time_ns);
-    if (copy_out) std::memcpy(weights.data(), out.buffer.contents, weights.size_bytes());
+    if (copy_out) {
+      std::memcpy(weights.data(), out.buffer.contents, weights.size_bytes());
+      model_host_copy_bytes.fetch_add(weights.size_bytes(), std::memory_order_relaxed);
+    }
   }
 }
 
@@ -9568,7 +9635,8 @@ std::unique_ptr<Shap> MakeShap(ShapModel const& model, std::uint32_t features, s
 }
 
 void AddLeafValues(Span<std::int32_t const> ids, Span<float const> weights, std::uint32_t targets,
-                   std::size_t stride, Span<float> output) {
+                   std::size_t stride, Span<float> output,
+                   Span<std::int32_t const> leaf_mapping) {
   if (ids.empty()) return;
   CHECK_NE(targets, 0);
   CHECK_EQ(weights.size() % targets, 0);
@@ -9583,22 +9651,29 @@ void AddLeafValues(Span<std::int32_t const> ids, Span<float const> weights, std:
     CHECK(command);
     auto input = PredictionInput(rt, ids.data(), ids.size_bytes());
     auto leaves = PredictionInput(rt, weights.data(), weights.size_bytes());
+    auto mapping = leaf_mapping.empty()
+                       ? input
+                       : PredictionInput(rt, leaf_mapping.data(), leaf_mapping.size_bytes());
     PredictionOutput out{rt, output, true};
     if (MemoryRangesOverlap(ids.data(), ids.size_bytes(), output.data(), output.size_bytes()))
       input = PredictionSnapshot(rt, command, input, ids.size_bytes());
     if (MemoryRangesOverlap(weights.data(), weights.size_bytes(), output.data(), output.size_bytes()))
       leaves = PredictionSnapshot(rt, command, leaves, weights.size_bytes());
+    if (MemoryRangesOverlap(leaf_mapping.data(), leaf_mapping.size_bytes(), output.data(),
+                            output.size_bytes()))
+      mapping = PredictionSnapshot(rt, command, mapping, leaf_mapping.size_bytes());
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
     struct {
       std::uint64_t rows, stride;
-      std::uint32_t targets, padding;
-    } p{ids.size(), stride, targets, 0};
+      std::uint32_t targets, mapped;
+    } p{ids.size(), stride, targets, static_cast<std::uint32_t>(!leaf_mapping.empty())};
     [encoder setComputePipelineState:rt.leaf_pipeline];
     [encoder setBuffer:input.buffer offset:input.offset atIndex:0];
     [encoder setBuffer:leaves.buffer offset:leaves.offset atIndex:1];
     [encoder setBuffer:out.memory.buffer offset:out.memory.offset atIndex:2];
     [encoder setBytes:&p length:sizeof(p) atIndex:3];
+    [encoder setBuffer:mapping.buffer offset:mapping.offset atIndex:4];
     [encoder dispatchThreads:MTLSizeMake(ids.size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     [encoder endEncoding];
@@ -9794,7 +9869,8 @@ void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
   static_assert(sizeof(SplitFinalizeNode) == 16 && sizeof(SplitFinalizeFeature) == 16);
   static_assert(sizeof(SplitNodeResult) == 40 && sizeof(SplitNodeWeights) == 16);
   results->resize(nodes.size());
-  weights->resize(parents.size());
+  if (weights) weights->resize(parents.size());
+  if (workspace) static_cast<MetalSplitWorkspace*>(workspace)->finalized_nodes.clear();
   CHECK_EQ(parents.size(), bounds.size());
   CHECK_LE(features.size(), std::numeric_limits<std::uint32_t>::max());
   CHECK_LE(parents.size(), std::numeric_limits<std::uint32_t>::max());
@@ -9836,7 +9912,7 @@ void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
     auto parent = Scratch(rt, &scratch->node_parents, parents.size_bytes(), parents.data());
     auto bound = Scratch(rt, &scratch->node_bounds, bounds.size_bytes(), bounds.data());
     auto out = Scratch(rt, &scratch->node_results, results->size() * sizeof(SplitNodeResult));
-    auto weight = Scratch(rt, &scratch->node_weights, weights->size() * sizeof(SplitNodeWeights));
+    auto weight = Scratch(rt, &scratch->node_weights, parents.size() * sizeof(SplitNodeWeights));
     auto command = [rt.queue commandBuffer];
     CHECK(command);
     auto e = [command computeCommandEncoder];
@@ -9860,8 +9936,77 @@ void FinalizeSplitNodes(Span<SplitFinalizeNode const> nodes,
     [e endEncoding];
     CompleteOperation(command, &split_finalize_dispatches, &split_gpu_time_ns);
     std::memcpy(results->data(), out.contents, results->size() * sizeof(SplitNodeResult));
-    std::memcpy(weights->data(), weight.contents, weights->size() * sizeof(SplitNodeWeights));
+    if (weights) {
+      auto bytes = weights->size() * sizeof(SplitNodeWeights);
+      std::memcpy(weights->data(), weight.contents, bytes);
+      split_weight_readback_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    }
+    scratch->finalized_nodes.assign(nodes.begin(), nodes.end());
   }
+}
+
+namespace {
+class MetalSplitWeightStorage final : public SplitWeightStorage {
+  std::uint32_t targets_;
+  std::unique_ptr<VectorBuffer> data_{MakeVectorBuffer()};
+  std::vector<bool> ready_;
+
+  Span<float const> View(std::uint32_t node, std::size_t field) const {
+    CHECK_LT(node, ready_.size());
+    CHECK(ready_[node]) << "No finalized weights for this node.";
+    return {static_cast<float const*>(data_->Data()) + (std::size_t(node) * 3 + field) * targets_,
+            targets_};
+  }
+
+ public:
+  explicit MetalSplitWeightStorage(std::uint32_t targets) : targets_{targets} {
+    CHECK_GT(targets, 0);
+  }
+  Span<float const> Base(std::uint32_t node) const override { return View(node, 0); }
+  Span<float const> Left(std::uint32_t node) const override { return View(node, 1); }
+  Span<float const> Right(std::uint32_t node) const override { return View(node, 2); }
+  void Store(SplitWorkspace const& workspace, Span<SplitWeightCopy const> copies) override {
+    static_assert(sizeof(SplitWeightCopy) == 8);
+    auto const& source = static_cast<MetalSplitWorkspace const&>(workspace);
+    auto& rt = GetRuntime();
+    CHECK_LE(copies.size(), std::numeric_limits<std::uint32_t>::max());
+    std::vector<std::uint32_t> ids;
+    auto size = ready_.size();
+    for (auto const& copy : copies) {
+      CHECK_LT(copy.source, source.finalized_nodes.size());
+      CHECK_EQ(source.finalized_nodes[copy.source].targets, targets_);
+      size = std::max(size, std::size_t(copy.node) + 1);
+      ids.push_back(copy.node);
+    }
+    std::sort(ids.begin(), ids.end());
+    CHECK(std::adjacent_find(ids.begin(), ids.end()) == ids.end()) << "Duplicate weight destinations";
+    CHECK_LE(size, rt.device.maxBufferLength / (std::uint64_t{targets_} * 3 * sizeof(float)));
+    if (copies.empty()) return;
+    data_->Resize(size * targets_ * 3 * sizeof(float));
+    @autoreleasepool {
+      auto output = TryBorrowMemory(rt.device, data_->Data(), data_->SizeBytes(), 4);
+      CHECK(output.buffer) << "Cannot bind owned Metal weight storage.";
+      auto requests = Upload(rt, copies.data(), copies.size_bytes());
+      auto command = [rt.queue commandBuffer];
+      auto encoder = [command computeCommandEncoder];
+      [encoder setComputePipelineState:rt.split_weight_store_pipeline];
+      [encoder setBuffer:source.node_weights offset:0 atIndex:0];
+      [encoder setBuffer:source.node_input offset:0 atIndex:1];
+      [encoder setBuffer:requests offset:0 atIndex:2];
+      [encoder setBuffer:output.buffer offset:output.offset atIndex:3];
+      [encoder setBytes:&targets_ length:sizeof(targets_) atIndex:4];
+      [encoder dispatchThreads:MTLSizeMake(targets_, copies.size(), 1)
+          threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+      [encoder endEncoding];
+      CompleteOperation(command, &split_weight_store_dispatches, &split_gpu_time_ns);
+    }
+    ready_.resize(size, false);
+    for (auto id : ids) ready_[id] = true;
+  }
+};
+}  // namespace
+std::unique_ptr<SplitWeightStorage> MakeSplitWeightStorage(std::uint32_t targets) {
+  return std::make_unique<MetalSplitWeightStorage>(targets);
 }
 
 void BuildSplitCategories(Span<float const> cuts, Span<SplitCategoryTask const> tasks,
@@ -9959,8 +10104,8 @@ void UpdateBoundsBuffers(Runtime& rt, BorrowedMemory const& lo, BorrowedMemory c
                          std::int32_t monotone, Span<float const> left_weight,
                          Span<float const> right_weight, bool vector_leaf) {
   // Snapshot weights before any writes, including inputs aliased to bound storage.
-  auto lw = Upload(rt, left_weight.data(), left_weight.size_bytes());
-  auto rw = Upload(rt, right_weight.data(), right_weight.size_bytes());
+  auto lw = SnapshotModelWords(left_weight.data(), left_weight.size());
+  auto rw = SnapshotModelWords(right_weight.data(), right_weight.size());
   struct {
     std::uint32_t parent, left, right, targets;
     std::int32_t monotone;

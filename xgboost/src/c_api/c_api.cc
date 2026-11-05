@@ -662,6 +662,14 @@ XGB_DLL int XGBMetalInfo(char const **out) {
       Integer{static_cast<std::int64_t>(stats.model_category_copy_dispatches)};
   info["model_copy_words"] = Integer{static_cast<std::int64_t>(stats.model_copy_words)};
   info["model_scale_dispatches"] = Integer{static_cast<std::int64_t>(stats.model_scale_dispatches)};
+  info["split_weight_store_dispatches"] =
+      Integer{static_cast<std::int64_t>(stats.split_weight_store_dispatches)};
+  info["split_weight_readback_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.split_weight_readback_bytes)};
+  info["model_host_copy_bytes"] = Integer{static_cast<std::int64_t>(stats.model_host_copy_bytes)};
+  info["model_snapshot_bytes"] = Integer{static_cast<std::int64_t>(stats.model_snapshot_bytes)};
+  info["prediction_shared_input_bytes"] =
+      Integer{static_cast<std::int64_t>(stats.prediction_shared_input_bytes)};
   info["model_state_gpu_time_ns"] =
       Integer{static_cast<std::int64_t>(stats.model_state_gpu_time_ns)};
   info["cuda_integer_multi_split_dispatches"] =

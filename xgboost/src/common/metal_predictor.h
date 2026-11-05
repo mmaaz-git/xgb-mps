@@ -32,6 +32,7 @@ class Prediction {
                        std::uint32_t groups, Span<float> predictions, bool leaf = false) = 0;
 };
 void AddLeafValues(Span<std::int32_t const> ids, Span<float const> weights, std::uint32_t targets,
-                   std::size_t stride, Span<float> output);
+                   std::size_t stride, Span<float> output,
+                   Span<std::int32_t const> leaf_mapping = {});
 std::unique_ptr<Prediction> MakePrediction(PredictionModel const& model);
 }  // namespace xgboost::common::metal

@@ -42,26 +42,40 @@ def test_model_copy_scale_and_reload(metal, kind, growth, eta):
     # each categorical split has exactly one storage word.
     category_splits = sum(sum(tree["split_type"]) for tree in trees(model))
     assert (category_words > 0) == (kind != "numeric")
-    assert after["model_copy_words"] - before["model_copy_words"] == 3 * y.shape[1] * splits + category_splits
+    roots = len(trees(model))
+    assert after["model_copy_words"] - before["model_copy_words"] == (
+        (3 * splits + 2 * roots) * y.shape[1] + category_splits)
     copies = after["model_weight_copy_dispatches"] - before["model_weight_copy_dispatches"]
     scales = after["model_scale_dispatches"] - before["model_scale_dispatches"]
     categories = after["model_category_copy_dispatches"] - before["model_category_copy_dispatches"]
-    assert copies == scales and copies > 0
+    assert copies == scales + roots and scales > roots
     assert 0 < categories <= copies if kind != "numeric" else categories == 0
+    assert after["split_weight_store_dispatches"] - before["split_weight_store_dispatches"] > roots
+    for key in ["split_weight_readback_bytes", "model_host_copy_bytes"]:
+        assert after[key] == before[key]
     cpu = xgb.Booster(params={"device": "cpu"}, model_file=model.save_raw())
     np.testing.assert_array_equal(model.predict(d), cpu.predict(d))
     np.testing.assert_array_equal(model.inplace_predict(x), cpu.inplace_predict(x))
 
 
-def test_root_only_model_does_not_copy_or_scale(metal):
+@pytest.mark.parametrize("targets", [3, 17])
+@pytest.mark.parametrize("eta", [0., .3, 1.])
+def test_root_only_model_copies_and_scales_resident_weights(metal, targets, eta):
     x = np.full((17, 2), np.nan, dtype=np.float32)
-    y = np.ones((17, 3), dtype=np.float32)
+    y = np.ones((17, targets), dtype=np.float32)
     d = xgb.DMatrix(x, label=y)
+    params = dict(device="mps", tree_method="hist", nthread=1, base_score=0,
+                  learning_rate=eta, multi_strategy="multi_output_tree")
     before = xgb.metal_info()
-    model = xgb.train(dict(device="mps", tree_method="hist", nthread=1, base_score=0,
-                           multi_strategy="multi_output_tree"), d, 2)
+    model = xgb.train(params, d, 2)
     after = xgb.metal_info()
     assert all(len(tree["left_children"]) == 1 for tree in trees(model))
-    for key in ["model_weight_copy_dispatches", "model_category_copy_dispatches",
-                "model_copy_words", "model_scale_dispatches"]:
+    assert after["model_weight_copy_dispatches"] - before["model_weight_copy_dispatches"] == 4
+    assert after["model_copy_words"] - before["model_copy_words"] == 4 * targets
+    assert after["model_scale_dispatches"] - before["model_scale_dispatches"] == 2
+    assert after["split_weight_store_dispatches"] - before["split_weight_store_dispatches"] == 2
+    for key in ["model_category_copy_dispatches", "split_weight_readback_bytes",
+                "model_host_copy_bytes"]:
         assert after[key] == before[key]
+    cpu = xgb.train({**params, "device": "cpu"}, d, 2)
+    np.testing.assert_allclose(model.predict(d), cpu.predict(d), rtol=2e-6, atol=2e-6)

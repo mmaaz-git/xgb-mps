@@ -694,27 +694,28 @@ class CPUPredictor : public Predictor {
       if (ctx_->IsMPS()) {
         auto ids = common::metal::ConstDeviceSpan(leaf_ids[tree_idx]);
         auto targets = out_preds.Shape(1);
-        std::vector<float> leaves(static_cast<std::size_t>(p_tree->Size()) * targets, 0.0f);
+        CHECK_EQ(p_tree->NumTargets(), targets);
+        if (ids.empty()) continue;
+        std::vector<float> scalar_leaves;
+        common::Span<float const> leaves;
+        common::Span<bst_node_t const> mapping;
         if (p_tree->IsMultiTarget()) {
-          auto view = p_tree->HostMtView();
+          auto view = tree::MultiTargetTreeView{DeviceOrd::MPS(), false, p_tree};
           CHECK_EQ(view.NumTargets(), targets);
-          for (bst_node_t n = 0; n < view.Size(); ++n)
-            if (view.IsLeaf(n)) {
-              auto weights = view.LeafValue(n);
-              for (std::size_t k = 0; k < targets; ++k) leaves[n * targets + k] = weights(k);
-            }
+          leaves = view.leaf_weights.Values();
+          mapping = {view.right, static_cast<std::size_t>(view.Size())};
         } else {
           CHECK_EQ(targets, 1);
+          scalar_leaves.resize(p_tree->Size(), 0.0f);
           auto view = p_tree->HostScView();
           for (bst_node_t n = 0; n < view.Size(); ++n)
-            if (!view.IsDeleted(n) && view.IsLeaf(n)) leaves[n] = view.LeafValue(n);
+            if (!view.IsDeleted(n) && view.IsLeaf(n)) scalar_leaves[n] = view.LeafValue(n);
+          leaves = scalar_leaves;
         }
-        if (!ids.empty()) {
-          CHECK_EQ(out_preds.Stride(1), 1);
-          auto size = (ids.size() - 1) * out_preds.Stride(0) + targets;
-          common::metal::AddLeafValues(ids, leaves, targets, out_preds.Stride(0),
-                                       {&out_preds(0, 0), size});
-        }
+        CHECK_EQ(out_preds.Stride(1), 1);
+        auto size = (ids.size() - 1) * out_preds.Stride(0) + targets;
+        common::metal::AddLeafValues(ids, leaves, targets, out_preds.Stride(0),
+                                     {&out_preds(0, 0), size}, mapping);
         continue;
       }
 #endif

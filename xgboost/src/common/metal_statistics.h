@@ -139,5 +139,10 @@ struct Statistics {
   // Tree payload publication; per-tree control descriptors are excluded.
   std::uint64_t prediction_model_pack_dispatches, prediction_model_shared_input_bytes,
       prediction_model_staging_bytes;
+  // Persistent vector weights and model payload copies, excluding descriptors.
+  std::uint64_t split_weight_store_dispatches, split_weight_readback_bytes, model_host_copy_bytes,
+      model_snapshot_bytes;
+  // Resident input bindings for prediction, including compact vector leaf caches.
+  std::uint64_t prediction_shared_input_bytes;
 };
 }  // namespace xgboost::common::metal
