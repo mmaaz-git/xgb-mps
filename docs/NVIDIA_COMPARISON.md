@@ -106,3 +106,58 @@ including selected-observation changes and source-race policies.
 
 The comparison tool's Python tests use explicitly synthetic data. Passing those
 integrity tests is not a substitute for the NVIDIA command above.
+
+## Production sketch, training and prediction comparison
+
+`scripts/compare_gpu_pipeline.py` complements the numerical witnesses with fresh
+ordinary DMatrix inputs through production training, exported cuts and prediction.
+It requires a matching production-tree/library build record and rejects CPU
+fallback. It records all cut bits, predictive tree fields by path, sampled margin
+bits, input hashes, hardware, build information and the exact harness-file hash.
+Each GPU model is also evaluated on CPU at the original `2e-5` tolerances.
+This checks prediction of the same model; it does not assert that separately
+trained CPU and GPU models must be identical.
+
+The `fixtures-v1` suite has eight cases: dense, missing/empty-column, categorical,
+row-weighted, subnormal-weighted, zero-weighted, group-weighted ranking and
+Hessian-weighted `approx`. Integer-generated inputs and binary fractions avoid
+RNG/library-math variation; cross-platform input hashes must still agree.
+Each case trains three trees. `higgs-v1` uses all 10.5M training rows for the
+ordinary sketch path, trains one tree and records 1,024 held-out predictions.
+It is a correctness experiment, not a performance benchmark or a replay of all
+1,000 training rounds. Prepare HIGGS using `scripts/prepare_published_data.py`.
+
+After the CUDA build above, use an environment with NumPy and SciPy:
+
+```sh
+python3 scripts/compare_gpu_pipeline.py run --device cuda \
+  --build-record results/cuda-comparison-build/build.json \
+  --output results/gpu-pipeline-fixtures-cuda.json
+python3 scripts/compare_gpu_pipeline.py run --device cuda --suite higgs-v1 \
+  --build-record results/cuda-comparison-build/build.json \
+  --output results/gpu-pipeline-higgs-cuda.json
+python3 scripts/compare_gpu_pipeline.py compare \
+  validation/gpu-pipeline-fixtures-m3.json results/gpu-pipeline-fixtures-cuda.json \
+  --output results/gpu-pipeline-fixtures-comparison.json
+python3 scripts/compare_gpu_pipeline.py compare \
+  validation/gpu-pipeline-higgs-m3.json results/gpu-pipeline-higgs-cuda.json \
+  --output results/gpu-pipeline-higgs-comparison.json
+```
+
+Run the same harness source on both machines. Exit codes are `0` for identical
+recorded outputs, `2` for differences requiring review, and `1` for invalid or
+mismatched evidence. Changed cuts, leaf weights and margins remain visible;
+there is no automatic waiver for floating-point differences. Negative-infinity
+bin lower bounds and split thresholds are retained as bits: these are valid
+source-defined boundaries, not nonfinite prediction failures.
+
+The [M3 fixture observations](../validation/gpu-pipeline-fixtures-m3.json) and
+[HIGGS observations](../validation/gpu-pipeline-higgs-m3.json) are complete on
+production `68c800e`. All sampled GPU predictions match CPU evaluation of the
+same model bit for bit. HIGGS dispatched five sketch batches, and its cuts and
+first predictive tree exactly reproduce the earlier full benchmark. The
+[run record](../validation/gpu-pipeline-m3-run.json) includes hashes, commands,
+the initial validator error and 18 passing synthetic integrity tests. NVIDIA
+results are still absent. These integration cases do not close the fourteen
+remaining numerical contracts or cover external memory, native device inputs,
+distributed execution and all other caller combinations.

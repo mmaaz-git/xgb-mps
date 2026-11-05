@@ -1,0 +1,48 @@
+{
+  "status": "passed-metal-observations-and-report-integrity",
+  "scope": "Eight production pipeline fixtures plus full HIGGS one-round sketch; no NVIDIA execution",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "script_sha256": "0a2bf9f3029b718d1a51f930c256f48ccb30c489e2ae06cf642b4f85a89b54d4",
+  "reports": {
+    "fixtures": {
+      "path": "validation/gpu-pipeline-fixtures-m3.json",
+      "sha256": "40ce3895a5503092ef2206ad5b3dcfe4a3aa00df2661d43ded52e65094419f8d",
+      "cases": 8
+    },
+    "higgs": {
+      "path": "validation/gpu-pipeline-higgs-m3.json",
+      "sha256": "c3d67738602aee8d5a7a8bf5e4d7ca6f966954c11fd449c5ae3551ec214d6451",
+      "cases": 1
+    }
+  },
+  "integrity_tests": {
+    "command": "PYTHONPATH=xgboost/python-package DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib .venv/bin/python -m pytest -q tests/test_gpu_pipeline_reports.py",
+    "passed": 18,
+    "seconds": 0.12,
+    "scope": "Synthetic integrity tests; not CUDA execution"
+  },
+  "higgs_control": "Exported Metal cuts and first predictive tree match the original full HIGGS benchmark/first-round diagnostic exactly",
+  "cpu_prediction_control": "All 513 predictions for each of 8 fixture cases and all 1024 HIGGS sample predictions match CPU evaluation of the same GPU model bit for bit",
+  "sketch_batches": {
+    "fixtures": "one each, except approx_hessian three",
+    "higgs": 5
+  },
+  "commands": [
+    ".venv/bin/python scripts/compare_gpu_pipeline.py run --device mps --build-record results/perf1-higgs-1000-provenance.json --output results/gpu-pipeline-fixtures-v2-m3.json",
+    ".venv/bin/python scripts/compare_gpu_pipeline.py run --device mps --suite higgs-v1 --build-record results/perf1-higgs-1000-provenance.json --output results/gpu-pipeline-higgs-m3.json"
+  ],
+  "log": "results/gpu-pipeline-v2-m3.log",
+  "log_sha256": "8862b39edcc5a54ad18f41f80dde973907e35903ec8716ade9cfc6dc81994faa",
+  "initial_validation_failure": {
+    "path": "results/gpu-pipeline-fixtures-final-m3.json",
+    "sha256": "813afe180ed6ef72a3bcab9bf844fee8083b6904ab6166b3db0b5441855d2c65",
+    "reason": "Harness validator incorrectly rejected source-defined -infinity numeric lower bounds and missing-value split thresholds. Corrected validation, added regression, and reran without changing production code or tolerances."
+  },
+  "limitations": [
+    "NVIDIA execution/comparison is still absent.",
+    "Fixtures do not cover every caller or the remaining fourteen numerical contracts.",
+    "HIGGS uses all training rows for quantile construction but only one tree and 1024 test predictions.",
+    "Reports record the pre-commit revision; script_sha256 identifies the exact new harness source."
+  ]
+}
