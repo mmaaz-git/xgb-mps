@@ -17,6 +17,7 @@
 #include "xgboost/json.h"
 #include "ranking_rounding_io.h"
 #include "ranking_objective_report.h"
+#include "ranking_primitive_io.h"
 
 using namespace xgboost;
 namespace rr = ranking_rounding;
@@ -177,10 +178,75 @@ void RunObjectives(char const* input_path, char const* output_path) {
               input.Size(), sequences, rows);
 }
 
+void RunPrimitives(char const* input_path, char const* output_path) {
+  namespace rp = ranking_primitive;
+  std::string metadata_path = std::string(output_path)+".json";
+  rr::Require(!std::filesystem::exists(metadata_path) && !std::filesystem::exists(output_path),
+              "Primitive output/metadata already exists");
+  auto queries = rp::LoadInputs(input_path);
+  int devices = 0; Cuda(cudaGetDeviceCount(&devices));
+  rr::Require(devices > 0, "Actual NVIDIA GPU required; no skipped pass or CPU fallback");
+  Cuda(cudaSetDevice(0)); auto ctx = Context{}.MakeCUDA(0);
+  dh::device_vector<rp::Query> source(queries);
+  dh::device_vector<rp::Result> storage(queries.size());
+  auto in = dh::ToSpan(source);
+  auto out = dh::ToSpan(storage);
+  thrust::for_each_n(ctx.CUDACtx()->CTP(), thrust::make_counting_iterator(std::size_t{0}),
+      queries.size(), [=] __device__(std::size_t i) {
+        auto q = in[i];
+        float maximum = __uint_as_float(q.maximum), value = __uint_as_float(q.value);
+        auto fgs = static_cast<float>(q.rows);
+        float bound = fgs * maximum;
+        double cost_bound = static_cast<double>(fgs) * (q.cost / q.minimum);
+        // Invoke the actual source, including its unspecified nonfinite frexp
+        // exponent. Do not substitute Metal's explicit exponent-zero policy.
+        float m = common::CreateRoundingFactor(bound, q.rows);
+        double cm = common::CreateRoundingFactor(cost_bound, q.rows);
+        // Separate evaluations of the source delta expressions classify the
+        // finite/nonfinite domain; they are not private-temporary captures.
+        float delta = bound / (1.f - (2.f * static_cast<float>(q.rows)) *
+                                      std::numeric_limits<float>::epsilon());
+        double cost_delta = cost_bound / (1. - (2. * static_cast<double>(q.rows)) *
+                                              std::numeric_limits<double>::epsilon());
+        out[i] = {__float_as_uint(m),
+                  __float_as_uint(common::TruncateWithRounding(m, value)),
+                  __float_as_uint(common::TruncateWithRounding(m, -value)), __float_as_uint(delta),
+                  cm, common::TruncateWithRounding(cm, q.term),
+                  common::TruncateWithRounding(cm, -q.term), cost_delta};
+      });
+  Cuda(cudaDeviceSynchronize());
+  auto observations = ReadDevice(out.data(), out.size());
+  rp::Save(output_path, rp::kCuda, queries, observations.data());
+  cudaDeviceProp gpu{}; Cuda(cudaGetDeviceProperties(&gpu, 0));
+  int driver = 0, runtime = 0;
+  Cuda(cudaDriverGetVersion(&driver)); Cuda(cudaRuntimeGetVersion(&runtime));
+  Json meta{Object{}};
+  meta["status"] = String("completed-observations; comparison remains");
+  meta["suite"] = String("ranking-primitive-v1"); meta["backend"] = String("cuda");
+  meta["device"] = String(gpu.name);
+  meta["compute_capability"] = String(std::to_string(gpu.major)+"."+std::to_string(gpu.minor));
+  meta["nvcc"] = String(std::to_string(__CUDACC_VER_MAJOR__)+"."+
+      std::to_string(__CUDACC_VER_MINOR__)+"."+std::to_string(__CUDACC_VER_BUILD__));
+  meta["driver"] = Integer(driver); meta["runtime"] = Integer(runtime);
+  meta["thrust_version"] = Integer(THRUST_VERSION); meta["cub_version"] = Integer(CUB_VERSION);
+  meta["cases"] = Integer(queries.size()); meta["result_fields"] = Integer(queries.size()*6);
+  meta["diagnostic_fields"] = Integer(queries.size()*2);
+  meta["input_file"] = String(input_path); meta["observation_file"] = String(output_path);
+  meta["diagnostics"] = String("Separate source delta evaluations; not private-temporary captures");
+  std::string text; Json::Dump(meta, &text);
+  std::ofstream stream{metadata_path}; stream.exceptions(std::ios::badbit | std::ios::failbit);
+  stream << text << '\n';
+  std::printf("PASS CUDA primitive execution: %zu cases / %zu result and diagnostic fields; comparison remains\n",
+              queries.size(), queries.size()*8);
+}
+
 int main(int argc, char** argv) {
   try {
     if (argc == 4 && std::string(argv[1]) == "--objectives") {
       RunObjectives(argv[2], argv[3]); return 0;
+    }
+    if (argc == 4 && std::string(argv[1]) == "--primitives") {
+      RunPrimitives(argv[2], argv[3]); return 0;
     }
     rr::Require(argc == 3, "Usage: cuda_ranking_contracts input-only.bin new-cuda-observations.bin");
     std::string metadata_path = std::string(argv[2])+".json";

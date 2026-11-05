@@ -7,7 +7,8 @@ inputs as the Metal numerical-contract test. A second native harness covers
 **P5-N06** ranking RNG and raw pairs plus **training-rng-modern** streams and
 unweighted column sampling. A fourth exports the existing **P5-N03** primitive
 math corpus. A fifth adds **P5-N04/05** observations from the full existing
-ranking-rounding, ranking-gradient and repeated unbiased-objective corpora.
+ranking-rounding, ranking-gradient, repeated unbiased-objective and primitive
+rounding boundary corpora.
 The other seven numerical contracts and
 broader caller/integration comparisons remain work;
 these harnesses are not a full parity certificate.
@@ -388,7 +389,7 @@ and `0` means bit-identical outputs on these recorded executions.
 
 This mode covers the complete existing rounding corpus. The public-objective
 mode below covers the gradient and unbiased suites, including NDCG and repeated
-state. The separate primitive-rounding boundary test still needs CUDA coverage.
+state. A separate primitive mode below retains the rounding boundary test.
 No NVIDIA execution result is available yet. Fourteen synthetic integrity tests,
 a C++ input round trip and the unchanged Metal rounding checks pass locally.
 
@@ -501,6 +502,63 @@ each call carries a fixed parameter identity and all input words. Observations
 append FP32 gradient/Hessian and serialized bias words plus the next parent RNG
 word. `ROBE`, corpus ID and call count terminate the file at exact EOF. Gzip is
 packaging only. Valid framing alone does not authenticate GPU execution.
+
+## Ranking primitive rounding boundaries
+
+`cuda_ranking_contracts --primitives` consumes all **162,851 existing cases**
+from `metal_ranking_rounding`: powers and neighboring values, subnormals,
+overflow, zero bias, large row counts and random bit patterns. It invokes the
+vendored `CreateRoundingFactor<float/double>` and `TruncateWithRounding` functions
+with the production caller's bound expressions. The
+[run record](../validation/ranking-primitive-m3-run.json) retains all **977,106
+original result fields**, exact native checks and the same 7,284 FP32 / 2,400
+binary64 asymmetric truncation witnesses.
+
+The export adds two delta diagnostics per case: separate evaluations of the
+source expression passed to `frexp`, not captures of private temporaries.
+Metal explicitly uses exponent zero for nonfinite inputs; NVIDIA leaves that
+exponent unspecified. CUDA executes its source without adding Metal's guard.
+Both diagnostics must be nonfinite before factor differences enter policy
+review. A truncation difference inherits that review only when actual factors
+also differ; equal-factor truncations still require exact results. This does
+not prove the cause of every dependent difference.
+
+```sh
+python3 scripts/compare_ranking_primitives.py unpack \
+  validation/ranking-primitive-inputs-m3.bin.gz --output results/ranking-primitive-inputs.bin
+results/cuda-comparison-build/cmake/cuda_ranking_contracts --primitives \
+  results/ranking-primitive-inputs.bin results/ranking-primitive-cuda.bin
+python3 scripts/compare_ranking_primitives.py compare \
+  validation/ranking-primitive-metal-m3.bin.gz results/ranking-primitive-cuda.bin \
+  --output results/ranking-primitive-comparison.json
+```
+
+Use fresh output paths and preserve `.bin.json`, runtime logs and the matching
+`build.json`. The comparator requires the complete corpus and exact input bits.
+Finite-domain results and diagnostics require exact bits, except that pairs of
+NaNs retain their payload/sign differences for review. Signed-zero mismatches
+fail exact checks. Diagnostic classification or finite/nonfinite disagreements
+are not waived. Exit `1` means invalid evidence or an exact-check failure,
+`2` means other differences require review, and `0` means identical recorded
+outputs. None of these outcomes establishes behavior on untested inputs.
+
+The full Metal test and 17 synthetic report tests pass. The C++ input round trip
+is byte-identical. New Metal diagnostics match independent host expressions
+apart from 405 FP32 and 96 binary64 NaN payload/sign differences. Their nonfinite
+counts are 19,602 and 25,959 respectively. These host checks are not NVIDIA
+execution; CUDA compilation of this mode and runtime comparisons remain pending.
+
+```sh
+bash scripts/test.sh --native metal_ranking_rounding
+MTL_DEBUG_LAYER=1 results/metal_ranking_rounding_test \
+  xgboost/src/common/metal_histogram.metal --report-prefix results/new-ranking-primitive
+```
+
+`tests/ranking_primitive_io.h` specifies the little-endian `XGBRPR1\0` format:
+backend kind and fixed case count, all input fields without native struct
+padding, then eight observed fields per case for Metal/CUDA reports. `RPRE`
+and the case count finish the file at exact EOF. CUDA rejects observation files
+as input. Gzip is packaging only; framing does not authenticate GPU provenance.
 
 ## Production sketch, training and prediction comparison
 

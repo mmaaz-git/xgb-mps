@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include "cuda_ranking_rounding.h"
+#include "ranking_primitive_io.h"
 template <typename T, typename U>
 T Cast(U value) {
   static_assert(sizeof(T) == sizeof(U));
@@ -17,31 +18,37 @@ T Cast(U value) {
   std::memcpy(&out, &value, sizeof(T));
   return out;
 }
-struct Query {
-  std::uint32_t maximum, rows, value, padding;
-  double cost, minimum, term;
-};
-struct Result {
-  std::uint32_t factor, positive, negative, padding;
-  double cost_factor, cost_positive, cost_negative;
-};
+using ranking_primitive::Query;
+using ranking_primitive::Result;
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
-      if (argc != 2) throw std::runtime_error("Pass production shader");
+      ranking_primitive::Require(argc == 2 || (argc == 4 && std::string(argv[2]) == "--report-prefix"),
+                                 "Pass production shader [--report-prefix new-prefix]");
+      std::string prefix = argc == 4 ? argv[3] : "";
+      if (argc == 4) ranking_primitive::Require(!std::filesystem::exists(prefix+".inputs.bin") &&
+          !std::filesystem::exists(prefix+".metal.bin"), "Use a new primitive report prefix");
       std::ifstream file(argv[1]);
       std::string source{std::istreambuf_iterator<char>(file), {}};
       source += R"(
 struct RoundQuery { uint maximum, rows, value, padding; ulong cost, minimum, term; };
-struct RoundResult { uint factor, positive, negative, padding; ulong cost_factor, cost_positive, cost_negative; };
+struct RoundResult { uint factor, positive, negative, delta; ulong cost_factor, cost_positive, cost_negative, cost_delta; };
 kernel void test_ranking_rounding(device const RoundQuery* input [[buffer(0)]],
                                    device RoundResult* output [[buffer(1)]], uint tid [[thread_position_in_grid]]) {
   using namespace xgb_survival;
   RoundQuery q = input[tid];
   uint m = xgb_rank_rounding(q.maximum, q.rows);
   D cm{xgb_rank_cost_rounding(D{q.cost}, q.rows, D{q.minimum})}, term{q.term};
-  output[tid] = {m, xgb_rank_truncate(m, q.value), xgb_rank_truncate(m, q.value ^ 0x80000000u), 0,
-                 cm.bits, ((cm + term) - cm).bits, ((cm - term) - cm).bits};
+  // Separate source-expression diagnostics, not captures of private temporaries.
+  uint n = as_type<uint>(float(q.rows));
+  uint bound = xgb_rank_fmul(n, q.maximum);
+  uint correction = xgb_rank_fmul(xgb_rank_fmul(0x40000000u, n), 0x34000000u);
+  uint denominator = xgb_rank_fadd(0x3f800000u, correction ^ 0x80000000u);
+  uint delta = as_type<uint>(xgb_fdiv_preserve(as_type<float>(bound), as_type<float>(denominator)));
+  D cost_delta = (From(float(q.rows)) * (D{q.cost} / D{q.minimum})) /
+                (one - D{xgb_scaled_integer(q.rows, -51)});
+  output[tid] = {m, xgb_rank_truncate(m, q.value), xgb_rank_truncate(m, q.value ^ 0x80000000u), delta,
+                 cm.bits, ((cm + term) - cm).bits, ((cm - term) - cm).bits, cost_delta.bits};
 })";
       auto device = MTLCreateSystemDefaultDevice();
       if (!device) throw std::runtime_error("Metal required");
@@ -134,6 +141,10 @@ kernel void test_ranking_rounding(device const RoundQuery* input [[buffer(0)]],
       std::printf("PASS %zu exact rounding cases / %zu float and double fields; %zu float and %zu "
                   "double asymmetric terms\n",
                   queries.size(), queries.size() * 6, asymmetric, double_asymmetric);
+      if (argc == 4) {
+        ranking_primitive::Save(prefix+".inputs.bin", ranking_primitive::kInput, queries);
+        ranking_primitive::Save(prefix+".metal.bin", ranking_primitive::kMetal, queries, actual);
+      }
     } catch (std::exception const& e) {
       std::fprintf(stderr, "%s\n", e.what());
       return 1;

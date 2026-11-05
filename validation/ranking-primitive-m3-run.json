@@ -1,0 +1,243 @@
+{
+  "status": "Complete Metal primitive corpus and integrity checks passed; CUDA primitive compile/runtime pending",
+  "suite": "ranking-primitive-v1",
+  "scope": "All existing metal_ranking_rounding inputs and six result fields; adds two separate delta diagnostics per case for P5-N04/05.",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T172309Z",
+    "revision": "91f1b65c790503ef2c409b1e729a13a1d83a2f13",
+    "working_tree": "M .github/workflows/cuda-compile.yml\n M scripts/build_cuda_comparison.py\n M tests/cuda_ranking_contracts.cu\n M tests/metal_ranking_rounding.mm\n?? tests/ranking_primitive_io.h",
+    "diff_sha256": "421348a7c203531612d5fb65b44706bd50a5ba0fd982a0757a4a90083fa1babd",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/ranking_primitive_io.h": "f6c6d3d43d131ecafd230c9472025b61e40abe7d42b313004c1246bc546343b6"
+    },
+    "native_groups": [
+      "metal_ranking_rounding"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.7906127499882132
+      },
+      {
+        "name": "compile-metal_ranking_rounding",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-fobjc-arc",
+          "tests/metal_ranking_rounding.mm",
+          "-framework",
+          "Metal",
+          "-framework",
+          "Foundation",
+          "-o",
+          "results/metal_ranking_rounding_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_ranking_rounding.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.0668712090700865
+      },
+      {
+        "name": "metal_ranking_rounding",
+        "command": [
+          "results/metal_ranking_rounding_test",
+          "xgboost/src/common/metal_histogram.metal"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_ranking_rounding.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.759112167172134
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T17:23:13.528835+00:00"
+  },
+  "native_summary_path": "results/verify2-ranking-primitive-native/summary.json",
+  "native_summary_sha256": "4998c1f3cd4a1d1276b3c76c4992ab58c5977a0c507dc9327d9559b187db997c",
+  "tested_patch_paths": [
+    ".github/workflows/cuda-compile.yml",
+    "scripts/build_cuda_comparison.py",
+    "tests/cuda_ranking_contracts.cu",
+    "tests/metal_ranking_rounding.mm"
+  ],
+  "tested_patch_sha256": "421348a7c203531612d5fb65b44706bd50a5ba0fd982a0757a4a90083fa1babd",
+  "tested_tracked_patch_matches_current_source": true,
+  "source_sha256": {
+    ".github/workflows/cuda-compile.yml": "f3e030d4db7f539b1ebbd0066fe0a8dd321445f6d3baae68186b8af9c8f51cc4",
+    "scripts/build_cuda_comparison.py": "196bdf897c7fad2484079fa326bc00eed64e13f3b6f23833267d548e90b4e30e",
+    "tests/cuda_ranking_contracts.cu": "1a841c4467383e0bfc20576e8d3aed0a70af87d0d78f0249b364bc9b141675b8",
+    "tests/metal_ranking_rounding.mm": "3da3ef0e9409f086ff453a9b0fda8606ca184357bf0ff2071a668a6924183e03",
+    "tests/ranking_primitive_io.h": "f6c6d3d43d131ecafd230c9472025b61e40abe7d42b313004c1246bc546343b6",
+    "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+    "tests/cuda_ranking_rounding.h": "21321e0f868c6c4e071773c05d423aa07a06bc8ecdae4da026a9e861fbcf7d74",
+    "scripts/compare_ranking_primitives.py": "94927362b92493d1f524d1f068655f8c12e091e31a67c05a89fdedf756c41f59",
+    "tests/test_ranking_primitive_reports.py": "267924be027c23eadcf2cf232deba30f1b1e40433cb41dc42a50d16c7e1a8a8a",
+    "xgboost/src/common/deterministic.cuh": "704a14db2580fb9d0f5f86412298cbae5f1e8c1553ff3b69f75d96138a1e6f57",
+    "xgboost/src/common/metal_histogram.metal": "c559beb768dc6e44eb786df3ffc1a7c5bf0987d228e6f9331f7127020343b0f0"
+  },
+  "export_driver": "results/run-verify2-ranking-primitive.sh",
+  "export_driver_sha256": "13c66077cd91fc846b24e2724120408dc5435b8cd7c3fab87f33aeec09464dc5",
+  "export_log": "results/verify2-ranking-primitive.log",
+  "export_log_sha256": "eb06ec93ab8b105932c03690f447bd001ca9bf06fe9cc188b2204534e40581d2",
+  "export_exit_code": 0,
+  "export_environment": {
+    "MTL_DEBUG_LAYER": "1"
+  },
+  "artifacts": {
+    "inputs": {
+      "path": "validation/ranking-primitive-inputs-m3.bin.gz",
+      "compressed_bytes": 3717522,
+      "compressed_sha256": "25664129129a75a6b2c66d56f030bd7c5adb10a4475a5058a50c4693c5c6d217",
+      "raw_bytes": 5862660,
+      "raw_sha256": "f0451078e247216debbf89b877df4539507328ee61e338be47fb62bb7e8dc869"
+    },
+    "metal": {
+      "path": "validation/ranking-primitive-metal-m3.bin.gz",
+      "compressed_bytes": 6525878,
+      "compressed_sha256": "430ca5fa5347d35e4178dd8ada18995cad869e99c2a6c8abf5669fe4c79f47f7",
+      "raw_bytes": 13679508,
+      "raw_sha256": "4ac8b0e0f44d0d760ab77bc46c7e1a7a0c51552e32edd3b18f789c33a046b053"
+    }
+  },
+  "counts": {
+    "cases": 162851,
+    "original_result_fields": 977106,
+    "new_diagnostic_fields": 325702,
+    "total_fields": 1302808,
+    "float_asymmetric_terms": 7284,
+    "double_asymmetric_terms": 2400
+  },
+  "corpus": {
+    "structured_cases": 62850,
+    "explicit_asymmetric_case": 1,
+    "random_cases": 100000,
+    "random_engine": "std::mt19937_64",
+    "random_seed": 23843,
+    "preservation": "Original generator, source-derived scalar checks, six original result expressions and NaN/exact-bit acceptance unchanged; raw inputs exported, never regenerated for CUDA.",
+    "structured_rows": [
+      0,
+      1,
+      2,
+      31,
+      32,
+      33,
+      255,
+      256,
+      257,
+      4097,
+      65537,
+      4194303,
+      4194304,
+      4194305,
+      4294967295
+    ]
+  },
+  "cuda_consumer": {
+    "path": "common::CreateRoundingFactor<float/double> and common::TruncateWithRounding<float/double> from vendored deterministic.cuh",
+    "bounds": "FP32 float(rows)*maximum; binary64 double(float(rows))*(cost/minimum), as in the production ranking caller.",
+    "nonfinite_policy": "Actual CUDA source retained with no exponent initialization/guard added. Metal explicitly uses exponent zero for nonfinite frexp inputs.",
+    "diagnostics": "Separate source-expression delta evaluations on each GPU, not private-temporary captures.",
+    "executions_planned": 1,
+    "no_expected_outputs_supplied": true,
+    "device_requirement": "Actual NVIDIA GPU required; no skipped pass or CPU fallback."
+  },
+  "comparison": {
+    "ordinary_results": "Original exact bits, except both NaNs; all NaN payload/sign differences remain review items.",
+    "diagnostics": "Exact bits except both NaNs; classification or finite/nonfinite disagreement is not waived.",
+    "policy": "When both delta diagnostics are nonfinite, differing factors require review. Signed-truncation differences inherit that review only when actual factors also differ; equal-factor truncations remain exact.",
+    "causality_limit": "Different factors do not prove the cause of every dependent difference. Full reports remain available for review.",
+    "exit_codes": {
+      "0": "Identical on recorded inputs",
+      "1": "Invalid evidence or an exact-check failure",
+      "2": "Other bit differences require review"
+    }
+  },
+  "interchange_checks": {
+    "input_observation_bits_match": true,
+    "cpp_full_input_roundtrip_byte_identical": true,
+    "cpp_observation_input_rejected_before_output": true,
+    "probe": "results/verify2-ranking-primitive-io.cc",
+    "probe_sha256": "057dc3ac0d40a2406eb53b4bb01fed73dfcc7ec74df18a40b9bbd36e47a8f34c",
+    "log": "results/verify2-ranking-primitive-io.log",
+    "log_sha256": "14dcda8e4587ffccb669e606cae88e4cd5883aec165515827d37fe5f4ca1bb43",
+    "host_diagnostic_words_sha256": "0eafa8c6e611318b387858f3e2a5d11ea9f03dfc79853519f24479e560ee9a0f",
+    "host_source_diagnostic_comparison": {
+      "delta": {
+        "host_metal_exact_except_nan_payloads": true,
+        "bit_differences": 405,
+        "both_nan_bit_differences": 405,
+        "finite_rows": 143249,
+        "nonfinite_rows": 19602
+      },
+      "cost_delta": {
+        "host_metal_exact_except_nan_payloads": true,
+        "bit_differences": 96,
+        "both_nan_bit_differences": 96,
+        "finite_rows": 136892,
+        "nonfinite_rows": 25959
+      }
+    },
+    "host_diagnostic_scope": "Independent host arithmetic checks of new Metal diagnostics; not NVIDIA execution. 405 FP32 and 96 binary64 NaN payload/sign differences retained in raw files."
+  },
+  "integrity_tests": {
+    "command": "PYTHONPATH=xgboost/python-package DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib .venv/bin/python -m pytest -q tests/test_ranking_primitive_reports.py",
+    "scope": "Synthetic reports only; no NVIDIA execution",
+    "passed": 17,
+    "seconds": 0.72,
+    "log": "results/verify2-ranking-primitive-report-tests.log",
+    "log_sha256": "e531d880002c89fc2bf4ad9100bb9c0620479c5066257cb423fc44bec4e0aa25"
+  },
+  "cuda_build_driver_check": {
+    "status": "Passed mocked five-binary compile/link and source hashes; not NVCC or GPU execution",
+    "source": "results/verify2-ranking-primitive-build-mock.py",
+    "source_sha256": "0ed13c2afd97d569b4d30e87ac9899fdd6a9b1f1697f2dbcc86db015b62a27fe",
+    "log": "results/verify2-ranking-primitive-build-mock.log",
+    "log_sha256": "1119911309a85346dd6a04f52b9b72fee6a5276c25531dcda92c24158cb670bb"
+  },
+  "cuda_compile": {
+    "status": "not_submitted",
+    "gpu_execution": false,
+    "prior_public_objective_run": 42073244457,
+    "prior_run_includes_primitives": false,
+    "scheduling": "Wait for live public-objective compiler run to finish before pushing compile-triggering changes."
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "results/cuda-comparison-build/cmake/cuda_ranking_contracts --primitives results/ranking-primitive-inputs.bin results/ranking-primitive-cuda.bin"
+  },
+  "limits": [
+    "No actual NVIDIA execution has occurred.",
+    "Separate delta diagnostics do not expose the private delta used in the compiled CreateRoundingFactor body.",
+    "Nonfinite exponent differences require review and do not establish general CUDA equivalence.",
+    "This is the existing primitive corpus; public-objective and low-level ranking consumers have separate reports.",
+    "Compiler/contraction closure requires emitted-code and runtime evidence, beyond these primitive observations.",
+    "Binary framing is not hardware authentication; preserve runtime metadata/logs and the matching build record."
+  ]
+}

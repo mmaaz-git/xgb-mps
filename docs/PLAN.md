@@ -143,6 +143,14 @@ serialized FP32 bias observations do not reveal full binary64 internal state.
 The [record](../validation/ranking-objective-m3-run.json) separates these results
 from pending CUDA compiler/runtime validation. This extends P5-N05 coverage;
 it does not add another completed contract.
+
+The separate ranking primitive corpus is also exported in full: **162,851 cases /
+977,106 original result fields**, plus 325,702 delta diagnostics to distinguish
+finite arithmetic from the nonfinite `frexp` exponent policy. The Metal test
+retains all original exact checks and asymmetric terms; 17 synthetic integrity
+tests pass. CUDA invokes the vendored rounding/truncation functions directly.
+Its compiler/runtime validation remains pending; see the
+[primitive record](../validation/ranking-primitive-m3-run.json).
 Runners now address ten contracts; seven still lack dedicated runners, broader
 caller coverage remains, and none has actual NVIDIA execution evidence.
 
@@ -153,7 +161,7 @@ its contract until actual NVIDIA results have been reviewed.
 
 | Order | Remaining contract work | Required comparison |
 | --- | --- | --- |
-| 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Public-objective exports/replay added; complete its CUDA compiler gate, then execute both ranking modes on NVIDIA. Add matching coverage for the separate primitive-rounding boundaries. |
+| 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
 | 2 | P5-N07 and training-reduction-association | Stats, linalg, metric and training reductions under their declared term precision and association bounds |
 | 3 | P5-N09/10/11: PR, ROC and ranking metrics | Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
