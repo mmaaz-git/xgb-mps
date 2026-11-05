@@ -19,6 +19,7 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "tests/aft_contract_io.h", "tests/cuda_rng_contracts.cu", "tests/rng_contract_fixtures.h",
           "tests/cuda_ranking_pairs.h", "tests/cuda_philox_reference.h",
           "tests/column_rng_contract_fixtures.h", "tests/cuda_column_reference.h",
+          "tests/math_contract_io.h", "tests/cuda_math_contracts.cu",
           "scripts/build_cuda_comparison.py")
 
 
@@ -128,7 +129,7 @@ def main():
         binary = output / "cmake/cuda_numerical_contracts"
         binaries = {name: {"path": str(output / f"cmake/cuda_{name}_contracts"),
                            "sha256": sha(output / f"cmake/cuda_{name}_contracts")}
-                    for name in ("numerical", "aft", "rng")}
+                    for name in ("numerical", "aft", "rng", "math")}
         if (git("rev-parse", "HEAD:xgboost").decode().strip() != tree
                 or hashlib.sha256(git("diff", "HEAD", "--", "xgboost")).hexdigest() != diff
                 or {relative: sha(ROOT / relative) for relative in INPUTS} != inputs):
@@ -143,6 +144,8 @@ def main():
                                                 str(output / "cuda-aft-observations.bin")]), flush=True)
         print("RNG runtime command:", shlex.join([binaries["rng"]["path"],
                                                 str(output / "cuda-rng-report.json")]), flush=True)
+        print("Math runtime command:", shlex.join([binaries["math"]["path"], "results/math-inputs.bin",
+                                                 str(output / "cuda-math-observations.bin")]), flush=True)
     except Exception as error:
         record.update(status="failed", error=str(error))
         raise

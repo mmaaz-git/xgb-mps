@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "math_contract_io.h"
 void Require(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
@@ -27,7 +28,7 @@ double Value(uint64_t bits) {
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
-      Require(argc == 2, "Pass production Metal source");
+      auto report = math_contracts::ReportOption(argc, argv, 3);
       auto device = MTLCreateSystemDefaultDevice();
       Require(device != nil, "No GPU");
       std::ifstream file(argv[1]);
@@ -119,6 +120,14 @@ int main(int argc, char** argv) {
                   "Binary64 to float mismatch");
         }
       }
+      if (report) {
+        math_contracts::Words observations;
+        for (std::size_t i = 0; i < count; ++i) {
+          for (unsigned k = 0; k < 4; ++k) observations.push_back(actual[4*i+k]);
+          for (unsigned k = 0; k < 2; ++k) observations.push_back(floats[2*i+k]);
+        }
+        report->Add(0, inputs, observations);
+      }
       std::vector<uint32_t> floats_in;
       for (size_t i = 0; i < 100000; ++i) floats_in.push_back(uint32_t(rng()));
       for (uint32_t x : {0u, 0x80000000u, 1u, 0x7fffffu, 0x800000u, 0x7f800000u, 0xff800000u})
@@ -149,6 +158,11 @@ int main(int argc, char** argv) {
         Require(
             (std::isnan(expected) && std::isnan(Value(actual[i]))) || Bits(expected) == actual[i],
             "Float to binary64 mismatch");
+      }
+      if (report) {
+        report->Add(1, math_contracts::Words(floats_in.begin(), floats_in.end()),
+                    math_contracts::Words(actual, actual + floats_in.size()));
+        report->Finish();
       }
       printf("PASS %zu binary64 arithmetic operations, %zu narrowing and %zu widening conversions "
              "on %s\n",

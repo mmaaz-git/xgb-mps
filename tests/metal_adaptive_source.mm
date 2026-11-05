@@ -10,6 +10,7 @@
 #include <vector>
 #include "../results/cuda_objective_reference_generated.h"
 #include "cuda_metric_reference.h"
+#include "math_contract_io.h"
 using namespace cuda_metric;
 struct Params {
   std::uint64_t rows;
@@ -41,7 +42,7 @@ float Hypot(float a, float b) {
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
-      Check(argc == 2, "Pass shader path");
+      auto report = math_contracts::ReportOption(argc, argv, 8);
       std::ifstream file(argv[1]);
       std::string source{std::istreambuf_iterator<char>(file), {}};
       source += R"(
@@ -143,6 +144,15 @@ kernel void adaptive_primitive_math(device const uint2* input [[buffer(0)]],
       std::printf("PASS %zu primitive fields; max hypot/tanh ULP %llu/%llu\n", inputs.size() * 2,
                   (unsigned long long)max_hypot, (unsigned long long)max_tanh);
       std::fflush(stdout);
+      if (report) {
+        math_contracts::Words input_words, observations;
+        for (std::size_t i = 0; i < inputs.size(); ++i)
+          for (unsigned k = 0; k < 2; ++k) {
+            input_words.push_back(Cast<std::uint32_t>(inputs[i][k]));
+            observations.push_back(Cast<std::uint32_t>(actual[2*i+k]));
+          }
+        report->Add(3, input_words, observations);
+      }
       std::size_t fields = 0, cases = 0;
       for (unsigned kind : {0u, 1u})
         for (unsigned mode = 0; mode < 6; ++mode) {
@@ -227,6 +237,7 @@ kernel void adaptive_primitive_math(device const uint2* input [[buffer(0)]],
           std::printf("PASS kind%u mode%u: %zu checked fields\n", kind, mode, fields);
           std::fflush(stdout);
         }
+      if (report) report->Finish();
       std::printf("PASS %zu source cases / %zu fields; %zu primitive fields\n", cases, fields,
                   inputs.size() * 2);
     } catch (std::exception const& e) {

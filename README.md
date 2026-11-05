@@ -46,8 +46,11 @@ The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) cover 39 shared thresho
 CDF and sketch-order witnesses, plus 96 survival-objective cases with 316,683
 rows. A ranking RNG runner adds the existing 659,200 draws and 9,068,696 raw
 pairs, training RNG streams, unweighted column shuffles and sampling hierarchies.
-These provide runners for seven of the seventeen numerical contracts;
-ten still need complete runners. Production sketch/training/prediction comparisons
+The primitive-math runner adds **1,942,163 observed fields** for binary64
+arithmetic/casts, exp/log/erf and FP32 hypot/tanh, preserving the existing Metal
+inputs and tolerances. Runners now address eight of the seventeen numerical
+contracts; nine still lack dedicated runners, and broader caller coverage remains.
+Production sketch/training/prediction comparisons
 also cover eight fixtures and full-size HIGGS quantile construction. Metal
 observations are published; NVIDIA execution is still required. Differences
 remain visible for review.

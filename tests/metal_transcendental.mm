@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "math_contract_io.h"
 uint64_t Bits(double value) {
   uint64_t b;
   std::memcpy(&b, &value, 8);
@@ -32,7 +33,7 @@ void Require(bool ok, char const *message) {
 int main(int argc, char **argv) {
   @autoreleasepool {
     try {
-      Require(argc == 2, "Pass production Metal source");
+      auto report = math_contracts::ReportOption(argc, argv, 4);
       auto device = MTLCreateSystemDefaultDevice();
       Require(device != nil, "No GPU");
       std::ifstream file(argv[1]);
@@ -139,6 +140,13 @@ int main(int argc, char **argv) {
                   (unsigned long long)max_ulp[2], mismatches);
       Require(mismatches == 0,
               "Transcendental error exceeds four binary64 ULP");
+      if (report) {
+        math_contracts::Words observations;
+        for (std::size_t i = 0; i < in.size(); ++i)
+          for (unsigned k = 0; k < 3; ++k) observations.push_back(result[4*i+k]);
+        report->Add(2, in, observations);
+        report->Finish();
+      }
       std::printf("PASS on %s\n", device.name.UTF8String);
       return 0;
     } catch (std::exception const &e) {

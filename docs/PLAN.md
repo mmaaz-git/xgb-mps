@@ -48,7 +48,7 @@ classification.
 | PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA compile passed at `bf1ebea` | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
 | PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA compile passed at `bf1ebea` | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
 | VERIFY-1 | Integration at a fixed revision | Locally complete; NVIDIA execution remains separate | [Acceptance report](LOCAL_ACCEPTANCE.md) maps all 17 contracts and 16 original gap rows; full Metal/CPU/federated evidence at `68c800e`, focused numerical fixtures at `0c66454`; CUDA compile passed at `bf1ebea` |
-| VERIFY-2 | NVIDIA execution comparison | Runners for seven contracts and production sketch/training/prediction added; Metal evidence published, external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; ten remaining contracts and broader callers still need complete harness coverage; publish differences, not just compiler success |
+| VERIFY-2 | NVIDIA execution comparison | Runners addressing eight contracts and production sketch/training/prediction added; Metal evidence published, external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; nine contracts lack dedicated runners and broader caller coverage remains; publish differences, not just compiler success |
 | PERF-1 | Profile/optimize a frozen benchmark matrix | Full HIGGS repeated at `68c800e`; ordinary strict equivalence failed, common-cut 100-round diagnostic passes | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
 
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
@@ -100,8 +100,8 @@ Metal groups pass. The CUDA runner invokes the production ranking cache, sorts
 and `MakePairsOp`, comparing each observed result exactly with the same
 independent host oracle used by Metal. It also covers 1,060,276 Philox/uniform
 queries through production `RandomWeight`. The
-[run record](../validation/rng-contract-m3-run.json) separates completed Metal
-checks from pending CUDA compilation and execution.
+[run record](../validation/rng-contract-m3-run.json) retains the initial Metal
+checks; the extension record below tracks the current CUDA compiler result.
 
 The `rng-v2` extension covers the training RNG contract's distinct Thrust shuffle
 stream: all 128 existing unweighted primitive cases / 1,320,913 permutation
@@ -111,8 +111,19 @@ input/case ordering; its full Metal group passes with the original 550 cases
 and 33 resident chains. Weighted log-key arithmetic and broader caller
 combinations remain separate comparison work. The
 [extension record](../validation/rng-column-contract-m3-run.json) links the base
-RNG evidence without relabeling it as NVIDIA execution. Seven contracts now have
-runners, ten need complete runners, and none has actual NVIDIA execution evidence.
+RNG evidence without relabeling it as NVIDIA execution. The corrected RNG,
+numerical and AFT consumers compiled and linked in
+[run 42058206746](https://github.com/mmaaz-git/xgb-mps/actions/runs/42058206746).
+
+The P5-N03 primitive-math runner exports the unchanged binary64 arithmetic/cast,
+exp/log/erf and FP32 hypot/tanh corpora: **1,942,163 observed fields**. Three Metal
+groups and 16 synthetic report-integrity tests pass. Existing CPU budgets remain
+unchanged; GPU-to-GPU math differences require review, even at one ULP. See the
+[run record](../validation/math-contract-m3-run.json). CUDA compilation and
+execution of this new consumer remain pending. This does not close P5-N12's
+compiler/contraction requirement or establish universal error bounds.
+Runners now address eight contracts; nine still lack dedicated runners, broader
+caller coverage remains, and none has actual NVIDIA execution evidence.
 
 PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
 Freeze the accepted source and workload parameters; inspect prior outputs before
