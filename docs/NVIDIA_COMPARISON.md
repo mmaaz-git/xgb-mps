@@ -1266,8 +1266,7 @@ python3 scripts/compare_grouped_pr_contracts.py compare \
 
 Original Metal execution and the full export pass. Independent references,
 23 report-integrity tests, eleven mocked build-driver tests and the complete C++
-input round trip pass. CUDA compilation and actual NVIDIA execution remain
-pending. Comparison exits 1 for malformed input or reference failure and 2 for
+input round trip pass. [CUDA compilation passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770); actual NVIDIA execution remains pending. Comparison exits 1 for malformed input or reference failure and 2 for
 review, even if all common outputs match, because the domain adaptation remains.
 All output bit differences, including zero signs and NaN payloads, are reported.
 
@@ -1299,7 +1298,7 @@ retains the generated source and edit record, checks metric registry identity,
 and rejects exported metric definitions from the copy.
 
 Eight source/capture-helper checks and fourteen mocked build-driver checks pass
-locally. [CUDA compilation of this preparation is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288); these host checks do
+locally. [CUDA compilation of this preparation is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288); these host checks do
 not prove CUDA execution or numerical agreement. The full 528-record Metal AUC
 corpus still needs its exporter, CUDA replay and comparison checks. Replay must
 also compare the instrumented results with calls to the original linked library.

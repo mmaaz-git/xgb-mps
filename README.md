@@ -51,7 +51,7 @@ unproven.
 | Validation stage | Current status |
 | --- | --- |
 | Local Metal/CPU acceptance | Full regression passed at `41d4dc2`; details below |
-| CUDA compilation | [Linear build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42113854537); the [grouped PR/AUC build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770). The [capacity fix and AUC capture build is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288) |
+| CUDA compilation | [Grouped PR/AUC build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770). The [capacity fix and AUC capture build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42122113288) |
 | CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
 | Performance | Mixed; the latest full HIGGS run is slower on MPS |
 
@@ -62,7 +62,7 @@ The latest [linear replay](validation/linear-contract-m3-run.json) preserves 56
 records and 893 actions; its Metal and independent reference checks pass.
 
 Grouped PR now also has a complete local replay of its 319 existing records;
-its CUDA build and execution remain pending. [Evidence and domain limits](docs/NVIDIA_COMPARISON.md#grouped-precisionrecall-auc).
+its CUDA build passed; NVIDIA execution remains pending. [Evidence and domain limits](docs/NVIDIA_COMPARISON.md#grouped-precisionrecall-auc).
 
 Remaining work is to complete comparisons for PR/ROC/ranking metrics, SHAP
 and compiler arithmetic behavior; extend caller coverage, including the full

@@ -323,3 +323,15 @@ VERIFY-2 linear consumer (terminal success; no NVIDIA execution):
   Library SHA256: 95e0acad25674e7c3c5f09b040ad8fd5a50dacee334a2e06df0f01ef35badf6b
   Linear executable SHA256: 4e8485ec14b7cc2cb6e878b8ae196eac5e40f6cd24a2d7381a0ce740fbc416a6
   This predates grouped PR and the AUC capacity fix. No CUDA kernels executed.
+
+VERIFY-2 grouped PR and PORT-12 AUC capacity (terminal success):
+  b1d678babbe438905e3cfb33a27a56ae49eda630:42117995770, completed 2026-11-05T22:32:10.497367+00:00
+  https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770
+  All 71 input hashes, eight CUDA objects, 197 production steps and eight executable links verified.
+  Early nvCOMP loader, 24-entry metric and 3-entry linear registry/symbol isolation,
+  and 10,005 host RNG checks passed. No NVIDIA or Metal kernel execution.
+  log_sha256: bf89100f283cb8705582d27781aa9697e1618f895d8ced9956843a82f9432f0f
+  build_record_sha256: 18a7a54904d640cde7f0358bd3800deb3e58f0e79b098ca94a43c07ab0894de8
+  library_sha256: 3cf2b94af820751be5f1a7ba9fafac768936fafdae0e124c3da670b2e39616a6
+  Artifacts: results/cuda-compile-42117995770; verified by results/verify-cuda-42117995770.py.
+  Predates PORT-13 and the isolated AUC source-capture preparation.

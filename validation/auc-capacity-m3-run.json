@@ -1,5 +1,5 @@
 {
-  "status": "passed-focused-Metal-CPU-acceptance; CUDA compilation and NVIDIA runtime pending",
+  "status": "passed-focused-Metal-CPU-acceptance-and-CUDA-compilation; NVIDIA runtime pending",
   "recorded_utc": "2026-11-05T21:59:16.712501+00:00",
   "task": "PORT-12",
   "production_commit": "4a0581351fe63dc980fea439167ed320884d59de",
@@ -260,13 +260,87 @@
     "results/auc-wide-native/007-pytest.log": "3e81e71e91b80eeb0675d8b9d6cb86e55ec544b1bb52b7dbc55543efc4c8304e"
   },
   "cuda_compile": {
-    "status": "in_progress",
+    "status": "passed-compile-link-and-host-checks",
+    "gpu_execution": false,
     "run_id": 42117995770,
     "head": "b1d678babbe438905e3cfb33a27a56ae49eda630",
     "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42117995770",
-    "gpu_execution": false,
-    "inputs": 71,
-    "binaries": 8
+    "finished_utc": "2026-11-05T22:32:10.497367+00:00",
+    "production_steps": 197,
+    "harness_objects": 8,
+    "linked_binaries": 8,
+    "verified_input_hashes": 71,
+    "nvcomp_loader_probe": {
+      "status": "passed",
+      "gpu_execution": false
+    },
+    "nvcomp_runtime_path": "/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13/libnvcomp.so.5.3.0.16\n/usr/lib/x86_64-linux-gnu/libnvcomp5-cuda-13",
+    "metric_source_isolation": {
+      "status": "passed",
+      "gpu_execution": false,
+      "registry_entries": 24,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-baseline.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-registry-probe.txt": "39951c571010ebce452e5c14902c46bdff4d6d163b426bf3066e9395157005c0",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/metric-defined-dynamic-symbols.txt": "599daf66f208e7929a234db26b14838d909627adddc34cd1ed850d0dfdd1cc58"
+      }
+    },
+    "linear_source_isolation": {
+      "status": "passed",
+      "gpu_execution": false,
+      "registry_entries": 3,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/linear-registry-baseline.txt": "ff530317415f03fafaa546ef508d8ccec55f5d300a4b42b0fb708b68e60d01fd",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/linear-registry-probe.txt": "ff530317415f03fafaa546ef508d8ccec55f5d300a4b42b0fb708b68e60d01fd",
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/linear-defined-dynamic-symbols.txt": "28e38395638294e0f7467ce49291076d963d240e4ab5367c00602204022c3c8e"
+      }
+    },
+    "sampling_rng_alignment": {
+      "status": "passed",
+      "gpu_execution": false,
+      "cases": 10005,
+      "files": {
+        "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/sampling-rng-alignment.txt": "918099a29222fdb9b4e2c25ff8dc75f10c22537f7a5a7af6188a3ce889a05b1d"
+      }
+    },
+    "log_sha256": "bf89100f283cb8705582d27781aa9697e1618f895d8ced9956843a82f9432f0f",
+    "build_record_sha256": "18a7a54904d640cde7f0358bd3800deb3e58f0e79b098ca94a43c07ab0894de8",
+    "library_sha256": "3cf2b94af820751be5f1a7ba9fafac768936fafdae0e124c3da670b2e39616a6",
+    "binaries": {
+      "numerical": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_numerical_contracts",
+        "sha256": "9089c0bb9ffae1420bb08ee6cd9a111b35f6bf0d74ad3ff3b66f088d0e6a8b0f"
+      },
+      "aft": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_aft_contracts",
+        "sha256": "f15c52b67ff6915109d01fc00786ae28105fb985d5d6954c151c1a321c850d26"
+      },
+      "rng": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_rng_contracts",
+        "sha256": "ce5a0aa414d808a2c27ec6f99295aa15ef4ff00acac2e223ac2808176ce6f2d7"
+      },
+      "math": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_math_contracts",
+        "sha256": "08c5f24ae6b8beca85b49d11866b40cfa3b496a11d9fe3e976ccd198d934ad4c"
+      },
+      "ranking": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_ranking_contracts",
+        "sha256": "6c8fdb86a1736037448c401ec39eb508d7653a456c059f3b67bb2e5fb226bc95"
+      },
+      "metric": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_metric_contracts",
+        "sha256": "705f33cf75f2afad3647edcbcacd32e1ffe861c482cedf8ec7448293c9d8b7b3"
+      },
+      "linear": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_linear_contracts",
+        "sha256": "4e8485ec14b7cc2cb6e878b8ae196eac5e40f6cd24a2d7381a0ce740fbc416a6"
+      },
+      "auc": {
+        "path": "/__w/xgb-mps/xgb-mps/results/cuda-comparison-build/cmake/cuda_auc_contracts",
+        "sha256": "bd44d76ce6c3c279705d83eec1efef965556faca08c22f3235220cebc247593e"
+      }
+    },
+    "scope": "Includes grouped PR consumer and Metal-only AUC capacity source follow-up; no CUDA or MPS kernel execution in this CI gate"
   },
   "limits": [
     "No NVIDIA runtime equivalence established.",
