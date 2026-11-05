@@ -56,7 +56,8 @@ compilation. The new metric runner preserves all 375 records, including math,
 label and empty-input checks; eight undefined label casts remain Metal-only
 guards. In [run 42092645863](https://github.com/mmaaz-git/xgb-mps/actions/runs/42092645863),
 compilation and linking completed, but the host isolation check could not load
-`libnvcomp.so.5`. The harness loader fix is awaiting CI verification.
+`libnvcomp.so.5`. The harness loader fix and stump extension are being checked in
+[run 42100004279](https://github.com/mmaaz-git/xgb-mps/actions/runs/42100004279).
 The root/stump extension preserves all 405 existing cases and 11,964,810 gradient
 pairs; its Metal export and independent reference checks pass. Its CUDA consumer
 records production stump weights separately from diagnostic sums; compilation

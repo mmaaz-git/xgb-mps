@@ -41,5 +41,12 @@
   "limits": [
     "This is a test-harness loader fix; production source/library unchanged.",
     "No NVIDIA kernel execution; metric source isolation still requires the real CI job."
-  ]
+  ],
+  "ci_verification": {
+    "status": "in_progress",
+    "gpu_execution": false,
+    "run_id": 42100004279,
+    "head": "b5ad541fb7f239f3f49537256765d7795e607f6a",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42100004279"
+  }
 }

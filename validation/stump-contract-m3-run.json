@@ -194,10 +194,11 @@
     "gpu_execution": false
   },
   "cuda_compile": {
-    "status": "not_run",
+    "status": "in_progress",
     "gpu_execution": false,
-    "previous_run": 42092645863,
-    "previous_run_includes_stumps": false
+    "run_id": 42100004279,
+    "head": "b5ad541fb7f239f3f49537256765d7795e607f6a",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42100004279"
   },
   "cuda_runtime": {
     "status": "not_run",
@@ -210,5 +211,6 @@
     "Original native corpus and tolerances unchanged; these bounds are not a universal theorem for every CUDA reduction architecture.",
     "Integer root/leaf/cache sums, current CUDA-derived sampling, linear updates and broader training combinations remain separate.",
     "Only the Apple M3 was used; the synthetic tests and C++ codec do not constitute GPU evidence."
-  ]
+  ],
+  "harness_commit": "4b389b151b9c9a9f8e88f0e0bcecd794bda51049"
 }
