@@ -32,6 +32,10 @@ on:
       - "tests/cuda_integer_leaf_contracts.cuh"
       - "tests/integer_cache_contract_io.h"
       - "tests/cuda_integer_cache_contracts.cuh"
+      - "tests/linear_contract_io.h"
+      - "tests/cuda_linear_contracts.cu"
+      - "tests/cuda_linear_source.h"
+      - "tests/linear_registry_probe.h"
       - "tests/metric_contract_io.h"
       - "tests/cuda_metric_source.h"
       - "tests/cuda_metric_contracts.cu"
@@ -71,6 +75,10 @@ on:
       - "tests/cuda_integer_leaf_contracts.cuh"
       - "tests/integer_cache_contract_io.h"
       - "tests/cuda_integer_cache_contracts.cuh"
+      - "tests/linear_contract_io.h"
+      - "tests/cuda_linear_contracts.cu"
+      - "tests/cuda_linear_source.h"
+      - "tests/linear_registry_probe.h"
       - "tests/metric_contract_io.h"
       - "tests/cuda_metric_source.h"
       - "tests/cuda_metric_contracts.cu"
@@ -126,6 +134,9 @@ jobs:
             results/cuda-comparison-build/metric-registry-baseline.txt
             results/cuda-comparison-build/metric-registry-probe.txt
             results/cuda-comparison-build/metric-defined-dynamic-symbols.txt
+            results/cuda-comparison-build/linear-registry-baseline.txt
+            results/cuda-comparison-build/linear-registry-probe.txt
+            results/cuda-comparison-build/linear-defined-dynamic-symbols.txt
             results/cuda-comparison-build/sampling-rng-alignment.txt
             results/cuda-comparison-build/cmake/compile_commands.json
             results/cuda-comparison-build/cmake/CMakeCache.txt

@@ -1,0 +1,923 @@
+{
+  "status": "Full Metal linear corpus, independent reference/input checks, codec and integrity tests passed; CUDA compilation and execution pending",
+  "suite": "linear-v1",
+  "recorded_utc": "2026-11-05T21:32:31.558814+00:00",
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "production_tree": "704337528464e553a76670a0abb6a87ad1a94fdf",
+  "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16,
+    "os": "macOS 26.6.2"
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T210006Z",
+    "revision": "d66b5c58ac70d05f8768d92aeef9a6c99ef3fa4c",
+    "working_tree": "M tests/metal_linear_api.cc\n?? tests/linear_contract_io.h",
+    "diff_sha256": "ab4fd668c4ff625ed15ad11298d24b108ca22989dca75558e862636358f675c6",
+    "manifest_sha256": "235f5386b1caf21e92332bda615e14667780aa65ece6df3b0235887ad2a77b33",
+    "untracked_sha256": {
+      "tests/linear_contract_io.h": "063bd696f2877490a380db234f118c80ec25361f3b93562d4cb3582afd8f179f"
+    },
+    "native_groups": [
+      "metal_linear_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.7707694170530885
+      },
+      {
+        "name": "compile-metal_linear_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_linear_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_linear_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_linear_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.4782347499858588
+      },
+      {
+        "name": "metal_linear_api",
+        "command": [
+          "results/metal_linear_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_linear_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.5548629579134285
+      }
+    ],
+    "library_sha256": "23782d0d5882a2d5813414400268b849d7439ee52e30c5b44c547dd70853af90",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T21:00:09.934303+00:00"
+  },
+  "native_source_proof": {
+    "status": "native exporter source matches successful normal/export run",
+    "base_revision": "d66b5c58ac70d05f8768d92aeef9a6c99ef3fa4c",
+    "native_diff_sha256": "ab4fd668c4ff625ed15ad11298d24b108ca22989dca75558e862636358f675c6",
+    "source_sha256": {
+      "tests/metal_linear_api.cc": "122012f28d1a9982fd92a5c42819d17e892d4eaf46208a933801d88553dd462a",
+      "tests/linear_contract_io.h": "063bd696f2877490a380db234f118c80ec25361f3b93562d4cb3582afd8f179f",
+      "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895"
+    },
+    "log": "results/verify2-linear.log",
+    "no_cuda_execution": true,
+    "files": {
+      "results/verify2-linear.inputs.bin": 659188184,
+      "results/verify2-linear.metal.bin": 1252328684
+    }
+  },
+  "export_run": {
+    "status": "passed",
+    "command": [
+      "results/metal_linear_api_test",
+      "--report-prefix",
+      "results/verify2-linear"
+    ],
+    "environment": {
+      "MTL_DEBUG_LAYER": "1"
+    },
+    "log": "results/verify2-linear.log"
+  },
+  "counts": {
+    "records": 56,
+    "actions": 893,
+    "input_fp32_words": 160652408,
+    "input_state_fp32_words": 148277148,
+    "original_backing_fp32_words": 8237830,
+    "csc_entries": 4137430,
+    "actual_metal_sum_fields": 3570,
+    "actual_metal_residual_fields_including_guards": 148280662,
+    "planned_cuda_residual_fields": 123567316,
+    "duplicate_residual_exclusions": 123,
+    "unsafe_rejection_exclusions": 3,
+    "original_counted_cases": 49,
+    "extra_cases": 7,
+    "original_source_pairs": 4118809,
+    "original_sum_fields": 3564,
+    "original_exact_or_nonfinite_sum_fields": 2991,
+    "original_residual_checks": 148277125,
+    "metal_copy_guard_fields": 3528,
+    "cuda_copy_guard_fields": 3036,
+    "planned_common_actual_fields": 123570886
+  },
+  "artifacts": {
+    "inputs": {
+      "path": "validation/linear-contract-inputs-m3.bin.xz",
+      "bytes": 51223864,
+      "sha256": "f4d04c9c46f087af52afe251d990bd8083dcc192520b250914b5fba892ea5972",
+      "raw_bytes": 659188184,
+      "raw_sha256": "8f25c600a8ff304df6def17cbb939f4588e6792e5003b1e6ce895ed0d5a50afd",
+      "compression": "xz;64MiB dictionary"
+    },
+    "metal": {
+      "path": "validation/linear-contract-metal-m3.bin.xz",
+      "bytes": 62933600,
+      "sha256": "403a6c2b6b851881c5592fce9602f42c0760905a64f691fe13af596a2997dc8c",
+      "raw_bytes": 1252328684,
+      "raw_sha256": "0377d139f9366b0d8b7c441468a1e241d11d17c2c87d704319db51e0fef92521",
+      "compression": "xz;64MiB dictionary"
+    }
+  },
+  "full_input_validation": {
+    "status": "passed",
+    "input_matching": "Every original/CSC/action-state bit matches between input-only and Metal files",
+    "input_sha256": "8f25c600a8ff304df6def17cbb939f4588e6792e5003b1e6ce895ed0d5a50afd",
+    "metal_sha256": "0377d139f9366b0d8b7c441468a1e241d11d17c2c87d704319db51e0fef92521",
+    "counts": {
+      "records": 56,
+      "actions": 893,
+      "input_fp32_words": 160652408,
+      "input_state_fp32_words": 148277148,
+      "original_backing_fp32_words": 8237830,
+      "csc_entries": 4137430,
+      "actual_metal_sum_fields": 3570,
+      "actual_metal_residual_fields_including_guards": 148280662,
+      "planned_cuda_residual_fields": 123567316,
+      "duplicate_residual_exclusions": 123,
+      "unsafe_rejection_exclusions": 3,
+      "original_counted_cases": 49,
+      "extra_cases": 7,
+      "original_source_pairs": 4118809,
+      "original_sum_fields": 3564,
+      "original_exact_or_nonfinite_sum_fields": 2991,
+      "original_residual_checks": 148277125,
+      "metal_copy_guard_fields": 3528,
+      "cuda_copy_guard_fields": 3036,
+      "planned_common_actual_fields": 123570886
+    },
+    "cuda_execution": false
+  },
+  "independent_reference": {
+    "status": "passed",
+    "records": 56,
+    "actions": 893,
+    "sum_fields": 3570,
+    "exact_or_nonfinite_sum_fields": 2997,
+    "max_forward_error_fraction": 0.09877172024237874,
+    "log": "results/verify2-linear-comparator.log",
+    "source_inputs": "Exact original MT19937 values, CSC layout/duplicates, original backing/guards and explicit action input states",
+    "gradients": "Sequential binary64 reference of FP32 source terms; original exact dyadic lattice/nonfinite rules or gamma_d bound, d=8 per recursive256 level",
+    "residuals": "Original FP32 (h*delta)*x then GradientPair addition; exact finite bits and NaN classification; zero bias skip versus zero feature arithmetic",
+    "input_states": "Reconstructed from the original source sequence, including serial duplicate updates; shared CUDA action inputs match every bit"
+  },
+  "source_sha256": {
+    "tests/metal_linear_api.cc": "122012f28d1a9982fd92a5c42819d17e892d4eaf46208a933801d88553dd462a",
+    "tests/linear_contract_io.h": "063bd696f2877490a380db234f118c80ec25361f3b93562d4cb3582afd8f179f",
+    "tests/ranking_rounding_io.h": "b185840178a877b5562ec975f64e1076d2e39197908f5bd0ef7337bcbd74b895",
+    "tests/cuda_linear_contracts.cu": "6f6551ca9f6069e1ecb97e59319fdb4818b51b704ee6d9193cce8410a872159f",
+    "tests/cuda_linear_source.h": "7c0c3b31723db540527c2339fb20bd8a2b25c8bc51f773a7a978327cb7ccd73f",
+    "tests/linear_registry_probe.h": "29eaf61bc5a8603385e9e14888cdeca8557c6bccc30722775f9410f5dd249569",
+    "scripts/compare_linear_contracts.py": "097e2e93e9a2e666b10b6174a45043eec96c868bcffb298a592befd857b96039",
+    "tests/test_linear_contract_reports.py": "e02ec450feb940047e76c904f62e9b1bee2f0ca46aec436dea9425ceae276d8f",
+    "tests/test_cuda_metric_build.py": "03c342b00086bc5c50d3c93a4ad98ed692d1c2e4617d842d452d0736d9a03da2",
+    "scripts/build_cuda_comparison.py": "43dc16ede624ca3e93b3e662ea72eab8ca718d141165080a3d9417167a825db3",
+    "tests/cuda_comparison/CMakeLists.txt": "b85f1a1efff98af37ed54f24c4a87a26ca35c27aa7c9d7167f8fd2e7333f6ef9",
+    "tests/cuda_numerical_contracts.cu": "cc6495173c5821a26bc7cc63dc7cbddfe970cdd82be941162f287a58d0b2c633",
+    ".github/workflows/cuda-compile.yml": "bc60fbdb9d23b070a0eb4f915488f734b7bc5e14dc02dd0fe98a0a2519df5d3d",
+    "xgboost/src/linear/updater_gpu_coordinate.cu": "2b3a08697a2de7da87893888223267992699b7b29370612e1df14b142ca69ba8",
+    "xgboost/src/linear/coordinate_common.h": "c06f1e66b4dbc686323ca856289d09d8a517ff5551550369e5b0e30f4dc080b3",
+    "xgboost/src/linear/param.h": "58e9cb990ff8a114cb3d417b2a2b1b4ef1f37a3d425aa566f0c1b04c32a43f30",
+    "xgboost/include/xgboost/linear_updater.h": "281014d85e1328ba99a5d6336da0e24db3fcdb4159ae1ec199d8eee1ff1ab424"
+  },
+  "log_sha256": {
+    "results/verify2-linear.log": "54967b58678ad1be1a12bf58f42ea13fd5c658fcb20282622a6af90f5310c1a0",
+    "results/verify2-linear-native/summary.json": "2331a81775a601b16ba8621d49515c1cda17ad8173aecf7a72f2531843df8957",
+    "results/verify2-linear-native-source.json": "60d2fbf6a4c358510611158e1b157a1e947618a1472b4adfee542be7c90bf89c",
+    "results/verify2-linear-comparator.log": "7e607c67c5a0553f6cacf4404bbe390037fac21a78ffb261383ecbd9a80a80cb",
+    "results/verify2-linear-input-checks.json": "ebfc427cf847d695c431a7e46b830c1c8078bebe16a2fb6f1709ac664b6f7905",
+    "results/verify2-linear-codec.log": "52ab5a0f34a73ac21e0c8c7b8f0ba00a56405d2b1d5bd30dc03720871db3a9c6",
+    "results/verify2-linear-codec.json": "39f25a739f235b8589049470fdc44c9b592bbc2b5b3361bcdc5459d9edad6919",
+    "results/verify2-linear-final-tests.log": "bab5f74a3d27cf67d3184e07362b2e6ac5e4234dc0618c0ec6c7952e6a37b9c1",
+    "results/verify2-linear-report-tests.log": "9ce826c0af4776ede6ce36ddd6141c78ab8be1a9ab7020cf9c3d802acdf71104",
+    "results/verify2-linear-report-tests-final.log": "b72a658a9e79529f91fd1a362712c0b31af897de90fa05b9ad5cc2f8b4f7aa7e",
+    "results/verify2-linear-packaging.log": "aea9682878fcffebbc33fe691331dee69341610e4d8beb0255a9403577793993",
+    "results/run-verify2-linear-codec.py": "2c9dc745a7f7f5e200d1975b44fb3a85138f9f1a6579e698e236038a4ca7fb8e",
+    "results/verify2-linear-io.cc": "067e1f45dcb596da660b04623843ac792c40ebc7cc6e2e33f0d394ede5301051",
+    "results/package-verify2-linear.py": "c34e60da493409c1c7e755e154af6d5c60de677c8d1b9e994ee30c16ec415676"
+  },
+  "integrity_tests": {
+    "status": "passed",
+    "count": 20,
+    "log": "results/verify2-linear-final-tests.log",
+    "gpu_execution": false
+  },
+  "build_driver_tests": {
+    "status": "passed",
+    "count": 11,
+    "inputs_hashed": 67,
+    "binaries": 7,
+    "log": "results/verify2-linear-final-tests.log",
+    "scope": "Mocked lifecycle/source/registry/symbol/loader/RNG gates; not compilation",
+    "gpu_execution": false
+  },
+  "development_check": {
+    "initial_log": "results/verify2-linear-report-tests.log",
+    "initial_result": "30passed/1failed: test compared an mmap object with bytes instead of comparing its contents",
+    "fix": "Compare bytes in the small synthetic compression test; no comparator or numerical-policy change",
+    "final_log": "results/verify2-linear-final-tests.log",
+    "final_result": "31passed"
+  },
+  "codec_check": {
+    "status": "passed",
+    "cases": 56,
+    "steps": 893,
+    "roundtrip": "byte-exact",
+    "input_sha256": "8f25c600a8ff304df6def17cbb939f4588e6792e5003b1e6ce895ed0d5a50afd",
+    "observations_rejected_before_output_creation": true,
+    "gpu_execution": false
+  },
+  "cuda_compile": {
+    "status": "not_started",
+    "gpu_execution": false,
+    "reason": "Leaf/cache compiler run42108648407 passed; this linear batch awaits its first compiler run"
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "results/cuda-comparison-build/cmake/cuda_linear_contracts results/linear-inputs.bin results/linear-cuda.bin"
+  },
+  "domain_exclusions": [
+    {
+      "case": 12,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 12,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 12,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 13,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 13,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 13,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 14,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 14,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 14,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 15,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 15,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 15,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 16,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 16,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 16,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 17,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 17,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 17,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 18,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 18,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 18,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 19,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 19,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 19,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 20,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 20,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 20,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 21,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 21,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 21,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 22,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 22,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 22,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 23,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 23,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 23,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 24,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 24,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 24,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 25,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 25,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 25,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 26,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 26,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 26,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 27,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 27,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 27,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 28,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 28,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 28,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 29,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 29,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 29,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 30,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 30,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 30,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 31,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 31,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 31,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 32,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 32,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 32,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 33,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 33,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 33,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 34,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 34,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 34,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 35,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 35,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 35,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 36,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 36,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 36,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 37,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 37,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 37,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 38,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 38,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 38,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 39,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 39,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 39,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 40,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 40,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 40,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 41,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 41,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 41,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 42,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 42,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 42,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 43,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 43,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 43,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 44,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 44,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 44,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 45,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 45,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 45,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 46,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 46,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 46,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 47,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 47,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 47,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 48,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 48,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 48,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 49,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 49,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 49,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 50,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 50,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 50,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 51,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 51,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 51,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 52,
+      "step": 3,
+      "domain": 1
+    },
+    {
+      "case": 52,
+      "step": 9,
+      "domain": 1
+    },
+    {
+      "case": 52,
+      "step": 15,
+      "domain": 1
+    },
+    {
+      "case": 53,
+      "step": 0,
+      "domain": 2
+    },
+    {
+      "case": 54,
+      "step": 0,
+      "domain": 2
+    },
+    {
+      "case": 55,
+      "step": 0,
+      "domain": 2
+    }
+  ],
+  "limits": [
+    "No NVIDIA execution; the CUDA consumer is not compiler-validated yet.",
+    "Actual vendored GPUCoordinateUpdater method bodies are included with private unregistered registry entries and hidden visibility. A member-pointer adapter initializes/readbacks owned state without changing the source class or access specifiers.",
+    "Each operation loads its explicit source input state through original UpdateGpair. This is not LazyInitDevice, the full updater/selector loop, or a continuous CUDA update sequence.",
+    "123 duplicate-column residual actions remain CUDA exclusions; their gradient reductions run. Three unsafe rejection calls remain Metal guards and CUDA exclusions. No successful CUDA rejection observations are fabricated.",
+    "Empty primitive calls receive explicit well-formed storage; no claim is made for the full updater empty-input early return.",
+    "Original reduction bounds are retained, not universal CUB architecture guarantees. CUDA association and NVCC contraction differences require actual execution and review.",
+    "Reports preserve original checks and additionally expose copy guards and edge-case fields, including two previously unchecked Hessian diagnostics.",
+    "Only Apple M3 execution. Full linear updater/selector comparisons and broader caller combinations remain necessary."
+  ]
+}

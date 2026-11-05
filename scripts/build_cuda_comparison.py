@@ -31,6 +31,10 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "tests/sampling_contract_io.h", "tests/cuda_sampling_contracts.cuh",
           "tests/integer_leaf_contract_io.h", "tests/cuda_integer_leaf_contracts.cuh",
           "tests/integer_cache_contract_io.h", "tests/cuda_integer_cache_contracts.cuh",
+          "tests/linear_contract_io.h", "tests/cuda_linear_contracts.cu",
+          "tests/cuda_linear_source.h", "tests/linear_registry_probe.h",
+          "xgboost/src/linear/updater_gpu_coordinate.cu", "xgboost/src/linear/coordinate_common.h",
+          "xgboost/src/linear/param.h", "xgboost/include/xgboost/linear_updater.h",
           "xgboost/src/tree/gpu_hist/histogram.cu", "xgboost/src/tree/gpu_hist/histogram.cuh",
           "xgboost/src/tree/gpu_hist/feature_groups.cu", "xgboost/src/tree/gpu_hist/feature_groups.cuh",
           "xgboost/src/data/ellpack_page.cu", "xgboost/src/data/ellpack_page.cuh",
@@ -159,7 +163,7 @@ def main():
         binary = output / "cmake/cuda_numerical_contracts"
         binaries = {name: {"path": str(output / f"cmake/cuda_{name}_contracts"),
                            "sha256": sha(output / f"cmake/cuda_{name}_contracts")}
-                    for name in ("numerical", "aft", "rng", "math", "ranking", "metric")}
+                    for name in ("numerical", "aft", "rng", "math", "ranking", "metric", "linear")}
         # Host-only checks, runnable on compiler CI without NVIDIA hardware.
         # Verify both the real registry and dynamic symbol boundary: the metric
         # probe must neither register alternate factories nor interpose bodies.
@@ -191,6 +195,23 @@ def main():
             "registry_entries": len(baseline.splitlines()),
             "files": {str(path): sha(path) for path in (baseline_path, probe_path, symbols_path)}}
         print("PASS host metric registry/factory identity and hidden source definitions; no GPU execution", flush=True)
+        linear_paths = (output/"linear-registry-baseline.txt", output/"linear-registry-probe.txt",
+                        output/"linear-defined-dynamic-symbols.txt")
+        linear_baseline = capture([binaries["numerical"]["path"], "--linear-registry"], linear_paths[0])
+        linear_probe = capture([binaries["linear"]["path"], "--linear-registry"], linear_paths[1])
+        if linear_baseline != linear_probe or not any(line.startswith("gpu_coord_descent ") for line in linear_baseline.splitlines()):
+            raise ValueError("Linear probe changed/omitted registered names or factory types")
+        linear_symbols = capture(["nm", "-D", "--defined-only", "-C", binaries["linear"]["path"]], linear_paths[2])
+        linear_names = [re.sub(r"^\s*(?:[0-9a-fA-F]+\s+)?[A-Za-z?]\s+", "", line)
+                        for line in linear_symbols.splitlines()]
+        linear_definition = r"^(?:(?:non-virtual|virtual) thunk to |(?:typeinfo(?: name)?|vtable|VTT) for |guard variable for )?xgboost::linear::"
+        if any(re.match(linear_definition, name) for name in linear_names):
+            raise ValueError("Linear source probe exports production linear definitions")
+        record["linear_source_isolation"] = {
+            "status": "passed", "gpu_execution": False,
+            "registry_entries": len(linear_baseline.splitlines()),
+            "files": {str(path): sha(path) for path in linear_paths}}
+        print("PASS host linear registry/factory identity and hidden source definitions; no GPU execution", flush=True)
         rng_path = output / "sampling-rng-alignment.txt"
         rng_check = capture([binaries["numerical"]["path"], "--sampling-rng"], rng_path)
         if rng_check.strip() != "PASS sampling MT19937 row-seed alignment: 10005 cases; no GPU execution":
@@ -234,6 +255,8 @@ def main():
                 "results/integer-leaf-inputs.bin", str(output / "cuda-integer-leaf-observations.bin")]), flush=True)
         print("Integer cache runtime command:", shlex.join([binaries["numerical"]["path"], "--integer-cache",
                 "results/integer-cache-inputs.bin", str(output / "cuda-integer-cache-observations.bin")]), flush=True)
+        print("Linear runtime command:", shlex.join([binaries["linear"]["path"],
+                "results/linear-inputs.bin", str(output / "cuda-linear-observations.bin")]), flush=True)
     except Exception as error:
         record.update(status="failed", error=str(error))
         raise

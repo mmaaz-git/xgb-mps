@@ -12,10 +12,11 @@ rounding boundary corpora. The numerical executable also has a **P5-N07** mode
 for the complete statistics API corpus, a separate linear-algebra mode, and a
 root/stump mode preserving all 405 existing reduction cases, and a sampling
 mode preserving the complete current CUDA-derived sampling corpus.
-The integer leaf mode retains every original page and weight check.
+The integer leaf and cache modes retain every original page, weight and lifecycle check.
 A sixth executable covers the complete metric-term/reduction corpus, including
 its previously uncounted math, label and empty-input checks.
-The other six numerical contracts and
+A seventh executable adds the full linear operation corpus, extending
+**training-reduction-association** coverage. The other five numerical contracts and
 broader caller/integration comparisons remain work;
 these harnesses are not a full parity certificate.
 
@@ -843,8 +844,9 @@ Both native modes and all exported Metal checks pass, alongside 18 report tests
 and six mocked build-driver tests. The updated CUDA-domain status policy
 reproduces both earlier Metal/input exports byte for byte. C++ input round trips
 are exact, and observation files are rejected as CUDA inputs. These checks are
-not NVIDIA execution evidence. Neither the CUDA compiler gate nor actual NVIDIA
-runtime comparison has completed for this metric extension.
+not NVIDIA execution evidence. The CUDA compiler/link and host isolation gates
+passed in [run 42100004279](https://github.com/mmaaz-git/xgb-mps/actions/runs/42100004279);
+actual NVIDIA runtime comparison remains pending.
 
 ```sh
 bash scripts/test.sh --native metal_metric_api
@@ -936,7 +938,7 @@ The [run record](../validation/sampling-contract-m3-run.json) contains exact
 source, input, observation and log hashes. The original Metal checks pass in
 ordinary and export modes. All **19,522,746 observation words** pass their
 reference checks, and 19 synthetic report-integrity tests pass. CUDA compilation
-and NVIDIA execution are pending.
+and host checks passed in run42103889374; NVIDIA execution remains pending.
 
 CUDA constructs the actual `GradientQuantiserGroup`, quantizes with
 `CalcQuantizedGpairs`, and calls `cuda_impl::Sampler::Sample` and `ApplySampling`.
@@ -1013,7 +1015,9 @@ the original test but absent from its printed 250-case counter. There are
 **256 records**, with three undefined CUDA conversions explicitly excluded.
 The [record](../validation/integer-leaf-contract-m3-run.json) links the inputs,
 Metal outputs and exact provenance. Both native modes, 15 synthetic report
-tests and the C++ input round trip pass. CUDA compilation/execution are pending.
+tests and the C++ input round trip pass. CUDA compilation/linking passed in
+[run 42108648407](https://github.com/mmaaz-git/xgb-mps/actions/runs/42108648407);
+NVIDIA execution remains pending.
 
 CUDA builds the actual original `GradientQuantiserGroup`, calls `LeafGradSum`
 for every page into one persistent integer matrix, and obtains all five weight
@@ -1063,6 +1067,13 @@ bash scripts/test.sh --native metal_integer_leaf_api
 MTL_DEBUG_LAYER=1 results/metal_integer_leaf_api_test --report-prefix results/new-integer-leaf
 python3 scripts/compare_integer_leaf_contracts.py validate-metal results/new-integer-leaf.metal.bin
 ```
+
+Preserve runtime `.json` metadata, logs and compiler `build.json`. The `XGBILF1\0`
+format checks fixed case identities, full source/sample backing storage,
+backend-specific statuses, observations/references, `ILFE` plus the count and
+exact EOF. CUDA accepts input-only records. Comparison exits 1 for malformed
+evidence or reference failures and 2 for required review, including the three
+exclusions even when all common-domain outputs agree.
 
 ## Integer histogram-cache lifecycle
 
@@ -1117,13 +1128,81 @@ python3 scripts/compare_integer_cache_contracts.py validate-metal results/new-in
 ```
 
 Both Metal modes, the independent checker, 16 synthetic report tests and the C++
-input round trip pass. CUDA compilation and execution remain pending. This is a
+input round trip pass. CUDA compilation/linking passed in run42108648407;
+NVIDIA execution remains pending. This is a
 single-worker API replay; it does not validate the full external-memory scheduler
 or establish complete training-reduction parity.
 
-Preserve runtime `.json` metadata, logs and compiler `build.json`. The `XGBILF1\0`
-format checks fixed case identities, full source/sample backing storage,
-backend-specific statuses, observations/references, `ILFE` plus the count and
-exact EOF. CUDA accepts input-only records. Comparison exits 1 for malformed
-evidence or reference failures and 2 for required review, including the three
-exclusions even when all common-domain outputs agree.
+## Linear coordinate reductions and residuals
+
+The `cuda_linear_contracts` executable retains the complete existing
+`metal_linear_api.cc` corpus: 49 main cases, four exceptional cases and three
+rejection guards, for **56 records / 893 actions**. This includes the million-row
+case, zero rows, multiple groups, negative Hessians, duplicate CSC row IDs,
+subnormals, large and nonfinite values, and the original source/entry/copy guards.
+The [record](../validation/linear-contract-m3-run.json) links the full artifacts
+and their source hashes.
+
+The normal and export Metal runs retain the original counts: 4,118,809 source
+pairs, 3,564 checked sum fields (2,991 exact/nonfinite) and 148,277,125 residual
+checks. The reports additionally serialize the previously uncounted edge cases,
+copy guards, the order fixture's Hessian and the overflow fixture's Hessian:
+3,570 sum fields and 148,280,662 residual/copy fields. The independent checker
+reconstructs every original input, including the seeded MT19937 sequence and
+duplicate CSC entries. It validates each supplied action state, source terms,
+FP32 reduction bound and residual expression. Original finite residual bits and
+NaN classification remain unchanged; no tolerance is widened.
+
+CUDA invokes `GPUCoordinateUpdater::GetBiasGradient`, `GetGradient`,
+`UpdateBiasResidual` and `UpdateResidual` from the actual vendored source.
+Its class and method bodies are unchanged. A test-only member-pointer adapter
+initializes its private CSC/gradient storage and calls the original
+`UpdateGpair` upload. Registry expressions populate unregistered test entries;
+hidden visibility prevents production symbol replacement. Compiler CI checks
+the actual registered names/factory types against a baseline executable and
+rejects exported production linear definitions. These are host checks, not GPU
+execution evidence.
+
+This is an **operation replay**, not an execution of `LazyInitDevice`, the full
+updater/selector loop or a continuous CUDA update sequence. Each action loads
+its supplied input state. Those states preserve the original test's CPU
+reference sequence and are independently reconstructed by the comparator.
+This adaptation is necessary to compare defined operations following the
+original corpus's duplicate-column updates: CUDA's concurrent duplicate writes
+race, while Metal supports serial duplicate runs. The 123 affected residual
+updates are explicit CUDA exclusions; their preceding gradient reductions still
+execute. The three unsafe row/feature guards are Metal rejection observations
+and CUDA exclusions, never fabricated successful CUDA rejections. Empty states
+exercise well-formed zero-length primitive calls, not the updater constructor's
+empty-input early-return path.
+
+There are 123,570,886 planned common actual fields: 3,570 sums and 123,567,316
+residual/copy fields. Comparison returns 1 for malformed data or failed checks
+and 2 for required domain/difference review, even if every common output matches.
+NaN payload and zero-sign bit differences remain visible despite the native
+classification/numeric rules.
+
+```sh
+python3 scripts/compare_linear_contracts.py unpack \
+  validation/linear-contract-inputs-m3.bin.xz results/linear-inputs.bin
+results/cuda-comparison-build/cmake/cuda_linear_contracts \
+  results/linear-inputs.bin results/linear-cuda.bin
+python3 scripts/compare_linear_contracts.py compare \
+  validation/linear-contract-metal-m3.bin.xz results/linear-cuda.bin \
+  --output results/linear-comparison.json
+```
+
+To export again, use new paths. The full input and Metal files require about
+1.9 GB before compression; the checker memory-maps uncompressed files.
+
+```sh
+bash scripts/test.sh --native metal_linear_api
+MTL_DEBUG_LAYER=1 results/metal_linear_api_test --report-prefix results/new-linear
+python3 scripts/compare_linear_contracts.py validate-metal results/new-linear.metal.bin
+```
+
+Metal execution, the independent checker, 20 report-integrity tests and the full
+C++ input round trip pass. CUDA compilation/execution and full updater/selector
+comparisons remain pending. Primitive association bounds are not universal CUB
+architecture guarantees; preserve concrete failures for review alongside the
+separate compiler/contraction contract.

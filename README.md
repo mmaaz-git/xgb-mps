@@ -42,42 +42,26 @@ pointers and categorical state on GPU; subsequent work adds numerical witnesses.
 Next: finish the comparison harnesses and run them on NVIDIA.** Full parity
 remains unproven.
 
-The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) address eleven of the
-seventeen numerical contracts: quantile/sketch behavior, survival objectives,
-RNG and column sampling, primitive math, ranking rounding/gradients/bias, and
-statistics reductions and means, linear algebra, and metric terms/reductions.
-Ranking replay now includes all **4,038 calls** from the existing gradient and
-repeated unbiased-objective suites, plus the separate primitive rounding boundary
-corpus. Linear-algebra replay preserves all 258 existing cases plus two empty
-operations; three Metal-only guard cases are explicitly outside CUDA's domain.
-Metal observations are published with exact input bits and unchanged numerical
-tolerances. Ranking primitive, statistics and linalg replays passed CUDA
-compilation. The new metric runner preserves all 375 records, including math,
-label and empty-input checks; eight undefined label casts remain Metal-only
-guards. In [run 42092645863](https://github.com/mmaaz-git/xgb-mps/actions/runs/42092645863),
-compilation and linking completed, but the host isolation check could not load
-`libnvcomp.so.5`. The harness loader fix, host metric isolation checks and stump
-extension passed in [run 42100004279](https://github.com/mmaaz-git/xgb-mps/actions/runs/42100004279).
-The root/stump extension preserves all 405 existing cases and 11,964,810 gradient
-pairs; its Metal export and independent reference checks pass. Its CUDA consumer
-records production stump weights separately from diagnostic sums; NVIDIA
-execution remains pending.
-The sampling extension now preserves all 199 current CUDA-derived sampling
-records, including 54 calls across persistent sampler lifetimes. Its Metal
-observations and reference checks pass; eight undefined CUDA conversion cases
-are explicit exclusions. Its [CUDA build](https://github.com/mmaaz-git/xgb-mps/actions/runs/42103889374)
-passed, including the 10,005-case host RNG check; NVIDIA execution remains pending. See
-the [sampling record](validation/sampling-contract-m3-run.json).
-The integer leaf and histogram-cache extensions preserve all 256 leaf records
-and 48 cache cases, including paged cancellation, growth, subtraction and tree
-reuse. Metal outputs and independent reference checks pass; their CUDA
-compiler/runtime checks are pending. See the
-[leaf record](validation/integer-leaf-contract-m3-run.json) and
-[cache record](validation/integer-cache-contract-m3-run.json).
-Production pipeline comparisons also cover eight
-fixtures and full-size HIGGS quantile construction. Six contracts still lack
-dedicated runners, broader caller coverage remains, and **none of these runners
-has NVIDIA execution evidence yet**. Differences remain visible for review.
+| Validation stage | Current status |
+| --- | --- |
+| Local Metal/CPU acceptance | Passed for the audited implementation; details below |
+| CUDA compilation | [Latest completed run passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42108648407), including leaf/cache comparisons; the new linear comparison program awaits compilation |
+| CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
+| Performance | Mixed; the latest full HIGGS run is slower on MPS |
+
+The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) address twelve of the
+seventeen numerical contracts, with saved Metal observations, exact shared inputs
+and explicit numerical limits. This is test coverage, not a completion percentage.
+The latest [linear replay](validation/linear-contract-m3-run.json) preserves 56
+records and 893 actions; its Metal and independent reference checks pass.
+
+Remaining work is to add dedicated comparisons for PR/ROC/ranking metrics, SHAP
+and compiler arithmetic behavior; extend caller coverage, including the full
+linear updater/selector; then execute the comparisons on NVIDIA and resolve the
+differences. Further performance tuning follows correctness. Detailed corpus
+counts, exclusions, failed attempts and corrected builds belong in the
+[comparison guide](docs/NVIDIA_COMPARISON.md) and
+[compiler record](validation/cuda-compile-ci-13.4.txt).
 
 `tree_method="exact"` is unsupported on MPS. For linear GPU training, use
 `booster="gblinear", updater="coord_descent"`; the default `shotgun` updater

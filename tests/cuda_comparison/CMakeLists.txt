@@ -21,7 +21,7 @@ if(XGB_USE_NVCOMP)
 endif()
 
 add_custom_target(cuda_comparison_objects)
-foreach(contract numerical aft rng math ranking metric)
+foreach(contract numerical aft rng math ranking metric linear)
   set(object cuda_${contract}_objects)
   set(binary cuda_${contract}_contracts)
   add_library(${object} OBJECT ../cuda_${contract}_contracts.cu)
@@ -35,7 +35,7 @@ foreach(contract numerical aft rng math ranking metric)
   target_compile_options(${object} PRIVATE
     --expt-extended-lambda --expt-relaxed-constexpr --default-stream=per-thread
     -Xfatbin=-compress-all)
-  if(contract STREQUAL "metric")
+  if(contract STREQUAL "metric" OR contract STREQUAL "linear")
     # Source policy/reducer probes must not interpose on the production library.
     target_compile_options(${object} PRIVATE
       -Xcompiler=-fvisibility=hidden -Xcompiler=-fvisibility-inlines-hidden)

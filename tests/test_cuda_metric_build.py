@@ -16,7 +16,7 @@ def build(tmp_path,monkeypatch):
     spec=importlib.util.spec_from_file_location("cuda_driver",ROOT/"scripts/build_cuda_comparison.py")
     driver=importlib.util.module_from_spec(spec); spec.loader.exec_module(driver)
     targets=re.search(r"foreach\(contract ([^)]+)\)",(ROOT/"tests/cuda_comparison/CMakeLists.txt").read_text()).group(1).split()
-    assert targets==["numerical","aft","rng","math","ranking","metric"]
+    assert targets==["numerical","aft","rng","math","ranking","metric","linear"]
     for name in driver.INPUTS:
         p=tmp_path/name; p.parent.mkdir(parents=True,exist_ok=True); p.write_bytes((ROOT/name).read_bytes())
     (tmp_path/"xgboost").mkdir(exist_ok=True)
@@ -41,8 +41,16 @@ def build(tmp_path,monkeypatch):
         if args[0]=="nm":
             # A CUB specialization mentioning a policy is not itself a metric
             # definition. Actual metric methods/vtables must remain hidden.
-            text="00000001 T xgboost::metric::EvalRowRMSE()\n" if state["bad"]=="symbols" else "00000001 W thrust::Kernel<xgboost::metric::EvalRowRMSE>()\n"
+            if args[-1].endswith('cuda_linear_contracts'):
+                text="00000001 T xgboost::linear::GPUCoordinateUpdater::UpdateResidual()\n" if state['bad']=='linear-symbols' else "00000001 W thrust::Kernel<xgboost::linear::GPUCoordinateUpdater>()\n"
+            else:
+                text="00000001 T xgboost::metric::EvalRowRMSE()\n" if state["bad"]=="symbols" else "00000001 W thrust::Kernel<xgboost::metric::EvalRowRMSE>()\n"
             return SimpleNamespace(stdout=text,stderr="",returncode=0)
+        if '--linear-registry' in args:
+            text='gpu_coord_descent factory_signature\n'
+            if state['bad']=='linear-registry' and args[0].endswith('cuda_linear_contracts'):
+                text='gpu_coord_descent changed_factory\n'
+            return SimpleNamespace(stdout=text,stderr='',returncode=0)
         if "--sampling-rng" in args:
             text = "partial check\n" if state["bad"] == "sampling-rng" else "PASS sampling MT19937 row-seed alignment: 10005 cases; no GPU execution\n"
             return SimpleNamespace(stdout=text,stderr="",returncode=0)
@@ -64,13 +72,17 @@ def build(tmp_path,monkeypatch):
     return run,state,tmp_path,output,driver
 
 
-def test_six_binaries_complete_hashes_and_host_only_isolation_gate(build):
+def test_seven_binaries_complete_hashes_and_host_only_isolation_gate(build):
     run,state,root,output,driver=build
     record=run("compile"); assert record["status"]=="passed-object-compile"
     assert not any("--metric-registry" in c for c in state["calls"])
     record=run("link")
     assert record["status"]=="passed-compile-link" and not record["gpu_execution"]
-    assert len(record["binaries"])==6 and len(record["inputs"])==59
+    assert len(record["binaries"])==7 and len(record["inputs"])==67
+    assert {'tests/linear_contract_io.h','tests/cuda_linear_contracts.cu','tests/cuda_linear_source.h',
+            'tests/linear_registry_probe.h','xgboost/src/linear/updater_gpu_coordinate.cu',
+            'xgboost/src/linear/coordinate_common.h','xgboost/src/linear/param.h',
+            'xgboost/include/xgboost/linear_updater.h'} <= set(record['inputs'])
     assert {'tests/integer_cache_contract_io.h','tests/cuda_integer_cache_contracts.cuh',
             'xgboost/src/tree/gpu_hist/histogram.cu','xgboost/src/tree/gpu_hist/histogram.cuh',
             'xgboost/src/tree/gpu_hist/feature_groups.cu','xgboost/src/tree/gpu_hist/feature_groups.cuh',
@@ -87,6 +99,9 @@ def test_six_binaries_complete_hashes_and_host_only_isolation_gate(build):
     assert isolation["status"]=="passed" and not isolation["gpu_execution"] and len(isolation["files"])==3
     assert sum("--metric-registry" in c for c in state["calls"])==2
     assert any(c[0]=="nm" for c in state["calls"])
+    isolation=record['linear_source_isolation']
+    assert isolation['status']=='passed' and not isolation['gpu_execution'] and len(isolation['files'])==3
+    assert sum('--linear-registry' in c for c in state['calls'])==2
     assert record['sampling_rng_alignment']['cases'] == 10005
     assert record['sampling_rng_alignment']['status'] == 'passed'
     assert not record['sampling_rng_alignment']['gpu_execution']
@@ -98,13 +113,16 @@ def test_six_binaries_complete_hashes_and_host_only_isolation_gate(build):
     cmake=(root/"tests/cuda_comparison/CMakeLists.txt").read_text()
     assert '-Xcompiler=-fvisibility=hidden -Xcompiler=-fvisibility-inlines-hidden' in cmake
     workflow=(ROOT/'.github/workflows/cuda-compile.yml').read_text()
-    for name in ('metric-registry-baseline.txt','metric-registry-probe.txt','metric-defined-dynamic-symbols.txt','sampling-rng-alignment.txt'):
+    for name in ('metric-registry-baseline.txt','metric-registry-probe.txt','metric-defined-dynamic-symbols.txt',
+                 'linear-registry-baseline.txt','linear-registry-probe.txt','linear-defined-dynamic-symbols.txt','sampling-rng-alignment.txt'):
         assert f'results/cuda-comparison-build/{name}' in workflow
 
 
 @pytest.mark.parametrize("bad,pattern",[("registry","registered names or factory"),("empty","registered names or factory"),
                                         ("symbols","exports production metric"),("source","changed after object"),
-                                        ("sampling-rng","Sampling RNG alignment check")])
+                                        ("sampling-rng","Sampling RNG alignment check"),
+                                        ("linear-registry","Linear probe changed/omitted"),
+                                        ("linear-symbols","exports production linear")])
 def test_isolation_and_source_mismatch_retain_failure(build,bad,pattern):
     run,state,root,output,driver=build
     run("compile"); state["bad"]=bad
