@@ -38,6 +38,7 @@ INPUTS = ("tests/numerical_contract_fixtures.h", "tests/numerical_contract_repor
           "xgboost/src/linear/param.h", "xgboost/include/xgboost/linear_updater.h",
           "tests/grouped_pr_contract_io.h", "tests/cuda_auc_contracts.cu",
           "tests/auc_contract_io.h", "tests/cuda_auc_replay.cuh",
+          "tests/grouped_roc_contract_io.h", "tests/cuda_grouped_roc_replay.cuh",
           "tests/auc_capture.cuh", "scripts/prepare_auc_probe.py",
           "xgboost/src/metric/auc.cu", "xgboost/src/metric/auc.h",
           "xgboost/src/tree/gpu_hist/histogram.cu", "xgboost/src/tree/gpu_hist/histogram.cuh",
@@ -288,6 +289,8 @@ def main():
                 "results/linear-inputs.bin", str(output / "cuda-linear-observations.bin")]), flush=True)
         print("Binary/multi-output AUC runtime command:", shlex.join([binaries["auc"]["path"], "--auc",
               "results/auc-inputs.bin", str(output/"cuda-auc-observations.bin")]), flush=True)
+        print("Grouped ROC runtime command:", shlex.join([binaries["auc"]["path"], "--grouped-roc",
+              "results/grouped-roc-inputs.bin", str(output/"cuda-grouped-roc-observations.bin")]), flush=True)
         print("Grouped PR runtime command:", shlex.join([binaries["auc"]["path"], "--grouped-pr",
                 "results/grouped-pr-inputs.bin", str(output / "cuda-grouped-pr-observations.bin")]), flush=True)
     except Exception as error:

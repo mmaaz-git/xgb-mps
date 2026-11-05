@@ -1371,3 +1371,73 @@ full parity. The CUDA metadata sidecar records hardware, compiler, CUDA and
 CCCL versions, observed guards and explicit packing adaptations. Keep it with
 the compiler evidence and observation file. Grouped ROC, ranking metrics and
 broader public callers remain separate work.
+
+
+## Grouped ROC AUC
+
+The complete grouped ROC corpus now has an exporter, independent report checker
+and CUDA replay using the original linked `cuda_impl::RankingAUC`. It retains
+**278 records**: the empty and overflow calls, one batch of **390 edge queries**,
+all **272 main cases**, and three million-row analytic cases. Original inputs,
+strided backing guards, per-query results, CPU observations and CPU overflow
+rejection remain visible. Every original assertion and the original
+`2e-12 * max(1, abs(reference))` limit remain unchanged.
+
+Both Metal modes pass under API validation. Independent reconstruction matches
+**7,727,003 input words**; the report checker validates **14,409 fields** without
+reference failures. The original native test enumerates **234,208,157 pairs**
+in its main corpus and **2,168,663 pairs** in the edge checks. The independent
+Python checker uses input-order pair comparisons, caching only byte-identical
+queries; it does not reuse Metal's merge/inversion algorithm. Finite pair sums
+are exact within this corpus's documented binary64 integer range. FP32 weight
+squares and half-products remain separate operations, including subnormal
+rounding; an ordinary 0.5 tie credit would be wrong for some witnesses.
+
+The common-domain adaptation follows two concrete source constraints:
+
+- In a mixed call, zero-pair queries (length 0 or 1) have no transform-output
+  write to their `d_auc` slot. The replay removes those queries before the
+  aggregate CUDA call. It keeps two-row queries, whose one pair writes zero.
+  This changes 273 records and removes 1,144 zero-pair groups. The original
+  Metal aggregates and per-query outputs remain recorded separately.
+- Every original query also executes alone: **2,567 isolated calls**, including
+  **1,514 queries shorter than three rows**. CUDA's all-invalid early return
+  makes these isolated calls well-defined. Their outputs are actual separate
+  calls, not invented internal observations from the combined CUDA call.
+- Each million-row query implies **500,002,500,003 pairs**, exceeding CUDA's
+  explicit `n_threads < INT32_MAX` guard. The replay invokes the real function
+  and requires that specific guard. It does not launch a quadratic scan, omit
+  the inputs or fabricate a successful CUDA AUC. Metal's three 64-bit analytic
+  results remain validated as an extension beyond CUDA's source limit.
+
+Negative and nonfinite query weights exercise the private implementation;
+public metadata validation rejects them. The checker preserves overflow/NaN
+classification and the source's `total_weight > 0` branch. All 24 report-integrity
+checks pass, including identical wrong synthetic GPU outputs, corrupted source
+bits/guards/CPU values and subnormal tie-credit witnesses. Fourteen mocked
+build-driver checks pass separately; neither is CUDA execution evidence.
+
+The actual C++ input reader/writer reproduces all 278 input records exactly;
+its packing transformation matches **6,363,747 words** independently selected in
+Python, including weight alignment after removing zero-pair groups. The
+[acceptance record](../validation/grouped-roc-contract-m3-run.json) links the
+[saved Metal observations](../validation/grouped-roc-contract-metal-m3.bin.xz)
+and records source/library hashes. CUDA compilation and NVIDIA runtime
+validation of this new replay are pending.
+
+```sh
+python3 scripts/compare_grouped_roc_contracts.py validate-metal \
+  validation/grouped-roc-contract-metal-m3.bin.xz
+python3 scripts/compare_grouped_roc_contracts.py unpack \
+  validation/grouped-roc-contract-metal-m3.bin.xz results/grouped-roc-inputs.bin
+# On NVIDIA, after building the comparison tools:
+results/cuda-comparison-build/cmake/cuda_auc_contracts --grouped-roc \
+  results/grouped-roc-inputs.bin results/grouped-roc-cuda.bin
+python3 scripts/compare_grouped_roc_contracts.py compare \
+  validation/grouped-roc-contract-metal-m3.bin.xz results/grouped-roc-cuda.bin \
+  --output results/grouped-roc-comparison.json
+```
+
+Use fresh output names. Comparison exits 1 for malformed data or reference
+failure and 2 for results requiring review. No NVIDIA run or full parity is
+claimed; ranking metrics and broader public metric callers remain separate work.

@@ -69,8 +69,12 @@ Metal export, independent reference checks and complete input round trip pass;
 [CUDA compilation is queued](https://github.com/mmaaz-git/xgb-mps/actions/runs/42125079498)
 and NVIDIA execution remains pending. [AUC evidence](validation/auc-contract-m3-run.json).
 
-Remaining work is to validate the new AUC replay on CUDA, complete grouped ROC,
-ranking-metric, SHAP and compiler arithmetic comparisons; extend caller coverage, including the full
+Grouped ROC now also preserves all 278 records, including its 390-query edge
+batch and million-row extensions. Local input/output and packing checks pass;
+CUDA compilation and execution remain pending. [Grouped ROC evidence](validation/grouped-roc-contract-m3-run.json).
+
+Remaining work is to validate the new AUC replays on CUDA, complete ranking-metric,
+SHAP and compiler arithmetic comparisons; extend caller coverage, including the full
 linear updater/selector; then execute the comparisons on NVIDIA and resolve the
 differences. Further performance tuning follows correctness. Detailed corpus
 counts, exclusions, failed attempts and corrected builds belong in the

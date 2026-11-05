@@ -19,6 +19,7 @@ void Cuda(cudaError_t code) {
   if (code!=cudaSuccess) throw std::runtime_error(cudaGetErrorString(code));
 }
 #include "cuda_auc_replay.cuh"
+#include "cuda_grouped_roc_replay.cuh"
 std::vector<double> Observe(Context const& ctx,std::vector<float> const& p,
                             std::vector<float> const& y,std::vector<std::uint32_t> const& ptr,
                             std::vector<float> const& weights) {
@@ -45,8 +46,9 @@ int main(int argc,char** argv) {
       return 0;
     }
     if (argc == 4 && std::string(argv[1]) == "--auc") return auc_replay::Run(argv[2], argv[3]);
+    if (argc == 4 && std::string(argv[1]) == "--grouped-roc") return grouped_roc_replay::Run(argv[2], argv[3]);
     gp::Require(argc==4 && std::string(argv[1])=="--grouped-pr",
-                "Usage: cuda_auc_contracts (--grouped-pr|--auc) input-only.bin new-cuda.bin");
+                "Usage: cuda_auc_contracts (--grouped-pr|--grouped-roc|--auc) input-only.bin new-cuda.bin");
     std::string metadata=std::string(argv[3])+".json";
     gp::Require(!std::filesystem::exists(metadata),"AUC metadata already exists");
     int count=0;Cuda(cudaGetDeviceCount(&count));gp::Require(count>0,"Actual NVIDIA GPU required");

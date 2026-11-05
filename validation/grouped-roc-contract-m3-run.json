@@ -1,0 +1,206 @@
+{
+  "status": "Complete grouped ROC Metal corpus and local reference/codec checks passed; CUDA compilation and NVIDIA runtime pending",
+  "suite": "grouped-roc-v1",
+  "recorded_utc": "2026-11-05T23:02:41.773246+00:00",
+  "production_source_commit": "41d4dc26cc23bf58357e59f986cbbf7aec0e2864",
+  "production_tree": "145fdffbc52f59354bed55b96d184d9e50c23ff4",
+  "hardware": {
+    "device": "Apple M3",
+    "gpu_cores": 10,
+    "memory_gib": 16
+  },
+  "native_run": {
+    "status": "passed",
+    "started_utc": "20261105T225712Z",
+    "revision": "d6b73bdba520424a38ef91e2656d13dc5ca4e25d",
+    "working_tree": "M tests/cuda_auc_contracts.cu\n M tests/metal_ranking_roc_api.cc\n?? tests/cuda_grouped_roc_replay.cuh\n?? tests/grouped_roc_contract_io.h",
+    "diff_sha256": "398cd1068e4ff797a4508835d3eb57c769d7502341fae71e6a0525a2d6598513",
+    "manifest_sha256": "075bb5f9021f1d26c6601ee9e04ae464b81926f4699a6d6484c42db19adf9cf7",
+    "untracked_sha256": {
+      "tests/cuda_grouped_roc_replay.cuh": "1fefe1f87592e8c9f54b9b6e5f7f342ac4e4763d389c73b578b072d260e7b1fd",
+      "tests/grouped_roc_contract_io.h": "6efef8d6649324b96dda79c2fe651d412c8003265f6808da8e5c0a827abd2413"
+    },
+    "native_groups": [
+      "metal_ranking_roc_api"
+    ],
+    "python_selection": [],
+    "steps": [
+      {
+        "name": "build-metal",
+        "command": [
+          "bash",
+          "scripts/build.sh"
+        ],
+        "environment": {},
+        "log": "001-build-metal.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 0.6625464160460979
+      },
+      {
+        "name": "compile-metal_ranking_roc_api",
+        "command": [
+          "clang++",
+          "-O2",
+          "-std=c++17",
+          "-ffp-contract=off",
+          "-DDMLC_CORE_USE_CMAKE",
+          "-DDMLC_LOG_CUSTOMIZE=1",
+          "-DXGBOOST_USE_METAL=1",
+          "-I",
+          "xgboost/include",
+          "-I",
+          "xgboost/dmlc-core/include",
+          "-I",
+          "build-metal/dmlc-core/include",
+          "-Xpreprocessor",
+          "-fopenmp",
+          "-I",
+          "/opt/homebrew/opt/libomp/include",
+          "tests/metal_ranking_roc_api.cc",
+          "-L",
+          "xgboost/lib",
+          "-lxgboost",
+          "-L",
+          "/opt/homebrew/opt/libomp/lib",
+          "-lomp",
+          "-Wl,-rpath,/Users/maaz/Documents/xgb-mps/xgboost/lib",
+          "-o",
+          "results/metal_ranking_roc_api_test"
+        ],
+        "environment": {},
+        "log": "002-compile-metal_ranking_roc_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.55642129201442
+      },
+      {
+        "name": "metal_ranking_roc_api",
+        "command": [
+          "results/metal_ranking_roc_api_test"
+        ],
+        "environment": {
+          "MTL_DEBUG_LAYER": "1"
+        },
+        "log": "003-metal_ranking_roc_api.log",
+        "status": "passed",
+        "exit_code": 0,
+        "seconds": 1.5795484578702599
+      }
+    ],
+    "library_sha256": "71517892c338586cb0da4e4fcad3ae18b1335a1b0f424e5ad982837b8abb48ca",
+    "exit_code": 0,
+    "finished_utc": "2026-11-05T22:57:16.110344+00:00"
+  },
+  "source_hashes": {
+    "tests/metal_ranking_roc_api.cc": "a0613623c4d60d7fdf31faab5df520d4150f3f366f2d0c0f25318bc3de0cc0a2",
+    "tests/grouped_roc_contract_io.h": "6efef8d6649324b96dda79c2fe651d412c8003265f6808da8e5c0a827abd2413",
+    "tests/cuda_grouped_roc_replay.cuh": "1fefe1f87592e8c9f54b9b6e5f7f342ac4e4763d389c73b578b072d260e7b1fd",
+    "tests/cuda_auc_contracts.cu": "3c3bdfde8947a1d2c83ff16182eaf2110fe47ba50f7ec0a6da7baf632dd8a2e5",
+    "scripts/compare_grouped_roc_contracts.py": "71b7b9cbb6b62f338e1936b515e70b465857e525395d70ba01c73427a9185848",
+    "tests/test_grouped_roc_contract_reports.py": "e7a63903445c4d8c1b6154c0d3031a3d77007c390615897e2428042aabd7aae0",
+    "scripts/build_cuda_comparison.py": "53cba2494c802697c1a6ea38b6e718784da78b690fad00a2a188c15be0296a71",
+    "tests/test_cuda_metric_build.py": "5a262cdf2bf39e42d717567e8f66e2ec5177b2ee657224912b536f0a136e93ef"
+  },
+  "independent_reference": {
+    "cases": 278,
+    "input_words": 7727003,
+    "checked_fields": 14409,
+    "isolated_queries": 2567,
+    "isolated_short_queries": 1514,
+    "adapted_records": 273,
+    "removed_zero_pair_groups": 1144,
+    "logical_reference_pairs": 236376820,
+    "unique_reference_queries": 880,
+    "observed_cuda_pair_guards": 0,
+    "reference_failures": []
+  },
+  "artifacts": {
+    "status": "passed",
+    "artifact": {
+      "path": "validation/grouped-roc-contract-metal-m3.bin.xz",
+      "bytes": 1028548,
+      "sha256": "90ecef5131ecf86fad19f540fa51b48d36ec0183347586b2e557e6e03b024d03",
+      "raw_bytes": 31033316,
+      "raw_sha256": "4a1dccf509ed5f836cd39aab85142b1b68700fb4b7a80daf563a503739525011"
+    },
+    "input_only": {
+      "bytes": 30915820,
+      "sha256": "42b0c6efe087ced936208f574f0affeec7b2f9f5b1c66a6ac669f1ea9ad2aa0d"
+    },
+    "codec": {
+      "cases": 278,
+      "exact_roundtrip": true,
+      "exact_compact_inputs": true,
+      "compact_input_words": 6363747
+    }
+  },
+  "codec_negative_controls": [
+    {
+      "case": "observations",
+      "exit_code": 1,
+      "error": "Requires complete input-only grouped ROC corpus"
+    },
+    {
+      "case": "truncated",
+      "exit_code": 1,
+      "error": "ios_base::clear: unspecified iostream_category error"
+    },
+    {
+      "case": "identity",
+      "exit_code": 1,
+      "error": "Wrong grouped ROC identity/order"
+    }
+  ],
+  "corpus": {
+    "records": 278,
+    "main_records": 272,
+    "main_rows": 161680,
+    "main_native_enumerated_pairs": 234208157,
+    "edge_queries": 390,
+    "edge_rows": 19110,
+    "edge_native_enumerated_pairs": 2168663,
+    "million_row_cases": 3,
+    "pairs_per_million_row_case": 500002500003,
+    "common_combined_calls": 275,
+    "isolated_query_calls": 2567,
+    "isolated_short_queries": 1514,
+    "planned_actual_cuda_pair_guards": 3
+  },
+  "report_integrity_tests": {
+    "status": "passed",
+    "count": 24,
+    "gpu_execution": false
+  },
+  "mocked_build_tests": {
+    "status": "passed",
+    "count": 14,
+    "gpu_execution": false
+  },
+  "logs": {
+    "results/grouped-roc-export.log": "1b3de9ce241a84c594018dd892f6afdbdf4b50d3a71e85f69e18cd6d6fe62387",
+    "results/grouped-roc-full.validation.log": "8fd50b6fbc2cab00ab530cbc815ff397b7efc3e2483000dca2797514861109a2",
+    "results/grouped-roc-helper-tests.log": "69762302f362cbb0d8656320bf6fcc1db858c2b5f3e36b6d51ecfbdbaa94635e",
+    "results/grouped-roc-package.log": "eb7da0840766ed7af54957bfd2a6bf705890fee84b831a1fa5923da93da866ac",
+    "results/verify-package-grouped-roc.py": "41c74fb7666d1e8bb90d522eb45f7676a81db78ccb21398502ffdaea39366579",
+    "results/run-grouped-roc-export.sh": "06208bb51b8e3e1a8839b7fa452259997b588e7ddb03736b26969fbee9785f6a",
+    "results/grouped-roc-codec.cc": "3b5111c3938deebef622c4909bbfaab9c536a150c6d1ec1e1ed8b78bd018c46a"
+  },
+  "cuda_compile": {
+    "status": "not_run_for_new_grouped_ROC_replay",
+    "gpu_execution": false
+  },
+  "cuda_runtime": {
+    "status": "not_run",
+    "command": "cuda_auc_contracts --grouped-roc input-only.bin new-cuda.bin"
+  },
+  "limits": [
+    "No NVIDIA execution or CUDA compiler pass for this new consumer yet.",
+    "Original linked RankingAUC executes: no source copy or reconstructed successful outputs.",
+    "Mixed CUDA calls remove only length0/1 queries, which have unwritten aggregate slots when valid queries are present. Length2 queries retain their source branch.",
+    "Every original query also runs alone, including empty/singleton/two-row queries, using the source all-invalid early return. These are separate calls, not private aggregate diagnostics.",
+    "Million-row Metal analytic results remain; the actual CUDA functions must reject those inputs with the int32 pair-count guard.",
+    "Independent pair counting retains FP32 weight-square and half-product rounding, including underflow, overflow and NaN classification. Original 2e-12*max(1,abs(reference)) limit retained.",
+    "Only M3 local evidence. P5-N10 compiler/runtime validation and broader public caller combinations remain; this is not full CUDA parity."
+  ]
+}

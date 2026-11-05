@@ -14,6 +14,7 @@
 #include "../xgboost/src/common/metal_auc.h"
 #include "../xgboost/src/common/metal_histogram.h"
 #include "xgboost/context.h"
+#include "grouped_roc_contract_io.h"
 
 namespace xgboost::metric {
 double GroupRankingROC(Context const*, common::Span<float const>, linalg::VectorView<float const>,
@@ -24,6 +25,7 @@ using common::Span;
 std::string current;
 size_t cases = 0, checked_rows = 0;
 uint64_t enumerated_pairs = 0;
+std::unique_ptr<grouped_roc::Exporter> report;
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
@@ -56,6 +58,43 @@ double PairReference(std::vector<float> const& scores, std::vector<float> const&
   // metric/auc.cu::RankingAUC writes zero unless the scanned pair weight is >0.
   // This differs from CPU for NaN query weights (private API only).
   return total > 0 ? area / total : 0;
+}
+
+void Record(std::vector<float> const& p, std::vector<float> const& y,
+            std::vector<bst_group_t> const& ptr, std::vector<float> const& weights,
+            common::metal::RankingAUCSums result,
+            std::vector<common::metal::RankingAUCSums> const& guards = {},
+            std::vector<double> const& cpu = {}, bool cpu_rejected = false) {
+  if (!report) return;
+  namespace gr = grouped_roc;
+  gr::Input in{report->NextSpec(), ptr, p, y, weights};
+  gr::Observation out;
+  out.original = {result.area, result.valid_groups};
+  out.cpu = cpu; out.cpu_overflow_rejected = cpu_rejected;
+  for (auto value : guards) {
+    out.per_query_guards.push_back(value.area); out.per_query_guards.push_back(value.valid_groups);
+  }
+  if (in.spec.family != gr::kLarge) {
+    auto compact = gr::Compact(in);
+    auto combined = common::metal::RankingROCAUC(linalg::MakeVec(compact.predictions),
+        linalg::MakeVec(compact.labels), compact.ptr, compact.weights);
+    Close(combined.area, result.area); Close(combined.valid_groups, result.valid_groups);
+    out.common = {combined.area, combined.valid_groups};
+    // Every original query is also observed alone, including empty/singleton
+    // queries: CUDA's all-invalid early return makes those calls well-defined.
+    for (unsigned g = 0; g < in.spec.groups; ++g) {
+      std::vector<float> gp, gy, gw;
+      for (unsigned row = ptr[g]; row < ptr[g + 1]; ++row) {
+        gp.push_back(p[gr::Offset(in.spec) + row * gr::Stride(in.spec)]);
+        gy.push_back(y[gr::Offset(in.spec) + row * gr::Stride(in.spec)]);
+      }
+      if (!weights.empty()) gw.push_back(weights[g]);
+      auto single = common::metal::RankingROCAUC(linalg::MakeVec(gp), linalg::MakeVec(gy),
+          std::vector<bst_group_t>{0, unsigned(gp.size())}, gw);
+      out.isolated.push_back(single.area); out.isolated.push_back(single.valid_groups);
+    }
+  }
+  report->Add(in, out);
 }
 
 void Case(size_t n, int layout, int mode) {
@@ -119,6 +158,7 @@ void Case(size_t n, int layout, int mode) {
   Context cpu;
   cpu.Init({{"device", "cpu"}, {"nthread", "2"}});
   double sum = 0, valid = 0;
+  std::vector<double> observed_cpu;
   for (size_t g = 0; g + 1 < groups.size(); ++g) {
     size_t count = groups[g + 1] - groups[g];
     if (count < 3) {
@@ -133,6 +173,7 @@ void Case(size_t n, int layout, int mode) {
     }
     float w = weights.empty() ? 1 : weights[g];
     auto expected = metric::GroupRankingROC(&cpu, p, linalg::MakeVec(y), w);
+    if (report) observed_cpu.push_back(expected);
     Close(individual[g].area, expected);
     Close(individual[g].area, PairReference(p, y, w));
     Close(individual[g].valid_groups, 1);
@@ -141,6 +182,7 @@ void Case(size_t n, int layout, int mode) {
   }
   Close(result.area, sum);
   Close(result.valid_groups, valid);
+  Record(storage_p, storage_y, groups, weights, result, output, observed_cpu);
   ++cases;
   checked_rows += rows;
   if (cases % 30 == 0) {
@@ -162,6 +204,7 @@ void LargeAnalytic() {
                                                linalg::MakeVec(labels), groups, {});
     Close(result.area, mode == 0 ? 0 : (mode == 1 ? 1 : 0.5));
     Close(result.valid_groups, 1);
+    Record(predictions, labels, groups, {}, result);
     std::printf("PASS million-row analytic case %d: %llu implied pairs, 64-bit counts\n", mode,
                 (unsigned long long)(uint64_t(n) * (n - 1) / 2));
     std::fflush(stdout);
@@ -176,6 +219,7 @@ void CudaEdgeContracts() {
                                             std::vector<bst_group_t>{0}, {});
   Close(empty.area, 0);
   Close(empty.valid_groups, 0);
+  Record({}, {}, {0}, {}, empty);
   std::vector<float> p{0, 1, 2}, y{0, 1, 2}, w{1e30f};
   std::vector<bst_group_t> groups{0, 3};
   Context cpu;
@@ -190,6 +234,7 @@ void CudaEdgeContracts() {
   auto result = common::metal::RankingROCAUC(linalg::MakeVec(p), linalg::MakeVec(y), groups, w);
   Close(result.area, PairReference(p, y, w[0]));
   Close(result.valid_groups, 1);
+  Record(p, y, groups, w, result, {}, {}, cpu_error);
 
   // Many queries in one command exercise the source weight branch, independently
   // enumerated FP32 pair terms, exceptional predictions, stable label ties and
@@ -255,6 +300,7 @@ void CudaEdgeContracts() {
   }
   Close(result.area, expected_sum);
   Close(result.valid_groups, expected_valid);
+  Record(predictions, labels, offsets, weights, result, guarded);
   std::printf(
       "PASS %zu CUDA grouped ROC edge queries / %zu rows / %llu enumerated pairs; "
       "NaN/overflow/underflow weights, "
@@ -263,8 +309,9 @@ void CudaEdgeContracts() {
   enumerated_pairs = previous_pairs;
 }
 
-int main() {
+int main(int argc, char** argv) {
   try {
+    report = grouped_roc::ReportOption(argc, argv);
     CudaEdgeContracts();
     for (size_t n : {0, 1, 2, 3, 31, 256, 257, 1025})
       for (int layout = 0; layout < 3; ++layout)
@@ -276,6 +323,7 @@ int main() {
         "PASS %zu native grouped ROC cases / %zu rows / %llu independently enumerated pairs, plus "
         "3 million-row analytic cases and CUDA empty/overflow checks\n",
         cases, checked_rows, (unsigned long long)enumerated_pairs);
+    if (report) report->Finish();
     return 0;
   } catch (std::exception const& error) {
     std::fprintf(stderr, "FAIL %s: %s\n", current.c_str(), error.what());

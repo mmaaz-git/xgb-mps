@@ -203,7 +203,7 @@ its contract until actual NVIDIA results have been reviewed.
 | --- | --- | --- |
 | 1 | P5-N04/05: ranking rounding, gradients and unbiased updates | Full low-level, public-objective and primitive-boundary exports/replays added. Complete outstanding CUDA compiler gates, then execute all three modes on NVIDIA and review differences. |
 | 2 | P5-N07 and training-reduction-association | Full statistics, linalg, metric, root/stump, current CUDA-derived sampling, integer leaf/cache and linear operation corpora added; complete outstanding compiler/runtime gates. Full linear updater/selector and broader caller comparisons remain separate. |
-| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Complete grouped PR corpus exported and locally checked; CUDA build passed, runtime pending. Binary/multi-output PR/ROC export, CUDA replay and local validation added; new replay compilation pending. Next: grouped ROC, then ranking metrics. Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
+| 3 | P5-N09/10/11: PR, ROC and ranking metrics | Complete grouped PR corpus exported and locally checked; CUDA build passed, runtime pending. Binary/multi-output PR/ROC export, CUDA replay and local validation added; new replay compilation pending. Grouped ROC replay also has complete local acceptance; compiler/runtime gates remain. Next: ranking metrics. Retain pathological inputs, fallback branches, top-k/soft labels and prefix/IDCG diagnostics; distinguish common valid CUDA inputs from Metal extensions |
 | 4 | training-shap-order | Same models/inputs through actual prediction consumers; retain cross-tree accumulation differences |
 | Across all batches | P5-N12: compiler and contraction behavior | Record and inspect emitted CUDA behavior and matching runtime results; primitive tests or compiler flags alone do not close this contract |
 
@@ -258,8 +258,18 @@ replay compares captured results with separate original linked-library calls;
 compiler and NVIDIA runtime validation are pending. The 21 report-integrity
 checks retain original bounds and explicit empty/invalid API distinctions.
 See the [AUC record](../validation/auc-contract-m3-run.json). P5-N09 still requires
-those gates before changing the comparison-coverage count; grouped ROC and
-ranking-metric comparisons follow next.
+those gates before changing the comparison-coverage count.
+
+The grouped ROC extension retains all 278 records: the 390-query edge batch,
+272 main cases and three million-row analytic calls, plus empty/overflow calls.
+Both Metal modes, exact input/packing round trips and 24 report-integrity tests
+pass. CUDA invokes the original linked `RankingAUC`, with explicit zero-pair
+query removal for mixed calls, actual isolated calls for every original query,
+and actual source pair-count guards for million-row inputs. Compiler/runtime
+gates remain; this does not close P5-N10. See the
+[grouped ROC record](../validation/grouped-roc-contract-m3-run.json). Continue
+with the full ranking-metric corpus, retaining top-k/soft-label and IDCG/prefix
+diagnostics before addressing SHAP and compiler behavior.
 
 PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
 Freeze the accepted source and workload parameters; inspect prior outputs before
