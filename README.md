@@ -45,8 +45,9 @@ quantization and leaf accumulation. Two new native groups pass 8.8 million exact
 checks around that boundary; a complete 65,536-target vector tree also matches CPU
 and analytic predictions. [Capacity evidence](validation/output-capacity-m3-run.json).
 The full native and Python regression also passes at `41d4dc2`.
-**Next: finish comparison harnesses and run them on NVIDIA.** Full parity remains
-unproven.
+**Next: execute the existing comparisons on NVIDIA and fix observed mismatches.**
+No NVIDIA runtime host is configured. M3 performance work can proceed while that
+evidence remains unavailable; full parity stays unproven.
 
 | Validation stage | Current status |
 | --- | --- |

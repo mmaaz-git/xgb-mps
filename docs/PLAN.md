@@ -4,6 +4,28 @@ Updated 2026-11-05 after the [caller/numerical audit](CUDA_AUDIT.md).
 The bounded audit is complete; the user resumed feature development. This is the work queue;
 chronological progress logs are not a second plan.
 
+## Immediate execution order
+
+The audited implementation queue and local acceptance are complete. Current
+work must distinguish a demonstrated missing/defective Metal operation from
+additional verification depth. Full CUDA parity remains unproven.
+
+1. Finish the already-running CUDA compiler checks and fix concrete failures.
+2. Execute the existing comparison programs on an actual NVIDIA host before
+   expanding their scope. No NVIDIA runtime host is currently configured.
+   Use observed mismatches and the operation inventory to choose the next fix
+   or required coverage addition; no automatic sequence of more private-function
+   replay harnesses. Remaining contracts/callers are still open requirements.
+3. While that hardware is unavailable, use the existing M3 benchmark evidence to
+   profile a measured bottleneck and improve performance without changing the
+   CUDA-defined algorithms or weakening correctness checks. This does not close
+   the outstanding NVIDIA verification requirement.
+
+The unfinished ranking-cache comparison is preserved locally on
+`wip/ranking-cache-comparison` at `c157fb6`, outside main. Its Metal export passes,
+but its independent checker and CUDA compilation are unfinished. Do not count
+it as accepted coverage or resume it automatically ahead of the order above.
+
 ## Target and completion claims
 
 Port CUDA-accelerated operations in the **vendored XGBoost 3.4.2 snapshot**
@@ -70,8 +92,9 @@ separately without production changes. [CUDA run
 
 The ranking sort/score batch now preserves all 1,031 existing native cases and
 passes local export, independent reference, codec and integrity checks. Its CUDA
-compilation is pending. Next ranking work is the full label/cache-generation,
+compilation is pending. Remaining ranking coverage includes label/cache-generation,
 public metric state/lifetime and plan corpora; this batch does not close P5-N11.
+Schedule additions under the immediate execution order above.
 See the [ranking comparison scope](NVIDIA_COMPARISON.md#ranking-metric-sort-and-score-corpus).
 
 VERIFY-2 needs an actual NVIDIA runner. The [native harness](NVIDIA_COMPARISON.md)
@@ -273,9 +296,9 @@ pass. CUDA invokes the original linked `RankingAUC`, with explicit zero-pair
 query removal for mixed calls, actual isolated calls for every original query,
 and actual source pair-count guards for million-row inputs. Compiler/runtime
 gates remain; this does not close P5-N10. See the
-[grouped ROC record](../validation/grouped-roc-contract-m3-run.json). Continue
-with the full ranking-metric corpus, retaining top-k/soft-label and IDCG/prefix
-diagnostics before addressing SHAP and compiler behavior.
+[grouped ROC record](../validation/grouped-roc-contract-m3-run.json). Remaining
+ranking-metric, SHAP and compiler behavior comparisons must follow the immediate
+execution order above; this historical batch list is not an automatic work queue.
 
 PERF-1 can now proceed on the M3 while external NVIDIA evidence is unavailable.
 Freeze the accepted source and workload parameters; inspect prior outputs before
