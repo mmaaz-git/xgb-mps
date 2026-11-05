@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate complete observation files and compare the 21 shared witness inputs.
+"""Validate complete v1/v2 observation files and compare shared witness inputs.
 
 Exit 0: files are valid and the compared outputs match on these inputs only.
 Exit 2: numerical/read-order differences were recorded and require review.
@@ -16,6 +16,16 @@ import sys
 SCALES = (0, -149, 100)
 ROWS = {"weighted_cdf": (3, 257), "raw_prefix": (3, 261, 513),
         "reverse_unique": (9,), "repair": (9,)}
+
+
+def case_rows(suite):
+    return ROWS | ({"weighted_threshold": (2,)} if suite == "numerical-v2" else {})
+
+
+def iterations(backend, name):
+    if name == "weighted_threshold":
+        return 6  # Three neighboring alphas, each in forward/reversed input order.
+    return 32 if backend == "cuda" and name == "repair" else 1
 
 
 class ReportError(ValueError):
@@ -49,13 +59,15 @@ def load_report(path):
             "Missing metadata/schema version")
     backend = metadata.get("backend")
     require(backend in ("metal", "cuda"), "Unknown backend")
+    suite = metadata.get("fixture_suite", "numerical-v1")
+    require(suite in ("numerical-v1", "numerical-v2"), "Unknown fixture suite")
     require(summary.get("kind") == "summary" and summary.get("status") == "completed",
             "Missing successful completion record")
     require(type(summary.get("cases")) is int and summary["cases"] == len(lines)-2,
             "Summary count does not match the observations")
     expected = {(name, rows, exponent, iteration)
-                for name, sizes in ROWS.items() for rows in sizes for exponent in SCALES
-                for iteration in range(32 if backend == "cuda" and name == "repair" else 1)}
+                for name, sizes in case_rows(suite).items() for rows in sizes for exponent in SCALES
+                for iteration in range(iterations(backend, name))}
     cases = {}
     for case in lines[1:-1]:
         require(case.get("kind") == "case", "Unexpected non-case record")
@@ -65,7 +77,10 @@ def load_report(path):
         require(key in expected, f"Unexpected case {key}")
         require(key not in cases, f"Duplicate case {key}")
         name, rows, _, _ = key
-        if name == "weighted_cdf":
+        if name == "weighted_threshold":
+            inputs = {"values": (2, 32), "weights": (2, 32), "alpha": (1, 32)}
+            outputs = {"api_selected": (1, 32)}
+        elif name == "weighted_cdf":
             inputs = {"values": (rows, 32), "weights": (rows, 32)}
             outputs = {"cdf": (rows, 32), "selected": (1, 32), "api_selected": (1, 32)}
         elif name == "raw_prefix":
@@ -90,13 +105,15 @@ def load_report(path):
 def compare(metal, cuda):
     require(metal["metadata"]["backend"] == "metal" and cuda["metadata"]["backend"] == "cuda",
             "Expected Metal report followed by CUDA report")
+    suite = metal["metadata"].get("fixture_suite", "numerical-v1")
+    require(suite == cuda["metadata"].get("fixture_suite", "numerical-v1"), "Fixture suites differ")
     differences = []
     patterns = {}
     for key, observed in cuda["cases"].items():
-        base = key[:3] + (0,)
+        base = key[:3] + (0 if key[0] == "repair" else key[3],)
         reference = metal["cases"][base]
         require(observed["input"] == reference["input"], f"{key}: fixture inputs differ")
-        counts = patterns.setdefault(key[:3], Counter())
+        counts = patterns.setdefault(base, Counter())
         counts[json.dumps(observed["output"], sort_keys=True)] += 1
         changed = {}
         for field, actual in observed["output"].items():
@@ -105,6 +122,7 @@ def compare(metal, cuda):
             if not indices:
                 continue
             require(field != "ptr", f"{key}: structural column-pointer mismatch")
+            require(key[0] != "weighted_threshold", f"{key}: exact binary64 threshold contract mismatch")
             if field == "entries":
                 invariant = (2, 3) if key[0] == "repair" else (0, 3)
                 require(all(i % 4 not in invariant for i in indices),
@@ -119,13 +137,14 @@ def compare(metal, cuda):
                                 "P5-N14 scan association", "fields": changed})
     return {
         "status": "differences-require-review" if differences else "exact-on-these-inputs",
-        "scope": "P5-N08/13/14: 21 shared inputs only; not full CUDA parity",
+        "scope": ("P5-N01/08/13/14: 39 shared inputs only; not full CUDA parity" if suite == "numerical-v2" else
+                  "P5-N08/13/14: 21 shared inputs only; not full CUDA parity"),
         "metal": {k: v for k, v in metal.items() if k != "cases"},
         "cuda": {k: v for k, v in cuda.items() if k != "cases"},
         "input_cases": len(metal["cases"]), "cuda_executions": len(cuda["cases"]),
         "differing_executions": len(differences), "differences": differences,
         "repeat_observations": [
-            {"id": key[0], "rows": key[1], "exponent": key[2],
+            {"id": key[0], "rows": key[1], "exponent": key[2], "variant": key[3],
              "distinct_cuda_outputs": len(counts), "frequencies": sorted(counts.values(), reverse=True)}
             for key, counts in patterns.items()],
     }

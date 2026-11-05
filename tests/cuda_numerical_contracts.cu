@@ -1,4 +1,4 @@
-// NVIDIA execution of the shared P5-N08/13/14 witnesses. No Metal oracle is
+// NVIDIA execution of the shared P5-N01/08/13/14 witnesses. No Metal oracle is
 // substituted for CUDA. Order-dependent differences are observations for review.
 #include <cuda_runtime.h>
 #include <cub/version.cuh>
@@ -44,6 +44,22 @@ std::vector<SketchEntry> Entries(std::vector<fixture::Entry> const& values) {
   return result;
 }
 
+void Threshold(Context const* ctx, fixture::Report& report, int exponent, unsigned variant) {
+  auto q = fixture::MakeThreshold(exponent, variant);
+  dh::device_vector<float> values(q.values), weights(q.weights);
+  dh::device_vector<std::size_t> ptr(std::vector<std::size_t>{0, 2});
+  auto alpha = thrust::make_constant_iterator(q.alpha);
+  HostDeviceVector<float> result;
+  common::SegmentedWeightedQuantile(ctx, alpha, ptr.cbegin(), ptr.cend(), values.cbegin(),
+                                    values.cend(), weights.cbegin(), weights.cend(), &result);
+  auto const& selected = result.ConstHostVector();
+  Check(selected.size() == 1 && selected[0] == q.expected,
+        "CUDA binary64 threshold selected the wrong observation");
+  report.Case("weighted_threshold", 2, exponent, variant,
+              {{"values", fixture::FloatWords(q.values)}, {"weights", fixture::FloatWords(q.weights)},
+               {"alpha", fixture::FloatWords(&q.alpha, 1)}},
+              {{"api_selected", fixture::FloatWords(selected)}});
+}
 void Quantile(Context const* ctx, fixture::Report& report, unsigned rows, int exponent) {
   auto q = fixture::MakeQuantile(rows, exponent);
   dh::device_vector<float> values(q.values), weights(q.weights);
@@ -172,7 +188,7 @@ int main(int argc, char** argv) {
     auto ctx = Context{}.MakeCUDA(0);
     Check(ctx.Device().IsCUDA(), "XGBoost context is not CUDA");
     fixture::Report report(argv[1]);
-    report.Metadata({{"backend", "cuda"}, {"device", device.name},
+    report.Metadata({{"backend", "cuda"}, {"fixture_suite", "numerical-v2"}, {"device", device.name},
                      {"compute_capability", std::to_string(device.major)+"."+std::to_string(device.minor)},
                      {"driver", std::to_string(driver)}, {"runtime", std::to_string(runtime)},
                      {"cuda_headers", std::to_string(CUDART_VERSION)},
@@ -183,6 +199,7 @@ int main(int argc, char** argv) {
                      {"repair", "fresh Merge invokes FixError once; 32 repetitions per input"}});
     unsigned completed = 0;
     for (int exponent : {0, -149, 100}) {
+      for (unsigned variant = 0; variant < 6; ++variant) { Threshold(&ctx, report, exponent, variant); ++completed; }
       for (unsigned rows : {3u, 257u}) { Quantile(&ctx, report, rows, exponent); ++completed; }
       for (unsigned rows : {3u, 261u, 513u}) { Prefix(&ctx, report, rows, exponent); ++completed; }
       Summary(&ctx, report, exponent, false, 0); ++completed;

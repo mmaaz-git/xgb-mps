@@ -13,6 +13,21 @@ inline float Add(float a, float b) {
 struct Quantile {
   std::vector<float> values, weights, serial, regrouped;
 };
+struct Threshold {
+  std::vector<float> values, weights;
+  float alpha, expected;
+};
+inline Threshold MakeThreshold(int exponent, unsigned variant) {
+  // Two exactly summable weights isolate threshold precision from CDF order.
+  float s = std::ldexp(1.f, exponent), alpha = .1f;
+  unsigned level = variant / 2;
+  if (level == 0) alpha = std::nextafter(alpha, 0.f);
+  if (level == 2) alpha = std::nextafter(alpha, 1.f);
+  bool reverse = variant % 2;
+  return {reverse ? std::vector<float>{1, 0} : std::vector<float>{0, 1},
+          reverse ? std::vector<float>{9*s, s} : std::vector<float>{s, 9*s},
+          alpha, level == 0 ? 0.f : 1.f};
+}
 inline Quantile MakeQuantile(unsigned rows, int exponent) {
   float small = std::ldexp(1.f, exponent), large = std::ldexp(0x1p24f, exponent);
   Quantile q;

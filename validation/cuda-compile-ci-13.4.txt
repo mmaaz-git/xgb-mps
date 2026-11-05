@@ -93,3 +93,20 @@ VERIFY-1 final shared-source compile validation:
   All 197 compilation/link steps completed, with the final shared library linked.
   Prior run 42024506701 at a9960f2 was cancelled, not a compiler failure.
   This completes the local VERIFY-1 compiler gate; no NVIDIA kernel was executed.
+
+VERIFY-2 first consumer build (terminal failure, not a runtime result):
+  cd9a3fccd77fe7b40d599b63f32e04a23da7b051: 42039959199, failure,
+    completed 2026-11-05T14:20:32Z.
+    https://github.com/mmaaz-git/xgb-mps/actions/runs/42039959199
+  The first numerical harness object compiled successfully, and all 197
+  production compile/link steps completed. Final executable linking failed:
+  libnvcomp.so.5 was not found in the consumer linker's search path, causing
+  unresolved nvcompBatchedSnappy* references from libxgboost.so.
+  The ownership failure from 42033438919 did not recur.
+  Artifact cuda-compile-evidence, local log: results/cuda-compile-42039959199/results/cuda-compile-ci.log
+  Log SHA256: 844fe1617badf65c681715c000bdf1a390c2e678ba8032e9571f3e0f00dc0d0d
+  Build record: results/cuda-compile-42039959199/results/cuda-comparison-build/build.json
+  Fix 34b7d06 imports the same nvCOMP package in the consumer and adds an early
+  compile/link dependency check. Its actual remote validation is pending.
+  No NVIDIA kernel was executed; this failed consumer build does not replace
+  the earlier successful shared-library compiler gate with a runtime claim.

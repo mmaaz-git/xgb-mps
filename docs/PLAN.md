@@ -48,7 +48,7 @@ classification.
 | PORT-10 | GPU numeric split thresholds | Locally complete at `30639c6`; CUDA compile passed at `bf1ebea` | Resident cuts feed GPU threshold selection and category handling; 1,624 exact threshold cases, 103 native groups, 3,647 Python passes and CPU checks; [evidence](../validation/cuda-port10-m3.txt) |
 | PORT-11 | GPU sketch initialization | Locally complete at `68c800e`; CUDA compile passed at `bf1ebea` | GPU type reduction, owned snapshot and pointer clear; 72 new constructor/lifetime cases, 103 native groups, 3,647 Python passes, CPU checks and 14 federated groups; [evidence](../validation/cuda-port11-m3.txt) |
 | VERIFY-1 | Integration at a fixed revision | Locally complete; NVIDIA execution remains separate | [Acceptance report](LOCAL_ACCEPTANCE.md) maps all 17 contracts and 16 original gap rows; full Metal/CPU/federated evidence at `68c800e`, focused numerical fixtures at `0c66454`; CUDA compile passed at `bf1ebea` |
-| VERIFY-2 | NVIDIA execution comparison | Three-contract native harness and production sketch/training/prediction runner added; Metal observations published, external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; remaining contracts/callers still need harness coverage; publish differences, not just compiler success |
+| VERIFY-2 | NVIDIA execution comparison | Four-contract native harness and production sketch/training/prediction runner added; Metal observations published, external NVIDIA hardware required | [Harness instructions](NVIDIA_COMPARISON.md); shared fixtures must run against vendored CUDA on NVIDIA; remaining contracts/callers still need harness coverage; publish differences, not just compiler success |
 | PERF-1 | Profile/optimize a frozen benchmark matrix | Full HIGGS repeated at `68c800e`; ordinary strict equivalence failed, common-cut 100-round diagnostic passes | Repeated CPU/MPS timings and correctness for large HIGGS, wide synthetic, sparse and vector workloads; improvements and regressions published |
 
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
@@ -63,9 +63,11 @@ separately without production changes. [CUDA run
 42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238) at
 `bf1ebea` passed all 197 compile/link steps on the same production tree.
 
-VERIFY-2 needs an actual NVIDIA runner. The [first harness](NVIDIA_COMPARISON.md)
-connects P5-N08/13/14 inputs to vendored quantile/sketch consumers and records
-full output bits; its Metal reporting path and integrity checks pass. A production
+VERIFY-2 needs an actual NVIDIA runner. The [native harness](NVIDIA_COMPARISON.md)
+connects P5-N01/08/13/14 inputs to vendored quantile/sketch consumers and records
+full output bits; its 39 Metal witnesses and twelve report-integrity tests pass.
+The eighteen added P5-N01 cases isolate binary64 threshold precision using
+adjacent alphas, reversed input order and three weight scales. A production
 pipeline runner also records eight ordinary-matrix cases and full HIGGS sketch
 construction, with source/input hashes, GPU-execution checks and CPU evaluation
 of each GPU model. Its Metal reports and 18 synthetic integrity tests pass;

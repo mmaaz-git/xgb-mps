@@ -1,8 +1,9 @@
 # Running the shared numerical witnesses on NVIDIA
 
-VERIFY-2 requires actual GPU execution. The first harness covers **P5-N08,
-P5-N13 and P5-N14**, using the same 21 inputs as the Metal numerical-contract
-test. The other fourteen numerical contracts and broader caller/integration
+VERIFY-2 requires actual GPU execution. The current native harness,
+`numerical-v2`, covers **P5-N01, P5-N08, P5-N13 and P5-N14**, using the same 39
+inputs as the Metal numerical-contract test. The other thirteen numerical
+contracts and broader caller/integration
 comparisons remain work; this harness is not a full parity certificate.
 
 No NVIDIA execution result is published yet. The CUDA CI job compiles/links the
@@ -14,13 +15,14 @@ silently pass by skipping or falling back to CPU.
 
 | Witness | CUDA path | Metal observation and boundary |
 | --- | --- | --- |
+| Weighted threshold precision | Production `SegmentedWeightedQuantile` with FP32 alpha promoted by its binary64 threshold expression. | Production quantile API with native GPU inputs/output. Values `[0,1]`, weights `[1,9]`, three adjacent FP32 alphas around `.1`, both input orders and three weight scales isolate threshold narrowing from CDF association. |
 | Weighted CDF, 3/257 rows | Production `SegmentedWeightedQuantile`, plus a separately executed trace using its source sort/scan/selection functors. | Production quantile API and direct production CDF/select kernels. The CUDA trace is a separate execution, not a capture of the API's private temporary CDF. Both selections are retained. |
 | Raw segmented prefixes, 3/261/513 rows | Production `detail::SortByWeight`, including its in-place segmented scan. | Production hierarchical prefix kernels; cases cross 256-entry tile boundaries. |
 | Reverse duplicate accumulation | Production `SketchContainer::ScanInput`, including unique compaction. | Observed production reverse-scan output is projected onto retained first entries on the host for comparison. This report projection does not test Metal GPU compaction; existing sketch integration fixtures cover that separately. |
 | Neighboring rank repair | A fresh empty `SketchContainer::Merge` copies the unique-valued input and calls production `FixError` once. | Production deterministic left-to-right repair kernel. Synthetic rank violations isolate the operation, without claiming exact training-data reachability. |
 
 All inputs run at exponents `0`, `-149` and `100`. CUDA repeats each repair input
-32 times, always with fresh storage, producing **114 execution records for 21
+32 times, always with fresh storage, producing **132 execution records for 39
 input cases**. Repetition characterizes observed scheduling on that GPU; it does
 not enumerate every possible outcome of the source's neighboring read/write race.
 Neither runner changes production formulas or widens ordinary tolerances.
@@ -46,11 +48,15 @@ Use a new output name; existing reports are never overwritten. The native test
 continues to enforce its exact Metal expectations before emitting observations.
 The existing [local acceptance](LOCAL_ACCEPTANCE.md) records the fixed production
 revision and limits; source changes require a new matching observation file.
-The [published M3 observations](../validation/cuda-comparison-metal-m3.jsonl) use
-the accepted `68c800e` production tree and the `0074861` harness. Their
-[provenance](../validation/cuda-comparison-harness-m3.json) retains build/test
-commands, hashes and the corrected reporting-code compile failure. These are
-Metal observations; there is no corresponding NVIDIA execution file yet.
+The [current M3 observations](../validation/cuda-comparison-metal-v2-m3.jsonl)
+use the accepted `68c800e` production tree. Their
+[provenance](../validation/cuda-comparison-threshold-m3.json) retains commands,
+hashes, 39 witnesses / 3,491 exact native checks and twelve report-integrity
+tests. All 21 older payloads are unchanged; the 18 new cases enforce exact
+threshold selection. Historical [v1 observations](../validation/cuda-comparison-metal-m3.jsonl)
+and [provenance](../validation/cuda-comparison-harness-m3.json) remain readable.
+Comparison requires matching suites and rejects a v1/v2 pair. These are Metal
+observations; no corresponding NVIDIA execution file exists yet.
 
 ## Build and execute on NVIDIA
 
@@ -84,6 +90,9 @@ between them. Git metadata reads trust only the selected checkout for that
 invocation, accommodating container checkout ownership. The CI's
 `scripts/ci_cuda_build.sh` does this against its CUDA/NCCL/nvCOMP/federated build,
 but **does not run the final GPU command**.
+When production enables nvCOMP, the consumer imports that same CMake package,
+retaining its package-specific library path. A small dependency executable is
+compiled and linked before the harness object; it is never run on CPU-only CI.
 
 Keep the runtime log, observation file and build record together. Run the same
 source/fixture revision on both platforms. The comparison command rejects
@@ -95,8 +104,9 @@ python3 scripts/compare_numerical_contracts.py compare \
   --output results/numerical-comparison.json
 ```
 
-Exit `0` means outputs match on these inputs. Exit `1` means invalid evidence or
-a structural/source-preserved-field mismatch. Exit `2` preserves observed
+Exit `0` means outputs match on these inputs. Exit `1` means invalid evidence,
+an exact weighted-threshold mismatch, or a structural/source-preserved-field
+mismatch. Exit `2` preserves observed
 numerical/read-order differences for contract review; it does not automatically
 classify them as either defects or acceptable drift. The report retains changed
 fields and sample bit patterns, points to the full source reports by hash, and
@@ -158,6 +168,6 @@ same model bit for bit. HIGGS dispatched five sketch batches, and its cuts and
 first predictive tree exactly reproduce the earlier full benchmark. The
 [run record](../validation/gpu-pipeline-m3-run.json) includes hashes, commands,
 the initial validator error and 18 passing synthetic integrity tests. NVIDIA
-results are still absent. These integration cases do not close the fourteen
+results are still absent. These integration cases do not close the thirteen
 remaining numerical contracts or cover external memory, native device inputs,
 distributed execution and all other caller combinations.

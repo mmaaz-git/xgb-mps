@@ -42,8 +42,8 @@ pointers and categorical state on GPU; subsequent work adds numerical witnesses.
 execution comparisons and current-source performance work.** Full parity remains
 unproven.
 
-The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) cover shared CDF and
-sketch-order witnesses, plus production sketch/training/prediction on eight
+The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) cover 39 shared threshold,
+CDF and sketch-order witnesses, plus production sketch/training/prediction on eight
 fixtures and full-size HIGGS quantile construction. Metal observations are
 published; NVIDIA execution is still required. Differences remain visible for
 review.

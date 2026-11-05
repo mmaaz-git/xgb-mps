@@ -1,5 +1,5 @@
 {
-  "status": "Metal observations and comparison integrity checks passed; corrected CUDA harness build pending",
+  "status": "Metal v1 observations passed; CUDA v1 object and production library compiled, final consumer link failed; superseded by numerical-v2",
   "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
   "harness_commit": "00748612f2b879ee657b030bdbed29d94f41db93",
   "scope": "First VERIFY-2 harness: P5-N08/13/14 only. No NVIDIA runtime execution.",
@@ -135,10 +135,19 @@
   "cuda_compile": {
     "run_id": 42039959199,
     "head": "cd9a3fccd77fe7b40d599b63f32e04a23da7b051",
-    "status": "in_progress",
+    "status": "completed",
     "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42039959199",
     "gpu_execution": false,
-    "last_observed_utc": "2026-11-05T13:56:17.950486+00:00"
+    "conclusion": "failure",
+    "completed_utc": "2026-11-05T14:20:32Z",
+    "reason": "Harness object compiled; all 197 production steps passed; final executable link could not find libnvcomp.so.5 in its package-specific directory.",
+    "object_compile": "passed",
+    "production_compile_link": "passed",
+    "consumer_link": "failed",
+    "log": "results/cuda-compile-42039959199/results/cuda-compile-ci.log",
+    "log_sha256": "844fe1617badf65c681715c000bdf1a390c2e678ba8032e9571f3e0f00dc0d0d",
+    "build_record": "results/cuda-compile-42039959199/results/cuda-comparison-build/build.json",
+    "build_record_sha256": "0fc579ee56ad33665c694763137b65a7164b706c98d0eebaa2797e398c061d4e"
   },
   "nvidia_runtime": "not-run; no accessible NVIDIA host or repository self-hosted GPU runner",
   "limitations": [
@@ -169,5 +178,6 @@
     "lifecycle_scope": "Mocked CMake/Git checks: phase order, changed-input rejection, recorded Git failure, recorded configure failure. Not CUDA compilation.",
     "syntax": "Python py_compile and bash -n passed",
     "initial_local_mock_failure": "Temporary macOS /var symlink path was not resolved in the mock checkout; resolved it before all four checks passed."
-  }
+  },
+  "superseded_by": "validation/cuda-comparison-threshold-m3.json"
 }

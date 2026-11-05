@@ -1,4 +1,4 @@
-// Explicit divergence witnesses for P5-N08/13/14; no NVIDIA execution implied.
+// Shared P5-N01/08/13/14 witnesses; no NVIDIA execution implied.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <algorithm>
@@ -108,6 +108,33 @@ struct GPU {
     return output;
   }
 };
+void ThresholdWitness(fixture::Report& report, int exponent, unsigned variant) {
+  auto q = fixture::MakeThreshold(exponent, variant);
+  if (variant / 2 == 1) {
+    float first = std::ldexp(1.f, exponent), total = 10*first;
+    Check(double(total)*q.alpha > first && float(double(total)*q.alpha) == first,
+          "Threshold witness no longer distinguishes binary64 from FP32");
+  }
+  HostDeviceVector<float> values(q.values, DeviceOrd::MPS()), weights(q.weights, DeviceOrd::MPS()),
+      out(1, -1.f, DeviceOrd::MPS());
+  std::size_t dimensions[]{2, 1}, strides[]{1, 1};
+  xgboost::linalg::MatrixView<float const> view{values.ConstDeviceSpan(), dimensions, strides, DeviceOrd::MPS()};
+  metal::QuantileRequest request{0, 0, double(q.alpha)};
+  auto before = metal::GetStatistics();
+  metal::Quantiles(view, weights.ConstDeviceSpan(), {&request, 1}, out.DeviceSpan());
+  auto after = metal::GetStatistics();
+  Check(after.quantile_dispatches == before.quantile_dispatches+1, "No threshold quantile dispatch");
+  Check(after.vector_readback_bytes == before.vector_readback_bytes && !values.HostCanRead() &&
+            !weights.HostCanRead() && !out.HostCanRead(), "Threshold quantile requested a host mirror");
+  Check(out.ConstHostVector()[0] == q.expected, "Binary64 threshold selected the wrong observation");
+  report.Case("weighted_threshold", 2, exponent, variant,
+              {{"values", fixture::FloatWords(q.values)}, {"weights", fixture::FloatWords(q.weights)},
+               {"alpha", fixture::FloatWords(&q.alpha, 1)}},
+              {{"api_selected", fixture::FloatWords(out.ConstHostVector())}});
+  std::printf("P5-N01 exponent=%d variant=%u alpha=%08x selected=%.0f\n",
+              exponent, variant, Bits(q.alpha), q.expected);
+  ++witnesses;
+}
 void QuantileWitness(GPU& gpu, fixture::Report& report, unsigned rows, int exponent) {
   auto q = fixture::MakeQuantile(rows, exponent);
   Check(q.serial.back() != q.regrouped.back(), "CDF witness lost association difference");
@@ -225,10 +252,11 @@ int main(int argc, char** argv) {
             "Pass production shader source [--report new-output.jsonl]");
       GPU gpu(argv[1]);
       fixture::Report report{argc == 4 ? argv[3] : ""};
-      report.Metadata({{"backend", "metal"}, {"device", gpu.device.name.UTF8String},
+      report.Metadata({{"backend", "metal"}, {"fixture_suite", "numerical-v2"}, {"device", gpu.device.name.UTF8String},
                        {"compiler", __clang_version__}, {"shader", argv[1]},
                        {"reverse_unique", "host projection of observed GPU reverse scan"}});
       for (int exponent : {0, -149, 100}) {
+        for (unsigned variant = 0; variant < 6; ++variant) ThresholdWitness(report, exponent, variant);
         for (unsigned rows : {3u, 257u}) QuantileWitness(gpu, report, rows, exponent);
         for (unsigned rows : {3u, 261u, 513u}) PrefixWitness(gpu, report, rows, exponent);
         SummaryWitness(gpu, report, exponent, false);
