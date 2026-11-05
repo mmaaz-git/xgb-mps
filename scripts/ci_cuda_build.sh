@@ -24,6 +24,7 @@ cmake -S xgboost -B build-cuda-ci -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=80 \
   -DUSE_CUDA=ON -DUSE_METAL=OFF -DUSE_NCCL=ON -DBUILD_WITH_SHARED_NCCL=ON \
   -DUSE_NVCOMP=ON -DPLUGIN_FEDERATED=ON -DUSE_OPENMP=ON \
+  -Dnvcomp_DIR=/usr/lib/x86_64-linux-gnu/libnvcomp6-cuda-13/cmake/nvcomp \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 echo 'Compiling and linking libxgboost (no GPU execution)'
 cmake --build build-cuda-ci --parallel 2
