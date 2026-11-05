@@ -34,13 +34,14 @@ quantile precision and vector-row validity bugs, plus GPU state/data-placement
 gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
 **not a completion percentage or proof of parity**. See the
 [findings and evidence](docs/CUDA_AUDIT.md) and [ordered plan](docs/PLAN.md).
-Four tasks are locally complete: [quantile precision](validation/cuda-num1-m3.txt),
+Five tasks are locally complete: [quantile precision](validation/cuda-num1-m3.txt),
 [vector sampling validity](validation/cuda-port9-m3.txt),
-[resident vector weights](validation/cuda-port1-m3.txt), and
-[resident categorical state](validation/cuda-port2-m3.txt).
-The latest change (`6a606e1`) keeps selected vector category bits on Metal through
-queued candidates, model growth and row partitioning. **Six implementation tasks
-remain.** Exact vector gradient sums are next.
+[resident vector weights](validation/cuda-port1-m3.txt),
+[resident categorical state](validation/cuda-port2-m3.txt), and
+[exact vector sums](validation/cuda-port3-m3.txt).
+The latest change (`ab87872`) keeps exact vector root, node and selected-child
+sums on Metal through queued candidates and child propagation. **Five implementation
+tasks remain.** Sampled and allowed feature IDs are next.
 Numerical, scheduling and external-hardware limits remain explicit in the
 [parity ledger](docs/CUDA_PARITY.md).
 
@@ -103,10 +104,10 @@ check GPU execution. PyTorch and MLX are additional dependencies for their
 native-tensor tests. Optional federated tests require `brew install grpc protobuf`
 and run with `bash scripts/test_federated.sh` in separate build directories.
 
-Latest full regression covers `6a606e1`: **100 native groups and 3,597 Python
+Latest full regression covers `ab87872`: **101 native groups and 3,603 Python
 tests passed, with one expected skip**, plus CPU build/API/schema and nine updater
 checks. PyTorch and MLX GPU interop tests ran. The
-[record](validation/cuda-port2-m3.txt) includes commands, source hashes and limits.
+[record](validation/cuda-port3-m3.txt) includes commands, source hashes and limits.
 Optional federated checks were last run at `dd44829`, as recorded
 [here](validation/cuda-metal-native-csr-storage-m3.txt).
 

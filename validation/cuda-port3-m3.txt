@@ -1,0 +1,98 @@
+PORT-3 resident exact vector gradient sums, 2026-11-05
+Source: ab8787245846f7fff2fa77066573d76e0dc76eca
+Machine-readable commands, selections and hashes: cuda-port3-m3-run.json.
+Hardware: Apple M3, 10 GPU cores, 16 GB shared memory; macOS 26.6.2 / Python 3.13.5.
+
+Authority: vendored CUDA multi_evaluate_splits.cuh/.cu owns node_sums_ and
+split_sums_ on device. Selected sums survive queued candidates and scan-buffer
+reuse; child propagation uses exact integers. Vector root collectives reduce
+device integers before dequantization. The scalar root's explicit host boundary
+remains source-defined host work.
+
+Implementation:
+- SumRoot publishes MPS precise outputs and resident integer spans with GPU
+  copies. Offset/strided output views are supported; host diagnostics remain.
+- SplitSumStorage owns exact nodes and selected children by node ID. Selection,
+  storage growth, child propagation and parent gathers use GPU copies. Packed
+  original quantizer scales materialize binary64 views on GPU with the existing
+  EncodeIntegerStatistics kernel. No integer reconstruction from floating point.
+  Metal retains both existing exact child outputs; CUDA retains the scanned child
+  and derives its sibling from the exact parent. Integer arithmetic is unchanged.
+- Quantized vector evaluation can retain child payloads only on GPU. Split scans
+  and finalization bind resident parent spans directly, including offsets.
+  Workspace reset invalidates stale candidate/category/finalization metadata.
+- HistMultiEvaluator no longer copies vector root/node/selected-child payloads
+  through CPU containers. Queued entries keep scalar split metadata and the node
+  ID. Scalar Hessian totals preserve smaller-child/tie histogram scheduling;
+  CPU entries retain their original target-array behavior.
+- Eight diagnostic counters append to the existing prefix: 293 native fields,
+  295 C API fields. CPU instantiates GradientPairInt64 HostDeviceVector, already
+  supported by the Metal and CUDA implementations. CPU build/API checks pass.
+
+Acceptance:
+- New metal_split_sum_api native group: eight chains, targets 1/3/33/129,
+  9,296 exact integer/binary64 fields and 53 rejected requests. Independent CUDA
+  gradient-quantization and split oracles, normal/cancellation data, offset and
+  strided root guards, numeric/OHE/partition selections, overwritten selections,
+  delayed candidates, workspace reuse, growth beyond node 300 and reordered/
+  duplicate gathers. GPU finalization precedes CPU payload inspection; sum
+  readback, host input staging and HDV transfers remain zero. Cancellation cases
+  prove exact integer information that would be lost through binary64 survives.
+- Integer collective group: resident root publication and GPU finalization added
+  to the existing empty/extreme/cancellation/sampling fixtures at world sizes 1/2/3/5.
+  Per worker: 135 integer cases, 53,595 fields, 540 rejected calls; 36 production
+  updater cases and 3,072 CPU prediction checks. These are local workers on M3,
+  not NVIDIA execution or cross-machine validation.
+- Native training group: 249 cases/397,288 checks. Entire production updates assert
+  no vector-sum payload publication/staging for categorical, ordinary, reduced
+  and forest callers. Three new scheduling cases preserve left/right/tie choices
+  with empty queued target arrays and scalar Hessian totals.
+- Six public root-only cases cover targets 2/17 and no-feature/no-gain/leaf-limit
+  triggers, no sum readbacks, no child application, and exact CPU weight formulas.
+  Existing public cancellation, numerical constraints, sampling, categories and
+  external-page vector-tree source oracles remain regression guards.
+
+Focused checks and development failures:
+- port3-initial failed compilation at an empty MakeVec call missing its device
+  argument; corrected. port3-initial-v2 passed the then-current native training
+  group and 94 Python vector-split tests.
+- port3-focused initially failed a new test's outer HDV readback assertion after
+  intentional host inspection. The test now inspects the shared device span only
+  after GPU consumers and residency assertions, as other native tests do.
+- port3-focused-v2 passed distributed checks and training, then the new storage
+  test failed compilation because shape and stride used different integer types.
+  Corrected the fixture to use size_t for both.
+- port3-focused-v3 and diagnostic sums-v4/v5 exposed a malformed sparse-page
+  fixture: an extra zero offset introduced an empty first row. Corrected the new
+  fixture and the same construction in metal_split_categories.mm; the sparse
+  page already starts with offset 0. The new fixture asserts its row count.
+- port3-sums-v6 passed both sum/category native groups and 270 Python tests,
+  one warning. Categories: 864 slots/33,738,112 exact words, 20 API calls,
+  four weight chains/1,992 fields and four category-storage chains.
+- First full port3-integration stopped at the new scheduling fixture, which had
+  omitted SetRoot before expansion. Corrected the fixture; focused scheduling
+  run passed all 249 training cases. Production source was unchanged.
+No tolerance widening or arithmetic-kernel change was used to resolve these.
+
+CPU-only validation:
+  bash results/port3-cpu.sh
+  cmake --build build-cpu -j4
+  .venv/bin/python scripts/check_cpu_build.py --metal-library xgboost/lib/libxgboost.dylib
+  PYTHONPATH=results/cpu-python .venv/bin/python -m pytest -q \
+    tests/test_metal_updater.py -k cpu -o pythonpath=results/cpu-python
+  PASS separate USE_METAL=false library, matching schema 295, nine updater cases;
+  72 deselected, 11 warnings. CPU library SHA256:
+  78e4e2e3575a2bb2b671f99420f1f00fddd5c99a267f2ae467fdd46af5746454
+
+Full integration (tmux xgb-port3-integration-v2, terminal exit0):
+  bash scripts/test.sh --full --log-dir results/port3-integration-v2
+  All 205 stages PASSED: rebuilt library, 101 freshly compiled native groups,
+  independent linear reference and full Python suite.
+  Python: 3,603 PASSED, 1 expected no-GPU-only skip, 672 warnings, 267.89s.
+  PyTorch and MLX GPU interop tests ran. The JSON retains exact source/diff,
+  new-file, manifest and library hashes; all were checked before committing.
+  The source commit includes the separately hashed new metal_split_sum_api.cc.
+  PORT-3 is locally complete; five implementation tasks remain.
+Prior PORT-2 CUDA compile CI passed at 99cbeb3, run 42005865082. PORT-3 needs a
+new compiler result after publication. No NVIDIA execution, new benchmark,
+other Apple hardware or optional federated configuration run is claimed.

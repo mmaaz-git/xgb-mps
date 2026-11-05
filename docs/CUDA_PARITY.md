@@ -13,7 +13,7 @@ remain.** See the [ordered plan](PLAN.md).
 
 | Area | Current implementation | Boundary |
 | --- | --- | --- |
-| Tree training | Hist/approx histograms, quantization, sampling, scalar/vector split arithmetic, partitioning, constraints and leaf fitting have Metal paths | Vector payload ownership is incomplete |
+| Tree training | Hist/approx histograms, quantization, sampling, scalar/vector split arithmetic, partitioning, constraints and leaf fitting have Metal paths | Feature IDs, bound gathers and numeric thresholds still use host payloads |
 | Objectives/metrics | Regression, multiclass, ranking, AFT, adaptive objectives and metrics have Metal paths | Numerical comparisons have operation-specific limits |
 | Prediction | Tree/leaf prediction, native outputs, contributions/interactions have Metal paths | Source-defined host model setup/serialization remains |
 | Data | Native tensors/columns, CSR packing, sketches, quantile matrices, dictionaries, metadata, external caches and optional Snappy | Native ordinary entries stay resident through sketch/compression; producer readiness is synchronous |
@@ -28,7 +28,6 @@ not every branch's behavior.
 
 | Plan ID | Remaining CUDA behavior or evidence |
 | --- | --- |
-| PORT-3 | Exact vector node/selected-child sums move through host containers; CUDA retains device node/split sums. |
 | PORT-6 | Sampled/allowed feature-ID payloads and consumers still use CPU arrays. |
 | PORT-7 | Native quantile row/group weights pass through host expansion/readback. |
 | PORT-8 | Active scalar/vector split evaluators gather GPU monotonic bounds on CPU. |
@@ -48,7 +47,9 @@ at `c78cb43`: persistent GPU weights, root/model scaling, alias snapshots, bound
 inputs and compact prediction-cache gathers are validated
 ([evidence](../validation/cuda-port1-m3.txt)). PORT-2 is locally fixed at `6a606e1`:
 selected vector categories persist through queues, model growth and partitioning
-([evidence](../validation/cuda-port2-m3.txt)). Six implementation tasks remain.
+([evidence](../validation/cuda-port2-m3.txt)). PORT-3 is locally fixed at `ab87872`:
+exact vector roots, queued sums, parent gathers and child propagation stay on Metal
+([evidence](../validation/cuda-port3-m3.txt)). Five implementation tasks remain.
 The frozen audit retains its original findings. This is a finite
 implementation queue, not proof that no unlisted defects remain. Numerical
 acceptance fixtures and NVIDIA comparisons remain separate verification work.
@@ -84,17 +85,17 @@ reproduced defects, confirmed gaps and architecture risks.
 
 ## Evidence boundary
 
-Latest full local regression covers `6a606e1`: **100 native groups and 3,597
+Latest full local regression covers `ab87872`: **101 native groups and 3,603
 Python passes, one expected skip**, plus CPU build/API/schema and nine updater
 tests. Both PyTorch and MLX GPU interop tests ran.
-[Configuration, source hashes and results](../validation/cuda-port2-m3.txt).
+[Configuration, source hashes and results](../validation/cuda-port3-m3.txt).
 Optional federated learners were last tested at `dd44829`
 ([record](../validation/cuda-metal-native-csr-storage-m3.txt)). Earlier validation
 records retain their original scope and failures.
 
-CUDA compile CI passed at `383b448`, including PORT-1
-([run 42001642073](https://github.com/mmaaz-git/xgb-mps/actions/runs/42001642073)).
-The PORT-2 source needs its own CI result. CI compiles/links on
+CUDA compile CI passed at `99cbeb3`, including PORT-2
+([run 42005865082](https://github.com/mmaaz-git/xgb-mps/actions/runs/42005865082)).
+The PORT-3 source needs its own CI result. CI compiles/links on
 a CPU runner. **No NVIDIA runtime comparison has been performed.** Other Apple
 hardware is also untested. [Historical benchmarks](PUBLISHED_BENCHMARKS.md)
 predate subsequent correctness changes and are not current-HEAD measurements.

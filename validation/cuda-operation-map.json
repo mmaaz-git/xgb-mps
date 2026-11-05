@@ -10,7 +10,7 @@
     "xgboost/src/common/metal_histogram.mm",
     "xgboost/src/common/metal_histogram.metal"
   ],
-  "latest_local_regression": "validation/cuda-port2-m3.txt",
+  "latest_local_regression": "validation/cuda-port3-m3.txt",
   "groups": [
     {
       "id": "native-api",
@@ -956,10 +956,11 @@
         "tests/metal_quantized_state_api.cc",
         "tests/metal_gradient_sampling_api.cc",
         "tests/metal_global_quantizer_api.cc",
-        "tests/test_metal_sampling.py"
+        "tests/test_metal_sampling.py",
+        "tests/metal_split_sum_api.cc"
       ],
-      "status": "audited-with-open-tasks",
-      "limits": "Modern Philox target; global scales are source-defined. Reduction association and nonfinite policies are recorded in the detailed ledger. Confirmed remaining audit tasks: PORT-3; see validation/cuda-caller-audit.json for source/acceptance. PORT-9 fixed at 1034657; validation/cuda-port9-m3.txt records focused GPU and CPU checks.",
+      "status": "mapped",
+      "limits": "Modern Philox target; global scales are source-defined. Reduction association and nonfinite policies remain in the detailed ledger. PORT-3 vector root publication and exact node/selected-child storage fixed at ab87872; source-defined scalar roots and quantizer bounds remain host work. PORT-9 sampling validity fixed at 1034657. Independent integer, distributed and GPU-ownership checks are recorded in validation/cuda-port3-m3.txt; no NVIDIA execution claim.",
       "audited_operations": [
         "training-quantizer-bounds",
         "training-quantizer-control",
@@ -973,11 +974,10 @@
         "training-scalar-root-sum",
         "training-partition-sample-flags"
       ],
-      "open_tasks": [
-        "PORT-3"
-      ],
+      "open_tasks": [],
       "resolved_after_audit": [
-        "PORT-9"
+        "PORT-9",
+        "PORT-3"
       ]
     },
     {
@@ -1062,10 +1062,11 @@
       "tests": [
         "tests/test_metal_cuda_multi_splits.py",
         "tests/test_metal_split_categories.py",
-        "tests/test_metal_split_finalize.py"
+        "tests/test_metal_split_finalize.py",
+        "tests/metal_split_sum_api.cc"
       ],
       "status": "audited-with-open-tasks",
-      "limits": "PORT-1 weights/root scaling fixed at c78cb43; PORT-2 selected category payloads persist by node ID at 6a606e1. Exact node/child sums remain host containers (PORT-3); feature IDs, thresholds and downstream bound gathers remain PORT-6/10/8. See validation/cuda-port2-m3.txt and the frozen caller audit.",
+      "limits": "PORT-1 weights fixed at c78cb43, PORT-2 categories at 6a606e1, and PORT-3 exact node/child sums and GPU parent gathers at ab87872. Feature IDs, thresholds and bound gathers remain PORT-6/10/8. See validation/cuda-port3-m3.txt and the frozen audit.",
       "audited_operations": [
         "training-allowed-feature-storage",
         "training-bounds-consumers",
@@ -1082,13 +1083,13 @@
       ],
       "open_tasks": [
         "PORT-10",
-        "PORT-3",
         "PORT-6",
         "PORT-8"
       ],
       "resolved_after_audit": [
         "PORT-1",
-        "PORT-2"
+        "PORT-2",
+        "PORT-3"
       ]
     },
     {
@@ -1324,6 +1325,12 @@
       "source_commit": "6a606e101914e7433f2d6ca036c6ebc9c3cb8fa1",
       "status": "locally-validated",
       "evidence": "validation/cuda-port2-m3.txt",
+      "limits": "CUDA compile passed at 99cbeb3; NVIDIA execution remains VERIFY-2. Frozen caller ledger is unchanged."
+    },
+    "PORT-3": {
+      "source_commit": "ab8787245846f7fff2fa77066573d76e0dc76eca",
+      "status": "locally-validated",
+      "evidence": "validation/cuda-port3-m3.txt",
       "limits": "Full local Metal and CPU checks passed; CUDA compile for this change is pending. NVIDIA execution remains VERIFY-2. Frozen caller ledger is unchanged."
     }
   }

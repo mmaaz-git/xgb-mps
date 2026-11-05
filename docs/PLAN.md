@@ -24,11 +24,11 @@ Track three separate claims:
 
 The audit classified 174 logical operations and all 1,078 listed lexical sites
 across 42 families / 109 CUDA roots at `382f78c`. Sixteen missing/defective rows
-map to **10 implementation tasks** below; NUM-1, PORT-9, PORT-1 and PORT-2 are locally fixed,
-and six remain.
+map to **10 implementation tasks** below; NUM-1, PORT-9 and PORT-1/2/3 are locally fixed,
+and five remain.
 These unequal-sized rows are not a
 completion percentage, and this bounded audit cannot prove the absence of
-unlisted defects. **Next: PORT-3 exact vector gradient sums, then the remaining GPU-placement tasks.** No new kernels were added during
+unlisted defects. **Next: PORT-6 sampled/allowed feature IDs, then the remaining GPU-placement tasks.** No new kernels were added during
 classification.
 
 ## Ordered work queue
@@ -41,9 +41,9 @@ classification.
 | NUM-1 | Correct weighted-quantile threshold precision | Locally complete at `2404827` | Binary64 comparison and independent boundary/alias regressions pass; three native groups and 34 Python tests; [evidence](../validation/cuda-num1-m3.txt). NVIDIA comparison remains VERIFY-2 |
 | PORT-9 | Correct vector row validity after sampling | Locally complete at `1034657` | Retained sampler state controls positions; 42 new exact none/uniform/MVS cases plus zero-Hessian production updater coverage; four native groups, 52 Python tests and CPU build/API/updater checks pass; [evidence](../validation/cuda-port9-m3.txt) |
 | PORT-1 | GPU vector root/child/model weights | Locally complete at `c78cb43`; CUDA compile passed at `383b448` | Resident producer/storage/consumer chain, growth/aliases and non-MPS host views checked; 100 native groups plus final predictor check, 3,595 Python passes and CPU checks; [evidence](../validation/cuda-port1-m3.txt) |
-| PORT-2 | GPU selected categorical bitsets | Locally complete at `6a606e1`; new CUDA CI pending | Resident selection, queued state, model/view/partition consumers; 100 native groups, 3,597 Python passes and CPU checks; [evidence](../validation/cuda-port2-m3.txt) |
-| PORT-3 | GPU exact vector node/child sums | Next | Integer selected-child and node sums stay resident through evaluation/propagation; no floating reconstruction; scalar source-defined publication unchanged |
-| PORT-6 | Resident sampled/allowed feature IDs | Open; after vector state | GPU weighted gather/shuffle/sort, constraint filtering and split-consumer feature IDs; ordinary host launch descriptors remain permitted |
+| PORT-2 | GPU selected categorical bitsets | Locally complete at `6a606e1`; CUDA compile passed at `99cbeb3` | Resident selection, queued state, model/view/partition consumers; 100 native groups, 3,597 Python passes and CPU checks; [evidence](../validation/cuda-port2-m3.txt) |
+| PORT-3 | GPU exact vector node/child sums | Locally complete at `ab87872`; new CUDA CI pending | Resident exact roots, queued child storage, parent gathers and propagation; 101 native groups, 3,603 Python passes and CPU checks; [evidence](../validation/cuda-port3-m3.txt) |
+| PORT-6 | Resident sampled/allowed feature IDs | Next | GPU weighted gather/shuffle/sort, constraint filtering and split-consumer feature IDs; ordinary host launch descriptors remain permitted |
 | PORT-7 | Resident native quantile weights | Open; after PORT-6 | Keep row/group weights and GPU expansion resident through native adapter sketch construction; weighted/grouped/repeated-batch fixtures |
 | PORT-8 | GPU split-bound gathers | Open; after PORT-7 | Scalar/vector active evaluators consume GPU monotonic bounds; exclude unsupported reduced-gradient/monotone refit combination |
 | PORT-10 | GPU numeric split thresholds | Open; after PORT-8 | Selected cut and −∞ materialization executes on GPU; category-bit construction already exists, with categorical cases retained as regression guards |
@@ -55,28 +55,30 @@ classification.
 VERIFY-2 is an evidence gap, not a reason to keep editing unrelated Metal code
 while hardware is unavailable. Cross-Apple-hardware claims also require actual runs.
 
-## Next bounded change: PORT-3
+## Next bounded change: PORT-6
 
-Keep exact vector root, selected-child and node sums on the GPU through split
-evaluation, queued candidates and child propagation. PORT-1/2 supply persistent
-weights and categories; the integer and precise-gradient payloads still pass
-through host containers.
+Keep feature IDs and sampling weights on the GPU through initial iota,
+tree/level/node sampling, interaction filtering and actual split evaluation.
+The existing sampling/filter kernels alone do not close this producer/consumer gap.
 
-- Start from the quantized root reduction and distributed collective. Preserve
-  CUDA's scalar host-root boundary; vector roots stay on the device.
-- Retain selected integer child sums by node ID across workspace reuse and grow
-  device node storage when applying splits. Never reconstruct integers from
-  rounded floating-point values.
-- Gather parent payloads and derive precise values on GPU using the existing
-  quantizers. Distinguish scalar queue/control fields from target-length arrays.
-- Cover cancellation, root-only and multiple-target cases, delayed candidates,
-  growth and distributed sums. Run GPU consumers before CPU comparisons and
-  assert exact integer results, ownership and transfer behavior.
-- Finish with focused numerical/storage/updater tests and relevant CPU/shared-
-  source checks. Feature selection and downstream bound gathers remain separate.
+- Preserve CUDA's weighted Philox keys, unweighted Thrust shuffle and final sort.
+  Keep source-defined host RNG setup; bind GPU weights and feature arrays directly.
+- Return resident interaction-query results. Preserve root/disabled input order
+  and duplicates, and nonroot ascending/unique results. A scalar result count is
+  control data; the feature-ID array is a GPU payload.
+- Change scalar and vector evaluators to consume resident feature sets when
+  preparing feature-indexed histogram/split metadata. Reading the IDs back merely
+  to rebuild tasks on CPU does not satisfy this task.
+- Cover weighted/unweighted tree, level and node sampling, empty/root/disabled
+  queries, duplicates, queued candidates and storage growth. Check numeric,
+  one-hot and partition-based scalar/vector callers with GPU consumers before
+  CPU oracle comparisons and no feature/weight payload staging or readbacks.
+- Keep bound gathers and numeric threshold materialization tracked as PORT-8/10;
+  state any dependency explicitly. Do not change RNG or arithmetic to match CPU.
 
-Completed weight/category work and its validation boundaries are recorded under
-[PORT-1](../validation/cuda-port1-m3.txt) and [PORT-2](../validation/cuda-port2-m3.txt).
+Completed vector weights, categories and exact sums are recorded under
+[PORT-1](../validation/cuda-port1-m3.txt), [PORT-2](../validation/cuda-port2-m3.txt)
+and [PORT-3](../validation/cuda-port3-m3.txt).
 
 ## PORT-4 audit boundary
 
