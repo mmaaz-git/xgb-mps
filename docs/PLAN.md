@@ -327,7 +327,11 @@ tests pass; three 100-round HIGGS pairs give 64.8 s → 55.2 s median training,
 with all models and predictions bit-identical. The binary-column regression in
 an initial candidate was corrected before acceptance. [Evidence and limits](PUBLISHED_BENCHMARKS.md#compressed-ellpack-reader).
 This closes this reader change only. No new comparison infrastructure or full
-benchmark matrix is part of this batch; NVIDIA runtime validation remains open.
+benchmark matrix is part of this batch; NVIDIA runtime validation remains open. A later
+logistic compiler-specialization experiment passed correctness but yielded only
+1.02× median training and 1.04× objective time ratios amid substantial variation;
+it was rejected and production restored. [Record](PUBLISHED_BENCHMARKS.md#rejected-logistic-specialization).
+Do not repeat that experiment without new evidence.
 
 ## PORT-4 audit boundary
 

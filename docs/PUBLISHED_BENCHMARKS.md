@@ -355,3 +355,21 @@ the same prepared HIGGS cache. Use a different output path for each worker:
 
 The run record includes all six worker reports, power and memory observations,
 source/library hashes, dataset provenance, kernel timings and focused-test status.
+
+
+## Rejected logistic specialization
+
+A separate experiment compiled the logistic branch of the objective kernel as
+its own pipeline, keeping the shared arithmetic unchanged. Three native groups
+and 59 Python tests passed; all six 100-round HIGGS models and prediction arrays
+were bit-identical. Three before/after pairs gave median training times of
+**51.509 / 50.406 seconds (1.02×)** and objective GPU times of
+**8.953 / 8.619 seconds (1.04×)**. Objective GPU time was slower in the first pair;
+training times ranged from 39.9 to 55.0 seconds across the experiment.
+
+This did not establish a convincing benefit for the additional pipeline, so the
+candidate was removed and the accepted reader source and library restored.
+The [decision record](../validation/objective-specialization-m3-run.json) links
+compressed raw reports, the discarded patch and focused-test evidence. No
+production arithmetic or tolerance was changed, and this experiment adds no
+NVIDIA runtime evidence. Do not repeat it unchanged.

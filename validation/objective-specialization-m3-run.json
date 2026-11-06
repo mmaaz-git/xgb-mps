@@ -1,0 +1,148 @@
+{
+  "status": "rejected-performance-experiment-production-restored",
+  "date": "2026-11-05",
+  "baseline": {
+    "revision": "eeb9a34db05d23b8dacd9ade528a8244dcfef46f",
+    "library_sha256": "ab6184094c98956201353d25332a319132bef2e2a75b857d86eebc81947983a6"
+  },
+  "candidate_source_sha256": {
+    "xgboost/src/common/metal_histogram.metal": "de8eae1ff2736dc1a56e1b2b1c837aa73058700e82551f0ea6d00199cf9ca01c",
+    "xgboost/src/common/metal_histogram.mm": "44eee8195928c1b1d27f022ff277c701f03cc9502a7e8449c730153de1b35bee"
+  },
+  "candidate_patch_sha256": "1520b1485151cdc639fe9b867d22c07d7453bb12326928252c76fb4f82193062",
+  "change": "One compile-time logistic specialization of the existing shared objective body; same arithmetic, parameters and memory bindings.",
+  "decision": "Do not keep: median training ratio 1.02x and objective ratio 1.04x are small relative to the observed run variation; objective GPU time regressed in the first pair. No additional benchmark rounds or math changes were attempted.",
+  "focused_tests": {
+    "native_groups": [
+      "metal_objective_state_api",
+      "metal_objective",
+      "metal_objective_api"
+    ],
+    "python_passed": 59,
+    "status": "passed",
+    "library_sha256": "5072480b2aea8011c9a5410d9778e0f34472f10969f17a7285b8847dce07d69a"
+  },
+  "paired": {
+    "status": "passed-bitwise-before-after",
+    "rows": 10500000,
+    "features": 28,
+    "rounds": 100,
+    "repeats": 3,
+    "test_rows": 500000,
+    "library_sha256": {
+      "baseline": "ab6184094c98956201353d25332a319132bef2e2a75b857d86eebc81947983a6",
+      "candidate": "5072480b2aea8011c9a5410d9778e0f34472f10969f17a7285b8847dce07d69a"
+    },
+    "medians": {
+      "baseline": {
+        "training_seconds": 51.5093673330266,
+        "histogram_seconds": 12.297072699,
+        "partition_seconds": 7.752347645,
+        "objective_seconds": 8.953144702
+      },
+      "candidate": {
+        "training_seconds": 50.40625208406709,
+        "histogram_seconds": 12.279558199,
+        "partition_seconds": 7.736777148,
+        "objective_seconds": 8.618725784
+      }
+    },
+    "training_speedup": 1.0218844925649253,
+    "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+    "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+    "runs": [
+      {
+        "repeat": 0,
+        "variant": "baseline",
+        "report": "results/objective-specialization/baseline-0.json",
+        "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true\n",
+        "library_sha256": "ab6184094c98956201353d25332a319132bef2e2a75b857d86eebc81947983a6",
+        "training_seconds": 43.18706720788032,
+        "histogram_seconds": 8.33298921,
+        "partition_seconds": 7.46701319,
+        "objective_seconds": 6.530311489,
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+      },
+      {
+        "repeat": 0,
+        "variant": "candidate",
+        "report": "results/objective-specialization/candidate-0.json",
+        "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true\n",
+        "library_sha256": "5072480b2aea8011c9a5410d9778e0f34472f10969f17a7285b8847dce07d69a",
+        "training_seconds": 39.90183099987917,
+        "histogram_seconds": 9.078087889,
+        "partition_seconds": 7.668988873,
+        "objective_seconds": 6.965238453,
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+      },
+      {
+        "repeat": 1,
+        "variant": "baseline",
+        "report": "results/objective-specialization/baseline-1.json",
+        "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true\n",
+        "library_sha256": "ab6184094c98956201353d25332a319132bef2e2a75b857d86eebc81947983a6",
+        "training_seconds": 54.998946874868125,
+        "histogram_seconds": 13.545188532,
+        "partition_seconds": 7.93098606,
+        "objective_seconds": 9.643820991,
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+      },
+      {
+        "repeat": 1,
+        "variant": "candidate",
+        "report": "results/objective-specialization/candidate-1.json",
+        "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true\n",
+        "library_sha256": "5072480b2aea8011c9a5410d9778e0f34472f10969f17a7285b8847dce07d69a",
+        "training_seconds": 54.239852665923536,
+        "histogram_seconds": 12.657009029,
+        "partition_seconds": 7.771905615,
+        "objective_seconds": 8.618725784,
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+      },
+      {
+        "repeat": 2,
+        "variant": "candidate",
+        "report": "results/objective-specialization/candidate-2.json",
+        "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true\n",
+        "library_sha256": "5072480b2aea8011c9a5410d9778e0f34472f10969f17a7285b8847dce07d69a",
+        "training_seconds": 50.40625208406709,
+        "histogram_seconds": 12.279558199,
+        "partition_seconds": 7.736777148,
+        "objective_seconds": 8.743980742,
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+      },
+      {
+        "repeat": 2,
+        "variant": "baseline",
+        "report": "results/objective-specialization/baseline-2.json",
+        "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true\n",
+        "library_sha256": "ab6184094c98956201353d25332a319132bef2e2a75b857d86eebc81947983a6",
+        "training_seconds": 51.5093673330266,
+        "histogram_seconds": 12.297072699,
+        "partition_seconds": 7.752347645,
+        "objective_seconds": 8.953144702,
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+      }
+    ],
+    "scope": "MPS before/after only; full HIGGS rows with 100 rounds, not the published 1000-round workload or a CPU speedup claim. Same existing benchmark scripts, separate copied Python packages/libraries, fresh workers, alternating randomized order. Power state retained per run."
+  },
+  "objective_speedup": 1.0388014338060068,
+  "evidence": {
+    "path": "validation/objective-specialization-m3-observations.json.xz",
+    "sha256": "e2776ac5fb35bb795ff8db3a2588fb32ff1fa56bcbdc5f96c3c32df250480e90",
+    "contents": "All six worker reports, source patch, focused run summary/log and actual loaded-library paths."
+  },
+  "restored_library_sha256": "ab6184094c98956201353d25332a319132bef2e2a75b857d86eebc81947983a6",
+  "limits": [
+    "Fresh processes and randomized within-pair ordering; same unchanged HIGGS worker, full rows and 100 rounds.",
+    "All six saved model and margin files are bit-identical. CPU and NVIDIA were not run in this experiment.",
+    "Power and system swap measurements remain in the records; this experiment does not establish a general performance difference.",
+    "Rejected patch is archived only. Production files were restored byte-for-byte to the baseline revision; no new kernel was retained."
+  ]
+}
