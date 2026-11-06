@@ -106,6 +106,13 @@ turn a historical full run into a current full run.
 
 ## Recorded results
 
+- **Python workflow baseline before the next performance change:** `0dfde8b` plus
+  `test_metal_workflows.py`, 106 native groups and 4,001 Python passes with two
+  expected platform skips. New workflows cover mixed-column pipelines and
+  cross-validation, weighted categorical classification with early stopping,
+  and grouped ranking. Those three workflows also passed against the installed
+  package with source-path injection disabled.
+  [Revision, test hash and results](../validation/python-workflows-full-m3.json).
 - **Fresh Python installation, including the optimized sigmoid build:** the wheel's own package/library
   loaded in a fresh environment outside the checkout, without `PYTHONPATH` or
   `DYLD_LIBRARY_PATH`. Regression and classification train/predict/save/load/CPU
@@ -121,7 +128,7 @@ turn a historical full run into a current full run.
 - **HIGGS source-reference diagnosis:** all 6,184 saved MPS cuts across 28
   features exactly match CUDA-source equations; CPU cuts differ for 24 features.
   No new training or NVIDIA execution. [Scope and command](../validation/higgs-cut-source-m3.json).
-- **Last full native/Python regression:** `41d4dc2`, 106 native groups and 3,919
+- **Earlier full native/Python regression:** `41d4dc2`, 106 native groups and 3,919
   Python passes with two expected skips. See the
   [PORT-13 full-run record](../validation/output-capacity-full-m3-run.json).
 - **Accepted reader optimization:** `818e11f`, six native groups and 160 Python

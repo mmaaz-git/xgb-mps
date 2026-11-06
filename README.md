@@ -63,6 +63,7 @@ See [feature coverage and limits](docs/CUDA_PARITY.md) and the [current plan](do
 brew install snappy  # Independent decoder used by native tests.
 bash scripts/test.sh --list
 bash scripts/test.sh --python tests/test_metal_objectives.py
+bash scripts/test.sh --python tests/test_metal_workflows.py
 ```
 
 The test runner builds first and supports focused checks or `--full`. Fresh-wheel
@@ -77,6 +78,17 @@ Speedups depend on the workload. The recorded 1,000-round HIGGS benchmark at
 `68c800e` took **288 s CPU / 469 s MPS** median training on this M3. A later
 objective-kernel optimization improved a focused measurement, but a general CPU
 speedup is not established. See [complete timings and limitations](docs/PUBLISHED_BENCHMARKS.md).
+
+Large-workload profiling is separate from the tests:
+
+```sh
+.venv/bin/python scripts/profile_training.py --case wide --rows 1000000 \
+  --features 128 --rounds 100 --threads 8 --output results/profile-wide
+```
+
+The profiler runs fresh CPU/MPS processes and records setup/training times,
+GPU counters, held-out quality, memory pressure and per-round segments. HIGGS
+uses `--case higgs` with the cache from `scripts/prepare_published_data.py`.
 
 ## Repository guide
 

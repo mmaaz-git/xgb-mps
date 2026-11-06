@@ -1,0 +1,40 @@
+{
+  "status": "passed",
+  "tested_revision": "0dfde8b8d4b7155f3eae499dbdfc28d17545e8d5",
+  "additional_tests": {
+    "tests/test_metal_workflows.py": "e0f32d47b30728e25863dca27149774a8cd5df5b1cd4e6a90bdf6940bb095736"
+  },
+  "library_sha256": "bf2e3bc197a2ea9d20d017b4166c2512cc73c7c3273b0ddf70d6a52b4e9ac4f6",
+  "command": "bash scripts/test.sh --full --log-dir results/workflows-profile-20261105/full",
+  "started_utc": "20261106T042658Z",
+  "finished_utc": "2026-11-06T04:40:45.251476+00:00",
+  "hardware": "Apple M3, 10-core GPU, 16 GB RAM",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "native_groups": 106,
+  "python": {
+    "passed": 4001,
+    "skipped": 2,
+    "warnings": 670,
+    "seconds": 405.8,
+    "expected_skips": [
+      "Linux-only ELF loader test on macOS",
+      "No-accessible-Metal negative check on a host with an accessible GPU"
+    ]
+  },
+  "workflows": [
+    "Mixed DataFrame columns, sparse preprocessing, GridSearchCV, pipeline refit and joblib persistence",
+    "Weighted categorical classification with missing data, early stopping, category reordering and model reload",
+    "Whole-query train/validation/test splits, sklearn ranking, early stopping and reload"
+  ],
+  "installed_workflows": {
+    "passed": 3,
+    "package": "project .venv site-packages",
+    "isolation": "python -I, no PYTHONPATH or DYLD_LIBRARY_PATH, pytest pythonpath override empty"
+  },
+  "evidence_sha256": {
+    "results/workflows-profile-20261105/full/summary.json": "d500924268fbf5f27fe7e139a9b919cb6c8a15a54493f23662b1bbcd213f3af0",
+    "results/workflows-profile-20261105/full/214-pytest.log": "5d97414ac43b97d0bbd4bdc33f19b863fae6c070c5ed81c6ff444367a3505d5a",
+    "results/workflows-profile-20261105/workflows/summary.json": "a50d306e8241e6f969fa21fa32b259b64c53f5d85449582a32c5b7cd56d27aee"
+  },
+  "scope": "Full standard native/Python suite before performance changes. Optional federated builds, NVIDIA execution and additional Apple hardware are separate checks. Profiling ran after this suite."
+}
