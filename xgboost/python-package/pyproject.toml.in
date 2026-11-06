@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "{{ name }}"
-description = "XGBoost Python Package"
+description = "Python bindings for the xgb-mps fork of XGBoost"
 readme = { file = "README.rst", content-type = "text/x-rst" }
 authors = [
     { name = "Hyunsu Cho", email = "chohyu01@cs.washington.edu" },
@@ -15,7 +15,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 3 - Alpha",
     "Operating System :: OS Independent",
     "Typing :: Typed",
     "Programming Language :: Python",
@@ -32,8 +32,9 @@ dependencies = [
 ]
 
 [project.urls]
-documentation = "https://xgboost.readthedocs.io/en/stable/"
-repository = "https://github.com/dmlc/xgboost"
+documentation = "https://github.com/mmaaz-git/xgb-mps/blob/main/README.md"
+repository = "https://github.com/mmaaz-git/xgb-mps"
+"Upstream documentation" = "https://xgboost.readthedocs.io/en/stable/"
 
 [project.optional-dependencies]
 pandas = ["pandas>=1.2"]

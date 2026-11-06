@@ -12,8 +12,6 @@
 *.la
 *.a
 *~
-*.Rcheck
-*.rds
 *.tar.gz
 *.tar.bz2
 *conf
@@ -37,36 +35,20 @@ ipch
 rmm_log.txt
 Debug
 *suo
-.Rhistory
 *.dll
 *i386
 *x64
 *dump
 *save
 *csv
-.Rproj.user
 *.cpage.col
 *.cpage
-*.Rproj
 ./xgboost.mpi
 ./xgboost.mock
 *.bak
-#.Rbuildignore
-R-package.Rproj
-R-package/build/*
 *.cache*
 .mypy_cache/
 doxygen
-
-# java
-java/xgboost4j/target
-java/xgboost4j/tmp
-java/xgboost4j-demo/target
-java/xgboost4j-demo/data/
-java/xgboost4j-demo/tmp/
-java/xgboost4j-demo/model/
-nb-configuration*
-*.xml.versionsBackup
 
 # Eclipse
 .project
@@ -97,15 +79,10 @@ build_tests
 .DS_Store
 lib/
 
-# spark
-metastore_db
-
 /include/xgboost/build_config.h
 
-# files from R-package source install
+# Generated build configuration
 **/config.status
-R-package/config.h
-R-package/src/Makevars
 *.lib
 
 # Visual Studio
@@ -143,8 +120,6 @@ credentials.csv
 
 # Visual Studio code + extensions
 .vscode
-.metals
-.bloop
 
 # python tests
 *.bin
@@ -155,12 +130,10 @@ __MACOSX/
 model*.json
 /tests/python/models/models/
 
-# R tests
+# Generated documentation and test data
 *.htm
 *.html
 *.libsvm
-*.rds
-Rplots.pdf
 *.zip
 
 # nsys

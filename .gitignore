@@ -2,6 +2,7 @@
 .cache/
 .pytest_cache/
 .hypothesis/
+cachedir/
 __pycache__/
 *.pyc
 results/

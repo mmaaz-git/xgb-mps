@@ -1,4 +1,4 @@
-# Current review and cleanup
+# Review of the 6f3dcbd baseline
 
 2026-11-05; reviewed baseline `6f3dcbd`. Three subagents independently examined
 feature coverage, production complexity, and repository/tests/CI hygiene. This
@@ -25,7 +25,7 @@ maintenance and performance work.
 | Linear training | `updater_coordinate.cc` uses Metal reductions/residual updates; `test_metal_linear.py` covers all five selectors and CUDA-source snapshot behavior. | Actual CUDA updater comparison. |
 | Distributed/federated trees | Metal collective and learner implementations, with local multi-worker tests. | Other Apple GPUs and real multi-host deployment. |
 
-**Full ecosystem support still has gaps.** In `python-package/xgboost/spark/core.py`,
+**Ecosystem gaps at the reviewed revision (bindings since removed).** In `python-package/xgboost/spark/core.py`,
 `set_device` accepts only CPU/CUDA/GPU, GPU detection uses `use_cuda`, and worker
 GPU assignment selects CUDA ordinals. Generic `setParams(device="mps")` can
 bypass the setter, so this is an incomplete first-class integration, not proof

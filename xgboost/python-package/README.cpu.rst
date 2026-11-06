@@ -1,31 +1,19 @@
-=================================
-XGBoost Python Package (CPU only)
-=================================
+===================================
+xgb-mps Python bindings: CPU only
+===================================
 
-|PyPI version|
+This is the CPU-only Python package variant retained by the `xgb-mps fork
+<https://github.com/mmaaz-git/xgb-mps>`_ of XGBoost. It excludes GPU algorithms
+and federated learning. It does not provide ``device="mps"`` support.
 
-The ``xgboost-cpu`` package provides for a minimal installation, with no support for the
-GPU algorithms or federated learning. It is provided to allow XGBoost to be installed in a
-space-constrained environment.
+For a Metal-enabled Python build, follow the fork's `installation instructions
+<https://github.com/mmaaz-git/xgb-mps/blob/main/README.md>`_ instead. The upstream
+``pip install xgboost-cpu`` command installs the upstream distribution, not this
+fork.
 
-Note. ``xgboost-cpu`` package is only provided for x86_64 (amd64) Linux and Windows
-platforms.  For other platforms, please install ``xgboost`` from
-https://pypi.org/project/xgboost/.
+This fork ships Python bindings only. R, Java/Scala and Spark bindings,
+including ``xgboost.spark``, are removed. The CPU package variant retains the
+shared C++ engine and the usual Python API.
 
-Note. ``xgboost-cpu`` does not provide an sdist (source distribution). You may install
-sdist from https://pypi.org/project/xgboost/.
-
-Installation
-============
-
-From `PyPI <https://pypi.python.org/pypi/xgboost-cpu>`_
--------------------------------------------------------
-
-For a stable version, install using ``pip``::
-
-    pip install xgboost-cpu
-
-.. |PyPI version| image:: https://badge.fury.io/py/xgboost-cpu.svg
-   :target: https://badge.fury.io/py/xgboost-cpu
-
-For building from source, see `build <https://xgboost.readthedocs.io/en/latest/build.html>`_.
+Based on `XGBoost <https://github.com/dmlc/xgboost>`_, developed by its upstream
+contributors. Licensed under Apache-2.0; the package includes ``LICENSE``.

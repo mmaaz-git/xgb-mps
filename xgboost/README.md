@@ -1,62 +1,36 @@
-> This is the vendored engine for the Python-focused [xgb-mps fork](../README.md).
-> R, Java/Scala and Spark bindings are removed. Upstream links below describe
-> the original project; use the fork README for Metal installation and support.
+# XGBoost engine for xgb-mps
 
-<img src="https://xgboost.ai/images/logo/xgboost-logo-trimmed.png" width=200/> eXtreme Gradient Boosting
-===========
+This directory contains the vendored XGBoost 3.4.2 engine and the experimental
+Metal backend used by the [xgb-mps fork](../README.md).
 
-[![XGBoost-CI](https://github.com/dmlc/xgboost/workflows/XGBoost%20CI/badge.svg?branch=master)](https://github.com/dmlc/xgboost/actions)
-[![Documentation Status](https://readthedocs.org/projects/xgboost/badge/?version=latest)](https://xgboost.readthedocs.io)
-[![GitHub license](https://dmlc.github.io/img/apache2.svg)](./LICENSE)
-[![PyPI version](https://badge.fury.io/py/xgboost.svg)](https://pypi.python.org/pypi/xgboost/)
-[![Conda version](https://img.shields.io/conda/vn/conda-forge/py-xgboost.svg)](https://anaconda.org/conda-forge/py-xgboost)
-[![Optuna](https://img.shields.io/badge/Optuna-integrated-blue)](https://optuna.org)
-[![Twitter](https://img.shields.io/badge/@XGBoostProject--_.svg?style=social&logo=twitter)](https://twitter.com/XGBoostProject)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/dmlc/xgboost/badge)](https://api.securityscorecards.dev/projects/github.com/dmlc/xgboost)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/comet-ml/comet-examples/blob/master/integrations/model-training/xgboost/notebooks/how_to_use_comet_with_xgboost_tutorial.ipynb)
+**This fork ships Python bindings only.** The shared C++ engine and C API remain;
+R, Java/Scala and Spark bindings, including `xgboost.spark`, have been removed.
+CPU and CUDA implementations remain alongside Metal.
 
-[Community](https://xgboost.ai/community) |
-[Documentation](https://xgboost.readthedocs.io) |
-[Resources](demo/README.md) |
-[Contributors](CONTRIBUTORS.md) |
-[Release Notes](https://xgboost.readthedocs.io/en/latest/changes/index.html)
+Use the [project README](../README.md) for installation and `device="mps"`
+examples, and the [support summary](../docs/CUDA_PARITY.md) for tested behavior
+and limits. Upstream XGBoost packages and documentation describe the original
+project, not this fork's Metal support.
 
-XGBoost is an optimized distributed gradient boosting library designed to be highly ***efficient***, ***flexible*** and ***portable***.
-It implements machine learning algorithms under the [Gradient Boosting](https://en.wikipedia.org/wiki/Gradient_boosting) framework.
-XGBoost provides a parallel tree boosting (also known as GBDT, GBM) that solve many data science problems in a fast and accurate way.
-The same code runs on major distributed environment (Kubernetes, Hadoop, SGE, Dask) and can solve problems beyond billions of examples.
+## Source guide
 
-License
--------
-© Contributors, 2021. Licensed under an [Apache-2](https://github.com/dmlc/xgboost/blob/master/LICENSE) license.
+- `src/` and `include/`: shared engine, backends and C API.
+- `python-package/`: Python bindings and packaging.
+- `tests/`: retained upstream C++ and Python tests; fork-specific Metal tests
+  live in the repository's top-level [`tests/`](../tests/).
+- `doc/` and `demo/`: retained upstream documentation and examples, with removed
+  binding sections pruned.
+- `dmlc-core/` and `plugin/`: dependencies and optional engine components.
 
-Contribute to XGBoost
----------------------
-XGBoost has been developed and used by a group of active community members. Your help is very valuable to make the package better for everyone.
-Checkout the [Community Page](https://xgboost.ai/community).
+## Upstream credits and license
 
-Reference
----------
-- Tianqi Chen and Carlos Guestrin. [XGBoost: A Scalable Tree Boosting System](https://arxiv.org/abs/1603.02754). In 22nd SIGKDD Conference on Knowledge Discovery and Data Mining, 2016
-- XGBoost originates from research project at University of Washington.
+XGBoost is developed by the [upstream contributors](CONTRIBUTORS.md).
+See the [upstream repository](https://github.com/dmlc/xgboost) and
+[documentation](https://xgboost.readthedocs.io/).
 
-Sponsors
---------
-Become a sponsor and get a logo here. See details at [Sponsoring the XGBoost Project](https://xgboost.ai/sponsors). The funds are used to defray the cost of continuous integration and testing infrastructure (https://xgboost-ci.net).
+Reference: Tianqi Chen and Carlos Guestrin,
+[XGBoost: A Scalable Tree Boosting System](https://arxiv.org/abs/1603.02754),
+KDD 2016. XGBoost originated at the University of Washington.
 
-## Open Source Collective sponsors
-[![Backers on Open Collective](https://opencollective.com/xgboost/backers/badge.svg)](#backers) [![Sponsors on Open Collective](https://opencollective.com/xgboost/sponsors/badge.svg)](#sponsors)
-
-### Sponsors
-[[Become a sponsor](https://opencollective.com/xgboost#sponsor)]
-
-<a href="https://www.nvidia.com/en-us/" target="_blank"><img src="https://raw.githubusercontent.com/xgboost-ai/xgboost-ai.github.io/master/images/sponsors/nvidia.jpg" alt="NVIDIA" width="72" height="72"></a>
-<a href="https://www.comet.com/site/?utm_source=xgboost&utm_medium=github&utm_content=readme" target="_blank"><img src="https://cdn.comet.ml/img/notebook_logo.png" height="72"></a>
-<a href="https://opencollective.com/tomislav1" target="_blank"><img src="https://images.opencollective.com/tomislav1/avatar/256.png" height="72"></a>
-<a href="https://databento.com/?utm_source=xgboost&utm_medium=sponsor&utm_content=display"><img src="https://raw.githubusercontent.com/xgboost-ai/xgboost-ai.github.io/refs/heads/master/images/sponsors/databento.png" height="72"></a>
-<a href="https://www.intel.com/" target="_blank"><img src="https://images.opencollective.com/intel-corporation/2fa85c1/logo/256.png" width="72" height="72"></a>
-
-### Backers
-[[Become a backer](https://opencollective.com/xgboost#backer)]
-
-<a href="https://opencollective.com/xgboost#backers" target="_blank"><img src="https://opencollective.com/xgboost/backers.svg?width=890"></a>
+© Contributors, 2021. Licensed under [Apache-2.0](LICENSE).
+Third-party notices and licenses remain with their source files.
