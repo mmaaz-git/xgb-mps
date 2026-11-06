@@ -155,6 +155,35 @@ int main(int argc, char** argv) {
         }
         run(hist, tasks, scale, params);
       }
+      // Dense numeric screening: preserve winners across scan chunks, flat and
+      // near-tied gains, zero curvature, and bounded/unbounded gain intervals.
+      // The independent oracle evaluates every candidate at full precision.
+      for (ref::Scale scale : {ref::Scale{32, 32}, {0, 0}, {-32, -32}, {80, 80}, {48, 8}}) {
+        for (float lambda : {0.f, 1.f, 1e-8f, 1e8f, 1e9f}) {
+          std::vector<ref::Pair> hist;
+          std::vector<ref::Task> tasks;
+          for (std::uint32_t n : {31u, 32u, 33u, 127u, 255u, 256u, 257u, 1024u}) {
+            for (int pattern = 0; pattern < 6; ++pattern) {
+              auto begin = std::uint32_t(hist.size());
+              ref::Pair total{};
+              for (std::uint32_t i = 0; i < n; ++i) {
+                ref::Pair value{(std::int64_t(random() % 20001) - 10000) * (1LL << 20),
+                                std::int64_t(1 + random() % 2000) * (1LL << 20)};
+                if (pattern == 1) value.g = 0;
+                if (pattern == 2 || pattern == 3) value.g = 2 * value.h;
+                if (pattern == 3 && i == n / 2) value.g += 1;  // Near-tie below FP32 precision.
+                if (pattern == 4) value.h = 0;
+                if (pattern == 5) value.g = i % 2 ? -1 : 1;
+                hist.push_back(value);
+                total = ref::Add(total, value);
+              }
+              tasks.push_back({begin, std::uint32_t(hist.size()), 0, n, total,
+                               -INFINITY, INFINITY, 0});
+            }
+          }
+          run(hist, tasks, scale, {lambda, 0, 0, 0});
+        }
+      }
       // Integer cancellation must survive an FP64-rounded prefix: +/-2^60
       // around a one-unit contribution. Cover both numeric and categorical.
       for (int e : {-80, 0, 54, 100}) {
@@ -175,6 +204,7 @@ int main(int argc, char** argv) {
                   "exact integer children, materialized sums, gains, bins, missing directions, "
                   "partitions, category order and guards. No NVIDIA execution comparison.\n",
                   cases, bins_checked, cancellation_cases);
+      return 0;
     } catch (std::exception const& e) {
       std::fprintf(stderr, "FAIL: %s\n", e.what());
       return 1;

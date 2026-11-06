@@ -71,26 +71,31 @@ full baseline passed 106 native groups and 4,001 Python tests, with two expected
 platform skips. Workflows include preprocessing, cross-validation, categorical
 classification, early stopping, ranking and model persistence. The subsequent
 optimizations passed focused native/Python checks and installed-package
-workflows; the latest partition/sketch build passed 171 Python tests and four
+workflows; the latest split-evaluation build passed 178 Python tests and five
 native groups. [Validation commands/results](docs/VALIDATION.md) record the exact
 revisions and scope. CUDA CI compiles the NVIDIA backend; it does not run CUDA kernels.
 
 ## Performance
 
-Recent changes improved histogram accumulation and removed redundant row copies
-and feature-sort passes. Feature-key sorting is **about 4.1× faster** in an isolated
-GPU comparison for 28/128 features. Complete sketch construction improved
-**1.21× on wide data / 1.39× on HIGGS**, and partition GPU time improved **1.09–1.15×**.
-Before/after models and predictions remained bit-identical.
+Split evaluation now avoids duplicate calculations and skips candidates that
+cannot win, while retaining full-precision scoring for possible winners. On
+two dense synthetic workloads, median timings across three paired repeats are:
 
-These component gains have not established a reliable end-to-end CPU advantage.
-The latest high-dimensional runs also favor CPU: at **1,024 columns**, median
-CPU/MPS training takes **18.76 / 27.35 seconds**; at **4,096 columns**,
-**45.62 / 110.08 seconds**. Split evaluation dominates measured GPU time on these
-workloads. HIGGS training times varied substantially alongside high system-wide
-swap use. Both improvements and losses,
-including the historical 1,000-round workloads, are retained in the
-[complete timings and limitations](docs/PUBLISHED_BENCHMARKS.md).
+| Training data | CPU | MPS before | MPS after | MPS improvement |
+| --- | ---: | ---: | ---: | ---: |
+| 100K rows × 1,024 columns | 19.99 s | 34.37 s | 18.71 s | **1.84×** |
+| 25K rows × 4,096 columns | 39.01 s | 115.31 s | 55.97 s | **2.06×** |
+
+Each run uses 100 rounds, depth 6, 256 bins, eight CPU threads and 64 informative
+features, without column sampling. Split GPU time improved **5.17× / 5.29×**.
+Before/after models, predictions and per-round metric histories are bit-identical.
+CPU remains faster on the wider case; the small CPU/MPS difference at 1,024
+columns does not establish a general GPU advantage. User applications and
+substantial system-wide swap limit timing stability.
+
+Earlier changes improved histograms, row partitioning and sketch sorting.
+All timings and limitations, including losses and the historical 1,000-round
+workloads, are retained in the [benchmark record](docs/PUBLISHED_BENCHMARKS.md).
 
 Large-workload profiling is separate from the tests:
 

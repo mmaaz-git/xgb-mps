@@ -14,13 +14,15 @@ NVIDIA numerical equivalence, or a general performance advantage.
 
 Completed checks and results:
 
-- High-dimensional profiling now covers 100K rows × 1,024 columns and 25K rows ×
-  4,096 columns, with 64 informative features and three CPU/MPS pairs each.
-  CPU wins every pair; median MPS training takes 1.46× / 2.41× as long.
-  Split evaluation is the largest measured GPU cost (14.44 / 69.20 seconds).
-  Repeats and same-model CPU/MPS predictions agree exactly, but independently
-  trained models fail strict margin equivalence. No engine changes were made.
-  [High-dimensional evidence](../validation/high-dimensional-m3.json).
+- High-dimensional split evaluation now reuses identical missing-direction gains
+  and conservatively screens dense numeric candidates. On 1,024 / 4,096 columns,
+  paired median MPS training improves 1.84× / 2.06× and split GPU time improves
+  5.17× / 5.29×. All 12 MPS models, margins and metric histories match before/after;
+  five native groups, 178 Python tests and three installed workflows passed.
+  MPS is close to CPU at 1,024 columns; CPU remains faster at 4,096 columns.
+  Independently trained CPU/MPS models still differ.
+  [Optimization evidence](../validation/quantized-split-tuning-m3.json),
+  [original datasets and comparisons](../validation/high-dimensional-m3.json).
 - Partitioning now avoids a redundant row-ID copy for complete ordered ranges;
   sketch feature sorting omits all-zero high-key passes. Final checks passed
   four native groups, 171 Python tests and three installed-package workflows.
@@ -51,14 +53,13 @@ Completed checks and results:
 
 ## Next steps
 
-1. **Profile the high-dimensional split kernels.** On 4,096 columns, split GPU
-   time is about 69 seconds within 110 seconds of median training. Isolate the
-   software binary64 gain calculation, scans/reduction and dispatch geometry
-   before changing code. Preserve precision and split selection; do not assume
-   that replacing arithmetic with FP32 is equivalent. The earlier CPU sample's
-   74% command-wait share includes GPU execution, so it is not evidence that
-   submission overhead alone explains this slowdown. Retain held-out quality
-   and cross-model differences; these new datasets have no common-cut diagnosis.
+1. **Profile the remaining split-stage overhead and histogram costs.** At 4,096
+   columns, split GPU time is now 12.82 seconds and histogram GPU time 10.92 seconds
+   within 55.97 seconds of median training. Instrument CPU preparation, submission
+   and waits before choosing another change; GPU family timings can overlap and
+   their sum cannot be subtracted to infer CPU time. Preserve precision and split
+   selection. Retain held-out quality and cross-model differences; these datasets
+   still have no common-cut diagnosis.
 2. **Inspect sketch scratch-memory lifetimes.** The sampled wide worker reached
    a 6.9 GB physical-footprint peak. Check whether sorted records and temporary
    buffers can be reused without changing stable order or GPU ownership.

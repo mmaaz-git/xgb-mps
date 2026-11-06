@@ -106,6 +106,14 @@ turn a historical full run into a current full run.
 
 ## Recorded results
 
+- **Conservative quantized split screening and identical-gain reuse:** five native
+  groups and 178 Python tests passed, followed by three installed-package workflows.
+  The expanded independent CUDA-formula oracle checks 1,992 tasks and 426,234 bins,
+  including exact ties, near ties, zero curvature, cancellation and interval
+  fallback ranges. Over one million gain-bound checks also pass. All 12 MPS
+  models, margins and per-round metric histories in the paired large workloads
+  match before/after exactly. This is focused acceptance, not a full-suite rerun
+  or NVIDIA execution. [Sources, timings and checks](../validation/quantized-split-tuning-m3.json).
 - **Partition-copy removal and bounded feature-key sorting:** the final build
   passed four native groups and 171 Python tests, with no skips, followed by
   three installed-package workflows outside the checkout. Partition-only checks

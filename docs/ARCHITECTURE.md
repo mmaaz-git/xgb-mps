@@ -38,6 +38,16 @@ Quantized histogram and split paths preserve integer state. Reconstructing exact
 integers from floating views loses that contract. CUDA-source checks, CPU
 comparisons and NVIDIA execution are distinct evidence; see [the ledger](CUDA_PARITY.md).
 
+Scalar quantized splits reuse identical missing-direction gains when both integer
+missing sums are zero. Numeric features with at least 32 bins and zero missing
+sums can use conservative gain intervals when L1 regularization, delta-step limits,
+monotone constraints and leaf-weight bounds are absent. These reject candidates whose
+upper bound is strictly below another candidate's lower bound. Surviving
+candidates use the original binary64 calculation; ties are retained. Values
+outside the interval helper's supported range receive unbounded intervals and
+fall through. Category-weight scratch holds numeric upper bounds, with each
+lane reading only its own entries. No precision or selection tolerance changes.
+
 At the `6f3dcbd` review baseline the runtime/shader contained roughly 20,000 lines
 and 218 kernel entry points. Existing family headers supply extraction boundaries.
 Extract infrastructure, then one family per change; preserve arithmetic, APIs,

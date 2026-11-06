@@ -1,0 +1,1954 @@
+{
+  "status": "accepted",
+  "hardware": "Apple M3, 10-core GPU, 16 GB RAM",
+  "baseline": {
+    "revision": "fd4059a6c157397ded0b9ee17dc6ab06574f3126",
+    "sha256": {
+      "xgboost/src/common/metal_histogram.metal": "47915fd956dde85695f2b43fb87d9f7342b55e6240e14b0be756b746899782ff",
+      "xgboost/src/common/metal_histogram.mm": "b553569ce6edf36d81267f0f8aea86ddfb3434e17eae1b315d5472670c355ff0",
+      "xgboost/lib/libxgboost.dylib": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+      "scripts/profile_training.py": "2a0eb3e2c39ea315b43d66ae26c2260f42ac807c3cafdae53133790a2dfd8020"
+    }
+  },
+  "candidate": {
+    "base_revision": "fd4059a6c157397ded0b9ee17dc6ab06574f3126",
+    "sha256": {
+      "xgboost/src/common/metal_histogram.metal": "4bae9b0e4bf1fbc36394d54fc3b7214ac90bfad5c85f9f86dada02929b79ea72",
+      "xgboost/src/common/metal_histogram.mm": "f2f872d5c9812cebecf8a92c12480494ab252c9325abf04fef470f8483daddac",
+      "xgboost/lib/libxgboost.dylib": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+      "scripts/profile_training.py": "2a0eb3e2c39ea315b43d66ae26c2260f42ac807c3cafdae53133790a2dfd8020",
+      "tests/metal_cuda_split.mm": "65b83a1670baaa3420ed565e257787d9d687d59f9f8a56d9b1b7021e5054a86c",
+      "scripts/metal_quantized_split_benchmark.mm": "76ea564965e4f756a8ec016441569d37753c4be865871191fdc99fc1230a337b"
+    }
+  },
+  "changes": [
+    "Reuse the same gain for both missing directions when the integer missing sums are zero; retain missing-right ties.",
+    "For unconstrained dense numeric tasks with at least 32 bins, reuse conservative gain bounds to discard candidates only when upper < best lower. Keep the original binary64 calculation for survivors and unsupported ranges.",
+    "Cache numeric upper bounds in existing category-weight scratch; ensure diagnostic wrapper allocates it for numeric tasks too. Resident training already allocated this buffer."
+  ],
+  "precision": "No arithmetic precision, test tolerance, quantization or tie-breaking change. The existing interval helper is reused.",
+  "correctness": {
+    "focused_status": "passed",
+    "native_groups": 5,
+    "python_passed": 178,
+    "python_skipped": 0,
+    "command": "bash scripts/test.sh --native metal_cuda_split metal_split_bounds metal_cuda_multi_split metal_feature_split_api metal_split_finalize --python tests/test_metal_cuda_splits.py tests/test_metal_splits.py tests/test_metal_split_categories.py tests/test_metal_split_finalize.py tests/test_metal_training.py tests/test_metal_workflows.py --log-dir results/quantized-split-profile-20261106/focused",
+    "scalar_split_oracle": {
+      "cases": 1992,
+      "bins": 426234,
+      "cancellation_cases": 72,
+      "comparison": "Exact integer children, materialized sums, gain bits, winning bins, missing directions, partitions, category order and output guards. Expanded cases pass on baseline and final candidate; final candidate tested through the focused runner."
+    },
+    "gain_interval_oracle": {
+      "cases": 1000300,
+      "finite_intervals": 483117,
+      "unbounded_fallbacks": 517183
+    },
+    "large_workloads": "All 12 MPS models, margins and every-round metric histories are exactly equal before/after and to the original high-dimensional experiment. All six CPU controls also reproduce the original CPU outputs. Each MPS worker checks same-model CPU prediction exactly.",
+    "scope": "Focused acceptance. The historical full 106-native/4001-Python baseline predates this change. Independent CPU/MPS training still differs; no NVIDIA execution."
+  },
+  "kernel_benchmark": {
+    "device": "Apple M3",
+    "bins": 256,
+    "repeats": 5,
+    "cases": [
+      {
+        "feature_tasks": 128,
+        "missing": false,
+        "gpu_seconds": {
+          "baseline": [
+            0.0004365,
+            0.000433792,
+            0.000439792,
+            0.000434125,
+            0.000437958
+          ],
+          "reuse_only": [
+            0.000229625,
+            0.000238708,
+            0.000226583,
+            0.000232125,
+            0.000262333
+          ],
+          "screened": [
+            0.000216375,
+            0.000218333,
+            0.000255958,
+            0.000226792,
+            0.000244917
+          ]
+        },
+        "median_seconds": {
+          "baseline": 0.0004365,
+          "reuse_only": 0.000232125,
+          "screened": 0.000226792
+        },
+        "baseline_over_screened": 1.92467106423507,
+        "baseline_over_reuse_only": 1.8804523424878836
+      },
+      {
+        "feature_tasks": 1024,
+        "missing": false,
+        "gpu_seconds": {
+          "baseline": [
+            0.00237425,
+            0.002645375,
+            0.002601875,
+            0.00251875,
+            0.0025555
+          ],
+          "reuse_only": [
+            0.00133825,
+            0.00146375,
+            0.00127125,
+            0.001335625,
+            0.001266417
+          ],
+          "screened": [
+            0.000699292,
+            0.000599708,
+            0.000671167,
+            0.000603458,
+            0.000624083
+          ]
+        },
+        "median_seconds": {
+          "baseline": 0.0025555,
+          "reuse_only": 0.001335625,
+          "screened": 0.000624083
+        },
+        "baseline_over_screened": 4.094807902154041,
+        "baseline_over_reuse_only": 1.9133364529714554
+      },
+      {
+        "feature_tasks": 8192,
+        "missing": false,
+        "gpu_seconds": {
+          "baseline": [
+            0.018732083,
+            0.018119125,
+            0.018153208,
+            0.018168875,
+            0.01806075
+          ],
+          "reuse_only": [
+            0.00933125,
+            0.00961825,
+            0.009493125,
+            0.00934625,
+            0.0096705
+          ],
+          "screened": [
+            0.003711125,
+            0.003706292,
+            0.00347875,
+            0.003539208,
+            0.003538917
+          ]
+        },
+        "median_seconds": {
+          "baseline": 0.018153208,
+          "reuse_only": 0.009493125,
+          "screened": 0.003539208
+        },
+        "baseline_over_screened": 5.129172402413196,
+        "baseline_over_reuse_only": 1.9122478635854896
+      },
+      {
+        "feature_tasks": 128,
+        "missing": true,
+        "gpu_seconds": {
+          "baseline": [
+            0.000441708,
+            0.0004295,
+            0.000436875,
+            0.00047725,
+            0.000434375
+          ],
+          "reuse_only": [
+            0.000442625,
+            0.000475542,
+            0.000459,
+            0.000440375,
+            0.00043175
+          ],
+          "screened": [
+            0.000443708,
+            0.000438625,
+            0.000471167,
+            0.000476958,
+            0.000432875
+          ]
+        },
+        "median_seconds": {
+          "baseline": 0.000436875,
+          "reuse_only": 0.000442625,
+          "screened": 0.000443708
+        },
+        "baseline_over_screened": 0.984600232585394,
+        "baseline_over_reuse_only": 0.9870093194012991
+      },
+      {
+        "feature_tasks": 1024,
+        "missing": true,
+        "gpu_seconds": {
+          "baseline": [
+            0.002615167,
+            0.002451125,
+            0.002438542,
+            0.002449208,
+            0.0024785
+          ],
+          "reuse_only": [
+            0.002503875,
+            0.00254775,
+            0.002465167,
+            0.002679292,
+            0.00239375
+          ],
+          "screened": [
+            0.002442667,
+            0.002447708,
+            0.002518833,
+            0.002657667,
+            0.002537375
+          ]
+        },
+        "median_seconds": {
+          "baseline": 0.002451125,
+          "reuse_only": 0.002503875,
+          "screened": 0.002518833
+        },
+        "baseline_over_screened": 0.9731192977065174,
+        "baseline_over_reuse_only": 0.9789326543857022
+      },
+      {
+        "feature_tasks": 8192,
+        "missing": true,
+        "gpu_seconds": {
+          "baseline": [
+            0.018109292,
+            0.01827725,
+            0.017964208,
+            0.018314583,
+            0.017970958
+          ],
+          "reuse_only": [
+            0.018127,
+            0.017919625,
+            0.018118917,
+            0.017934875,
+            0.018123625
+          ],
+          "screened": [
+            0.018305917,
+            0.01833225,
+            0.018232208,
+            0.018372,
+            0.01817075
+          ]
+        },
+        "median_seconds": {
+          "baseline": 0.018109292,
+          "reuse_only": 0.018118917,
+          "screened": 0.018305917
+        },
+        "baseline_over_screened": 0.9892589374244403,
+        "baseline_over_reuse_only": 0.9994687872349104
+      }
+    ]
+  },
+  "kernel_command": "clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc scripts/metal_quantized_split_benchmark.mm -framework Metal -framework Foundation -o results/split-benchmark; results/split-benchmark xgboost/src/common/metal_histogram.metal results/split-baseline.metal",
+  "kernel_baseline_command": "git show fd4059a:xgboost/src/common/metal_histogram.metal > results/split-baseline.metal",
+  "exploratory_uncached_bounds": {
+    "note": "Earlier candidate recomputed upper bounds; superseded by the cached version. Exploratory source was not frozen separately; acceptance uses the final source hashes and paired timings.",
+    "timings": {
+      "device": "Apple M3",
+      "bins": 256,
+      "repeats": 5,
+      "cases": [
+        {
+          "feature_tasks": 128,
+          "missing": false,
+          "gpu_seconds": {
+            "baseline": [
+              0.000430625,
+              0.00043675,
+              0.000442875,
+              0.000426917,
+              0.000433625
+            ],
+            "reuse_only": [
+              0.000231125,
+              0.000239458,
+              0.000244458,
+              0.000275625,
+              0.000230958
+            ],
+            "screened": [
+              0.000242458,
+              0.000240667,
+              0.000243125,
+              0.0002265,
+              0.000267375
+            ]
+          }
+        },
+        {
+          "feature_tasks": 1024,
+          "missing": false,
+          "gpu_seconds": {
+            "baseline": [
+              0.002610708,
+              0.002566458,
+              0.002563333,
+              0.0025195,
+              0.002767042
+            ],
+            "reuse_only": [
+              0.001263375,
+              0.001258417,
+              0.001260083,
+              0.001259125,
+              0.001408958
+            ],
+            "screened": [
+              0.000798667,
+              0.0007375,
+              0.000730083,
+              0.000756667,
+              0.00072225
+            ]
+          }
+        },
+        {
+          "feature_tasks": 8192,
+          "missing": false,
+          "gpu_seconds": {
+            "baseline": [
+              0.01821575,
+              0.018154958,
+              0.018081417,
+              0.017996375,
+              0.018249042
+            ],
+            "reuse_only": [
+              0.009587542,
+              0.0096455,
+              0.009514,
+              0.009609458,
+              0.009571125
+            ],
+            "screened": [
+              0.004804375,
+              0.00475025,
+              0.004855125,
+              0.004836917,
+              0.004666
+            ]
+          }
+        },
+        {
+          "feature_tasks": 128,
+          "missing": true,
+          "gpu_seconds": {
+            "baseline": [
+              0.0004745,
+              0.000433458,
+              0.000447792,
+              0.00048875,
+              0.000430292
+            ],
+            "reuse_only": [
+              0.000471875,
+              0.000449,
+              0.0004385,
+              0.000435042,
+              0.000427542
+            ],
+            "screened": [
+              0.000441458,
+              0.000433583,
+              0.000489875,
+              0.00043775,
+              0.000478167
+            ]
+          }
+        },
+        {
+          "feature_tasks": 1024,
+          "missing": true,
+          "gpu_seconds": {
+            "baseline": [
+              0.0025195,
+              0.002370833,
+              0.002419375,
+              0.002435792,
+              0.002478208
+            ],
+            "reuse_only": [
+              0.002454,
+              0.002568875,
+              0.002464833,
+              0.002458875,
+              0.002474583
+            ],
+            "screened": [
+              0.002360917,
+              0.002551125,
+              0.002524167,
+              0.002551667,
+              0.002645458
+            ]
+          }
+        },
+        {
+          "feature_tasks": 8192,
+          "missing": true,
+          "gpu_seconds": {
+            "baseline": [
+              0.018032833,
+              0.018687083,
+              0.018167,
+              0.018308667,
+              0.018184125
+            ],
+            "reuse_only": [
+              0.018137792,
+              0.01799125,
+              0.018012166,
+              0.018044625,
+              0.017969167
+            ],
+            "screened": [
+              0.017956583,
+              0.01817425,
+              0.0179165,
+              0.01798625,
+              0.01812225
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "training": {
+    "status": "passed-bitwise-before-after",
+    "orders": [
+      [
+        "cpu",
+        "baseline",
+        "candidate"
+      ],
+      [
+        "candidate",
+        "cpu",
+        "baseline"
+      ],
+      [
+        "baseline",
+        "candidate",
+        "cpu"
+      ]
+    ],
+    "runs": [
+      {
+        "started_utc": "2026-11-06T08:23:30.629857+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 30.46535204187967,
+        "wall_seconds": 30.46600604057312,
+        "dmatrix_seconds": 0.4375578749459237,
+        "prediction_seconds": 0.0034090839326381683,
+        "gpu_counter_seconds": {},
+        "model_sha256": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+        "margins_sha256": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+        "test_accuracy": 0.7036,
+        "test_logloss": 0.5963073588455347,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1482113024,
+            "system_swap": "total = 14336.00M  used = 13256.06M  free = 1079.94M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2723823616,
+            "system_swap": "total = 15360.00M  used = 14554.94M  free = 805.06M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 0,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-4096-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-0.json",
+        "first_round_seconds": 3.3131372078787535,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:24:03.351437+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 122.99634841596708,
+        "wall_seconds": 122.99898481369019,
+        "dmatrix_seconds": 0.2218339580576867,
+        "prediction_seconds": 0.14243925013579428,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 73.765387594,
+          "gpu_time_ns": 13.08389284,
+          "cuda_sketch_gpu_time_ns": 1.289995744,
+          "input_prepare_gpu_time_ns": 0.456669657,
+          "ellpack_gpu_time_ns": 0.051675498,
+          "partition_gpu_time_ns": 0.044110407,
+          "vector_gpu_time_ns": 0.025170055,
+          "metric_gpu_time_ns": 0.008391123,
+          "objective_gpu_time_ns": 0.007394026,
+          "prediction_gpu_time_ns": 0.004468655,
+          "gradient_sum_gpu_time_ns": 0.00269466,
+          "column_sampling_gpu_time_ns": 0.000320038,
+          "base_score_gpu_time_ns": 1.7499e-05,
+          "label_validation_gpu_time_ns": 9.916e-06
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1532870656,
+            "system_swap": "total = 15360.00M  used = 14554.94M  free = 805.06M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2352168960,
+            "system_swap": "total = 18432.00M  used = 17183.94M  free = 1248.06M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 0,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-4096-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-0.json",
+        "first_round_seconds": 3.371172291925177,
+        "split_seconds": 73.765387594,
+        "histogram_seconds": 13.08389284,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:26:12.537869+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 61.75619350001216,
+        "wall_seconds": 61.75751781463623,
+        "dmatrix_seconds": 0.22587120812386274,
+        "prediction_seconds": 0.132671041181311,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 12.822623519,
+          "gpu_time_ns": 10.929730264,
+          "cuda_sketch_gpu_time_ns": 1.857500614,
+          "input_prepare_gpu_time_ns": 0.399740114,
+          "ellpack_gpu_time_ns": 0.053389957,
+          "partition_gpu_time_ns": 0.033644444,
+          "vector_gpu_time_ns": 0.021240157,
+          "metric_gpu_time_ns": 0.006874155,
+          "objective_gpu_time_ns": 0.00601499,
+          "prediction_gpu_time_ns": 0.004125279,
+          "gradient_sum_gpu_time_ns": 0.002628204,
+          "column_sampling_gpu_time_ns": 0.000254358,
+          "base_score_gpu_time_ns": 1.725e-05,
+          "label_validation_gpu_time_ns": 9.791e-06
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1538179072,
+            "system_swap": "total = 18432.00M  used = 17159.94M  free = 1272.06M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2357755904,
+            "system_swap": "total = 18432.00M  used = 17232.25M  free = 1199.75M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 0,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-4096-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/candidate-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-0.json",
+        "first_round_seconds": 4.616624708054587,
+        "split_seconds": 12.822623519,
+        "histogram_seconds": 10.929730264,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:27:17.406814+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 55.97343274997547,
+        "wall_seconds": 55.97463011741638,
+        "dmatrix_seconds": 0.24667179211974144,
+        "prediction_seconds": 0.12016979209147394,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 12.82591455,
+          "gpu_time_ns": 10.922693737,
+          "cuda_sketch_gpu_time_ns": 1.119115738,
+          "input_prepare_gpu_time_ns": 0.401830735,
+          "ellpack_gpu_time_ns": 0.064996207,
+          "partition_gpu_time_ns": 0.031763994,
+          "vector_gpu_time_ns": 0.020708696,
+          "metric_gpu_time_ns": 0.006978584,
+          "objective_gpu_time_ns": 0.006103731,
+          "prediction_gpu_time_ns": 0.003629398,
+          "gradient_sum_gpu_time_ns": 0.002178756,
+          "column_sampling_gpu_time_ns": 0.000264699,
+          "base_score_gpu_time_ns": 1.7999e-05,
+          "label_validation_gpu_time_ns": 1.0208e-05
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1533083648,
+            "system_swap": "total = 18432.00M  used = 17160.25M  free = 1271.75M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2352644096,
+            "system_swap": "total = 18432.00M  used = 16961.50M  free = 1470.50M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 1,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-4096-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/candidate-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-1.json",
+        "first_round_seconds": 2.754816999891773,
+        "split_seconds": 12.82591455,
+        "histogram_seconds": 10.922693737,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:28:16.200407+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 44.838853207882494,
+        "wall_seconds": 44.83981490135193,
+        "dmatrix_seconds": 0.22494087484665215,
+        "prediction_seconds": 0.004329917021095753,
+        "gpu_counter_seconds": {},
+        "model_sha256": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+        "margins_sha256": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+        "test_accuracy": 0.7036,
+        "test_logloss": 0.5963073588455347,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1511751680,
+            "system_swap": "total = 18432.00M  used = 16945.50M  free = 1486.50M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 4903649280,
+            "system_swap": "total = 17408.00M  used = 15969.31M  free = 1438.69M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 1,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-4096-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-1.json",
+        "first_round_seconds": 3.1713857501745224,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:29:03.514944+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 115.30949104111642,
+        "wall_seconds": 115.31195998191833,
+        "dmatrix_seconds": 0.2304406249895692,
+        "prediction_seconds": 0.10125612490810454,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 67.894380129,
+          "gpu_time_ns": 12.029700793,
+          "cuda_sketch_gpu_time_ns": 1.42878874,
+          "input_prepare_gpu_time_ns": 0.426570661,
+          "ellpack_gpu_time_ns": 0.056265748,
+          "partition_gpu_time_ns": 0.038637159,
+          "vector_gpu_time_ns": 0.023976477,
+          "metric_gpu_time_ns": 0.008268862,
+          "objective_gpu_time_ns": 0.006181784,
+          "prediction_gpu_time_ns": 0.003985407,
+          "gradient_sum_gpu_time_ns": 0.003025452,
+          "column_sampling_gpu_time_ns": 0.000282774,
+          "base_score_gpu_time_ns": 1.7082e-05,
+          "label_validation_gpu_time_ns": 9.875e-06
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1532854272,
+            "system_swap": "total = 17408.00M  used = 15961.31M  free = 1446.69M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2352398336,
+            "system_swap": "total = 18432.00M  used = 17134.19M  free = 1297.81M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 1,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-4096-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-1.json",
+        "first_round_seconds": 4.196329250000417,
+        "split_seconds": 67.894380129,
+        "histogram_seconds": 12.029700793,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:31:01.600712+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 107.09746933309361,
+        "wall_seconds": 107.09976506233215,
+        "dmatrix_seconds": 0.2368936249986291,
+        "prediction_seconds": 0.11295800004154444,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 67.356195187,
+          "gpu_time_ns": 11.898204937,
+          "cuda_sketch_gpu_time_ns": 1.332275366,
+          "input_prepare_gpu_time_ns": 0.441087325,
+          "ellpack_gpu_time_ns": 0.052462831,
+          "partition_gpu_time_ns": 0.03768981,
+          "vector_gpu_time_ns": 0.024104482,
+          "metric_gpu_time_ns": 0.007648073,
+          "objective_gpu_time_ns": 0.006523358,
+          "prediction_gpu_time_ns": 0.003975196,
+          "gradient_sum_gpu_time_ns": 0.00311295,
+          "column_sampling_gpu_time_ns": 0.000336398,
+          "base_score_gpu_time_ns": 1.7666e-05,
+          "label_validation_gpu_time_ns": 9.916e-06
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1532968960,
+            "system_swap": "total = 18432.00M  used = 17094.19M  free = 1337.81M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2352578560,
+            "system_swap": "total = 18432.00M  used = 17427.19M  free = 1004.81M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 2,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-4096-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-2.json",
+        "first_round_seconds": 3.837214791914448,
+        "split_seconds": 67.356195187,
+        "histogram_seconds": 11.898204937,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:32:51.595138+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 51.58602845808491,
+        "wall_seconds": 51.58713483810425,
+        "dmatrix_seconds": 0.23037058301270008,
+        "prediction_seconds": 0.10553241684101522,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 12.428687574,
+          "gpu_time_ns": 10.542986206,
+          "cuda_sketch_gpu_time_ns": 1.36361524,
+          "input_prepare_gpu_time_ns": 0.395607701,
+          "ellpack_gpu_time_ns": 0.056135373,
+          "partition_gpu_time_ns": 0.032078783,
+          "vector_gpu_time_ns": 0.022154305,
+          "metric_gpu_time_ns": 0.007404741,
+          "objective_gpu_time_ns": 0.005803817,
+          "prediction_gpu_time_ns": 0.004314487,
+          "gradient_sum_gpu_time_ns": 0.002117331,
+          "column_sampling_gpu_time_ns": 0.001352904,
+          "base_score_gpu_time_ns": 1.7791e-05,
+          "label_validation_gpu_time_ns": 9.749e-06
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1532985344,
+            "system_swap": "total = 18432.00M  used = 17387.19M  free = 1044.81M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2352545792,
+            "system_swap": "total = 18432.00M  used = 18055.44M  free = 376.56M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 2,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-4096-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/candidate-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-2.json",
+        "first_round_seconds": 3.347562290960923,
+        "split_seconds": 12.428687574,
+        "histogram_seconds": 10.542986206,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:33:45.890687+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 39.00616495893337,
+        "wall_seconds": 39.00700116157532,
+        "dmatrix_seconds": 0.2105429999064654,
+        "prediction_seconds": 0.004169916966930032,
+        "gpu_counter_seconds": {},
+        "model_sha256": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+        "margins_sha256": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+        "test_accuracy": 0.7036,
+        "test_logloss": 0.5963073588455347,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1511686144,
+            "system_swap": "total = 18432.00M  used = 18007.44M  free = 424.56M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 4890312704,
+            "system_swap": "total = 18432.00M  used = 17439.44M  free = 992.56M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 2,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-4096-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-2.json",
+        "first_round_seconds": 3.204183582914993,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:34:27.100839+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 18.82918795896694,
+        "wall_seconds": 18.829593181610107,
+        "dmatrix_seconds": 0.2237063329666853,
+        "prediction_seconds": 0.005110249854624271,
+        "gpu_counter_seconds": {},
+        "model_sha256": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+        "margins_sha256": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+        "test_accuracy": 0.7311,
+        "test_logloss": 0.5303854689651541,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1513717760,
+            "system_swap": "total = 18432.00M  used = 17439.44M  free = 992.56M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2893414400,
+            "system_swap": "total = 18432.00M  used = 17383.44M  free = 1048.56M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 0,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-1024-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-0.json",
+        "first_round_seconds": 2.11004720791243,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:34:48.011903+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 30.495782874990255,
+        "wall_seconds": 30.496438026428223,
+        "dmatrix_seconds": 0.22139191697351635,
+        "prediction_seconds": 0.15902224997989833,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 17.275974907,
+          "gpu_time_ns": 4.013809867,
+          "cuda_sketch_gpu_time_ns": 1.451392656,
+          "input_prepare_gpu_time_ns": 0.304790661,
+          "partition_gpu_time_ns": 0.106047881,
+          "ellpack_gpu_time_ns": 0.049341999,
+          "vector_gpu_time_ns": 0.021578277,
+          "metric_gpu_time_ns": 0.01680049,
+          "objective_gpu_time_ns": 0.01537932,
+          "prediction_gpu_time_ns": 0.008478472,
+          "gradient_sum_gpu_time_ns": 0.004222935,
+          "column_sampling_gpu_time_ns": 0.000228883,
+          "base_score_gpu_time_ns": 1.7499e-05,
+          "label_validation_gpu_time_ns": 1.3875e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535115264,
+            "system_swap": "total = 18432.00M  used = 17383.44M  free = 1048.56M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355265536,
+            "system_swap": "total = 17408.00M  used = 15851.81M  free = 1556.19M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 0,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-1024-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-0.json",
+        "first_round_seconds": 2.177200166042894,
+        "split_seconds": 17.275974907,
+        "histogram_seconds": 4.013809867,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:35:21.589954+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 18.387987917056307,
+        "wall_seconds": 18.38838291168213,
+        "dmatrix_seconds": 0.24441162520088255,
+        "prediction_seconds": 0.09333325014449656,
+        "gpu_counter_seconds": {
+          "gpu_time_ns": 3.643306021,
+          "split_gpu_time_ns": 3.377196152,
+          "cuda_sketch_gpu_time_ns": 1.53581466,
+          "input_prepare_gpu_time_ns": 0.296280618,
+          "partition_gpu_time_ns": 0.086014362,
+          "ellpack_gpu_time_ns": 0.055254332,
+          "vector_gpu_time_ns": 0.023254633,
+          "metric_gpu_time_ns": 0.015103325,
+          "objective_gpu_time_ns": 0.01339982,
+          "prediction_gpu_time_ns": 0.008522824,
+          "gradient_sum_gpu_time_ns": 0.004407722,
+          "column_sampling_gpu_time_ns": 0.000186731,
+          "base_score_gpu_time_ns": 1.7374e-05,
+          "label_validation_gpu_time_ns": 1.3625e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535229952,
+            "system_swap": "total = 17408.00M  used = 15731.81M  free = 1676.19M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355363840,
+            "system_swap": "total = 17408.00M  used = 16449.81M  free = 958.19M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 0,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-1024-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/candidate-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-0.json",
+        "first_round_seconds": 2.60395091609098,
+        "split_seconds": 3.377196152,
+        "histogram_seconds": 3.643306021,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:35:42.780959+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 18.710541374981403,
+        "wall_seconds": 18.710944175720215,
+        "dmatrix_seconds": 0.2194004999473691,
+        "prediction_seconds": 0.09875308279879391,
+        "gpu_counter_seconds": {
+          "gpu_time_ns": 3.647523567,
+          "split_gpu_time_ns": 3.418426437,
+          "cuda_sketch_gpu_time_ns": 1.470229365,
+          "input_prepare_gpu_time_ns": 0.299680741,
+          "partition_gpu_time_ns": 0.084770627,
+          "ellpack_gpu_time_ns": 0.055347663,
+          "vector_gpu_time_ns": 0.022329094,
+          "metric_gpu_time_ns": 0.014508248,
+          "objective_gpu_time_ns": 0.013375653,
+          "prediction_gpu_time_ns": 0.008355736,
+          "gradient_sum_gpu_time_ns": 0.004071052,
+          "column_sampling_gpu_time_ns": 0.00019099,
+          "base_score_gpu_time_ns": 1.854e-05,
+          "label_validation_gpu_time_ns": 1.4124e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535524864,
+            "system_swap": "total = 17408.00M  used = 16321.81M  free = 1086.19M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355724288,
+            "system_swap": "total = 17408.00M  used = 16786.06M  free = 621.94M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 1,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-1024-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/candidate-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-1.json",
+        "first_round_seconds": 2.157189416931942,
+        "split_seconds": 3.418426437,
+        "histogram_seconds": 3.647523567,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:36:03.806571+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 19.98859841702506,
+        "wall_seconds": 19.98902702331543,
+        "dmatrix_seconds": 0.23284579208120704,
+        "prediction_seconds": 0.008142624981701374,
+        "gpu_counter_seconds": {},
+        "model_sha256": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+        "margins_sha256": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+        "test_accuracy": 0.7311,
+        "test_logloss": 0.5303854689651541,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1513734144,
+            "system_swap": "total = 17408.00M  used = 16786.06M  free = 621.94M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2896674816,
+            "system_swap": "total = 17408.00M  used = 16618.06M  free = 789.94M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 1,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-1024-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-1.json",
+        "first_round_seconds": 2.2185383329633623,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:36:26.031449+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 34.930467957863584,
+        "wall_seconds": 34.93121790885925,
+        "dmatrix_seconds": 0.2947710838634521,
+        "prediction_seconds": 0.08856616588309407,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 17.631157941,
+          "gpu_time_ns": 4.054244126,
+          "cuda_sketch_gpu_time_ns": 1.583407574,
+          "input_prepare_gpu_time_ns": 0.313072608,
+          "partition_gpu_time_ns": 0.102166044,
+          "ellpack_gpu_time_ns": 0.058317247,
+          "vector_gpu_time_ns": 0.021446591,
+          "metric_gpu_time_ns": 0.016790748,
+          "objective_gpu_time_ns": 0.015431985,
+          "prediction_gpu_time_ns": 0.009196766,
+          "gradient_sum_gpu_time_ns": 0.004859905,
+          "column_sampling_gpu_time_ns": 0.000500501,
+          "base_score_gpu_time_ns": 7.6166e-05,
+          "label_validation_gpu_time_ns": 7.0541e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535016960,
+            "system_swap": "total = 17408.00M  used = 16562.06M  free = 845.94M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355232768,
+            "system_swap": "total = 17408.00M  used = 16307.75M  free = 1100.25M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 1,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-1024-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-1.json",
+        "first_round_seconds": 2.7298108329996467,
+        "split_seconds": 17.631157941,
+        "histogram_seconds": 4.054244126,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:37:03.403411+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 34.37053741700947,
+        "wall_seconds": 34.371273040771484,
+        "dmatrix_seconds": 0.2425701250322163,
+        "prediction_seconds": 0.08533699996769428,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 17.995378171,
+          "gpu_time_ns": 4.174669416,
+          "cuda_sketch_gpu_time_ns": 1.482538073,
+          "input_prepare_gpu_time_ns": 0.313212535,
+          "partition_gpu_time_ns": 0.104401037,
+          "ellpack_gpu_time_ns": 0.065178665,
+          "vector_gpu_time_ns": 0.023777375,
+          "metric_gpu_time_ns": 0.018697244,
+          "objective_gpu_time_ns": 0.016012991,
+          "prediction_gpu_time_ns": 0.00920136,
+          "gradient_sum_gpu_time_ns": 0.005879947,
+          "column_sampling_gpu_time_ns": 0.000283044,
+          "base_score_gpu_time_ns": 1.7791e-05,
+          "label_validation_gpu_time_ns": 1.375e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535541248,
+            "system_swap": "total = 17408.00M  used = 16299.75M  free = 1108.25M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355789824,
+            "system_swap": "total = 17408.00M  used = 16629.06M  free = 778.94M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 2,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-1024-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-2.json",
+        "first_round_seconds": 2.970043000066653,
+        "split_seconds": 17.995378171,
+        "histogram_seconds": 4.174669416,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:37:40.338727+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 19.369866624940187,
+        "wall_seconds": 19.370283842086792,
+        "dmatrix_seconds": 0.2062897498253733,
+        "prediction_seconds": 0.11153870914131403,
+        "gpu_counter_seconds": {
+          "gpu_time_ns": 3.662787049,
+          "split_gpu_time_ns": 3.41269289,
+          "cuda_sketch_gpu_time_ns": 1.529194241,
+          "input_prepare_gpu_time_ns": 0.301597864,
+          "partition_gpu_time_ns": 0.085844894,
+          "ellpack_gpu_time_ns": 0.05663854,
+          "vector_gpu_time_ns": 0.020193864,
+          "metric_gpu_time_ns": 0.014837326,
+          "objective_gpu_time_ns": 0.013485314,
+          "prediction_gpu_time_ns": 0.008655617,
+          "gradient_sum_gpu_time_ns": 0.004231057,
+          "column_sampling_gpu_time_ns": 0.000191312,
+          "base_score_gpu_time_ns": 1.8082e-05,
+          "label_validation_gpu_time_ns": 1.375e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535197184,
+            "system_swap": "total = 17408.00M  used = 16485.06M  free = 922.94M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355363840,
+            "system_swap": "total = 17408.00M  used = 16471.31M  free = 936.69M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 2,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-1024-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/candidate-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-2.json",
+        "first_round_seconds": 2.34587312489748,
+        "split_seconds": 3.41269289,
+        "histogram_seconds": 3.662787049,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T08:38:02.345255+00:00",
+        "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+        "training_seconds": 22.26070816605352,
+        "wall_seconds": 22.261186122894287,
+        "dmatrix_seconds": 0.23228220804594457,
+        "prediction_seconds": 0.008091374998912215,
+        "gpu_counter_seconds": {},
+        "model_sha256": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+        "margins_sha256": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+        "test_accuracy": 0.7311,
+        "test_logloss": 0.5303854689651541,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1513799680,
+            "system_swap": "total = 17408.00M  used = 16455.31M  free = 952.69M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2889351168,
+            "system_swap": "total = 17408.00M  used = 16311.31M  free = 1096.69M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 2,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/paired/wide-1024-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/baseline-package"
+        ],
+        "report": "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-2.json",
+        "first_round_seconds": 2.3479152920190245,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "exact_original_model_margins_and_metric_history": true
+      }
+    ],
+    "cases": {
+      "wide-4096": {
+        "medians": {
+          "cpu": {
+            "training_seconds": 39.00616495893337,
+            "dmatrix_seconds": 0.22494087484665215,
+            "first_round_seconds": 3.204183582914993,
+            "split_seconds": 0.0,
+            "histogram_seconds": 0.0
+          },
+          "baseline": {
+            "training_seconds": 115.30949104111642,
+            "dmatrix_seconds": 0.2304406249895692,
+            "first_round_seconds": 3.837214791914448,
+            "split_seconds": 67.894380129,
+            "histogram_seconds": 12.029700793
+          },
+          "candidate": {
+            "training_seconds": 55.97343274997547,
+            "dmatrix_seconds": 0.23037058301270008,
+            "first_round_seconds": 3.347562290960923,
+            "split_seconds": 12.822623519,
+            "histogram_seconds": 10.922693737
+          }
+        },
+        "training_speedup": 2.0600753853383584,
+        "split_speedup": 5.294889928601357,
+        "cpu_over_candidate": 0.6968692653382146,
+        "exact_original_model_margins_and_metric_history": true,
+        "paired_baseline_over_candidate": [
+          1.991643937962965,
+          2.0600753853383584,
+          2.076094487873074
+        ],
+        "dmatrix_plus_training_medians": {
+          "cpu": 39.216707958839834,
+          "baseline": 115.53993166610599,
+          "candidate": 56.220104542095214
+        }
+      },
+      "wide-1024": {
+        "medians": {
+          "cpu": {
+            "training_seconds": 19.98859841702506,
+            "dmatrix_seconds": 0.23228220804594457,
+            "first_round_seconds": 2.2185383329633623,
+            "split_seconds": 0.0,
+            "histogram_seconds": 0.0
+          },
+          "baseline": {
+            "training_seconds": 34.37053741700947,
+            "dmatrix_seconds": 0.2425701250322163,
+            "first_round_seconds": 2.7298108329996467,
+            "split_seconds": 17.631157941,
+            "histogram_seconds": 4.054244126
+          },
+          "candidate": {
+            "training_seconds": 18.710541374981403,
+            "dmatrix_seconds": 0.2194004999473691,
+            "first_round_seconds": 2.34587312489748,
+            "split_seconds": 3.41269289,
+            "histogram_seconds": 3.647523567
+          }
+        },
+        "training_speedup": 1.836961140149994,
+        "split_speedup": 5.166347664234153,
+        "cpu_over_candidate": 1.068306791152104,
+        "exact_original_model_margins_and_metric_history": true,
+        "paired_baseline_over_candidate": [
+          1.6584621989392876,
+          1.8668870802728605,
+          1.7744333547839082
+        ],
+        "dmatrix_plus_training_medians": {
+          "cpu": 20.221444209106266,
+          "baseline": 34.61310754204169,
+          "candidate": 18.929941874928772
+        }
+      }
+    },
+    "note": "Fresh workers; 100 rounds, 64 informative columns, all columns considered, eight CPU threads. CPU and both MPS variants run sequentially. Require exact saved models and margins from the original high-dimensional runs."
+  },
+  "dataset_provenance": "validation/high-dimensional-m3.json; identical 64-informative-feature datasets, 100 rounds, depth 6, 256 bins, eight CPU threads. No column subsampling. Train shapes 100000x1024 and 25000x4096; 102400000 training values each.",
+  "installed_package": {
+    "status": "passed",
+    "pytest_exit_code": 0,
+    "package": "/Users/maaz/Documents/xgb-mps/.venv/lib/python3.13/site-packages/xgboost/__init__.py",
+    "library": "/Users/maaz/Documents/xgb-mps/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.dylib",
+    "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+    "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+    "cwd": "/private/tmp",
+    "pytest_args": [
+      "-q",
+      "/Users/maaz/Documents/xgb-mps/tests/test_metal_workflows.py",
+      "-o",
+      "pythonpath=",
+      "--require-metal",
+      "--junitxml=/Users/maaz/Documents/xgb-mps/results/quantized-split-profile-20261106/installed-workflows.xml"
+    ],
+    "isolation": "python -I; cwd outside checkout; no PYTHONPATH or DYLD_LIBRARY_PATH; pytest pythonpath override empty",
+    "wheel": {
+      "filename": "xgboost-3.4.2-py3-none-macosx_26_0_arm64.whl",
+      "sha256": "4304d37c3e8ad24fce818a1323a062662a482836c157c6469cf3a83381d5aa31",
+      "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b"
+    },
+    "workflow_tests_passed": 3
+  },
+  "limits": [
+    "Warm runtime, fresh worker and matrices. Training includes quantization/evaluation; data generation, matrix setup and final prediction are separate.",
+    "GPU counter families can overlap. Do not sum them or subtract their sum from wall time to infer host execution.",
+    "This task ran no concurrent builds/tests/other benchmarks during timing. Unrelated sessions and applications were not controlled; swap observations are system-wide.",
+    "Dense unconstrained numeric splits benefit from screening; missing-data, categorical and constrained cases retain the full evaluator. Microbenchmark fallback timings and all losses are retained.",
+    "One M3, three full-training repeats per variant. These are bounded synthetic workloads, not a claim of general superiority over CPU or CUDA."
+  ],
+  "local_evidence_sha256": {
+    "results/quantized-split-profile-20261106/baseline-source.json": "feb2ffa3c5969af88c2f1c7338ca582efc0aa194f8e9e88ac06ed2ec66e5c57e",
+    "results/quantized-split-profile-20261106/baseline.metal": "47915fd956dde85695f2b43fb87d9f7342b55e6240e14b0be756b746899782ff",
+    "results/quantized-split-profile-20261106/candidate-source.json": "2fc119ff0ff2d5132c2a370eabbacae3b5ff553ae354baaf3a9b1bcefec4cf33",
+    "results/quantized-split-profile-20261106/check-installed.py": "d6c50cd0f64f2adee115a88d0c6dd5a9a67813204c827e96bcb30a376d6844c4",
+    "results/quantized-split-profile-20261106/focused/001-build-metal.log": "bcf58a2e7dba94b0b19f8791090f6ccb05a15e9e7a6ad10a7075490cbe87fd96",
+    "results/quantized-split-profile-20261106/focused/002-compile-metal_split_bounds.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/quantized-split-profile-20261106/focused/003-metal_split_bounds.log": "eb82854dd41ad258240fa8c4483da950928ab13a790cc2ceabde4a7bf71e3ef5",
+    "results/quantized-split-profile-20261106/focused/004-compile-metal_cuda_split.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/quantized-split-profile-20261106/focused/005-metal_cuda_split.log": "6031e6e93749adc7f5fb0b7fc2a9ce808278490c98a65141173d912979cdc462",
+    "results/quantized-split-profile-20261106/focused/006-compile-metal_cuda_multi_split.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/quantized-split-profile-20261106/focused/007-metal_cuda_multi_split.log": "9555e788c1f1ed8591e7b66494ebbb33a246550abffa4d42ee77098987b18f80",
+    "results/quantized-split-profile-20261106/focused/008-compile-metal_split_finalize.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/quantized-split-profile-20261106/focused/009-metal_split_finalize.log": "7d4a48ba5f18dcd8e96caa3b522d20420df5add72b01e0548214dcd9935cabd6",
+    "results/quantized-split-profile-20261106/focused/010-compile-metal_feature_split_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/quantized-split-profile-20261106/focused/011-metal_feature_split_api.log": "1c638779b0b9037b9a4bb4ed4cd7900baa3558252755a28e972f470d49293b53",
+    "results/quantized-split-profile-20261106/focused/012-pytest.log": "fab69ce8b9dead7891946a1c3f2f9d4d55de590189807f4d70a8fccc8e4e7a83",
+    "results/quantized-split-profile-20261106/focused/summary.json": "0fc319c108626bab13f9d010a49ae1414cd3cf7747636e4db68d69ca0b847c18",
+    "results/quantized-split-profile-20261106/install.log": "cc0a796d11022fd985814f1b9863dcb5debba869def7d35b3f931a3e8afc3468",
+    "results/quantized-split-profile-20261106/install.sh": "2633d7c3002252e9f94bddf98980d3b0bde85d5b88b0f41e77e89a559bba3e32",
+    "results/quantized-split-profile-20261106/installed-workflows.json": "a432dea947900e7a22e1f5be166c5924c80c8b9812f2e6ce1547e139ffae5222",
+    "results/quantized-split-profile-20261106/installed-workflows.xml": "79cd40de18e261b0900c638f424aabdfc8054a1be8217650ceae8b0747d9719b",
+    "results/quantized-split-profile-20261106/kernel-timings-cached.json": "3c24501abf43a1124d257f6c459aeb561b61ee11c2074a2754d23f831a91c57b",
+    "results/quantized-split-profile-20261106/kernel-timings.json": "b535e30387d952f87b3f8cf3efb90e310d4d1a252db3368a719faf90d1c2d1c3",
+    "results/quantized-split-profile-20261106/kernels.log": "ef58caca856fc0a3b6aa9b2fc12edd4b5b53106c09d4b786ddfb22a7d69ff41c",
+    "results/quantized-split-profile-20261106/kernels.sh": "c660cc3ecf6f144dbd735fd6a13caaac23b51eeee30916291120bcfa19324d85",
+    "results/quantized-split-profile-20261106/paired/summary.json": "cab48378be4707a8ebc46d64d766106123518d06c3be4ac75031e1eb8c1207e2",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-0.json": "c1d7fd52ce2b033f92f6eb9aa04e6a63d560a00f76cade826e174b91db0c8722",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-0.log": "d6fd55be72abc0477a2c8c7a5e684a69b8bf25391d4e628740783304779ecb16",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-0.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-0.progress.json": "892458a578358d703f1a4fe27a03569962fab98b9b644716637cd8c69d94973e",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-0.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-1.json": "c4b528ad320c9cef67660e160503cf63484413a6fb2012d1b61d54164dda6ba4",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-1.log": "d63472a05d9216954b9899731c9b03e61d129256e91588a68468227223cde3e8",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-1.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-1.progress.json": "1754ecb60f7fea8a3b25c141b7b6ebc226f712572fd29c76b5a8743adcd8c141",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-1.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-2.json": "a17456b14cec74b429cdd27f442bcdce01bef3fd4b1ff25dd245c409239c0f89",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-2.log": "ed6e2aafb66b007b5df4ab33a165034492d07f6b28c52f2b121ca6ebe396c7f5",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-2.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-2.progress.json": "3a4c7006111d4c2fa24902de7761be4af02c760075874924ce95fc1f337f808a",
+    "results/quantized-split-profile-20261106/paired/wide-1024-baseline/mps-2.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-0.json": "7e932970129a9ae2d59981a7230f8fe9d813ccc64d41d9e5aa4e66d10a4da032",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-0.log": "dee985765ecbcfb218cef8b5df425e79198bcffbbd5d344d2ad00192e254fa8d",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-0.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-0.progress.json": "d1f01d46b5058da463157d3e5d8cd6bde0ad01ca94f428425dca654eebd24637",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-0.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-1.json": "732073793cb3ad1a595e1900a9124a7ea7346208326455d3f4abd94f5b364ebf",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-1.log": "374a446e6618d371bad51a6e790b40f0e30cb5ecc7b9f8f8f46f87f8b5cd4421",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-1.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-1.progress.json": "64b10f6904d58b8c5fff0cd32cb8a4fccb5bb6ff583d0f6239e4fa57cf7280f1",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-1.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-2.json": "156e5709eb8583ecde8dbcff5a42d5081d706ae53e416e0f7e1776f55c0d0aa1",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-2.log": "45e612899f8c7b8a210159ca8f40c0da76423bae9470ad175f4357234c8debe7",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-2.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-2.progress.json": "ff4444ab461a30a559d4530721c1469688edec6202488beb8c17bf196743da1a",
+    "results/quantized-split-profile-20261106/paired/wide-1024-candidate/mps-2.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-0.json": "69a7a778cbe0485eb95bd6e337f616de830b6773e6157c415ba5e771087021c5",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-0.log": "eb705f98fb94d8e0c63ea94c5fae4db9ef6e5f75b10cd1eb8adf5b48e38d4a25",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-0.margins.npy": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-0.progress.json": "522ea9bfca62b73755bca16a9c5ffa94d3fc34b0bb7fd448b35d4804fd77f6f2",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-0.ubj": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-1.json": "b254258e78373f8f7de3f56395de69733b4b19f7ee77cb48126751d3d0159895",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-1.log": "046067e848d6b33f1c0b200c32993fb8baa58fbb28a043792947de7a6b3b7c0f",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-1.margins.npy": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-1.progress.json": "853402e23fef428bd69c22cb454c04a2579442b9c799d02567056327c8c9ec75",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-1.ubj": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-2.json": "5c4bd5fb0ec8cf01cb2a6574ebbd67f878975decb2db7bac74d9d496bc02aeda",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-2.log": "554f287af726381091deb8f755ec874daf98ff0f57046e645436cb03dad30db5",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-2.margins.npy": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-2.progress.json": "5054a9cc59b462d4c5a8dfa9c8c5193e628f509630ee1f1a6ec81466375eb7b2",
+    "results/quantized-split-profile-20261106/paired/wide-1024-cpu/cpu-2.ubj": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-0.json": "c027a2e4ada49e27214ea9e982ddefde1b82d0ea513a6942535a966a54e809e1",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-0.log": "4a4c75a348e119291c7d8ffb725af9630e4918096290bdb1cb5b16ec723202f4",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-0.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-0.progress.json": "88e7f6c8e90e374fe75b75463870944cbe0408c943d47562c71114e9f7c1ec9f",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-0.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-1.json": "eb131755c2780acd854ebb051a9e6230562ecfb65c1ac277ea79a9d97b3d1eb1",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-1.log": "29a72dabfba71cd33e64df5adf62148c670c3007423d734f2d726ff13a651641",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-1.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-1.progress.json": "fb8f9c87f408b140297a08260b9216d5e5d2e94c815ca6d031a6091cf592fedf",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-1.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-2.json": "849058455f06625d4a0f61ceac7e05573e46ba21aa079bc3f72d7b4e14df8b41",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-2.log": "a3400326fad56a5250cb2050488d6f6fa4dcc04ccd62f455c147b0a667d1ecf8",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-2.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-2.progress.json": "6e25d97efec5dc5005b5aeaac6773c2645ab43a4db5ab274b1d1b8b411039cf4",
+    "results/quantized-split-profile-20261106/paired/wide-4096-baseline/mps-2.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-0.json": "f34cfd01f6c045e7f55ad48a3eb0da714db361fd6719a3395207a0e355ba600c",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-0.log": "8e9348e3c3fd4b82e3438f5c60adcc9bc439e9139448b14ea68ee5dbd4b069bd",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-0.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-0.progress.json": "5708ec5f1139c7b20d7efc6f8d6fad54df5d12c6d891303b170c83fb9d17952b",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-0.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-1.json": "a044a4bcfa5ab63c317f3186048cea8667936dbf985f835ab4ce85a6c7d57a87",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-1.log": "0f148743a05b8b1b4168c6d2a1f1dae19b68f844a623b70f9413a0c2bd3a873d",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-1.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-1.progress.json": "9a3d57ce6da5f76eb17ed20abcc07448d57de274eb05e50da28e32c1958c9294",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-1.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-2.json": "dea17236c3859a3edc206b27a62adfe8a0a84d8f678c724597f7657237750c24",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-2.log": "d7d3b948004ac5bf814f9e33e9a28422cd21ff6cfbb4310b5aff151acb1fbb35",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-2.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-2.progress.json": "d8d8dd8bfe6bc0a4e0d294ba733a6fb87b7f8b2f213cac2c3b9663919f4d9fa2",
+    "results/quantized-split-profile-20261106/paired/wide-4096-candidate/mps-2.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-0.json": "38d50d344d30c4b0cffad4882cac3621a66fbaad08dc03985f6ca1421181e947",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-0.log": "f1474432b6531d7e17c6712ef9a354a71559531936463e4f9faa41e8ec65f4b7",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-0.margins.npy": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-0.progress.json": "e2f335e03560d422a01a1ed78d26b67cc3fd5317ede3d47f9722d9321955cbbc",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-0.ubj": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-1.json": "96bd6ed98d8ca8457764d270343ac91884f90e4a34487c1e5f136931653f5661",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-1.log": "ec5ca900318cd9d7c3e5ecc8cb901d76355ca86a84362834d729ac4901eb6b13",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-1.margins.npy": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-1.progress.json": "465ccfc2e6f43b2d66b6d0627b0e351a91554eaa8e1b63238e8d06dea05ab6a3",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-1.ubj": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-2.json": "388a607017a2044e11470766334abbddf6d4c29801c1afdc6392474816045399",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-2.log": "0e12b71a1466a86ca30a4b973328c8bafd870bfeed6298095f490338a41afcf7",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-2.margins.npy": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-2.progress.json": "78a5965cc8e5623f522165cab66f44c15bc16008352a77df444915f95cae2777",
+    "results/quantized-split-profile-20261106/paired/wide-4096-cpu/cpu-2.ubj": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+    "results/quantized-split-profile-20261106/paired.log": "827eb8f4b9f21d1634bde447756131327f3c1a86807786c0693c2ceb79907306",
+    "results/quantized-split-profile-20261106/paired.py": "d3a2d20895a0900245782899807fa38c254b2bde076eb6965404b3ea9b636339",
+    "results/quantized-split-profile-20261106/record.py": "bd14b3f0c169895346109531bc1b56d3b963279b29b3fee1e51a4dfbfad8de2c",
+    "results/quantized-split-profile-20261106/validate.log": "d77c4cdf4b853d5380e48cefa4d90be1801072dd072408b2d8cbc16eaeef4ae3",
+    "results/quantized-split-profile-20261106/validate.sh": "ec48c630acdad172cb61630909c1e4296bf3243dde51ad2f53c2c52dde1fbde5",
+    "results/quantized-split-profile-20261106/wheel.json": "92f1ed70f17a8d6f72db038d2435085d7029d851b6779a0ec338059591ae562d"
+  }
+}

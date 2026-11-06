@@ -10035,7 +10035,8 @@ static void EvaluateQuantizedSplitsImpl(
     auto input = Scratch(rt, &scratch->input, tasks.size_bytes(), resident_bins ? nullptr : tasks.data());
     auto output = Scratch(rt, &scratch->output, tasks.size() * sizeof(QuantizedSplitResult));
     auto order = Scratch(rt, &scratch->order, (categorical ? bins : 0) * sizeof(std::uint32_t));
-    auto weights = Scratch(rt, &scratch->weights, (categorical ? bins : 0) * sizeof(float));
+    // Numeric screening reuses this buffer for upper gain bounds.
+    auto weights = Scratch(rt, &scratch->weights, bins * sizeof(float));
     auto scans = Scratch(rt, &scratch->scans, bins * sizeof(GradientPairInt64));
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);

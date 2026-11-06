@@ -655,3 +655,89 @@ Reproduce with new output directories:
   --features 4096 --informative-features 64 --rounds 100 --threads 8 \
   --repeats 3 --output results/profile-wide-4096
 ```
+
+## Quantized split screening and identical-gain reuse
+
+The next change starts from `fd4059a` and addresses the high-dimensional split
+bottleneck above. With zero integer missing sums, both missing directions have
+identical child sums, so their full-precision gain is computed once. Dense
+numeric features with at least 32 bins can also reuse the existing conservative
+gain intervals when L1 regularization, delta-step limits, monotone constraints
+and leaf-weight bounds are absent. A candidate is skipped only when its upper
+bound is strictly below another candidate's lower bound. Ties and potentially
+winning candidates retain the original binary64 evaluation; unsupported ranges
+receive unbounded intervals. Numeric upper bounds reuse category-weight scratch.
+
+The kernel benchmark separates identical-gain reuse from the combined change,
+with five randomized paired measurements, an untimed warmup and exact checks
+against the independent CPU implementation of CUDA source formulas:
+
+| Dense feature tasks, 256 bins each | Original | Reuse only | Combined | Combined speedup |
+| --- | ---: | ---: | ---: | ---: |
+| 128 | 0.437 ms | 0.232 ms | 0.227 ms | 1.92× |
+| 1,024 | 2.556 ms | 1.336 ms | 0.624 ms | 4.09× |
+| 8,192 | 18.153 ms | 9.493 ms | 3.539 ms | 5.13× |
+
+The same benchmark with nonzero missing sums retains the original calculation
+and measures about 1–3% slower for the combined kernel in this sample. Its raw
+timings and the earlier uncached-bound experiment are retained in the evidence.
+These are selected kernel costs, not whole-training speedups.
+
+For full training, the two datasets above are unchanged. Three repeats rotate
+CPU/original-MPS/optimized-MPS order, each in a fresh process and using isolated
+original/candidate packages. All use 100 rounds, eight CPU threads, 64 informative
+columns and no column sampling. Median training times are:
+
+| Training shape | CPU | MPS original | MPS optimized | MPS improvement |
+| --- | ---: | ---: | ---: | ---: |
+| 100,000 × 1,024 | 19.989 s | 34.371 s | 18.711 s | 1.84× |
+| 25,000 × 4,096 | 39.006 s | 115.309 s | 55.973 s | 2.06× |
+
+Split GPU medians fall from **17.631 to 3.413 seconds** and **67.894 to 12.823
+seconds**: improvements of **5.17× / 5.29×**. All six before/after training pairs
+improve, but CPU remains faster on the 4,096-column workload. At 1,024 columns,
+the optimized MPS median is only 1.07× faster than CPU, insufficient to claim a
+general CPU advantage. Individual training times in repeat order are:
+
+| Workload / variant | Training runs, seconds |
+| --- | --- |
+| 1,024 columns CPU | 18.829, 19.989, 22.261 |
+| 1,024 columns MPS original | 30.496, 34.930, 34.371 |
+| 1,024 columns MPS optimized | 18.388, 18.711, 19.370 |
+| 4,096 columns CPU | 30.465, 44.839, 39.006 |
+| 4,096 columns MPS original | 122.996, 115.309, 107.097 |
+| 4,096 columns MPS optimized | 61.756, 55.973, 51.586 |
+
+All 12 MPS saved models, prediction arrays and per-round metric histories match
+before/after and reproduce the original high-dimensional experiment exactly.
+Every MPS worker also checks CPU prediction of its model exactly. The six CPU
+controls reproduce their original outputs too. Independently trained CPU/MPS
+models still differ by the amounts recorded above; no tolerance or precision
+was changed and no NVIDIA execution was performed.
+
+Five native groups and 178 Python tests passed, including the expanded 1,992-task
+scalar split oracle and 1,000,300 gain-interval checks. Three workflows passed
+against the newly installed wheel outside the checkout. These are focused checks;
+the historical full-suite run predates this optimization.
+
+This task ran no concurrent builds, tests or other benchmarks during timing.
+Unrelated sessions and applications were not controlled. All runs used AC power
+and passed clock checks; substantial system-wide swap and timing variation remain
+limitations. GPU counter families can overlap. The next profiling target is the
+remaining split-stage preparation/submission/waits and histogram work, rather
+than treating the GPU-time reduction as an equivalent whole-training reduction.
+
+The [complete evidence](../validation/quantized-split-tuning-m3.json) includes
+source/library hashes, all 18 training runs and their commands, kernel timings,
+memory/power observations, output comparisons and installation checks. The
+profiling commands above accept `--package-dir` for isolated revisions. Reproduce
+the direct kernel comparison with:
+
+```sh
+git show fd4059a:xgboost/src/common/metal_histogram.metal > results/split-baseline.metal
+clang++ -O2 -std=c++17 -ffp-contract=off -fobjc-arc \
+  scripts/metal_quantized_split_benchmark.mm -framework Metal -framework Foundation \
+  -o results/split-benchmark
+results/split-benchmark xgboost/src/common/metal_histogram.metal \
+  results/split-baseline.metal > results/split-kernel-timings.json
+```

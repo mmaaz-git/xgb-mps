@@ -6534,6 +6534,19 @@ inline float xgb_quantized_split_gain(ulong2 left, ulong2 right, GradientScale s
     return -INFINITY;
   return xgb_fadd_preserve(xgb_split_gain_weight(l, lw, p), xgb_split_gain_weight(r, rw, p));
 }
+// Raw child-gain bounds: quantized splits do not subtract the parent gain.
+// Used only without L1, weight bounds or monotone constraints, matching the
+// existing unconstrained binary64 evaluator's conservative interval contract.
+inline float2 xgb_quantized_split_gain_bound(ulong2 left, ulong2 right, GradientScale scale,
+                                            SplitParameters p) {
+  DoublePair l = xgb_split_dequantize(left, scale), r = xgb_split_dequantize(right, scale);
+  XGBDouble minimum = xgb_dfrom_float(p.min_child_weight);
+  if (!xgb_dlt({0}, l.h) || !xgb_dlt({0}, r.h) || xgb_dlt(l.h, minimum) || xgb_dlt(r.h, minimum))
+    return float2(-INFINITY);
+  float2 lb = xgb_unconstrained_gain_bound(l, p.reg_lambda);
+  float2 rb = xgb_unconstrained_gain_bound(r, p.reg_lambda);
+  return float2(xgb_round_down(lb.x + rb.x), xgb_round_up(lb.y + rb.y));
+}
 inline void xgb_quantized_split_update(float gain, ulong2 left, ulong2 right, uint bin,
                                        uint missing, uint partition,
                                        thread QuantizedSplitResult& best) {
@@ -6590,14 +6603,34 @@ kernel void xgb_evaluate_quantized_splits(
   threadgroup_barrier(mem_flags::mem_device);
   ulong2 missing = parent - carry;
   QuantizedSplitResult best{0, 0, 0, 0, -MAXFLOAT, -1, 0, 0, 0, 0, 0, 0};
+  bool no_missing = all(missing == ulong2(0));
+  bool screen = XGB_METAL_SPLIT_FILTER && task.kind == 0 && n >= 32 && no_missing &&
+                task.monotone == 0 && task.lower == -INFINITY && task.upper == INFINITY &&
+                (as_type<uint>(p.reg_alpha) & 0x7fffffffu) == 0 &&
+                (as_type<uint>(p.max_delta_step) & 0x7fffffffu) == 0;
+  float cutoff = -MAXFLOAT;  // Negative and zero raw gains remain eligible.
+  if (screen) {
+    for (uint i = lane; i < n; i += 32) {
+      ulong2 left = i ? scans[task.begin + i - 1] : ulong2(0);
+      float2 bound = xgb_quantized_split_gain_bound(left, parent - left, scale, p);
+      cutoff = max(cutoff, bound.x);
+      // Numeric tasks can reuse category-weight scratch. The same lane reads
+      // its own entries below, so no cross-lane memory synchronization is needed.
+      weights[task.begin + i] = bound.y;
+    }
+    cutoff = simd_max(cutoff);
+  }
   if (task.kind < 2) {
     for (uint i = lane; i < n; i += 32) {
       // Numeric: EXCLUSIVE prefix. One-hot: all nonmissing bins except i.
       ulong2 scan = task.kind == 0 ? (i ? scans[task.begin + i - 1] : ulong2(0))
                                    : carry - hist[task.begin + i];
+      // Strict rejection keeps all possible winners and equal-gain ties. An
+      // unbounded interval falls through to the original full-precision gain.
+      if (screen && weights[task.begin + i] < cutoff) continue;
       ulong2 left_missing = scan + missing;
       float gl = xgb_quantized_split_gain(left_missing, parent - left_missing, scale, task, p);
-      float gr = xgb_quantized_split_gain(scan, parent - scan, scale, task, p);
+      float gr = no_missing ? gl : xgb_quantized_split_gain(scan, parent - scan, scale, task, p);
       // CUDA LossChangeMissing uses strict >; equal gains send missing RIGHT.
       bool ml = xgb_cuda_float_lt(gr, gl);
       ulong2 left = ml ? left_missing : scan;
