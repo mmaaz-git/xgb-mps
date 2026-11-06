@@ -25,8 +25,6 @@ Contents
   prediction
   treemethod
   Python Package <python/index>
-  R Package <R-package/index>
-  JVM Package <jvm/index>
   Ruby Package <https://github.com/ankane/xgboost-ruby>
   Swift Package <https://github.com/kongzii/SwiftXGBoost>
   Julia Package <julia>

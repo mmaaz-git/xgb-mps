@@ -3,13 +3,17 @@
 Updated 2026-11-05 after a three-agent review of `6f3dcbd` and cleanup `383f19d`.
 The user replaced the open-ended full-parity goal with the Python usability,
 HIGGS diagnosis, correctness and measured-performance phase below, and confirmed
-that Spark/R/JVM belong in the later backlog. The Python phase is complete.
+the Python phase as the priority. The Python phase is complete. The user then
+chose to remove R, Java/Scala and Spark, including the Python Spark adapter,
+from this fork. Those integrations are excluded, not unfinished MPS tasks.
+Python, the shared C++ engine/C API and existing Dask support remain.
 This file is the current plan; the [previous plan](archive/PLAN-before-scope-reset-2026-11-05.md)
 retains completed tasks and comparison history.
 
 ## What “full MPS implementation” means
 
-Support the user-facing CUDA-accelerated operations and their required GPU work
+Within the Python/shared-engine scope, support the user-facing CUDA-accelerated
+operations and their required GPU work
 and data placement in the vendored XGBoost 3.4.2 snapshot on the documented Apple
 GPU platform. Preserve the algorithms, required
 precision, data ownership and GPU execution. Use CPU comparisons where the
@@ -30,8 +34,6 @@ See the [review](REVIEW.md), [support boundaries](CUDA_PARITY.md) and
 
 | Area | Actual gap | What would close it |
 | --- | --- | --- |
-| Spark integration | The device setter rejects MPS; GPU resource/ordinal and interchange paths recognize CUDA. Generic host-data execution may work but is unvalidated. | Add first-class MPS selection/resource behavior and test Spark train/transform. |
-| R/JVM distribution | Normal package build tools lack first-class Metal configuration; explicit CMake combinations exist. | Provide and validate standard Metal-enabled build/install paths. Core API support alone is not a packaging result. |
 | Quantile/training agreement | All 6,184 saved HIGGS MPS cuts match CUDA-source equations; CPU uses a different sketch. Fixed-cut training agrees in the recorded 100-round check. | NVIDIA execution remains a separate validation question; the CPU cut difference alone is not a demonstrated MPS defect. |
 | Cross-backend validation | Ranking, SHAP and linear training exist, but NVIDIA numerical and public-workflow comparisons are incomplete. | Representative end-to-end comparisons of the implemented features; add focused coverage for actual discrepancies. An unfinished replay program is not an unimplemented feature. |
 | Deployment coverage | Testing is concentrated on one M3. Distributed/federated tests used multiple workers on that machine. | Test additional Apple hardware and actual multi-host use before claiming those configurations validated. |
@@ -72,12 +74,10 @@ NVIDIA runtime equivalence is not claimed by these results.
 
 Installation instructions, revision-specific evidence, the HIGGS conclusion and
 the performance result are published. This completes the agreed Python phase;
-the remaining ecosystem/deployment work in the table is a backlog, not an
+the remaining validation/deployment work in the table is a backlog, not an
 automatic extension into exhaustive private-function replay or bitwise identity.
 
 NVIDIA access is required to execute CUDA comparisons; none is configured.
-Spark and R/JVM integration are real remaining ecosystem work, independent
-of that access, and lower-priority additions after the Python phase.
 That limits a CUDA-equivalence claim, not the ability to use or maintain this
 experimental MPS backend. The [advanced comparison guide](NVIDIA_COMPARISON.md)
 is a reference, not an automatic task list.
@@ -97,7 +97,9 @@ is a reference, not an automatic task list.
   the extra policy of emulating FP32 transcendental/division behavior. Neither
   deleting all emulation nor silently weakening tests is justified by this review.
 
-All regression tests and recorded evidence are retained. The approximately
+Core/Python regression tests and recorded evidence are retained. Dedicated
+R/JVM/Spark tests were removed with their bindings; earlier audit records still
+describe the revisions they examined. The approximately
 680 MB validation corpus should eventually have an artifact-storage policy;
 this cleanup does not delete it or rewrite Git history. The unfinished
 `wip/ranking-cache-comparison` branch remains outside main and is not accepted

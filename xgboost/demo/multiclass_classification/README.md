@@ -6,5 +6,3 @@ Make sure you make xgboost python module in ../../python
 ```bash
 ./runexp.sh
 ```
-
-**R version** please see the `train.R`.

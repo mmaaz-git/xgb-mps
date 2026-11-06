@@ -4,6 +4,13 @@ Use the vendored Python package and the freshly built library. The canonical
 runner builds first so a changed header cannot accidentally test an old binary.
 Inspect existing outputs before repeating expensive jobs.
 
+The 2026-11-05 removal of R/JVM/Spark was checked with CPU and Metal builds,
+wheel/source-archive inspection, and a fresh wheel installation outside the
+checkout: 77 workflow/model-state tests passed, with one expected no-GPU skip.
+Regression/classification train/predict/save/load and CPU model interchange also
+passed. The Metal library hash is unchanged from `cb495ee`.
+[Recorded checks](../validation/python-only-m3.json).
+
 ## Select checks
 
 ```sh

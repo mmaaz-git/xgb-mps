@@ -171,10 +171,7 @@ For any method chosen, you can modify ``lambdarank_num_pair_per_sample`` to cont
 Distributed Training
 ********************
 
-XGBoost implements distributed learning-to-rank with integration of multiple frameworks
-including :doc:`Dask </tutorials/dask>`, :doc:`Spark </jvm/xgboost4j_spark_tutorial>`, and
-:doc:`PySpark </tutorials/spark_estimator>`. The interface is similar to the single-node
-counterpart. Please refer to document of the respective XGBoost interface for details.
+XGBoost supports distributed learning-to-rank through :doc:`Dask </tutorials/dask>`.
 
 .. warning::
 

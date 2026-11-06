@@ -161,42 +161,6 @@ Dask API
     :show-inheritance:
 
 
-PySpark API
------------
-
-.. automodule:: xgboost.spark
-
-.. autoclass:: xgboost.spark.SparkXGBClassifier
-    :members:
-    :inherited-members:
-    :show-inheritance:
-
-.. autoclass:: xgboost.spark.SparkXGBClassifierModel
-    :members:
-    :inherited-members:
-    :show-inheritance:
-
-.. autoclass:: xgboost.spark.SparkXGBRegressor
-    :members:
-    :inherited-members:
-    :show-inheritance:
-
-.. autoclass:: xgboost.spark.SparkXGBRegressorModel
-    :members:
-    :inherited-members:
-    :show-inheritance:
-
-.. autoclass:: xgboost.spark.SparkXGBRanker
-    :members:
-    :inherited-members:
-    :show-inheritance:
-
-.. autoclass:: xgboost.spark.SparkXGBRankerModel
-    :members:
-    :inherited-members:
-    :show-inheritance:
-
-
 Collective
 ----------
 

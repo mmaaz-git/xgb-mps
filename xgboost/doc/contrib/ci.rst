@@ -249,31 +249,6 @@ Examples: useful tasks for local development
       -- ops/pipeline/test-python-wheel.sh --suite mgpu --cuda-version 13
       # --shm-size=4g is needed for multi-GPU algorithms to function
 
-* Build and test JVM packages
-
-  .. code-block:: bash
-
-    export DOCKER_REGISTRY=492475357299.dkr.ecr.us-west-2.amazonaws.com
-    export SCALA_VERSION=2.12  # Specify Scala version (2.12 or 2.13)
-    python3 ops/docker_run.py \
-      --image-uri ${DOCKER_REGISTRY}/xgb-ci.jvm:main \
-      --run-args "-e SCALA_VERSION" \
-      -- ops/pipeline/build-test-jvm-packages-impl.sh
-
-* Build and test JVM packages, with GPU support
-
-  .. code-block:: bash
-
-    export DOCKER_REGISTRY=492475357299.dkr.ecr.us-west-2.amazonaws.com
-    export SCALA_VERSION=2.12  # Specify Scala version (2.12 or 2.13)
-    export USE_CUDA=1
-    python3 ops/docker_run.py \
-      --image-uri ${DOCKER_REGISTRY}/xgb-ci.jvm_gpu_build:main \
-      --use-gpus \
-      --run-args "-e SCALA_VERSION -e USE_CUDA --shm-size=4g" \
-      -- ops/pipeline/build-test-jvm-packages-impl.sh
-      # --shm-size=4g is needed for multi-GPU algorithms to function
-
 *****************************
 Tour of the CI infrastructure
 *****************************

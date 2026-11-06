@@ -128,12 +128,6 @@ def no_dask_ml() -> PytestSkip:
     return no_mod("dask_ml")
 
 
-def no_spark() -> PytestSkip:
-    if sys.platform.startswith("win") or sys.platform.startswith("darwin"):
-        return {"reason": "Unsupported platform.", "condition": True}
-    return no_mod("pyspark")
-
-
 def no_pandas() -> PytestSkip:
     return no_mod("pandas")
 

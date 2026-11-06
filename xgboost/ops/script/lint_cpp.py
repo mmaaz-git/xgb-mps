@@ -141,7 +141,6 @@ def main() -> None:
         default=[
             "src",
             "include",
-            os.path.join("R-package", "src"),
             "python-package",
             "plugin/sycl",
         ],

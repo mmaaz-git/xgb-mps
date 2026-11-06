@@ -1,0 +1,97 @@
+{
+  "date": "2026-11-05",
+  "status": "passed",
+  "base_revision": "cb495ee273eecc67d7fd67ccfd8d0bd1a20393a0",
+  "change": "Remove R, Java/Scala and Spark bindings, dedicated tests/docs/CI and package/build hooks; retain Python and the shared engine.",
+  "hardware": "Apple M3, 10-core GPU, 16 GB RAM",
+  "builds": {
+    "metal": "passed",
+    "cpu": "passed",
+    "removed_R_LIB_ON": "rejected with explicit removal message",
+    "removed_JVM_BINDINGS_ON": "rejected with explicit removal message"
+  },
+  "packaging": {
+    "wheel": "passed; contains Metal dylib, no xgboost.spark module and no pyspark extra/dependency",
+    "sdist": "passed; no removed bindings or R CMake helpers; refreshed cpp_src staging contains updated CMake",
+    "project_venv": "cleaned wheel installed; Metal available, xgboost.spark absent"
+  },
+  "pytest": {
+    "passed": 77,
+    "skipped": 1,
+    "failures": 0,
+    "errors": 0,
+    "skip_reason": "No-GPU error test requires a machine without Metal; this M3 has Metal."
+  },
+  "installed_workflows": {
+    "status": "passed",
+    "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+    "prefix": "/Users/maaz/Documents/xgb-mps/results/python-only-20261105/venv",
+    "cwd": "/private/tmp/xgb-python-only.ypfiwD",
+    "package": "/Users/maaz/Documents/xgb-mps/results/python-only-20261105/venv/lib/python3.13/site-packages/xgboost/__init__.py",
+    "library": "/Users/maaz/Documents/xgb-mps/results/python-only-20261105/venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.dylib",
+    "library_sha256": "bf2e3bc197a2ea9d20d017b4166c2512cc73c7c3273b0ddf70d6a52b4e9ac4f6",
+    "dependencies": {
+      "xgboost": "3.4.2",
+      "numpy": "2.5.4",
+      "scipy": "1.18.1",
+      "scikit-learn": "1.9.1",
+      "pandas": "3.1.0",
+      "pytest": "9.2.0"
+    },
+    "public_workflows": [
+      {
+        "kind": "regression",
+        "save_load_and_cpu_interchange": "passed",
+        "mse": 0.1995643824338913,
+        "histogram_dispatches": 36,
+        "prediction_dispatches": 1
+      },
+      {
+        "kind": "classification",
+        "save_load_and_cpu_interchange": "passed",
+        "accuracy": 0.96875,
+        "histogram_dispatches": 36,
+        "prediction_dispatches": 1
+      }
+    ],
+    "pytest_args": [
+      "-q",
+      "/Users/maaz/Documents/xgb-mps/tests/test_metal.py",
+      "/Users/maaz/Documents/xgb-mps/tests/test_metal_model_state.py",
+      "-o",
+      "pythonpath=",
+      "--require-metal",
+      "--junitxml=/Users/maaz/Documents/xgb-mps/results/python-only-20261105/pytest.xml"
+    ],
+    "pytest_exit_code": 0,
+    "environment": "Fresh venv; no PYTHONPATH or DYLD_LIBRARY_PATH; Python isolated mode; cwd outside checkout"
+  },
+  "metal_library_unchanged": true,
+  "checks": [
+    "Modified Python AST and shell syntax",
+    "TOML plus rendered package-template variants",
+    "YAML syntax and workflow job dependencies",
+    "No remaining removed-binding references in active ops, workflow, Python or test files",
+    "git diff --check"
+  ],
+  "artifacts_sha256": {
+    "results/python-only-20261105/wheels/xgboost-3.4.2-py3-none-macosx_26_0_arm64.whl": "7852103f879a7e00b5d93c0d7ea86cfb85ca0017cb839a41b75cd4214e72384b",
+    "results/python-only-20261105/sdist/xgboost-3.4.2.tar.gz": "4b2769a5e16dd4dd047c1de34270b27b926f137f88e14d77a68601c844f28278",
+    "results/python-only-20261105/run.log": "f08dc1450a4e2370eeb67d7b7e40dfae3e8c86e979a398e9bf9d26844175e96c",
+    "results/python-only-20261105/sdist.log": "20f7b3761746480014e21ea18f471a83046565d8f69ac3dd627b9e5b4d7328db",
+    "results/python-only-20261105/run.sh": "4ef9263a01cb3ec8b8f99a8cb703da0c5a06b9e86ebf8c8fde8a1a793e25164b",
+    "results/python-only-20261105/check-installed.py": "6e90cd80e8ea980a761a870d631f3ae4fd0612dc4abf31e9116522cbeb161c7a",
+    "results/python-only-20261105/check-sdist.sh": "b5cd7d7199572b14499fe578f389912367bb076a047e10347c43ad676f63995d"
+  },
+  "source_sha256": {
+    "xgboost/CMakeLists.txt": "2576a1b1a01919fda8e70f65b214fbca000c8ab08d360e39191335978fce805c",
+    "xgboost/python-package/pyproject.toml": "56f45bd7792a0fb2c5fb13fd3c0903e7d59a8e7b9cabd5bdf0372a9bf7f22d68",
+    "xgboost/python-package/pyproject.toml.in": "558fa02209c5d7d68e66893a56576c52163a67630c05b21a497a152cba624d07",
+    "xgboost/python-package/xgboost/testing/__init__.py": "b19606b9259d1992b69480db6486928de1dab6881ae7dd3bc35b89c8dbe615bf"
+  },
+  "limits": [
+    "No kernel/arithmetic changes; no new benchmark run.",
+    "CUDA runtime and additional Apple hardware were not tested in this cleanup.",
+    "Full Sphinx documentation build and upstream release automation were not executed."
+  ]
+}

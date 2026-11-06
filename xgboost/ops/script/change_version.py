@@ -1,15 +1,6 @@
-"""
-1. Modify ``CMakeLists.txt`` in source tree and ``python-package/xgboost/VERSION`` if
-needed, run CMake .
-    If this is a RC release, the Python version has the form <major>.<minor>.<patch>rc1
-2. Modify ``DESCRIPTION`` and ``configure.ac`` in R-package. Run ``autoreconf``.
-3. Run ``mvn`` in ``jvm-packages``
-    If this is a RC release, the version for JVM packages has the form
-    <major>.<minor>.<patch>-RC1
-"""
+"""Update the shared library and Python package versions."""
 
 import argparse
-import datetime
 import os
 import re
 import subprocess
@@ -17,7 +8,7 @@ import sys
 import tempfile
 
 from pypi_variants import make_pyproject
-from test_utils import JVM_PACKAGES, PY_PACKAGE, R_PACKAGE, ROOT, cd
+from test_utils import PY_PACKAGE, ROOT, cd
 
 
 @cd(ROOT)
@@ -65,62 +56,6 @@ def pypkg(
     make_pyproject(use_suffix="na", require_nccl_dep="cu13")
 
 
-@cd(R_PACKAGE)
-def rpkg(major: int, minor: int, patch: int, is_dev: bool) -> None:
-    if is_dev:
-        version = f"{major}.{minor}.{patch}.0"
-    else:
-        version = f"{major}.{minor}.{patch}.1"
-    # Version: 2.0.0.1
-    desc_path = "DESCRIPTION"
-    with open(desc_path, "r") as fd:
-        description = fd.read()
-        pattern = r"Version:\ ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)"
-        matched = re.search(pattern, description)
-        assert matched, "Couldn't find version string in DESCRIPTION."
-        description = (
-            description[: matched.start(1)] + version + description[matched.end(1) :]
-        )
-        pattern = r"Date:\ ([0-9]+\-[0-9]+\-[0-9]+)"
-        today = datetime.date.today()
-        matched = re.search(pattern, description)
-        assert matched, "Couldn't find date string in DESCRIPTION."
-        description = (
-            description[: matched.start(1)] + str(today) + description[matched.end(1) :]
-        )
-    with open(desc_path, "w") as fd:
-        fd.write(description)
-
-    config_path = "configure.ac"
-    # AC_INIT([xgboost],[2.0.0],[],[xgboost],[])
-    version = f"{major}.{minor}.{patch}"
-    with open(config_path, "r") as fd:
-        config = fd.read()
-        pattern = (
-            r"AC_INIT\(\[xgboost\],\[([0-9]+\.[0-9]+\.[0-9]+)\],\[\],\[xgboost\],\[\]\)"
-        )
-        matched = re.search(pattern, config)
-        assert matched, "Couldn't find version string in configure.ac"
-        config = config[: matched.start(1)] + version + config[matched.end(1) :]
-
-    with open(config_path, "w") as fd:
-        fd.write(config)
-
-    subprocess.check_call(["autoreconf"])
-
-
-@cd(JVM_PACKAGES)
-def jvmpkgs(
-    major: int, minor: int, patch: int, rc: int, is_rc: bool, is_dev: bool
-) -> None:
-    version = f"{major}.{minor}.{patch}"
-    if is_dev:
-        version += "-SNAPSHOT"
-    if is_rc:
-        version += f"-RC{rc}"
-    subprocess.check_call(["mvn", "versions:set", f"-DnewVersion={version}"])
-
-
 @cd(ROOT)
 def main(args: argparse.Namespace) -> None:
     major = args.major
@@ -138,15 +73,6 @@ def main(args: argparse.Namespace) -> None:
 
     cmake(major, minor, patch)
     pypkg(major, minor, patch, rc, is_rc, is_dev)
-    rpkg(major, minor, patch, is_dev=is_dev)
-    jvmpkgs(major, minor, patch, rc, is_rc, is_dev)
-
-    print("""
-
-Please examine the changes and commit. Be aware that mvn might leave backup files in the
-source tree.
-
-""")
 
 
 if __name__ == "__main__":

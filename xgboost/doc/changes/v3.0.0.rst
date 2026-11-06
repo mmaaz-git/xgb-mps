@@ -340,7 +340,7 @@ initial implementation of the external memory training. To test the new package:
 Also, we finally have an online documentation site for the R package featuring both
 vignettes and API references (:pr:`11166`, :pr:`11257`). A good starting point for the new interface
 is the new ``xgboost()`` function. We won't list all the feature gains here, as there are
-too many! Please visit the :doc:`/R-package/index` for more info. There's a migration
+too many! Please visit the `upstream R documentation <https://xgboost.readthedocs.io/en/release_3.0.0/R-package/index.html>`_ for more info. There's a migration
 guide (:pr:`11197`) there if you use a previous XGBoost R package version.
 
 - Support for the MSVC build was dropped due to incompatibility with R headers. (:pr:`10355`,
@@ -360,7 +360,7 @@ JVM Packages
 
 The XGBoost 3.0 release features a significant update to the JVM packages, and in
 particular, the Spark package. There are breaking changes in packaging and some
-parameters. Please visit the :doc:`migration guide </jvm/xgboost_spark_migration>` for
+parameters. Please visit the `upstream migration guide <https://xgboost.readthedocs.io/en/release_3.0.0/jvm/xgboost_spark_migration.html>`_ for
 related changes. The work brings new features and a more unified feature set between CPU
 and GPU implementation. (:pr:`10639`, :pr:`10833`, :pr:`10845`, :pr:`10847`, :pr:`10635`, :pr:`10630`, :pr:`11179`, :pr:`11184`)
 

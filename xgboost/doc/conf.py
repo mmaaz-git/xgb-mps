@@ -8,10 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
-import tarfile
-import urllib.request
 import warnings
-from urllib.error import HTTPError
 
 CURR_PATH = os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
 PROJECT_ROOT = os.path.normpath(os.path.join(CURR_PATH, os.path.pardir))
@@ -28,10 +25,6 @@ import xgboost  # NOQA  # pylint: disable=wrong-import-position
 
 version = xgboost.__version__
 release = xgboost.__version__
-
-
-# Document is uploaded to here by the CI builder.
-S3_BUCKET = "https://xgboost-docs.s3.us-west-2.amazonaws.com"
 
 
 def run_doxygen() -> None:
@@ -62,155 +55,6 @@ def run_doxygen() -> None:
         os.chdir(curdir)
 
 
-def get_branch() -> str:
-    """Guess the git branch."""
-    branch = os.getenv("READTHEDOCS_VERSION_NAME", default=None)
-    print(f"READTHEDOCS_VERSION_NAME = {branch}")
-
-    def is_id():
-        try:
-            return str(int(branch)) == branch
-        except ValueError:
-            return False
-
-    if not branch:  # Not in RTD
-        branch = "master"  # use the master branch as the default.
-    elif branch == "latest":
-        branch = "master"
-    elif branch.startswith("release_"):
-        pass  # release branch, like: release_2.1.0
-    elif branch == "stable":
-        # Avoid patch release branch.
-        v = xgboost.__version__.split(".")
-        branch = f"release_{v[0]}.{v[1]}.0"
-    elif is_id():
-        # Likely PR branch
-        branch = f"PR-{branch}"
-    else:  # other dmlc branches.
-        pass
-    print(f"branch = {branch}")
-    return branch
-
-
-def get_sha(branch: str) -> str | None:
-    """Get the commit hash for the current documentation build."""
-    sha = os.getenv("READTHEDOCS_GIT_COMMIT_HASH", default=None)
-    if sha is not None:
-        return sha
-
-    if branch == "master":
-        res = subprocess.run(
-            ["git", "rev-parse", "master"], stdout=subprocess.PIPE, check=False
-        )
-    else:
-        res = subprocess.run(
-            ["git", "rev-parse", "HEAD"], stdout=subprocess.PIPE, check=False
-        )
-    if res.returncode != 0:
-        return None
-    return res.stdout.decode("utf-8").strip()
-
-
-def download_jvm_docs() -> None:
-    """Fetch docs for the JVM packages"""
-    print("Download JVM documents from S3.")
-    branch = get_branch()
-    commit = get_sha(branch)
-    if commit is None:
-        print("Couldn't find commit to build jvm docs.")
-        return
-
-    def try_fetch_jvm_doc(branch: str) -> bool:
-        """
-        Attempt to fetch JVM docs for a given branch.
-        Returns True if successful
-        """
-        try:
-            local_jvm_docs = os.environ.get("XGBOOST_JVM_DOCS", None)
-            url = f"{S3_BUCKET}/{branch}/{commit}/{branch}.tar.bz2"
-            if local_jvm_docs is not None:
-                local_jvm_docs = os.path.expanduser(local_jvm_docs)
-
-            if local_jvm_docs is not None and os.path.exists(local_jvm_docs):
-                # Reuse an existing tarball.
-                filename = local_jvm_docs
-            elif local_jvm_docs is not None:
-                # Download to local_jvm_docs for future reuse.
-                filename, _ = urllib.request.urlretrieve(url, filename=local_jvm_docs)
-                print(f"Finished: {url} -> {filename}")
-            else:
-                filename, _ = urllib.request.urlretrieve(url)
-                print(f"Finished: {url} -> {filename}")
-            if not os.path.exists(TMP_DIR):
-                os.mkdir(TMP_DIR)
-            jvm_doc_dir = os.path.join(TMP_DIR, "jvm_docs")
-            if os.path.exists(jvm_doc_dir):
-                shutil.rmtree(jvm_doc_dir)
-            os.mkdir(jvm_doc_dir)
-
-            with tarfile.open(filename, "r:bz2") as t:
-                t.extractall(jvm_doc_dir)
-            return True
-        except HTTPError:
-            print(f"JVM doc not found at {url}. Skipping...")
-            return False
-
-    if not try_fetch_jvm_doc(branch):
-        print("Falling back to the master branch.")
-        try_fetch_jvm_doc("master")
-
-
-def download_r_docs() -> None:
-    """Fetch R document from s3."""
-    branch = get_branch()
-    commit = get_sha(branch)
-    print("Download R documents from S3.")
-    if commit is None:
-        print("Couldn't find commit to build R docs.")
-        return
-
-    def try_fetch_r_doc(branch: str) -> bool:
-        try:
-            local_r_docs = os.environ.get("XGBOOST_R_DOCS", None)
-            url = f"{S3_BUCKET}/{branch}/{commit}/r-docs-{branch}.tar.bz2"
-            if local_r_docs is not None:
-                local_r_docs = os.path.expanduser(local_r_docs)
-
-            if local_r_docs is not None and os.path.exists(local_r_docs):
-                # Reuse an existing tarball.
-                filename = local_r_docs
-            elif local_r_docs is not None:
-                filename, _ = urllib.request.urlretrieve(url, filename=local_r_docs)
-                print(f"Finished: {url} -> {filename}")
-            else:
-                filename, _ = urllib.request.urlretrieve(url)
-                print(f"Finished: {url} -> {filename}")
-
-            if not os.path.exists(TMP_DIR):
-                os.mkdir(TMP_DIR)
-            r_doc_dir = os.path.join(TMP_DIR, "r_docs")
-            if os.path.exists(r_doc_dir):
-                shutil.rmtree(r_doc_dir)
-            os.mkdir(r_doc_dir)
-
-            with tarfile.open(filename, "r:bz2") as t:
-                t.extractall(r_doc_dir)
-
-            for root, _, files in os.walk(os.path.join(r_doc_dir, "doc", "R-package")):
-                for f in files:
-                    assert f.endswith(".md")
-                    src = os.path.join(root, f)
-                    dst = os.path.join(PROJECT_ROOT, "doc", "R-package", f)
-                    shutil.move(src, dst)
-            return True
-        except HTTPError:
-            print(f"R doc not found at {url}. Falling back to the master branch.")
-            return False
-
-    if not try_fetch_r_doc(branch):
-        try_fetch_r_doc("master")
-
-
 def is_readthedocs_build():
     """Return whether this is a Read the Docs build."""
     if os.environ.get("READTHEDOCS", None) == "True":
@@ -226,8 +70,6 @@ def is_readthedocs_build():
 
 if is_readthedocs_build():
     run_doxygen()
-    download_jvm_docs()
-    download_r_docs()
 
 
 # If extensions (or modules to document with autodoc) are in another directory,
@@ -419,7 +261,6 @@ intersphinx_mapping = {
     "sklearn": ("https://scikit-learn.org/stable", None),
     "dask": ("https://docs.dask.org/en/stable/", None),
     "distributed": ("https://distributed.dask.org/en/stable/", None),
-    "pyspark": ("https://spark.apache.org/docs/latest/api/python/", None),
     "rmm": ("https://docs.rapids.ai/api/rmm/nightly/", None),
 }
 

@@ -11,6 +11,10 @@ comparison coverage. Their Metal implementations and integration tests already
 exist. The [current plan](PLAN.md) separates implementation, validation,
 maintenance and performance work.
 
+> Subsequent scope decision: R, Java/Scala and Spark bindings were removed at
+> the user's request. The ecosystem finding below describes the reviewed revision,
+> not an outstanding task. See [PLAN.md](PLAN.md) for the current Python scope.
+
 ## What exists, and what remains uncertain
 
 | Area | Source and existing tests | Remaining question |

@@ -6,7 +6,9 @@ Detailed implementation history is preserved in the
 [archived ledger](archive/CUDA_PARITY-progress-2026-11-04.md). Historical sections
 describe different revisions and must not be read as current status.
 
-The target is CUDA-accelerated behavior in vendored XGBoost 3.4.2. `device="mps"`
+The target is CUDA-accelerated behavior exposed through Python and the shared
+engine in vendored XGBoost 3.4.2. R, Java/Scala and Spark bindings have been
+removed from this fork and are outside its support scope. `device="mps"`
 selects custom **Metal compute kernels**; Apple's MPS library does not replace
 XGBoost's CUDA kernels. **Full coverage remains unproven; verification work
 remains after the audit's ten implementation fixes.** See the [ordered plan](PLAN.md).

@@ -33,56 +33,9 @@ Add your test under the directory `tests/cpp/ <https://github.com/dmlc/xgboost/t
 
 You may try running your test by following instructions in :ref:`this section <running_gtest>`. Note. Google Test version 1.8.1 or later is required.
 
-JVM packages: JUnit / scalatest
-===============================
-The JVM packages for XGBoost (XGBoost4J / XGBoost4J-Spark) use `the Maven Standard Directory Layout <https://maven.apache.org/guides/introduction/introduction-to-the-standard-directory-layout.html>`_. Specifically, the tests for the JVM packages are located in the following locations:
-
-* `jvm-packages/xgboost4j/src/test/ <https://github.com/dmlc/xgboost/tree/master/jvm-packages/xgboost4j/src/test>`_
-* `jvm-packages/xgboost4j-spark/src/test/ <https://github.com/dmlc/xgboost/tree/master/jvm-packages/xgboost4j-spark/src/test>`_
-
-To write a test for Java code, see `JUnit 5 tutorial <https://junit.org/junit5/docs/current/user-guide/>`_.
-To write a test for Scala, see `Scalatest tutorial <https://www.scalatest.org/user_guide/writing_your_first_test>`_.
-
-You may try running your test by following instructions in :ref:`this section <running_jvm_tests>`.
-
-R package: testthat
-===================
-Add your test under the directory `R-package/tests/testthat <https://github.com/dmlc/xgboost/tree/master/R-package/tests/testthat>`_. Refer to `this excellent tutorial on testthat <https://kbroman.org/pkg_primer/pages/tests.html>`_.
-
-You may try running your test by following instructions in :ref:`this section <running_r_tests>`.
-
 **************************
 Running Unit Tests Locally
 **************************
-
-.. _running_r_tests:
-
-R package
-=========
-Run
-
-.. code-block:: bash
-
-  python ./ops/script/test_r_package.py --task=check
-
-at the root of the project directory. The command builds and checks the XGBoost
-r-package. Alternatively, if you want to just run the tests, you can use the following
-commands after installing XGBoost:
-
-.. code-block:: bash
-
-  cd R-package/tests/
-  Rscript testthat.R
-
-.. _running_jvm_tests:
-
-JVM packages
-============
-Maven is used
-
-.. code-block:: bash
-
-  mvn test
 
 .. _running_pytest:
 
@@ -113,7 +66,7 @@ In addition, to test CUDA code, run:
 
 (For this step, you should have compiled XGBoost with CUDA enabled.)
 
-For testing with distributed frameworks like ``Dask`` and ``PySpark``:
+For testing with distributed frameworks like ``Dask``:
 
 .. code:: bash
 

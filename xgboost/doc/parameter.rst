@@ -1,7 +1,3 @@
-..
-  IMPORTANT: When adding new entries to this file (e.g. a new parameter),
-  the parameter should also be added under file 'R-package/R/xgb.train.R'.
-
 ##################
 XGBoost Parameters
 ##################
@@ -10,10 +6,6 @@ Before running XGBoost, we must set three types of parameters: general parameter
 - **General parameters** relate to which booster we are using to do boosting, commonly tree or linear model
 - **Booster parameters** depend on which booster you have chosen
 - **Learning task parameters** decide on the learning scenario. For example, regression tasks may use different parameters with ranking tasks.
-
-.. note:: Parameters in R package
-
-  In R-package, you can use ``.`` (dot) to replace underscore in the parameters, for example, you can use ``max.depth`` to indicate ``max_depth``. The underscore parameters are also valid in R.
 
 .. contents::
   :backlinks: none
@@ -192,7 +184,7 @@ Parameters for Tree Booster
 
 * ``scale_pos_weight`` [default=1]
 
-  - Control the balance of positive and negative weights, useful for unbalanced classes. A typical value to consider: ``sum(negative instances) / sum(positive instances)``. See :doc:`Parameters Tuning </tutorials/param_tuning>` for more discussion. Also, see Higgs Kaggle competition demo for examples: `R <https://github.com/dmlc/xgboost/blob/master/demo/kaggle-higgs/higgs-train.R>`_, `py1 <https://github.com/dmlc/xgboost/blob/master/demo/kaggle-higgs/higgs-numpy.py>`_, `py2 <https://github.com/dmlc/xgboost/blob/master/demo/kaggle-higgs/higgs-cv.py>`_, `py3 <https://github.com/dmlc/xgboost/blob/master/demo/guide-python/cross_validation.py>`_.
+  - Control the balance of positive and negative weights, useful for unbalanced classes. A typical value to consider: ``sum(negative instances) / sum(positive instances)``. See :doc:`Parameters Tuning </tutorials/param_tuning>` for more discussion. Also, see Higgs Kaggle competition demo for examples: `py1 <https://github.com/dmlc/xgboost/blob/master/demo/kaggle-higgs/higgs-numpy.py>`_, `py2 <https://github.com/dmlc/xgboost/blob/master/demo/kaggle-higgs/higgs-cv.py>`_, `py3 <https://github.com/dmlc/xgboost/blob/master/demo/guide-python/cross_validation.py>`_.
 
 * ``updater``
 

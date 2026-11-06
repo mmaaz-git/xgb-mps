@@ -5,10 +5,11 @@
 An experimental Apple GPU backend for XGBoost 3.4.2, using custom Metal compute
 kernels behind `device="mps"`. This is an independent fork, not an upstream release.
 
-**The core backend trains and predicts on Apple GPUs. Full XGBoost ecosystem
-support and CUDA-equivalent numerical behavior are not yet established.**
-The latest bounded review found no missing major core training/prediction family;
-it did find unfinished binding integration, validation and maintainability work.
+**The Python package trains and predicts on Apple GPUs.** This fork targets
+Python and its shared C++ engine. R, Java/Scala and Spark bindings, including
+`xgboost.spark`, have been removed; they are outside the project scope.
+The latest bounded review found no missing major core training/prediction family.
+Numerical validation, deployment coverage and maintainability work remain.
 See the [review](docs/REVIEW.md) and [short current plan](docs/PLAN.md).
 
 ## Current scope
@@ -27,9 +28,8 @@ The original audit's ten implementation tasks and two later capacity fixes have
 local acceptance. That does not prove every branch or deployment works.
 [Behavior, numerical and platform limits](docs/CUDA_PARITY.md).
 
-**Remaining:** first-class Spark MPS GPU integration; standard R/JVM packaging
-and runtime validation; representative NVIDIA comparisons; additional Apple
-hardware and multi-host validation; and focused maintenance/performance work.
+**Remaining:** representative NVIDIA comparisons; additional Apple hardware
+and multi-host validation; and focused maintenance/performance work.
 The core Python package can build/package Metal with explicit configuration.
 Only Metal device ordinal 0 is supported, and native producer readiness is synchronous.
 
@@ -70,6 +70,9 @@ The installed package includes the built Metal library; no `PYTHONPATH` override
 is needed. A fresh-environment check on this M3 exercised regression and
 classification train/predict/save/load, CPU model interchange, and 77 existing
 workflow/model tests. [Installation evidence](validation/python-install-m3.json).
+After removing the other bindings, both builds and the fresh-wheel checks passed
+again; the cleaned package is installed in the project environment.
+[Python-only packaging validation](validation/python-only-m3.json).
 
 Use `xgb.QuantileDMatrix(X, y, device="mps")` for Metal quantile construction.
 PyTorch and MLX native inputs/outputs use DLPack interoperability; ordinary

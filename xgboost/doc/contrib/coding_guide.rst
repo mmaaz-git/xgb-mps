@@ -30,85 +30,6 @@ Python Coding Guideline
 
 .. _running_checks_locally:
 
-******************
-R Coding Guideline
-******************
-
-Code Style
-==========
-- We follow Google's C++ Style guide for C++ code.
-
-  - This is mainly to be consistent with the rest of the project.
-  - Another reason is we will be able to check style automatically with a linter.
-
-- When needed, you can disable the linter warning of certain line with ``// NOLINT(*)`` comments.
-- We use `roxygen <https://cran.r-project.org/web/packages/roxygen2/vignettes/roxygen2.html>`_ for documenting the R package.
-
-Rmarkdown Vignettes
-===================
-Rmarkdown vignettes are placed in `R-package/vignettes <https://github.com/dmlc/xgboost/tree/master/R-package/vignettes>`_.
-These Rmarkdown files are not compiled. We host the compiled version on `doc/R-package <https://github.com/dmlc/xgboost/tree/master/doc/R-package>`_.
-
-The following steps are followed to add a new Rmarkdown vignettes:
-
-- Add the original rmarkdown to ``R-package/vignettes``.
-- Modify ``doc/R-package/Makefile`` to add the markdown files to be build.
-- Clone the `dmlc/web-data <https://github.com/dmlc/web-data>`_ repo to folder ``doc``.
-- Now type the following command on ``doc/R-package``:
-
-  .. code-block:: bash
-
-    make the-markdown-to-make.md
-
-- This will generate the markdown, as well as the figures in ``doc/web-data/xgboost/knitr``.
-- Modify the ``doc/R-package/index.md`` to point to the generated markdown.
-- Add the generated figure to the ``dmlc/web-data`` repo.
-
-  - If you already cloned the repo to doc, this means ``git add``
-
-- Create PR for both the markdown and ``dmlc/web-data``.
-- You can also build the document locally by typing the following command at the ``doc`` directory:
-
-  .. code-block:: bash
-
-    make html
-
-The reason we do this is to avoid exploded repo size due to generated images.
-
-
-R package versioning
-====================
-See :ref:`release`.
-
-Testing R package with different compilers
-==========================================
-
-You can change the default compiler of R by changing the configuration file in home
-directory. For instance, if you want to test XGBoost built with clang++ instead of g++ on
-Linux, put the following in your ``~/.R/Makevars`` file:
-
-.. code-block:: sh
-
-  CC=clang-15
-  CXX17=clang++-15
-
-Be aware that the variable name should match with the name used by ``R CMD``:
-
-.. code-block:: sh
-
-  R CMD config CXX17
-
-Registering native routines in R
-================================
-According to `R extension manual <https://cran.r-project.org/doc/manuals/r-release/R-exts.html#Registering-native-routines>`_,
-it is good practice to register native routines and to disable symbol search. When any changes or additions are made to the
-C++ interface of the R package, please make corresponding changes in ``src/init.c`` as well.
-
-Generating the Package and Running Tests
-========================================
-
-The source layout of XGBoost is a bit unusual to normal R packages as XGBoost is primarily written in C++ with multiple language bindings in mind. As a result, some special cares need to be taken to generate a standard R tarball. Most of the tests are being run on CI, and as a result, the best way to see how things work is by looking at the CI configuration files (GitHub action, at the time of writing). There are helper scripts in ``ops/script`` and ``R-package/tests/helper_scripts`` for running various checks including linter and making the standard tarball.
-
 *********************************
 Running Formatting Checks Locally
 *********************************
@@ -155,14 +76,6 @@ To run Python checks locally, install the checkers mentioned previously and run 
   cd /path/to/xgboost/
   pre-commit run
 
-To run checks for R:
-
-.. code-block:: bash
-
-  cd /path/to/xgboost/
-  R CMD INSTALL R-package/
-  Rscript ops/script/lint_r.R $(pwd)
-
 To run checks for cpplint locally:
 
 .. code-block:: bash
@@ -171,7 +84,6 @@ To run checks for cpplint locally:
   python ./ops/script/lint_cpp.py
 
 
-Lastly, the linter for jvm-packages is integrated into the maven build process.
 
 
 Clang-tidy

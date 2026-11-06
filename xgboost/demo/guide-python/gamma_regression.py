@@ -8,7 +8,7 @@ import xgboost as xgb
 
 #  this script demonstrates how to fit gamma regression model (with log link function)
 #  in xgboost, before running the demo you need to generate the autoclaims dataset
-#  by running gen_autoclaims.R located in xgboost/demo/data.
+#  generated from the upstream XGBoost autoclaims example.
 
 data = np.genfromtxt('../data/autoclaims.csv', delimiter=',')
 dtrain = xgb.DMatrix(data[0:4741, 0:34], data[0:4741, 34])

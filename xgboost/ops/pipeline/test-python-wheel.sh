@@ -81,12 +81,6 @@ esac
 
 set -xu
 
-export PYSPARK_DRIVER_PYTHON=$(which python)
-export PYSPARK_PYTHON=$(which python)
-# This variable enables a special test mode in spark, but it's never publicly documented
-# as of writing.
-export SPARK_TESTING=1
-
 pip install -v ./wheelhouse/*.whl
 
 if [[ -n "${cuda_version}" ]]; then
@@ -117,15 +111,12 @@ case "$suite" in
     python -c 'from cupy.cuda import jitify; jitify._init_module()'
     pytest -v -s -rxXs --durations=0 -m 'mgpu' tests/python-gpu
     pytest -v -s -rxXs --durations=0 tests/test_distributed/test_gpu_with_dask
-    pytest -v -s -rxXs --durations=0 tests/test_distributed/test_with_spark/test_data.py -k dmatrix_ctor_gpu
-    pytest -v -s -rxXs --durations=0 tests/test_distributed/test_with_spark/test_spark.py -k local_cluster_gpu
     ;;
   cpu)
     echo "-- Run Python tests (CPU)"
     export RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE=1
     pytest -v -s -rxXs --durations=0 tests/python
     pytest -v -s -rxXs --durations=0 tests/test_distributed/test_with_dask
-    pytest -v -s -rxXs --durations=0 tests/test_distributed/test_with_spark
     ;;
   cpu-arm64)
     echo "-- Run Python tests (CPU, ARM64)"

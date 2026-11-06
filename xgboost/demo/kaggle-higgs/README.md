@@ -28,4 +28,3 @@ speedtest.py compares xgboost's speed on this dataset with sklearn.GBM
 
 Using R module
 =====
-* Alternatively, you can run using R, higgs-train.R and higgs-pred.R.

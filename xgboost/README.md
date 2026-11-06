@@ -1,10 +1,13 @@
+> This is the vendored engine for the Python-focused [xgb-mps fork](../README.md).
+> R, Java/Scala and Spark bindings are removed. Upstream links below describe
+> the original project; use the fork README for Metal installation and support.
+
 <img src="https://xgboost.ai/images/logo/xgboost-logo-trimmed.png" width=200/> eXtreme Gradient Boosting
 ===========
 
 [![XGBoost-CI](https://github.com/dmlc/xgboost/workflows/XGBoost%20CI/badge.svg?branch=master)](https://github.com/dmlc/xgboost/actions)
 [![Documentation Status](https://readthedocs.org/projects/xgboost/badge/?version=latest)](https://xgboost.readthedocs.io)
 [![GitHub license](https://dmlc.github.io/img/apache2.svg)](./LICENSE)
-[![CRAN Status Badge](https://www.r-pkg.org/badges/version/xgboost)](https://cran.r-project.org/web/packages/xgboost)
 [![PyPI version](https://badge.fury.io/py/xgboost.svg)](https://pypi.python.org/pypi/xgboost/)
 [![Conda version](https://img.shields.io/conda/vn/conda-forge/py-xgboost.svg)](https://anaconda.org/conda-forge/py-xgboost)
 [![Optuna](https://img.shields.io/badge/Optuna-integrated-blue)](https://optuna.org)
@@ -21,7 +24,7 @@
 XGBoost is an optimized distributed gradient boosting library designed to be highly ***efficient***, ***flexible*** and ***portable***.
 It implements machine learning algorithms under the [Gradient Boosting](https://en.wikipedia.org/wiki/Gradient_boosting) framework.
 XGBoost provides a parallel tree boosting (also known as GBDT, GBM) that solve many data science problems in a fast and accurate way.
-The same code runs on major distributed environment (Kubernetes, Hadoop, SGE, Dask, Spark, PySpark) and can solve problems beyond billions of examples.
+The same code runs on major distributed environment (Kubernetes, Hadoop, SGE, Dask) and can solve problems beyond billions of examples.
 
 License
 -------

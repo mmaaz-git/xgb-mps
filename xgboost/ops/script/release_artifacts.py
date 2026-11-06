@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 from urllib.request import urlretrieve
 
 import tqdm
@@ -191,41 +191,6 @@ Following steps should be done manually:
   `pip install xgboost==<VERSION>` """)
 
 
-def download_r_artifacts(
-    release: str, branch: str, commit: str, outdir: Path
-) -> Tuple[Dict[str, str], List[str]]:
-    """Download R package artifacts for the specified release and branch."""
-    platforms = ["linux"]
-    rpkg_dir = outdir / "r-packages"
-    rpkg_dir.mkdir(exist_ok=True)
-
-    artifacts = []
-    urls = {}
-
-    # https://s3-us-west-2.amazonaws.com/xgboost-nightly-builds/release_3.0.0/4bfd4bf60d32e2d62426cc4070ccb5a5ba1ed078/xgboost_r_gpu_linux.tar.gz
-    for plat in platforms:
-        url = f"{S3_BUCKET_URL}/{branch}/{commit}/xgboost_r_gpu_{plat}.tar.gz"
-        artifact_name = f"xgboost_r_gpu_{plat}.tar.gz"
-        artifact_path = rpkg_dir / artifact_name
-        retrieve(url=url, filename=artifact_path)
-        artifacts.append(artifact_path)
-        urls[plat] = url
-
-    print(f"Finished downloading R package artifacts: {artifacts}")
-    hashes = []
-    with DirectoryExcursion(rpkg_dir):
-        for f in artifacts:
-            result = subprocess.run(
-                ["sha256sum", f.name],
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            )
-            hashes.append(result.stdout.strip())
-    return urls, hashes
-
-
 def check_path() -> None:
     """Ensure the script is run from the project root directory."""
     current_dir = Path.cwd().resolve()
@@ -273,12 +238,10 @@ def make_src_tarball(release: str, outdir: Path) -> Tuple[str, str]:
 def release_note(
     release: str,
     artifact_hashes: List[str],
-    r_urls: Dict[str, str],
     tarball_name: str,
     outdir: Path,
 ) -> None:
     """Generate a note for GitHub release description."""
-    r_gpu_linux_url = r_urls["linux"]
     src_tarball = (
         f"https://github.com/dmlc/xgboost/releases/download/v{release}/{tarball_name}"
     )
@@ -301,9 +264,6 @@ echo "<hash> <artifact>" | shasum -a 256 --check
 ```
 {hash_note}
 ```
-
-**Experimental binary packages for R with CUDA enabled**
-* xgboost_r_gpu_linux.tar.gz: [Download]({r_gpu_linux_url})
 
 **Source tarball**
 * {tarball_name}: [Download]({src_tarball})"""
@@ -358,15 +318,6 @@ def main(args: argparse.Namespace) -> None:
     tarball_name, hash = make_src_tarball(release, outdir)
     artifact_hashes.append(hash)
 
-    # CUDA R packages
-    urls, hashes = download_r_artifacts(
-        release,
-        branch,
-        commit_hash,
-        outdir,
-    )
-    artifact_hashes.extend(hashes)
-
     # Python source wheel
     make_python_sdist(release, rc, rc_ver, outdir)
 
@@ -374,7 +325,7 @@ def main(args: argparse.Namespace) -> None:
     download_python_wheels(branch, commit_hash, outdir)
 
     # Write end note
-    release_note(release, artifact_hashes, urls, tarball_name, outdir)
+    release_note(release, artifact_hashes, tarball_name, outdir)
 
 
 if __name__ == "__main__":
