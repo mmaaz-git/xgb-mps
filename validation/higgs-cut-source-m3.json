@@ -1,0 +1,323 @@
+{
+  "status": "passed",
+  "mode": "source-cut-reference",
+  "gpu_execution": false,
+  "scope": "Saved full-HIGGS cuts against existing CUDA-source equations; CPU evaluation only",
+  "benchmark_sha256": "5a5fe26afa617cf28a15fe45616542a75dd2067aa71cf25a5304b5f7f06810b0",
+  "provenance_sha256": "56375cc2b90e0039bdc0b308bd53d2a96f30d9b458d980fea33f9e5aec72c5d7",
+  "script_sha256": "9fd9c5a96a51126d6d8d49bda70800ec527c204df403e3e3b9ee74035931edea",
+  "source_sha256": {
+    "tests/cuda_sketch_reference.py": "fc9167f4dee675081155beb8687b31f323ef000b70e55c0615cdbf1130d16797",
+    "xgboost/src/common/quantile.cu": "204ec22f982f05024762684472033cb9c97514a9fecb420c9c8150e61cb7f13a",
+    "xgboost/src/common/quantile.cuh": "68bf00799dc4321108001986712bc0ce2d3090ee92a7e6e1e81c7d6b22042be1",
+    "xgboost/src/common/hist_util.cu": "352fd90e8674cfa8b31d6548ad46acc577a4f47bea11a9d99af463f07ebf90e1",
+    "xgboost/src/common/hist_util.cuh": "f5f1e5612ee3b2da58dce518408da6f4a6bb2c9f802b60fe63a53e6f58e4fc1c"
+  },
+  "production_source_commit": "68c800e91cccfce0d44bee02bd1880358e213ee2",
+  "dataset_sha256": {
+    ".cache/datasets/higgs/manifest.json": "2b53990d8592ae909a55fa85d340a197d955eee96e6038c2aacb7465dd2ec5eb",
+    ".cache/datasets/higgs/X.npy": "bd19c9d3a95392a2f6dbb36b5aa29809ce10a94cf5b58096689efa839dd6ae38",
+    ".cache/datasets/higgs/y.npy": "fed2348cb923ea201b0956a797729c7b86e499b9d01f425653ff6ddc41931a04"
+  },
+  "saved_cut_sha256": {
+    "cpu": "43439edcc672271b01d3930ec69b95b8ba4ed1427ccf0f4d0518bbe3b6f32968",
+    "mps": "ef03e58738e982449f3c49021421db8798ee9a938437e5024ede9fc79b62dc0e"
+  },
+  "initial_lookup_reference_cases": 15,
+  "windows": [
+    {
+      "begin": 0,
+      "end": 67108864,
+      "rows": 2396746
+    },
+    {
+      "begin": 67108864,
+      "end": 134217728,
+      "rows": 2396746
+    },
+    {
+      "begin": 134217728,
+      "end": 201326592,
+      "rows": 2396746
+    },
+    {
+      "begin": 201326592,
+      "end": 268435456,
+      "rows": 2396746
+    },
+    {
+      "begin": 268435456,
+      "end": 294000000,
+      "rows": 913020
+    }
+  ],
+  "features": [
+    {
+      "feature": 0,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 127,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 1,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 30,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 2,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 108,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 3,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 253,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 4,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 253,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 5,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 177,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 6,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 59,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 7,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 140,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 8,
+      "reference_cuts": 4,
+      "rows_seen": 10500004,
+      "cpu_exact": true,
+      "cpu_different_values": 0,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 9,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 150,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 10,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 54,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 11,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 106,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 12,
+      "reference_cuts": 4,
+      "rows_seen": 10500004,
+      "cpu_exact": true,
+      "cpu_different_values": 0,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 13,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 118,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 14,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 39,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 15,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 112,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 16,
+      "reference_cuts": 4,
+      "rows_seen": 10500004,
+      "cpu_exact": true,
+      "cpu_different_values": 0,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 17,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 67,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 18,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 45,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 19,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 107,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 20,
+      "reference_cuts": 4,
+      "rows_seen": 10500004,
+      "cpu_exact": true,
+      "cpu_different_values": 0,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 21,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 252,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 22,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 244,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 23,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 208,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 24,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 249,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 25,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 250,
+      "cpu_root_threshold_in_reference": false,
+      "mps_exact": true,
+      "mps_different_values": 0,
+      "mps_root_threshold_in_reference": true
+    },
+    {
+      "feature": 26,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 251,
+      "mps_exact": true,
+      "mps_different_values": 0
+    },
+    {
+      "feature": 27,
+      "reference_cuts": 257,
+      "rows_seen": 10500004,
+      "cpu_exact": false,
+      "cpu_different_values": 251,
+      "mps_exact": true,
+      "mps_different_values": 0
+    }
+  ],
+  "limits": [
+    "No NVIDIA execution; does not certify compiler rounding or CUB behavior.",
+    "Explains cut construction; does not replay all 1000 training rounds."
+  ],
+  "elapsed_seconds": 9.217332791071385,
+  "command": ".venv/bin/python scripts/diagnose_higgs.py --benchmark results/perf1-higgs-1000.json --provenance results/perf1-higgs-1000-provenance.json --source-cuts-from results/perf1-higgs-diagnosis --output-dir results/higgs-cut-source-20261105",
+  "result": {
+    "metal_cuts_matching_reference": 6184,
+    "metal_features_matching_reference": 28,
+    "cpu_features_differing_from_reference": 24
+  },
+  "interpretation": "All saved MPS cuts, including the first divergent root threshold, follow the CUDA-source sliding-window sketch equations. CPU uses a different streaming sketch. No Metal cut defect demonstrated by this discrepancy; NVIDIA execution remains unverified.",
+  "log_sha256": "5b135a1dc22f9761b4449b0ad3b5e83fc5e4880bedfd8897174bd38d07a402ca"
+}

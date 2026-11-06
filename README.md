@@ -40,17 +40,15 @@ on CPU, as with CUDA. Distributed `gblinear` is unsupported upstream.
 ## Build and try it
 
 Requires an Apple GPU on macOS, Xcode command-line tools, Python **3.11+**, CMake,
-Ninja and OpenMP. These commands use the vendored Python package:
+Ninja and OpenMP. These commands build and install this fork into a local environment:
 
 ```sh
 git clone https://github.com/mmaaz-git/xgb-mps.git
 cd xgb-mps
 brew install cmake ninja libomp
 python3 -m venv .venv
-.venv/bin/python -m pip install numpy scipy scikit-learn pandas pytest
 bash scripts/build.sh
-export PYTHONPATH="$PWD/xgboost/python-package"
-export DYLD_LIBRARY_PATH="$(brew --prefix libomp)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+.venv/bin/python -m pip install './xgboost/python-package[scikit-learn,pandas]' pytest
 ```
 
 Run with `.venv/bin/python`:
@@ -67,6 +65,11 @@ model = xgb.XGBRegressor(device="mps", tree_method="hist", n_estimators=20)
 model.fit(X, y)
 print(model.predict(X[:3]))
 ```
+
+The installed package includes the built Metal library; no `PYTHONPATH` override
+is needed. A fresh-environment check on this M3 exercised regression and
+classification train/predict/save/load, CPU model interchange, and 77 existing
+workflow/model tests. [Installation evidence](validation/python-install-m3.json).
 
 Use `xgb.QuantileDMatrix(X, y, device="mps")` for Metal quantile construction.
 PyTorch and MLX native inputs/outputs use DLPack interoperability; ordinary
@@ -95,8 +98,9 @@ are available, but unfinished replay modes are not missing MPS features.
 
 Performance is mixed. The latest full 1,000-round HIGGS measurement at `68c800e`
 gave **288 s CPU / 469 s MPS** median training on this M3. Independently trained
-CPU/MPS models have different quantile cuts; a separate fixed-cut diagnostic
-passes. A later reader optimization at `818e11f` improved a **100-round MPS-only**
+CPU/MPS models have different quantile cuts. All saved MPS cuts match the
+CUDA-source sketch equations; a separate fixed-cut training diagnostic passes.
+A later reader optimization at `818e11f` improved a **100-round MPS-only**
 comparison from **64.8 s to 55.2 s**, with identical models and predictions.
 These are different experiments, not a current general CPU-speedup claim.
 [Workloads, every timing and limitations](docs/PUBLISHED_BENCHMARKS.md).

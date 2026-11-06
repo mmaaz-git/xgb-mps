@@ -95,8 +95,8 @@ contains provenance, commands and results.
 The 2026-11-05 replay uses the full 10.5M/500K HIGGS split and 1,000 rounds,
 with three alternating CPU/MPS pairs. The production tree and library hashes
 were unchanged throughout; the benchmark harness was at `0074861`. This is the
-latest accepted production code, including the CUDA-style sketch and subsequent
-coverage fixes. Older measurements below predate these changes.
+accepted production code at that milestone, including the CUDA-style sketch and
+subsequent coverage fixes. Later reader/cleanup changes have separate evidence.
 
 | Measurement | CPU | MPS |
 | --- | ---: | ---: |
@@ -143,6 +143,23 @@ These observations implicate quantile construction, while retaining the
 1,000-round failure and the limit of this 100-round diagnostic. They do not
 establish Metal/CUDA sketch agreement; that needs NVIDIA execution.
 
+A subsequent source-reference check resolves the cut-construction question at
+the source-equation level: **all 6,184 saved MPS cuts across all 28 features match
+the existing CUDA-source scalar reference exactly**. It preserves the five
+original 64M-entry windows and their partial-row counts. CPU cuts differ on 24
+features; CPU's streaming queue/level sketch and CUDA's sorted-window sketch are
+different algorithms. The MPS root threshold `1.0759506` is in the reference cuts;
+the CPU threshold `1.0758163` is not. This difference does not demonstrate a Metal
+sketch bug. The initial unweighted lookup was vectorized for this full-size
+diagnostic and checked against the existing scalar lookup on 15 cases; later
+pruning, merging, duplicate repair and queries reuse the existing reference.
+
+This is CPU evaluation of CUDA source equations, **not NVIDIA execution**. It
+does not certify compiler rounding or independently replay all 1,000 training
+rounds. The recorded cross-model margin comparison remains failed, and the
+100-round common-cut check retains its original scope.
+[Source-reference evidence](../validation/higgs-cut-source-m3.json).
+
 [Raw runs](../validation/perf1-higgs-1000-m3.json),
 [source/dataset provenance](../validation/perf1-higgs-1000-provenance-m3.json),
 the [first-divergence diagnosis](../validation/perf1-higgs-diagnosis-m3.json)
@@ -162,6 +179,13 @@ Reproduce the diagnostic after a completed benchmark and provenance check:
   --benchmark results/perf1-higgs-1000.json \
   --provenance results/perf1-higgs-1000-provenance.json \
   --output-dir results/perf1-higgs-common-cuts --common-cuts --rounds 100
+
+# Inspect saved cuts using source equations; no library rebuild or training.
+.venv/bin/python scripts/diagnose_higgs.py \
+  --benchmark results/perf1-higgs-1000.json \
+  --provenance results/perf1-higgs-1000-provenance.json \
+  --source-cuts-from results/perf1-higgs-diagnosis \
+  --output-dir results/higgs-cut-source-20261105
 ```
 
 ## Initial M3 measurements

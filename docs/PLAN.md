@@ -1,7 +1,8 @@
 # Scope and remaining work
 
-Updated 2026-11-05 after a three-agent review of `6f3dcbd`.
-The automatic full-parity goal is **paused**. This cleanup does not resume it.
+Updated 2026-11-05 after a three-agent review of `6f3dcbd` and cleanup `383f19d`.
+The user replaced the open-ended full-parity goal with the Python usability,
+HIGGS diagnosis, correctness and measured-performance phase below.
 This file is the current plan; the [previous plan](archive/PLAN-before-scope-reset-2026-11-05.md)
 retains completed tasks and comparison history.
 
@@ -30,7 +31,7 @@ See the [review](REVIEW.md), [support boundaries](CUDA_PARITY.md) and
 | --- | --- | --- |
 | Spark integration | The device setter rejects MPS; GPU resource/ordinal and interchange paths recognize CUDA. Generic host-data execution may work but is unvalidated. | Add first-class MPS selection/resource behavior and test Spark train/transform. |
 | R/JVM distribution | Normal package build tools lack first-class Metal configuration; explicit CMake combinations exist. | Provide and validate standard Metal-enabled build/install paths. Core API support alone is not a packaging result. |
-| Quantile/training agreement | HIGGS CPU and MPS cuts differ; fixed-cut training agrees. This is not yet diagnosed against NVIDIA. | Run the existing quantile/training comparison and resolve any demonstrated MPS defect. |
+| Quantile/training agreement | All 6,184 saved HIGGS MPS cuts match CUDA-source equations; CPU uses a different sketch. Fixed-cut training agrees in the recorded 100-round check. | NVIDIA execution remains a separate validation question; the CPU cut difference alone is not a demonstrated MPS defect. |
 | Cross-backend validation | Ranking, SHAP and linear training exist, but NVIDIA numerical and public-workflow comparisons are incomplete. | Representative end-to-end comparisons of the implemented features; add focused coverage for actual discrepancies. An unfinished replay program is not an unimplemented feature. |
 | Deployment coverage | Testing is concentrated on one M3. Distributed/federated tests used multiple workers on that machine. | Test additional Apple hardware and actual multi-host use before claiming those configurations validated. |
 | Platform boundaries | Device ordinal 0, synchronous native-input readiness and explicit allocation/index limits are documented. | State the supported surface clearly; extend a boundary only when a required, supported CUDA use case is identified. Do not infer a CUDA gap from a Metal guard alone. |
@@ -39,17 +40,37 @@ See the [review](REVIEW.md), [support boundaries](CUDA_PARITY.md) and
 
 ## Immediate execution order
 
-1. This bounded cleanup and its focused checks are complete. Keep the
-   implementation goal paused; the findings are in [REVIEW.md](REVIEW.md).
-2. Before resuming development, choose one concrete deliverable from the table.
-   The highest-value correctness check is the existing quantile/training comparison.
-3. Use demonstrated failures or required unsupported use cases to select code
-   changes. Do not automatically add more private-function replay programs,
-   synthetic edge-case corpora or benchmark batches.
+The cleanup is complete; findings are in [REVIEW.md](REVIEW.md). The active phase
+has this acceptance checklist:
+
+1. **Python installation and use:** build a wheel, install it into a fresh
+   environment, verify the imported package/library come from that environment,
+   and run existing workflow tests outside the checkout without source-path
+   injection. Exercise training, prediction, save/load and CPU model interchange.
+2. **HIGGS diagnosis:** inspect the saved benchmark, cuts and common-cut evidence;
+   identify the source of the cut difference as far as the evidence permits.
+   Use an existing NVIDIA comparison if hardware is available. Clearly separate
+   an established defect, expected algorithm differences and unresolved behavior.
+3. **Correctness:** fix any demonstrated defect from these checks and retain a
+   focused regression. Preserve required CUDA algorithms/precision and existing
+   tolerances. Do not add comparison infrastructure without a concrete failure.
+4. **Performance:** after correctness checks, optimize a measured bottleneck and
+   evaluate it with the existing benchmark tools, paired timings and correctness
+   checks. Retain only supported improvements; record unsuccessful experiments.
+
+Progress: item 1 passed ([fresh installation](../validation/python-install-m3.json));
+item 2 has a source-level explanation ([all HIGGS cuts](../validation/higgs-cut-source-m3.json)).
+Neither check demonstrated a production defect requiring item 3 changes.
+Item 4 remains open. NVIDIA runtime equivalence is not claimed by these results.
+
+Publish installation instructions, revision-specific acceptance evidence, the
+HIGGS conclusion and the performance result. This phase ends when those four
+items are verified and its demonstrated defects are resolved; it does not grow
+automatically into exhaustive private-function replay or universal bitwise identity.
 
 NVIDIA access is required to execute CUDA comparisons; none is configured.
-Spark and packaging integration are real remaining ecosystem work, independent
-of that access; this cleanup identifies them without starting another porting batch.
+Spark and R/JVM integration are real remaining ecosystem work, independent
+of that access, and lower-priority additions after the Python phase.
 That limits a CUDA-equivalence claim, not the ability to use or maintain this
 experimental MPS backend. The [advanced comparison guide](NVIDIA_COMPARISON.md)
 is a reference, not an automatic task list.

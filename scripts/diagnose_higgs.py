@@ -4,6 +4,8 @@
 Compare saved models by tree path, check the saved Metal model on the CPU
 predictor, and reproduce each backend's first round with exported quantile cuts.
 An optional common-cut run separates quantization from downstream training.
+The source-cut mode compares saved cuts to the existing CUDA-source reference
+without rebuilding matrices or rerunning training.
 These are correctness diagnostics, not replacement benchmark timings.
 """
 import argparse
@@ -14,6 +16,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "xgboost/python-package"))
@@ -192,6 +195,108 @@ def worker(args, benchmark):
     print(f"{device}: exported {len(cuts)} cuts; first tree exact replay={replay}", flush=True)
 
 
+def source_cut_reference(args, benchmark, provenance):
+    """Check the observed unweighted HIGGS cuts against CUDA source equations."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    import cuda_sketch_reference as ref
+
+    f32 = np.float32
+
+    def input_prune(values, size):
+        # Vectorize only the initial unweighted lookup, whose ranks are integers.
+        # Merge/repair/subsequent prune/query reuse the independent scalar oracle.
+        n = len(values)
+        indices = np.arange(n, dtype=np.int64)
+        if n > size:
+            rank = ((np.arange(1, size-1, dtype=f32) * f32(n-2)) / f32(size-1) + f32(1))*f32(2)
+            middle = np.arange(n, dtype=f32) + np.arange(1, n+1, dtype=f32)
+            i = np.searchsorted(middle[1:-1], rank, side="right")
+            picked = np.where(rank < f32(i+1) + f32(i+1), i, i+1)
+            picked = np.where(rank < middle[0], 0, picked)
+            picked = np.where(rank >= middle[-1], n-1, picked)
+            indices = np.r_[0, picked, n-1]
+        return np.column_stack([f32(indices), f32(indices+1), np.ones(len(indices), dtype=f32), values[indices]]).astype(f32)
+
+    # Confirm the faster initial lookup against the existing scalar traversal.
+    for n in [1, 2, 17, 257, 4097]:
+        values = np.arange(n, dtype=f32)//f32(3)
+        raw = np.column_stack([np.arange(n, dtype=f32), np.arange(1, n+1, dtype=f32), np.ones(n, dtype=f32), values])
+        for bins in [2, 7, 256]:
+            size = min(n, ref.budget(n, bins))
+            np.testing.assert_array_equal(input_prune(values, size), ref.prune(raw, size, False))
+    previous = json.loads((args.source_cuts_from / "diagnosis.json").read_text())
+    if (previous.get("status") != "recorded; interpretation-required"
+            or previous.get("benchmark_sha256") != sha(args.benchmark)
+            or previous.get("provenance_sha256") != sha(args.provenance)
+            or "first_round" not in previous):
+        raise ValueError("Use the matching completed first-divergence diagnosis")
+    sources = ["tests/cuda_sketch_reference.py", "xgboost/src/common/quantile.cu",
+               "xgboost/src/common/quantile.cuh", "xgboost/src/common/hist_util.cu",
+               "xgboost/src/common/hist_util.cuh"]
+    source_hashes = {p: sha(ROOT / p) for p in sources}
+    for p, current in source_hashes.items():
+        original = subprocess.check_output(["git", "show", f"{provenance['production_source_commit']}:{p}"], cwd=ROOT)
+        if hashlib.sha256(original).hexdigest() != current:
+            raise ValueError(f"Reference source changed since the saved benchmark: {p}")
+    for filename in ("manifest.json", "X.npy", "y.npy"):
+        if sha(args.cache / filename) != provenance["dataset_sha256"][f".cache/datasets/higgs/{filename}"]:
+            raise ValueError(f"Dataset changed: {filename}")
+    rows, columns = benchmark["runs"]["mps"][0]["shapes"]["train"]
+    bins = benchmark["runs"]["mps"][0]["params"]["max_bin"]
+    if (rows, columns, bins) != (10_500_000, 28, 256):
+        raise ValueError("This diagnosis covers the recorded full-size HIGGS cut discrepancy")
+    x = np.load(args.cache / "X.npy", mmap_mode="r")
+    assert x.shape == (11_000_000, columns) and x.dtype == f32
+    saved = {mode: np.load(args.source_cuts_from / f"{mode}-cuts.npz") for mode in ("cpu", "mps")}
+    args.output_dir.mkdir(parents=True, exist_ok=False)
+    started = time.monotonic()
+    record = {"status": "running", "mode": "source-cut-reference", "gpu_execution": False,
+              "scope": "Saved full-HIGGS cuts against existing CUDA-source equations; CPU evaluation only",
+              "benchmark_sha256": sha(args.benchmark), "provenance_sha256": sha(args.provenance),
+              "script_sha256": sha(Path(__file__)), "source_sha256": source_hashes,
+              "production_source_commit": provenance["production_source_commit"],
+              "dataset_sha256": provenance["dataset_sha256"],
+              "saved_cut_sha256": {m: sha(args.source_cuts_from / f"{m}-cuts.npz") for m in saved},
+              "initial_lookup_reference_cases": 15, "windows": [], "features": [],
+              "limits": ["No NVIDIA execution; does not certify compiler rounding or CUB behavior.",
+                         "Explains cut construction; does not replay all 1000 training rounds."]}
+    for begin in range(0, rows*columns, 1 << 26):
+        end = min(rows*columns, begin+(1 << 26))
+        # RowsInEntrySpan counts the original dense CSR page's partial rows.
+        n_rows = (end+columns-1)//columns - begin//columns
+        record["windows"].append(dict(begin=begin, end=end, rows=n_rows))
+    output = args.output_dir / "diagnosis.json"
+    write(output, record)
+    for feature in range(columns):
+        column, seen = np.empty((0, 4), dtype=f32), 0
+        for w in record["windows"]:
+            first = max(0, (w["begin"]-feature+columns-1)//columns)
+            last = min(rows, (w["end"]-feature+columns-1)//columns)
+            values = np.sort(np.asarray(x[first:last, feature]))
+            assert np.isfinite(values).all()
+            incoming = ref.normalize_input(input_prune(values, min(w["rows"], ref.budget(w["rows"], bins))))
+            seen += w["rows"]
+            column = ref.unique(ref.prune(ref.merge(column, incoming), ref.budget(seen, bins), False, index_unique=True))
+        cuts = np.asarray([-np.inf, *ref.query(column, bins)], dtype=f32)
+        item = dict(feature=feature, reference_cuts=len(cuts), rows_seen=seen)
+        for mode, data in saved.items():
+            p, c = data["ptr"], data["cuts"]
+            actual = c[p[feature]:p[feature+1]]
+            item[mode+"_exact"] = actual.shape == cuts.shape and np.array_equal(actual.view(np.uint32), cuts.view(np.uint32))
+            item[mode+"_different_values"] = int(np.count_nonzero(actual.view(np.uint32) != cuts.view(np.uint32))) if actual.shape == cuts.shape else None
+            root = previous["first_round"][mode]["root"]
+            if feature == root["feature"]:
+                item[mode+"_root_threshold_in_reference"] = bool(np.any(cuts.view(np.uint32) == root["threshold_bits"]))
+        record["features"].append(item)
+        print(f"Feature {feature+1}/{columns}: MPS exact={item['mps_exact']}; CPU exact={item['cpu_exact']}", flush=True)
+        write(output, record)
+    record.update(status="passed" if all(r["mps_exact"] for r in record["features"]) else "mismatch",
+                  elapsed_seconds=time.monotonic()-started)
+    write(output, record)
+    if record["status"] != "passed":
+        raise ValueError("Saved Metal cuts differ from the CUDA-source reference")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--benchmark", type=Path, required=True)
@@ -200,6 +305,8 @@ def main():
     parser.add_argument("--cache", type=Path, default=ROOT / ".cache/datasets/higgs")
     parser.add_argument("--common-cuts", action="store_true",
                         help="Train fresh CPU/Metal quantile matrices with identical CPU reference cuts")
+    parser.add_argument("--source-cuts-from", type=Path,
+                        help="Check a completed first-divergence directory against the existing CUDA-source cut reference; no training")
     parser.add_argument("--rounds", type=int, default=100, help="Rounds for the common-cut diagnostic")
     parser.add_argument("--worker", choices=("cpu", "mps", "predict", "common-cpu", "common-mps"),
                         help=argparse.SUPPRESS)
@@ -210,6 +317,11 @@ def main():
         parser.error("Use a terminal HIGGS replay; never run this during benchmark timing")
     if not provenance.get("production_unchanged_after") or not provenance.get("library_unchanged_after"):
         parser.error("The benchmark did not finish with verified source/library provenance")
+    if args.source_cuts_from:
+        if args.worker or args.common_cuts:
+            parser.error("Source-cut diagnosis cannot be combined with worker/common-cut modes")
+        source_cut_reference(args, benchmark, provenance)
+        return
     if sha(ROOT / "xgboost/lib/libxgboost.dylib") != provenance["library_sha256"]:
         parser.error("The production library changed since the benchmark")
     if not 1 <= args.rounds <= benchmark["rounds"]:

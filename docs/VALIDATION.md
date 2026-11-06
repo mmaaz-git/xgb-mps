@@ -99,6 +99,14 @@ turn a historical full run into a current full run.
 
 ## Recorded results
 
+- **Fresh Python installation at `383f19d`:** the wheel's own package/library
+  loaded in a fresh environment outside the checkout, without `PYTHONPATH` or
+  `DYLD_LIBRARY_PATH`. Regression and classification train/predict/save/load/CPU
+  interchange passed, plus 77 existing workflow/model tests and one expected
+  no-GPU-test skip. [Installation record](../validation/python-install-m3.json).
+- **HIGGS source-reference diagnosis:** all 6,184 saved MPS cuts across 28
+  features exactly match CUDA-source equations; CPU cuts differ for 24 features.
+  No new training or NVIDIA execution. [Scope and command](../validation/higgs-cut-source-m3.json).
 - **Last full native/Python regression:** `41d4dc2`, 106 native groups and 3,919
   Python passes with two expected skips. See the
   [PORT-13 full-run record](../validation/output-capacity-full-m3-run.json).
@@ -120,6 +128,11 @@ turn a historical full run into a current full run.
   and host loader/registry/source/RNG checks were verified. This predates the
   cleanup and does not validate its new CI checkout configuration.
   [Compiler history](../validation/cuda-compile-ci-13.4.txt).
+- **Cleanup CUDA workflow at `383f19d`:** GitHub reports
+  [run 42138562183](https://github.com/mmaaz-git/xgb-mps/actions/runs/42138562183)
+  successful, including the new sparse checkout, CUDA compile/host checks and
+  artifact upload. This status inspection is not a repeat artifact-hash audit
+  and does not include NVIDIA execution.
 
 The [local acceptance report](LOCAL_ACCEPTANCE.md) reconciles the original audit
 fixes and numerical contracts. No NVIDIA GPU execution is recorded. Other Apple

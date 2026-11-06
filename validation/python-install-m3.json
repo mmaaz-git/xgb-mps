@@ -1,0 +1,71 @@
+{
+  "status": "passed",
+  "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+  "prefix": "/Users/maaz/Documents/xgb-mps/results/python-install-20261105/venv",
+  "cwd": "/private/tmp/xgb-mps-installed.WBkFkY",
+  "package": "/Users/maaz/Documents/xgb-mps/results/python-install-20261105/venv/lib/python3.13/site-packages/xgboost/__init__.py",
+  "library": "/Users/maaz/Documents/xgb-mps/results/python-install-20261105/venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.dylib",
+  "library_sha256": "79f513e352f0900b905c7f034903aff44eae30fcdc3235b612db7337edd6c8d8",
+  "dependencies": {
+    "xgboost": "3.4.2",
+    "numpy": "2.5.4",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.1",
+    "pandas": "3.1.0",
+    "pytest": "9.2.0"
+  },
+  "public_workflows": [
+    {
+      "kind": "regression",
+      "save_load_and_cpu_interchange": "passed",
+      "mse": 0.1995643824338913,
+      "histogram_dispatches": 36,
+      "prediction_dispatches": 1
+    },
+    {
+      "kind": "classification",
+      "save_load_and_cpu_interchange": "passed",
+      "accuracy": 0.96875,
+      "histogram_dispatches": 36,
+      "prediction_dispatches": 1
+    }
+  ],
+  "pytest_args": [
+    "-q",
+    "/Users/maaz/Documents/xgb-mps/tests/test_metal.py",
+    "/Users/maaz/Documents/xgb-mps/tests/test_metal_model_state.py",
+    "-o",
+    "pythonpath=",
+    "--require-metal",
+    "--junitxml=/Users/maaz/Documents/xgb-mps/results/python-install-20261105/pytest.xml"
+  ],
+  "pytest_exit_code": 0,
+  "environment": "Fresh venv; no PYTHONPATH or DYLD_LIBRARY_PATH; Python isolated mode; cwd outside checkout",
+  "revision": "383f19d2b0e676ec51d548d64f69814973eefc1a",
+  "scope": "Local wheel built from existing validated Metal library; installed into fresh Python 3.13 environment. No source-path or dynamic-library-path overrides. Not a portable wheel release or a new clean C++ rebuild.",
+  "wheel": {
+    "filename": "xgboost-3.4.2-py3-none-macosx_26_0_arm64.whl",
+    "sha256": "92fdeaef20043bc1a464c9a84ad38f3783575b718f4d493b0186a681a0eed92c"
+  },
+  "pytest_counts": {
+    "tests": "78",
+    "failures": "0",
+    "errors": "0",
+    "skipped": "1"
+  },
+  "expected_skip": "No-GPU rejection test skips on this Metal-capable host.",
+  "source_sha256": {
+    "xgboost/python-package/pyproject.toml": "b8a34ed5f7a117e580667e26cdf24254cc2cc67b27d56a79e80ea0103f4956bc",
+    "xgboost/python-package/CMakeLists.txt": "786c6a42efdffef37e10fb18878fa9ce8175e4db720f89d37168c2c0c05bd915",
+    "tests/test_metal.py": "f408b21998fc8ae80cbcea1e26ba9f1291adc6c5c6eb27c8c2ad10aa4fd4e277",
+    "tests/test_metal_model_state.py": "e5939f5a4ae5f6d55b4e94c8449a5576db2e5660be1fe8f1258f08a8a8678a86",
+    "tests/conftest.py": "f5918b5259e00d7eab5528e3595b01d87cc5f6d5a50ca13c78a1a07250c0a6c2"
+  },
+  "local_evidence": {
+    "results/python-install-20261105/run.sh": "b8b27d22255cb0073fff3e13f267b112ef81995dd9a37e4247a338aae0bf19a5",
+    "results/python-install-20261105/check-installed.py": "5914a7c935396648b44a9a12f250547148a1871ef86b9319b9cccab6a22a009f",
+    "results/python-install-20261105/run.log": "a223f93a07bf13e38e82fdef2089667802406b82fd1209fd5c015af3354ce11e",
+    "results/python-install-20261105/installed.json": "4cf3dbe04f3f559793ed98c7a62a00b75068575c42fe3e7a8d1fa0cf79e1f6ab",
+    "results/python-install-20261105/pytest.xml": "7a817780b4437acc3d739e908f3521e285d6b748d6b31985b27b5f854cbcd4f4"
+  }
+}
