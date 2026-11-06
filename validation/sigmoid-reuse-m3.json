@@ -1,0 +1,628 @@
+{
+  "status": "passed-bitwise-before-after",
+  "rows": 10500000,
+  "features": 28,
+  "rounds": 100,
+  "repeats": 3,
+  "test_rows": 500000,
+  "library_sha256": {
+    "baseline": "79f513e352f0900b905c7f034903aff44eae30fcdc3235b612db7337edd6c8d8",
+    "candidate": "bf2e3bc197a2ea9d20d017b4166c2512cc73c7c3273b0ddf70d6a52b4e9ac4f6"
+  },
+  "medians": {
+    "baseline": {
+      "training_seconds": 52.54578912490979,
+      "histogram_seconds": 10.597358945,
+      "partition_seconds": 7.966739243,
+      "objective_seconds": 7.780825069
+    },
+    "candidate": {
+      "training_seconds": 48.60154708311893,
+      "histogram_seconds": 10.440683409,
+      "partition_seconds": 7.931646488,
+      "objective_seconds": 1.123804824
+    }
+  },
+  "training_speedup": 1.0811546602630853,
+  "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+  "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+  "runs": [
+    {
+      "repeat": 0,
+      "variant": "baseline",
+      "report": "results/sigmoid-reuse-20261105/baseline-0.json",
+      "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t87%; discharging; 3:40 remaining present: true\n",
+      "power_after": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t86%; discharging; 3:30 remaining present: true\n",
+      "library_sha256": "79f513e352f0900b905c7f034903aff44eae30fcdc3235b612db7337edd6c8d8",
+      "training_seconds": 46.43771004094742,
+      "histogram_seconds": 8.418628448,
+      "partition_seconds": 7.8455619,
+      "objective_seconds": 6.587626869,
+      "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+      "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+    },
+    {
+      "repeat": 0,
+      "variant": "candidate",
+      "report": "results/sigmoid-reuse-20261105/candidate-0.json",
+      "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t86%; discharging; 3:30 remaining present: true\n",
+      "power_after": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t86%; discharging; 3:20 remaining present: true\n",
+      "library_sha256": "bf2e3bc197a2ea9d20d017b4166c2512cc73c7c3273b0ddf70d6a52b4e9ac4f6",
+      "training_seconds": 33.69800858292729,
+      "histogram_seconds": 8.462151341,
+      "partition_seconds": 7.638515105,
+      "objective_seconds": 1.015025205,
+      "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+      "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+    },
+    {
+      "repeat": 1,
+      "variant": "baseline",
+      "report": "results/sigmoid-reuse-20261105/baseline-1.json",
+      "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t86%; discharging; 3:20 remaining present: true\n",
+      "power_after": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t85%; discharging; 3:10 remaining present: true\n",
+      "library_sha256": "79f513e352f0900b905c7f034903aff44eae30fcdc3235b612db7337edd6c8d8",
+      "training_seconds": 52.54578912490979,
+      "histogram_seconds": 10.813467017,
+      "partition_seconds": 8.124125054,
+      "objective_seconds": 8.072147867,
+      "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+      "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+    },
+    {
+      "repeat": 1,
+      "variant": "candidate",
+      "report": "results/sigmoid-reuse-20261105/candidate-1.json",
+      "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t85%; discharging; 3:10 remaining present: true\n",
+      "power_after": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t85%; discharging; 3:00 remaining present: true\n",
+      "library_sha256": "bf2e3bc197a2ea9d20d017b4166c2512cc73c7c3273b0ddf70d6a52b4e9ac4f6",
+      "training_seconds": 48.60154708311893,
+      "histogram_seconds": 10.440683409,
+      "partition_seconds": 7.931646488,
+      "objective_seconds": 1.123804824,
+      "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+      "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+    },
+    {
+      "repeat": 2,
+      "variant": "candidate",
+      "report": "results/sigmoid-reuse-20261105/candidate-2.json",
+      "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t85%; discharging; 3:00 remaining present: true\n",
+      "power_after": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t84%; discharging; 2:40 remaining present: true\n",
+      "library_sha256": "bf2e3bc197a2ea9d20d017b4166c2512cc73c7c3273b0ddf70d6a52b4e9ac4f6",
+      "training_seconds": 60.76126941596158,
+      "histogram_seconds": 10.61997187,
+      "partition_seconds": 8.423776571,
+      "objective_seconds": 1.142796246,
+      "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+      "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+    },
+    {
+      "repeat": 2,
+      "variant": "baseline",
+      "report": "results/sigmoid-reuse-20261105/baseline-2.json",
+      "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t84%; discharging; 2:40 remaining present: true\n",
+      "power_after": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=27132003)\t83%; discharging; 2:30 remaining present: true\n",
+      "library_sha256": "79f513e352f0900b905c7f034903aff44eae30fcdc3235b612db7337edd6c8d8",
+      "training_seconds": 54.57976879202761,
+      "histogram_seconds": 10.597358945,
+      "partition_seconds": 7.966739243,
+      "objective_seconds": 7.780825069,
+      "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+      "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+    }
+  ],
+  "scope": "MPS before/after only; full HIGGS rows with 100 rounds, not the published 1000-round workload or a CPU speedup claim. Same existing benchmark scripts, separate copied Python packages/libraries, fresh workers, alternating randomized order. Power state retained per run.",
+  "base_revision": "f4257b8ee827ddc7646560dad3e8f91fce812109",
+  "change": "Objective Sigmoid reuses the existing ranking two-float exponential implementation for non-NaN inputs; NaNs retain the general path. Required FP32 expression boundaries and software division retained.",
+  "source_sha256": {
+    "xgboost/src/common/metal_histogram.metal": "dafdccb77b3a9a62dc16ada15bf5f3a95eb3aef37e0650d5639b40460f42191d",
+    "tests/metal_ranking_math.mm": "362548039503994c08f36c812dce2e60eb0057729e3c0a31d447a0656b44161a",
+    "scripts/benchmark.py": "96178eb84b339bfd889103f4db59aa5b270c47cf8863cae58e8bac568b53af80",
+    "scripts/benchmark_published.py": "1892fcc3df10382c79579bb35d45e42a2f65df22e9023ef52c4e834b896e76b9"
+  },
+  "focused_regression": {
+    "revision": "f4257b8ee827ddc7646560dad3e8f91fce812109",
+    "diff_sha256": "2a9933d09d234256d6dcb0ea313d7f46fb109a2d7da8a63e7a9e7288c722105f",
+    "native_groups": [
+      "metal_objective_state_api",
+      "metal_objective",
+      "metal_numerical_contracts",
+      "metal_objective_api",
+      "metal_ranking_math"
+    ],
+    "python_selection": [
+      "tests/test_metal_objectives.py",
+      "tests/test_metal.py"
+    ],
+    "library_sha256": "bf2e3bc197a2ea9d20d017b4166c2512cc73c7c3273b0ddf70d6a52b4e9ac4f6",
+    "started_utc": "20261106T025338Z",
+    "finished_utc": "2026-11-06T02:54:10.178834+00:00",
+    "status": "passed",
+    "native_groups_passed": 5,
+    "python_passed": 112,
+    "expected_skips": 1,
+    "sigmoid_inputs_matching_binary64_reference": 2996040,
+    "objective_exact_fields": 14305782
+  },
+  "objective_gpu_speedup": 6.9236444824159245,
+  "local_log_sha256": {
+    "results/sigmoid-reuse-20261105/checks.log": "a597455be63012d642d6655e03b9f425d892505ae994492d26d1f6603c65e042",
+    "results/sigmoid-reuse-20261105/focused/summary.json": "b1c3d3133edd2b140ddc2ac1165dc20199fe09e2fdd4d2c088b93e1379f1b147",
+    "results/sigmoid-reuse-20261105/paired.log": "1d62c860dd8c64b2390b54339466c289907c66c17dbf8d29e502e25a64dd2485",
+    "results/sigmoid-reuse-20261105/paired.py": "ddd722ceb10d561eec046976791d1d5702c22ac20739a22d852dbb8ac8fdfc14",
+    "results/sigmoid-reuse-20261105/baseline-loaded.json": "8e913b651880e90f1add58c56c5a06277c356d09361c9a969e13e73adc3e5820",
+    "results/sigmoid-reuse-20261105/candidate-loaded.json": "598a7d452a2d22a51fb8d97b176b318a729419775300be96931accf6fe8311e3"
+  },
+  "workers": {
+    "results/sigmoid-reuse-20261105/baseline-0.json": {
+      "status": "complete",
+      "device": "mps",
+      "params": {
+        "tree_method": "hist",
+        "device": "mps",
+        "nthread": 8,
+        "seed": 0,
+        "max_depth": 6,
+        "max_bin": 256,
+        "min_child_weight": 1,
+        "gamma": 0,
+        "reg_alpha": 0,
+        "reg_lambda": 1,
+        "subsample": 1,
+        "colsample_bytree": 1,
+        "base_score": 0.5,
+        "objective": "binary:logitraw",
+        "eval_metric": "error",
+        "eta": 0.3
+      },
+      "rounds": 100,
+      "shapes": {
+        "train": [
+          10500000,
+          28
+        ],
+        "test": [
+          500000,
+          28
+        ]
+      },
+      "split_index_sha256": {},
+      "dmatrix_seconds": 7.110909749986604,
+      "training_seconds": 46.43771004094742,
+      "dmatrix_plus_training_seconds": 53.548619790934026,
+      "clock": {
+        "started_utc": "2026-11-06T02:55:21.121907+00:00",
+        "wall_seconds": 46.438085079193115,
+        "monotonic_seconds": 46.43771004094742
+      },
+      "memory": {
+        "before": {
+          "process_peak_rss_bytes": 3208757248,
+          "system_swap": "total = 22528.00M  used = 22127.12M  free = 400.88M  (encrypted)"
+        },
+        "after_training": {
+          "process_peak_rss_bytes": 3208757248,
+          "system_swap": "total = 23552.00M  used = 23066.62M  free = 485.38M  (encrypted)"
+        }
+      },
+      "training_segments": [
+        {
+          "round": 25,
+          "elapsed_seconds": 22.354193708160892,
+          "segment_seconds": 22.354193708160892
+        },
+        {
+          "round": 50,
+          "elapsed_seconds": 30.792534625157714,
+          "segment_seconds": 8.438340916996822
+        },
+        {
+          "round": 75,
+          "elapsed_seconds": 38.618565000128,
+          "segment_seconds": 7.826030374970287
+        },
+        {
+          "round": 100,
+          "elapsed_seconds": 46.42391841602512,
+          "segment_seconds": 7.805353415897116
+        }
+      ],
+      "test_prediction_seconds": 0.12450512498617172,
+      "test_accuracy": 0.742178,
+      "test_logloss": 0.5109559910015393
+    },
+    "results/sigmoid-reuse-20261105/candidate-0.json": {
+      "status": "complete",
+      "device": "mps",
+      "params": {
+        "tree_method": "hist",
+        "device": "mps",
+        "nthread": 8,
+        "seed": 0,
+        "max_depth": 6,
+        "max_bin": 256,
+        "min_child_weight": 1,
+        "gamma": 0,
+        "reg_alpha": 0,
+        "reg_lambda": 1,
+        "subsample": 1,
+        "colsample_bytree": 1,
+        "base_score": 0.5,
+        "objective": "binary:logitraw",
+        "eval_metric": "error",
+        "eta": 0.3
+      },
+      "rounds": 100,
+      "shapes": {
+        "train": [
+          10500000,
+          28
+        ],
+        "test": [
+          500000,
+          28
+        ]
+      },
+      "split_index_sha256": {},
+      "dmatrix_seconds": 1.236525250133127,
+      "training_seconds": 33.69800858292729,
+      "dmatrix_plus_training_seconds": 34.934533833060414,
+      "clock": {
+        "started_utc": "2026-11-06T02:56:10.904637+00:00",
+        "wall_seconds": 33.6985981464386,
+        "monotonic_seconds": 33.69800858292729
+      },
+      "memory": {
+        "before": {
+          "process_peak_rss_bytes": 4140351488,
+          "system_swap": "total = 23552.00M  used = 22970.62M  free = 581.38M  (encrypted)"
+        },
+        "after_training": {
+          "process_peak_rss_bytes": 4140351488,
+          "system_swap": "total = 24576.00M  used = 23764.81M  free = 811.19M  (encrypted)"
+        }
+      },
+      "training_segments": [
+        {
+          "round": 25,
+          "elapsed_seconds": 14.079357374925166,
+          "segment_seconds": 14.079357374925166
+        },
+        {
+          "round": 50,
+          "elapsed_seconds": 20.34749083290808,
+          "segment_seconds": 6.268133457982913
+        },
+        {
+          "round": 75,
+          "elapsed_seconds": 27.33119016699493,
+          "segment_seconds": 6.98369933408685
+        },
+        {
+          "round": 100,
+          "elapsed_seconds": 33.653250416973606,
+          "segment_seconds": 6.322060249978676
+        }
+      ],
+      "test_prediction_seconds": 0.11342137516476214,
+      "test_accuracy": 0.742178,
+      "test_logloss": 0.5109559910015393
+    },
+    "results/sigmoid-reuse-20261105/baseline-1.json": {
+      "status": "complete",
+      "device": "mps",
+      "params": {
+        "tree_method": "hist",
+        "device": "mps",
+        "nthread": 8,
+        "seed": 0,
+        "max_depth": 6,
+        "max_bin": 256,
+        "min_child_weight": 1,
+        "gamma": 0,
+        "reg_alpha": 0,
+        "reg_lambda": 1,
+        "subsample": 1,
+        "colsample_bytree": 1,
+        "base_score": 0.5,
+        "objective": "binary:logitraw",
+        "eval_metric": "error",
+        "eta": 0.3
+      },
+      "rounds": 100,
+      "shapes": {
+        "train": [
+          10500000,
+          28
+        ],
+        "test": [
+          500000,
+          28
+        ]
+      },
+      "split_index_sha256": {},
+      "dmatrix_seconds": 1.530108500039205,
+      "training_seconds": 52.54578912490979,
+      "dmatrix_plus_training_seconds": 54.07589762494899,
+      "clock": {
+        "started_utc": "2026-11-06T02:56:49.455463+00:00",
+        "wall_seconds": 52.5463080406189,
+        "monotonic_seconds": 52.54578912490979
+      },
+      "memory": {
+        "before": {
+          "process_peak_rss_bytes": 4100014080,
+          "system_swap": "total = 24576.00M  used = 23508.81M  free = 1067.19M  (encrypted)"
+        },
+        "after_training": {
+          "process_peak_rss_bytes": 4100014080,
+          "system_swap": "total = 24576.00M  used = 23089.25M  free = 1486.75M  (encrypted)"
+        }
+      },
+      "training_segments": [
+        {
+          "round": 25,
+          "elapsed_seconds": 18.560728000011295,
+          "segment_seconds": 18.560728000011295
+        },
+        {
+          "round": 50,
+          "elapsed_seconds": 28.667442959034815,
+          "segment_seconds": 10.10671495902352
+        },
+        {
+          "round": 75,
+          "elapsed_seconds": 40.06694666692056,
+          "segment_seconds": 11.399503707885742
+        },
+        {
+          "round": 100,
+          "elapsed_seconds": 52.521084875101224,
+          "segment_seconds": 12.454138208180666
+        }
+      ],
+      "test_prediction_seconds": 0.14285250008106232,
+      "test_accuracy": 0.742178,
+      "test_logloss": 0.5109559910015393
+    },
+    "results/sigmoid-reuse-20261105/candidate-1.json": {
+      "status": "complete",
+      "device": "mps",
+      "params": {
+        "tree_method": "hist",
+        "device": "mps",
+        "nthread": 8,
+        "seed": 0,
+        "max_depth": 6,
+        "max_bin": 256,
+        "min_child_weight": 1,
+        "gamma": 0,
+        "reg_alpha": 0,
+        "reg_lambda": 1,
+        "subsample": 1,
+        "colsample_bytree": 1,
+        "base_score": 0.5,
+        "objective": "binary:logitraw",
+        "eval_metric": "error",
+        "eta": 0.3
+      },
+      "rounds": 100,
+      "shapes": {
+        "train": [
+          10500000,
+          28
+        ],
+        "test": [
+          500000,
+          28
+        ]
+      },
+      "split_index_sha256": {},
+      "dmatrix_seconds": 1.614827207988128,
+      "training_seconds": 48.60154708311893,
+      "dmatrix_plus_training_seconds": 50.21637429110706,
+      "clock": {
+        "started_utc": "2026-11-06T02:57:46.132787+00:00",
+        "wall_seconds": 48.60193705558777,
+        "monotonic_seconds": 48.60154708311893
+      },
+      "memory": {
+        "before": {
+          "process_peak_rss_bytes": 4122017792,
+          "system_swap": "total = 24576.00M  used = 22841.25M  free = 1734.75M  (encrypted)"
+        },
+        "after_training": {
+          "process_peak_rss_bytes": 4122017792,
+          "system_swap": "total = 23552.00M  used = 22948.19M  free = 603.81M  (encrypted)"
+        }
+      },
+      "training_segments": [
+        {
+          "round": 25,
+          "elapsed_seconds": 22.186630208045244,
+          "segment_seconds": 22.186630208045244
+        },
+        {
+          "round": 50,
+          "elapsed_seconds": 31.69162879092619,
+          "segment_seconds": 9.504998582880944
+        },
+        {
+          "round": 75,
+          "elapsed_seconds": 39.74072620808147,
+          "segment_seconds": 8.04909741715528
+        },
+        {
+          "round": 100,
+          "elapsed_seconds": 48.58288912498392,
+          "segment_seconds": 8.842162916902453
+        }
+      ],
+      "test_prediction_seconds": 0.16708149993792176,
+      "test_accuracy": 0.742178,
+      "test_logloss": 0.5109559910015393
+    },
+    "results/sigmoid-reuse-20261105/candidate-2.json": {
+      "status": "complete",
+      "device": "mps",
+      "params": {
+        "tree_method": "hist",
+        "device": "mps",
+        "nthread": 8,
+        "seed": 0,
+        "max_depth": 6,
+        "max_bin": 256,
+        "min_child_weight": 1,
+        "gamma": 0,
+        "reg_alpha": 0,
+        "reg_lambda": 1,
+        "subsample": 1,
+        "colsample_bytree": 1,
+        "base_score": 0.5,
+        "objective": "binary:logitraw",
+        "eval_metric": "error",
+        "eta": 0.3
+      },
+      "rounds": 100,
+      "shapes": {
+        "train": [
+          10500000,
+          28
+        ],
+        "test": [
+          500000,
+          28
+        ]
+      },
+      "split_index_sha256": {},
+      "dmatrix_seconds": 1.729187250137329,
+      "training_seconds": 60.76126941596158,
+      "dmatrix_plus_training_seconds": 62.49045666609891,
+      "clock": {
+        "started_utc": "2026-11-06T02:58:38.625798+00:00",
+        "wall_seconds": 60.76202201843262,
+        "monotonic_seconds": 60.76126941596158
+      },
+      "memory": {
+        "before": {
+          "process_peak_rss_bytes": 4023894016,
+          "system_swap": "total = 23552.00M  used = 22812.19M  free = 739.81M  (encrypted)"
+        },
+        "after_training": {
+          "process_peak_rss_bytes": 4023894016,
+          "system_swap": "total = 23552.00M  used = 22860.62M  free = 691.38M  (encrypted)"
+        }
+      },
+      "training_segments": [
+        {
+          "round": 25,
+          "elapsed_seconds": 28.995798874879256,
+          "segment_seconds": 28.995798874879256
+        },
+        {
+          "round": 50,
+          "elapsed_seconds": 38.8857322500553,
+          "segment_seconds": 9.889933375176042
+        },
+        {
+          "round": 75,
+          "elapsed_seconds": 48.742392083862796,
+          "segment_seconds": 9.856659833807498
+        },
+        {
+          "round": 100,
+          "elapsed_seconds": 60.726744584040716,
+          "segment_seconds": 11.98435250017792
+        }
+      ],
+      "test_prediction_seconds": 0.277807499980554,
+      "test_accuracy": 0.742178,
+      "test_logloss": 0.5109559910015393
+    },
+    "results/sigmoid-reuse-20261105/baseline-2.json": {
+      "status": "complete",
+      "device": "mps",
+      "params": {
+        "tree_method": "hist",
+        "device": "mps",
+        "nthread": 8,
+        "seed": 0,
+        "max_depth": 6,
+        "max_bin": 256,
+        "min_child_weight": 1,
+        "gamma": 0,
+        "reg_alpha": 0,
+        "reg_lambda": 1,
+        "subsample": 1,
+        "colsample_bytree": 1,
+        "base_score": 0.5,
+        "objective": "binary:logitraw",
+        "eval_metric": "error",
+        "eta": 0.3
+      },
+      "rounds": 100,
+      "shapes": {
+        "train": [
+          10500000,
+          28
+        ],
+        "test": [
+          500000,
+          28
+        ]
+      },
+      "split_index_sha256": {},
+      "dmatrix_seconds": 1.6391062499023974,
+      "training_seconds": 54.57976879202761,
+      "dmatrix_plus_training_seconds": 56.218875041930005,
+      "clock": {
+        "started_utc": "2026-11-06T02:59:43.868671+00:00",
+        "wall_seconds": 54.58018612861633,
+        "monotonic_seconds": 54.57976879202761
+      },
+      "memory": {
+        "before": {
+          "process_peak_rss_bytes": 4068540416,
+          "system_swap": "total = 23552.00M  used = 22316.50M  free = 1235.50M  (encrypted)"
+        },
+        "after_training": {
+          "process_peak_rss_bytes": 4068540416,
+          "system_swap": "total = 23552.00M  used = 22582.56M  free = 969.44M  (encrypted)"
+        }
+      },
+      "training_segments": [
+        {
+          "round": 25,
+          "elapsed_seconds": 22.92702741594985,
+          "segment_seconds": 22.92702741594985
+        },
+        {
+          "round": 50,
+          "elapsed_seconds": 34.38602166599594,
+          "segment_seconds": 11.45899425004609
+        },
+        {
+          "round": 75,
+          "elapsed_seconds": 43.88468245812692,
+          "segment_seconds": 9.498660792130977
+        },
+        {
+          "round": 100,
+          "elapsed_seconds": 54.555651207920164,
+          "segment_seconds": 10.670968749793246
+        }
+      ],
+      "test_prediction_seconds": 0.1370310839265585,
+      "test_accuracy": 0.742178,
+      "test_logloss": 0.5109559910015393
+    }
+  },
+  "acceptance": "Retained: all six models and all six margin arrays are bit-identical; the objective GPU component improves in every pair. End-to-end timing varies substantially and one candidate run is slower than its paired baseline.",
+  "limits": [
+    "MPS before/after on full 10.5M training / 500K test rows with 100 rounds; not the published 1000-round workload or a CPU/NVIDIA speedup claim.",
+    "All six runs used battery power. High system-wide swap and timing variation limit the end-to-end median comparison. User applications were not closed.",
+    "GPU component speedup is clear; the 1.081x median training ratio is not evidence of a general or stable total-training speedup.",
+    "No new NVIDIA execution or full 3919-test rerun. Existing numerical tolerances were unchanged."
+  ]
+}

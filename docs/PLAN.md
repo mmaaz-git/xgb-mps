@@ -2,7 +2,8 @@
 
 Updated 2026-11-05 after a three-agent review of `6f3dcbd` and cleanup `383f19d`.
 The user replaced the open-ended full-parity goal with the Python usability,
-HIGGS diagnosis, correctness and measured-performance phase below.
+HIGGS diagnosis, correctness and measured-performance phase below, and confirmed
+that Spark/R/JVM belong in the later backlog. The Python phase is complete.
 This file is the current plan; the [previous plan](archive/PLAN-before-scope-reset-2026-11-05.md)
 retains completed tasks and comparison history.
 
@@ -38,10 +39,10 @@ See the [review](REVIEW.md), [support boundaries](CUDA_PARITY.md) and
 | Maintainability | Runtime/shader monoliths, legacy test-only paths and numerical-policy complexity remain. | Small extractions or proven dead-code removals, each retaining relevant regression checks. |
 | Performance | Full HIGGS remains slower on this M3 than CPU in the latest 1,000-round measurement. | Optimize measured bottlenecks after correctness; report complete before/after results, including CPU wins. |
 
-## Immediate execution order
+## Completed Python acceptance checklist
 
-The cleanup is complete; findings are in [REVIEW.md](REVIEW.md). The active phase
-has this acceptance checklist:
+The cleanup is complete; findings are in [REVIEW.md](REVIEW.md). The Python phase
+used this acceptance checklist:
 
 1. **Python installation and use:** build a wheel, install it into a fresh
    environment, verify the imported package/library come from that environment,
@@ -58,15 +59,21 @@ has this acceptance checklist:
    evaluate it with the existing benchmark tools, paired timings and correctness
    checks. Retain only supported improvements; record unsuccessful experiments.
 
-Progress: item 1 passed ([fresh installation](../validation/python-install-m3.json));
+Results: item 1 passed again on the optimized build, which is also installed in
+the project's `.venv` ([fresh installation](../validation/python-install-m3.json));
 item 2 has a source-level explanation ([all HIGGS cuts](../validation/higgs-cut-source-m3.json)).
 Neither check demonstrated a production defect requiring item 3 changes.
-Item 4 remains open. NVIDIA runtime equivalence is not claimed by these results.
+Item 4 reduced the measured logistic-gradient GPU cost from 7.78 to 1.12 seconds
+median by reusing the existing checked sigmoid implementation. All six HIGGS
+models/prediction arrays match exactly. Total training timing was variable;
+the 1.081x median ratio is not a general speedup claim.
+[Performance and focused regression evidence](../validation/sigmoid-reuse-m3.json).
+NVIDIA runtime equivalence is not claimed by these results.
 
-Publish installation instructions, revision-specific acceptance evidence, the
-HIGGS conclusion and the performance result. This phase ends when those four
-items are verified and its demonstrated defects are resolved; it does not grow
-automatically into exhaustive private-function replay or universal bitwise identity.
+Installation instructions, revision-specific evidence, the HIGGS conclusion and
+the performance result are published. This completes the agreed Python phase;
+the remaining ecosystem/deployment work in the table is a backlog, not an
+automatic extension into exhaustive private-function replay or bitwise identity.
 
 NVIDIA access is required to execute CUDA comparisons; none is configured.
 Spark and R/JVM integration are real remaining ecosystem work, independent

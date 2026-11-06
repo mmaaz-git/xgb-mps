@@ -397,3 +397,43 @@ The [decision record](../validation/objective-specialization-m3-run.json) links
 compressed raw reports, the discarded patch and focused-test evidence. No
 production arithmetic or tolerance was changed, and this experiment adds no
 NVIDIA runtime evidence. Do not repeat it unchanged.
+
+## Reusing the checked sigmoid implementation
+
+The Python usability phase identified an existing implementation that could
+reduce the measured logistic-objective cost. Ranking already uses a two-float
+exponential expansion with explicit FP32 boundaries and software division.
+The objective sigmoid now reuses that helper for non-NaN inputs; NaNs retain
+the general path. This adds no new pipeline and changes no test tolerances.
+
+Five native groups and 112 Python tests passed, with one expected skip. The
+existing 2,996,040-input sigmoid corpus now also checks the objective entry point;
+every result matches the independent binary64 reference. The objective API
+checks passed 14,305,782 exact fields, including subnormal/nonfinite cases.
+
+Three pairs used the full 10.5M/500K HIGGS split and **100 rounds**, separate
+baseline/candidate package and library snapshots, fresh worker processes and
+randomized pair order. Every saved model and prediction array is bit-identical
+across all six runs.
+
+| Pair | Baseline training (s) | Candidate training (s) |
+| --- | ---: | ---: |
+| 1 | 46.438 | 33.698 |
+| 2 | 52.546 | 48.602 |
+| 3 | 54.580 | 60.761 |
+| Median | 52.546 | 48.602 |
+
+Median objective GPU time fell from **7.781 to 1.124 seconds (6.92x)** and improved
+in every pair. This component improvement supports retaining the small change.
+The total-training median ratio is **1.081x**, but one candidate run was slower
+and timing varied substantially. All six runs used battery power; system-wide
+swap was approximately 22–24 GB and user applications remained open. These
+conditions do not establish a reliable general end-to-end speedup. No build or
+test job ran concurrently with the timed workers.
+
+This is an MPS before/after experiment, not a CPU/NVIDIA speedup measurement or
+a rerun of the published 1,000-round workload. The existing benchmark worker
+command above applies to the two source/library snapshots. The
+[result record](../validation/sigmoid-reuse-m3.json) retains exact source/library
+hashes, every timing, model hashes, power, memory and clock observations.
+The final optimized wheel also passed a [fresh installation check](../validation/python-install-m3.json).

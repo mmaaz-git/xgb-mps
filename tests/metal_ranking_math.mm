@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
       std::string source{std::istreambuf_iterator<char>(file), {}};
       source += R"(
         kernel void test_rank_math(device const uint* input [[buffer(0)]],
-                                   device uint2* output [[buffer(1)]],
+                                   device uint4* output [[buffer(1)]],
                                    uint tid [[thread_position_in_grid]]) {
           using namespace xgb_survival;
           uint bits = input[tid];
@@ -39,7 +39,8 @@ int main(int argc, char** argv) {
           uint e = as_type<uint>(xgb_dto_float(Exp(x)));
           uint denom = xgb_rank_fadd(xgb_rank_fadd(e, 0x3f800000u), as_type<uint>(1e-16f));
           uint precise = as_type<uint>(xgb_dto_float(one / From(as_type<float>(denom))));
-          output[tid] = uint2(xgb_rank_sigmoid(bits), precise);
+          output[tid] = uint4(xgb_rank_sigmoid(bits), precise,
+                             xgb_objective_math::Sigmoid(xgb_objective_math::F{bits}).bits, 0);
         })";
       auto device = MTLCreateSystemDefaultDevice();
       auto options = [MTLCompileOptions new];
@@ -64,7 +65,7 @@ int main(int argc, char** argv) {
       auto in = [device newBufferWithBytes:inputs.data()
                                     length:inputs.size() * 4
                                    options:MTLResourceStorageModeShared];
-      auto out = [device newBufferWithLength:inputs.size() * 8
+      auto out = [device newBufferWithLength:inputs.size() * 16
                                      options:MTLResourceStorageModeShared];
       auto queue = [device newCommandQueue];
       auto command = [queue commandBuffer];
@@ -80,12 +81,13 @@ int main(int argc, char** argv) {
       if (command.status != MTLCommandBufferStatusCompleted)
         throw std::runtime_error(command.error.localizedDescription.UTF8String);
       auto actual = static_cast<uint32_t const*>(out.contents);
-      size_t cpu_diff = 0, precise_diff = 0, double_cpu_diff = 0;
+      size_t cpu_diff = 0, precise_diff = 0, double_cpu_diff = 0, objective_diff = 0;
       uint32_t max_cpu_ulp = 0;
       for (size_t i = 0; i < inputs.size(); ++i) {
         float x = std::min(-Value(inputs[i]), 88.7f);
         uint32_t expected = Bits(1.f / (std::exp(x) + 1.f + 1e-16f));
-        auto got = actual[2 * i], precise = actual[2 * i + 1];
+        auto got = actual[4 * i], precise = actual[4 * i + 1];
+        objective_diff += actual[4 * i + 2] != precise;
         float double_exp = static_cast<float>(std::exp(double(x)));
         uint32_t double_reference = Bits(1.f / (double_exp + 1.f + 1e-16f));
         double_cpu_diff += got != double_reference;
@@ -107,9 +109,10 @@ int main(int argc, char** argv) {
                   "binary64-oracle differences\n",
                   inputs.size(), cpu_diff, max_cpu_ulp, precise_diff);
       std::printf("CPU binary64-exp oracle differences: %zu\n", double_cpu_diff);
+      std::printf("Objective sigmoid binary64-oracle differences: %zu\n", objective_diff);
       // Apple's dynamic expf differs from correctly rounded exp in some cases;
       // both independent binary64-exp oracles must still agree exactly.
-      if (precise_diff || double_cpu_diff || max_cpu_ulp > 4)
+      if (precise_diff || double_cpu_diff || objective_diff || max_cpu_ulp > 4)
         throw std::runtime_error("Ranking sigmoid exceeded rounding contract");
     } catch (std::exception const& e) {
       std::fprintf(stderr, "%s\n", e.what());

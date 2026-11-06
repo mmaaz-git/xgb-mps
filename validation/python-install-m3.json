@@ -1,11 +1,11 @@
 {
   "status": "passed",
   "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
-  "prefix": "/Users/maaz/Documents/xgb-mps/results/python-install-20261105/venv",
-  "cwd": "/private/tmp/xgb-mps-installed.WBkFkY",
-  "package": "/Users/maaz/Documents/xgb-mps/results/python-install-20261105/venv/lib/python3.13/site-packages/xgboost/__init__.py",
-  "library": "/Users/maaz/Documents/xgb-mps/results/python-install-20261105/venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.dylib",
-  "library_sha256": "79f513e352f0900b905c7f034903aff44eae30fcdc3235b612db7337edd6c8d8",
+  "prefix": "/Users/maaz/Documents/xgb-mps/results/python-install-final-20261105/venv",
+  "cwd": "/private/tmp/xgb-mps-installed.16xpZo",
+  "package": "/Users/maaz/Documents/xgb-mps/results/python-install-final-20261105/venv/lib/python3.13/site-packages/xgboost/__init__.py",
+  "library": "/Users/maaz/Documents/xgb-mps/results/python-install-final-20261105/venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.dylib",
+  "library_sha256": "bf2e3bc197a2ea9d20d017b4166c2512cc73c7c3273b0ddf70d6a52b4e9ac4f6",
   "dependencies": {
     "xgboost": "3.4.2",
     "numpy": "2.5.4",
@@ -37,15 +37,16 @@
     "-o",
     "pythonpath=",
     "--require-metal",
-    "--junitxml=/Users/maaz/Documents/xgb-mps/results/python-install-20261105/pytest.xml"
+    "--junitxml=/Users/maaz/Documents/xgb-mps/results/python-install-final-20261105/pytest.xml"
   ],
   "pytest_exit_code": 0,
   "environment": "Fresh venv; no PYTHONPATH or DYLD_LIBRARY_PATH; Python isolated mode; cwd outside checkout",
-  "revision": "383f19d2b0e676ec51d548d64f69814973eefc1a",
-  "scope": "Local wheel built from existing validated Metal library; installed into fresh Python 3.13 environment. No source-path or dynamic-library-path overrides. Not a portable wheel release or a new clean C++ rebuild.",
+  "base_revision": "f4257b8ee827ddc7646560dad3e8f91fce812109",
+  "source_diff_sha256": "2a9933d09d234256d6dcb0ea313d7f46fb109a2d7da8a63e7a9e7288c722105f",
+  "scope": "Optimized Metal wheel from existing validated build, installed into fresh Python 3.13 environment; no source-path or dynamic-library-path overrides. Not a portable wheel release or new clean C++ rebuild.",
   "wheel": {
     "filename": "xgboost-3.4.2-py3-none-macosx_26_0_arm64.whl",
-    "sha256": "92fdeaef20043bc1a464c9a84ad38f3783575b718f4d493b0186a681a0eed92c"
+    "sha256": "83cca449764b8e420acc86fc2d42207195d973c21032eeeb9bd05746bd639357"
   },
   "pytest_counts": {
     "tests": "78",
@@ -55,6 +56,7 @@
   },
   "expected_skip": "No-GPU rejection test skips on this Metal-capable host.",
   "source_sha256": {
+    "xgboost/src/common/metal_histogram.metal": "dafdccb77b3a9a62dc16ada15bf5f3a95eb3aef37e0650d5639b40460f42191d",
     "xgboost/python-package/pyproject.toml": "b8a34ed5f7a117e580667e26cdf24254cc2cc67b27d56a79e80ea0103f4956bc",
     "xgboost/python-package/CMakeLists.txt": "786c6a42efdffef37e10fb18878fa9ce8175e4db720f89d37168c2c0c05bd915",
     "tests/test_metal.py": "f408b21998fc8ae80cbcea1e26ba9f1291adc6c5c6eb27c8c2ad10aa4fd4e277",
@@ -62,10 +64,22 @@
     "tests/conftest.py": "f5918b5259e00d7eab5528e3595b01d87cc5f6d5a50ca13c78a1a07250c0a6c2"
   },
   "local_evidence": {
-    "results/python-install-20261105/run.sh": "b8b27d22255cb0073fff3e13f267b112ef81995dd9a37e4247a338aae0bf19a5",
-    "results/python-install-20261105/check-installed.py": "5914a7c935396648b44a9a12f250547148a1871ef86b9319b9cccab6a22a009f",
-    "results/python-install-20261105/run.log": "a223f93a07bf13e38e82fdef2089667802406b82fd1209fd5c015af3354ce11e",
-    "results/python-install-20261105/installed.json": "4cf3dbe04f3f559793ed98c7a62a00b75068575c42fe3e7a8d1fa0cf79e1f6ab",
-    "results/python-install-20261105/pytest.xml": "7a817780b4437acc3d739e908f3521e285d6b748d6b31985b27b5f854cbcd4f4"
-  }
+    "results/python-install-final-20261105/run.sh": "ff3a74ea0ef3ce0e461ecb42498198840caff4b49ad8ff0d9adedf17b713a004",
+    "results/python-install-final-20261105/check-installed.py": "bb5b97182d748a14a28c0fc91ec973547c187b06ecf72e1449628fddb71fc774",
+    "results/python-install-final-20261105/run.log": "3af5daf3f75431c139a652ce166fcf025b5ee57d546c8e967ead6538e637c338",
+    "results/python-install-final-20261105/installed.json": "d368a2e3f6c7d7249a6681b0fd2c36872c83f0ae57ea52d8b9295267abafbdd3",
+    "results/python-install-final-20261105/pytest.xml": "20dca5570b7c85a2c73e8a01ae614c814f818f87665e3217964339240b408943"
+  },
+  "project_environment": {
+    "status": "passed",
+    "python": "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+    "package": "/Users/maaz/Documents/xgb-mps/.venv/lib/python3.13/site-packages/xgboost/__init__.py",
+    "library": "/Users/maaz/Documents/xgb-mps/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.dylib",
+    "library_sha256": "bf2e3bc197a2ea9d20d017b4166c2512cc73c7c3273b0ddf70d6a52b4e9ac4f6",
+    "histogram_dispatches": 2,
+    "prediction_dispatches": 1,
+    "cwd": "/private/tmp",
+    "isolated_python": true
+  },
+  "previous_acceptance": "Original pre-optimization fresh-environment result is retained at f4257b8:validation/python-install-m3.json and results/python-install-20261105."
 }

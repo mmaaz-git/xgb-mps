@@ -100,9 +100,11 @@ Performance is mixed. The latest full 1,000-round HIGGS measurement at `68c800e`
 gave **288 s CPU / 469 s MPS** median training on this M3. Independently trained
 CPU/MPS models have different quantile cuts. All saved MPS cuts match the
 CUDA-source sketch equations; a separate fixed-cut training diagnostic passes.
-A later reader optimization at `818e11f` improved a **100-round MPS-only**
-comparison from **64.8 s to 55.2 s**, with identical models and predictions.
-These are different experiments, not a current general CPU-speedup claim.
+A later **100-round MPS-only** comparison reused the existing fast sigmoid:
+logistic-gradient GPU time fell from **7.78 s to 1.12 s** median. Total training
+medians were **52.55 s / 48.60 s**, with substantial variation on battery and
+under high system-wide swap use. All six models and prediction arrays matched
+exactly. These results do not establish a general CPU speedup.
 [Workloads, every timing and limitations](docs/PUBLISHED_BENCHMARKS.md).
 
 ## Repository guide

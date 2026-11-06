@@ -99,11 +99,18 @@ turn a historical full run into a current full run.
 
 ## Recorded results
 
-- **Fresh Python installation at `383f19d`:** the wheel's own package/library
+- **Fresh Python installation, including the optimized sigmoid build:** the wheel's own package/library
   loaded in a fresh environment outside the checkout, without `PYTHONPATH` or
   `DYLD_LIBRARY_PATH`. Regression and classification train/predict/save/load/CPU
   interchange passed, plus 77 existing workflow/model tests and one expected
   no-GPU-test skip. [Installation record](../validation/python-install-m3.json).
+  The optimized wheel is also installed in the project's `.venv`, with its
+  loaded library hash and Metal train/predict dispatches checked outside the checkout.
+- **Sigmoid reuse optimization:** five native groups and 112 Python tests passed
+  with one expected skip. The existing sigmoid corpus now also checks the
+  objective entry point: 2,996,040 inputs agree exactly with its binary64 reference.
+  All six full-row, 100-round HIGGS models and margin arrays match before/after.
+  [Source hashes, complete timings and limits](../validation/sigmoid-reuse-m3.json).
 - **HIGGS source-reference diagnosis:** all 6,184 saved MPS cuts across 28
   features exactly match CUDA-source equations; CPU cuts differ for 24 features.
   No new training or NVIDIA execution. [Scope and command](../validation/higgs-cut-source-m3.json).

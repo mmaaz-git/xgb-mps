@@ -3431,6 +3431,11 @@ inline F FMax(F a, F b) {
   return a < b ? b : a;
 }
 inline F Sigmoid(F x) {
+  // Reuse the ranking path's two-float exp expansion and FP32 boundaries.
+  // Its existing binary64-oracle regression also checks this objective entry.
+  // Keep NaNs on the general path: the bounded expansion converts its exponent
+  // to an integer and is defined only for non-NaN inputs.
+  if (!IsNaN(x)) return F{xgb_rank_sigmoid(x.bits)};
   F neg = -x, cap = From(88.7f), one = From(1.f);
   // std::min keeps its first argument when that argument is NaN.
   return one / ((Exp(cap < neg ? cap : neg) + one) + From(1e-16f));
