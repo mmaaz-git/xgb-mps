@@ -1,6 +1,6 @@
 # Scope and next steps
 
-Updated 2026-11-05. This fork provides **Python bindings only**, backed by the
+Updated 2026-11-06. This fork provides **Python bindings only**, backed by the
 shared XGBoost C++ engine and its CPU, CUDA and Metal implementations. Existing
 Dask support remains. R, Java/Scala and Spark, including `xgboost.spark`, have
 been removed and are outside the project scope.
@@ -14,6 +14,13 @@ NVIDIA numerical equivalence, or a general performance advantage.
 
 Completed checks and results:
 
+- High-dimensional profiling now covers 100K rows × 1,024 columns and 25K rows ×
+  4,096 columns, with 64 informative features and three CPU/MPS pairs each.
+  CPU wins every pair; median MPS training takes 1.46× / 2.41× as long.
+  Split evaluation is the largest measured GPU cost (14.44 / 69.20 seconds).
+  Repeats and same-model CPU/MPS predictions agree exactly, but independently
+  trained models fail strict margin equivalence. No engine changes were made.
+  [High-dimensional evidence](../validation/high-dimensional-m3.json).
 - Partitioning now avoids a redundant row-ID copy for complete ordered ranges;
   sketch feature sorting omits all-zero high-key passes. Final checks passed
   four native groups, 171 Python tests and three installed-package workflows.
@@ -44,11 +51,14 @@ Completed checks and results:
 
 ## Next steps
 
-1. **Investigate command waits in split evaluation and prediction.** A separate
-   CPU sample found 74% of captured main-thread stacks waiting for Metal command
-   completion. This includes necessary GPU execution; inspect dependencies and
-   queue timing before attempting to batch commands. Resolve the wide-data
-   wall-time regression/variability before making general speedup claims.
+1. **Profile the high-dimensional split kernels.** On 4,096 columns, split GPU
+   time is about 69 seconds within 110 seconds of median training. Isolate the
+   software binary64 gain calculation, scans/reduction and dispatch geometry
+   before changing code. Preserve precision and split selection; do not assume
+   that replacing arithmetic with FP32 is equivalent. The earlier CPU sample's
+   74% command-wait share includes GPU execution, so it is not evidence that
+   submission overhead alone explains this slowdown. Retain held-out quality
+   and cross-model differences; these new datasets have no common-cut diagnosis.
 2. **Inspect sketch scratch-memory lifetimes.** The sampled wide worker reached
    a 6.9 GB physical-footprint peak. Check whether sorted records and temporary
    buffers can be reused without changing stable order or GPU ownership.

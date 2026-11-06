@@ -84,21 +84,29 @@ GPU comparison for 28/128 features. Complete sketch construction improved
 Before/after models and predictions remained bit-identical.
 
 These component gains have not established a reliable end-to-end CPU advantage.
-The latest wide-data candidate was slower overall, and HIGGS training times varied
-substantially alongside high system-wide swap use. Both improvements and losses,
+The latest high-dimensional runs also favor CPU: at **1,024 columns**, median
+CPU/MPS training takes **18.76 / 27.35 seconds**; at **4,096 columns**,
+**45.62 / 110.08 seconds**. Split evaluation dominates measured GPU time on these
+workloads. HIGGS training times varied substantially alongside high system-wide
+swap use. Both improvements and losses,
 including the historical 1,000-round workloads, are retained in the
 [complete timings and limitations](docs/PUBLISHED_BENCHMARKS.md).
 
 Large-workload profiling is separate from the tests:
 
 ```sh
-.venv/bin/python scripts/profile_training.py --case wide --rows 1000000 \
-  --features 128 --rounds 100 --threads 8 --output results/profile-wide
+.venv/bin/python scripts/profile_training.py --case wide --rows 100000 \
+  --features 1024 --informative-features 64 --rounds 100 --threads 8 \
+  --repeats 3 --output results/profile-wide-1024
 ```
 
 The profiler runs fresh CPU/MPS processes and records setup/training times,
 GPU counters, held-out quality, memory pressure and per-round segments. HIGGS
 uses `--case higgs` with the cache from `scripts/prepare_published_data.py`.
+The optional `--informative-features` spreads signal across the feature matrix;
+omitting it retains the original three-feature target. Independently trained
+CPU/MPS models can differ; these runs record the differences rather than claim
+training equivalence. Each MPS model's CPU prediction is checked exactly.
 
 ## Repository guide
 

@@ -1,0 +1,1041 @@
+{
+  "status": "complete",
+  "hardware": "Apple M3, 10-core GPU, 16 GB RAM",
+  "source": {
+    "revision": "59f0451466702ebfc0c5e5d0d68a731c38a6e60d",
+    "sha256": {
+      "scripts/profile_training.py": "2a0eb3e2c39ea315b43d66ae26c2260f42ac807c3cafdae53133790a2dfd8020",
+      "xgboost/src/common/metal_histogram.mm": "b553569ce6edf36d81267f0f8aea86ddfb3434e17eae1b315d5472670c355ff0",
+      "xgboost/src/common/metal_histogram.metal": "47915fd956dde85695f2b43fb87d9f7342b55e6240e14b0be756b746899782ff",
+      "xgboost/lib/libxgboost.dylib": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f"
+    },
+    "started_utc": "2026-11-06T07:56:34.177439+00:00"
+  },
+  "change": "Benchmark generator only: optional informative feature count; production library and kernels unchanged.",
+  "measurement": {
+    "rounds": 100,
+    "max_depth": 6,
+    "max_bin": 256,
+    "threads": 8,
+    "repeats": 3,
+    "sampling": "All rows and columns considered; no column or row subsampling.",
+    "worker_order": [
+      "cpu-0",
+      "mps-0",
+      "mps-1",
+      "cpu-1",
+      "cpu-2",
+      "mps-2"
+    ],
+    "timing": "Fresh process per run with warmed runtime. Training includes quantization and held-out evaluation every round. Generation, DMatrix setup, final prediction and correctness checks excluded; setup also reported.",
+    "counter_note": "GPU counter families can overlap. Do not sum them or add host waits to estimate total work.",
+    "environment": "AC power throughout. This task ran no concurrent builds/tests/other benchmarks; unrelated sessions and applications were not controlled. System swap is system-wide, not this process alone.",
+    "data_design": "Dense FP32 normal features; 64 informative columns evenly spread across width; linear/quadratic additive score and stochastic logistic labels. Each case has 102400000 training feature values. The wider case reduces rows to bound memory; this is not a constant-row scaling study.",
+    "hash_note": "Feature hashes cover array bytes; the two cases share the same flattened random stream and byte count, but reshape differently and have different labels. Interpret hashes with train/test shapes."
+  },
+  "checks": {
+    "smoke_status": "complete",
+    "mps_model_cpu_prediction": "Every MPS worker asserts exact equality of saved-model margins on MPS and CPU predictors.",
+    "training_equivalence": "Not established. Independent CPU/MPS models differ substantially; retain all margin/class/quality differences. Different sketch algorithms are a possible contributor, not diagnosed on these datasets.",
+    "cuda_equivalence": "Not tested: no NVIDIA device."
+  },
+  "cases": {
+    "wide-1024": {
+      "command": ".venv/bin/python scripts/profile_training.py --case wide --rows 100000 --features 1024 --informative-features 64 --rounds 100 --threads 8 --repeats 3 --output results/high-dimensional-20261106/wide-1024",
+      "train_shape": [
+        100000,
+        1024
+      ],
+      "test_shape": [
+        10000,
+        1024
+      ],
+      "dataset": {
+        "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+        "numpy_version": "2.5.4",
+        "signal": {
+          "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+          "features": [
+            0,
+            16,
+            32,
+            48,
+            64,
+            81,
+            97,
+            113,
+            129,
+            146,
+            162,
+            178,
+            194,
+            211,
+            227,
+            243,
+            259,
+            276,
+            292,
+            308,
+            324,
+            341,
+            357,
+            373,
+            389,
+            405,
+            422,
+            438,
+            454,
+            470,
+            487,
+            503,
+            519,
+            535,
+            552,
+            568,
+            584,
+            600,
+            617,
+            633,
+            649,
+            665,
+            682,
+            698,
+            714,
+            730,
+            746,
+            763,
+            779,
+            795,
+            811,
+            828,
+            844,
+            860,
+            876,
+            893,
+            909,
+            925,
+            941,
+            958,
+            974,
+            990,
+            1006,
+            1023
+          ]
+        },
+        "features_sha256": "57584a89ffbf2cd2ecb408a34b268a056beea97532429eaeb584c41bb99c9dcd",
+        "labels_sha256": "b7db05ecfdf19fe780854fc423272ea08616e12c1f11d14e7ef50abe696fd576"
+      },
+      "params_by_device": {
+        "cpu": {
+          "device": "cpu",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "mps": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        }
+      },
+      "training_median_seconds": {
+        "cpu": 18.762095416197553,
+        "mps": 27.352847292087972
+      },
+      "dmatrix_plus_training_median_seconds": {
+        "cpu": 19.001546708168462,
+        "mps": 27.566266667097807
+      },
+      "mps_over_cpu_training_median": 1.4578780613424402,
+      "gpu_counter_median_seconds": {
+        "split_gpu_time_ns": 14.43946993,
+        "gpu_time_ns": 3.42739443,
+        "cuda_sketch_gpu_time_ns": 1.688231824,
+        "input_prepare_gpu_time_ns": 0.298336655,
+        "partition_gpu_time_ns": 0.079519482,
+        "ellpack_gpu_time_ns": 0.049692873,
+        "vector_gpu_time_ns": 0.022320083,
+        "metric_gpu_time_ns": 0.014305698,
+        "objective_gpu_time_ns": 0.012480483,
+        "prediction_gpu_time_ns": 0.008086368,
+        "gradient_sum_gpu_time_ns": 0.004157058,
+        "column_sampling_gpu_time_ns": 0.000233005,
+        "base_score_gpu_time_ns": 1.725e-05,
+        "label_validation_gpu_time_ns": 1.3874e-05
+      },
+      "comparisons": [
+        {
+          "repeat": 0,
+          "margin_max_abs_difference": 3.6570234298706055,
+          "margin_rmse_difference": 0.8512070967063291,
+          "class_disagreement_fraction": 0.1957,
+          "accuracy_difference": -0.0006999999999999229,
+          "logloss_difference": 0.0015446387107176385,
+          "margin_values_outside_atol_rtol_2e_5": 9999,
+          "total_margin_values": 10000,
+          "strict_margin_equivalence_passed": false
+        },
+        {
+          "repeat": 1,
+          "margin_max_abs_difference": 3.6570234298706055,
+          "margin_rmse_difference": 0.8512070967063291,
+          "class_disagreement_fraction": 0.1957,
+          "accuracy_difference": -0.0006999999999999229,
+          "logloss_difference": 0.0015446387107176385,
+          "margin_values_outside_atol_rtol_2e_5": 9999,
+          "total_margin_values": 10000,
+          "strict_margin_equivalence_passed": false
+        },
+        {
+          "repeat": 2,
+          "margin_max_abs_difference": 3.6570234298706055,
+          "margin_rmse_difference": 0.8512070967063291,
+          "class_disagreement_fraction": 0.1957,
+          "accuracy_difference": -0.0006999999999999229,
+          "logloss_difference": 0.0015446387107176385,
+          "margin_values_outside_atol_rtol_2e_5": 9999,
+          "total_margin_values": 10000,
+          "strict_margin_equivalence_passed": false
+        }
+      ],
+      "checks": {
+        "cpu_repeated_models_and_margins_bitwise_equal": true,
+        "mps_repeated_models_and_margins_bitwise_equal": true,
+        "identical_cpu_mps_dataset_hashes_and_shapes": true,
+        "all_margins_finite": true,
+        "saved_artifact_hashes_verified": true
+      },
+      "runs": [
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-06T07:58:01.287347+00:00",
+          "loading_seconds": 0.659682541154325,
+          "dmatrix_seconds": 0.4160555840935558,
+          "training_seconds": 14.097157624782994,
+          "wall_seconds": 14.097365140914917,
+          "prediction_seconds": 0.006507083075121045,
+          "test_accuracy": 0.7311,
+          "test_logloss": 0.5303854689651541,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1489436672,
+              "system_swap": "total = 14336.00M  used = 13547.81M  free = 788.19M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2320089088,
+              "system_swap": "total = 15360.00M  used = 14496.12M  free = 863.88M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "model_sha256": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+          "margins_sha256": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+          "dispatch_counters": {
+            "histogram_dispatches": 0,
+            "split_dispatches": 0,
+            "cuda_integer_split_dispatches": 0,
+            "resident_histogram_dispatches": 0,
+            "resident_split_dispatches": 0,
+            "shared_histogram_dispatches": 0,
+            "objective_dispatches": 0,
+            "prediction_dispatches": 0
+          }
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-06T07:58:17.469094+00:00",
+          "loading_seconds": 0.6539595001377165,
+          "dmatrix_seconds": 0.21341937500983477,
+          "training_seconds": 27.352847292087972,
+          "wall_seconds": 27.353248119354248,
+          "prediction_seconds": 0.07459908304736018,
+          "test_accuracy": 0.7304,
+          "test_logloss": 0.5319301076758718,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1535115264,
+              "system_swap": "total = 15360.00M  used = 14496.12M  free = 863.88M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2257715200,
+              "system_swap": "total = 16384.00M  used = 15901.12M  free = 482.88M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "split_gpu_time_ns": 14.148688917,
+            "gpu_time_ns": 3.381174822,
+            "cuda_sketch_gpu_time_ns": 2.0490837,
+            "input_prepare_gpu_time_ns": 0.298336655,
+            "partition_gpu_time_ns": 0.079519482,
+            "ellpack_gpu_time_ns": 0.049692873,
+            "vector_gpu_time_ns": 0.024035495,
+            "metric_gpu_time_ns": 0.014305698,
+            "objective_gpu_time_ns": 0.012480483,
+            "prediction_gpu_time_ns": 0.008086368,
+            "gradient_sum_gpu_time_ns": 0.004157058,
+            "column_sampling_gpu_time_ns": 0.000401766,
+            "base_score_gpu_time_ns": 1.725e-05,
+            "label_validation_gpu_time_ns": 1.3874e-05
+          },
+          "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+          "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+          "dispatch_counters": {
+            "histogram_dispatches": 600,
+            "split_dispatches": 600,
+            "cuda_integer_split_dispatches": 600,
+            "resident_histogram_dispatches": 600,
+            "resident_split_dispatches": 600,
+            "shared_histogram_dispatches": 367,
+            "objective_dispatches": 100,
+            "prediction_dispatches": 100
+          }
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-06T07:58:47.202186+00:00",
+          "loading_seconds": 0.6649916251190007,
+          "dmatrix_seconds": 0.2032314999960363,
+          "training_seconds": 25.726651625009254,
+          "wall_seconds": 25.7270290851593,
+          "prediction_seconds": 0.07355170813389122,
+          "test_accuracy": 0.7304,
+          "test_logloss": 0.5319301076758718,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1534967808,
+              "system_swap": "total = 16384.00M  used = 15901.12M  free = 482.88M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2355118080,
+              "system_swap": "total = 17408.00M  used = 16780.56M  free = 627.44M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "split_gpu_time_ns": 14.43946993,
+            "gpu_time_ns": 3.42739443,
+            "cuda_sketch_gpu_time_ns": 1.476908156,
+            "input_prepare_gpu_time_ns": 0.29496358,
+            "partition_gpu_time_ns": 0.079001275,
+            "ellpack_gpu_time_ns": 0.045727914,
+            "vector_gpu_time_ns": 0.019897054,
+            "metric_gpu_time_ns": 0.01409678,
+            "objective_gpu_time_ns": 0.012461272,
+            "prediction_gpu_time_ns": 0.008069887,
+            "gradient_sum_gpu_time_ns": 0.004126889,
+            "column_sampling_gpu_time_ns": 0.00017402,
+            "base_score_gpu_time_ns": 1.8124e-05,
+            "label_validation_gpu_time_ns": 1.4458e-05
+          },
+          "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+          "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+          "dispatch_counters": {
+            "histogram_dispatches": 600,
+            "split_dispatches": 600,
+            "cuda_integer_split_dispatches": 600,
+            "resident_histogram_dispatches": 600,
+            "resident_split_dispatches": 600,
+            "shared_histogram_dispatches": 367,
+            "objective_dispatches": 100,
+            "prediction_dispatches": 100
+          }
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-06T07:59:15.167686+00:00",
+          "loading_seconds": 0.6942619590554386,
+          "dmatrix_seconds": 0.23945129197090864,
+          "training_seconds": 18.762095416197553,
+          "wall_seconds": 18.76236891746521,
+          "prediction_seconds": 0.005656666122376919,
+          "test_accuracy": 0.7311,
+          "test_logloss": 0.5303854689651541,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1513652224,
+              "system_swap": "total = 17408.00M  used = 16756.56M  free = 651.44M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2896297984,
+              "system_swap": "total = 17408.00M  used = 16684.56M  free = 723.44M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "model_sha256": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+          "margins_sha256": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+          "dispatch_counters": {
+            "histogram_dispatches": 0,
+            "split_dispatches": 0,
+            "cuda_integer_split_dispatches": 0,
+            "resident_histogram_dispatches": 0,
+            "resident_split_dispatches": 0,
+            "shared_histogram_dispatches": 0,
+            "objective_dispatches": 0,
+            "prediction_dispatches": 0
+          }
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-06T07:59:36.110579+00:00",
+          "loading_seconds": 0.706497292034328,
+          "dmatrix_seconds": 0.22650862485170364,
+          "training_seconds": 28.3176723329816,
+          "wall_seconds": 28.318084955215454,
+          "prediction_seconds": 0.026331375120207667,
+          "test_accuracy": 0.7311,
+          "test_logloss": 0.5303854689651541,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1513553920,
+              "system_swap": "total = 17408.00M  used = 16676.56M  free = 731.44M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 3015983104,
+              "system_swap": "total = 17408.00M  used = 16316.56M  free = 1091.44M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "model_sha256": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+          "margins_sha256": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+          "dispatch_counters": {
+            "histogram_dispatches": 0,
+            "split_dispatches": 0,
+            "cuda_integer_split_dispatches": 0,
+            "resident_histogram_dispatches": 0,
+            "resident_split_dispatches": 0,
+            "shared_histogram_dispatches": 0,
+            "objective_dispatches": 0,
+            "prediction_dispatches": 0
+          }
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-06T08:00:07.285511+00:00",
+          "loading_seconds": 0.738070750143379,
+          "dmatrix_seconds": 0.37961062509566545,
+          "training_seconds": 34.490977542009205,
+          "wall_seconds": 34.49148607254028,
+          "prediction_seconds": 0.09182045795023441,
+          "test_accuracy": 0.7304,
+          "test_logloss": 0.5319301076758718,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1535049728,
+              "system_swap": "total = 17408.00M  used = 16188.56M  free = 1219.44M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2355183616,
+              "system_swap": "total = 17408.00M  used = 16654.38M  free = 753.62M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "split_gpu_time_ns": 18.299016902,
+            "gpu_time_ns": 4.221078247,
+            "cuda_sketch_gpu_time_ns": 1.688231824,
+            "input_prepare_gpu_time_ns": 0.306286038,
+            "partition_gpu_time_ns": 0.117896785,
+            "ellpack_gpu_time_ns": 0.079940372,
+            "vector_gpu_time_ns": 0.022320083,
+            "metric_gpu_time_ns": 0.017589487,
+            "objective_gpu_time_ns": 0.015877486,
+            "prediction_gpu_time_ns": 0.008670944,
+            "gradient_sum_gpu_time_ns": 0.004501034,
+            "column_sampling_gpu_time_ns": 0.000233005,
+            "base_score_gpu_time_ns": 1.7207e-05,
+            "label_validation_gpu_time_ns": 1.375e-05
+          },
+          "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+          "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+          "dispatch_counters": {
+            "histogram_dispatches": 600,
+            "split_dispatches": 600,
+            "cuda_integer_split_dispatches": 600,
+            "resident_histogram_dispatches": 600,
+            "resident_split_dispatches": 600,
+            "shared_histogram_dispatches": 367,
+            "objective_dispatches": 100,
+            "prediction_dispatches": 100
+          }
+        }
+      ]
+    },
+    "wide-4096": {
+      "command": ".venv/bin/python scripts/profile_training.py --case wide --rows 25000 --features 4096 --informative-features 64 --rounds 100 --threads 8 --repeats 3 --output results/high-dimensional-20261106/wide-4096",
+      "train_shape": [
+        25000,
+        4096
+      ],
+      "test_shape": [
+        2500,
+        4096
+      ],
+      "dataset": {
+        "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+        "numpy_version": "2.5.4",
+        "signal": {
+          "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+          "features": [
+            0,
+            65,
+            130,
+            195,
+            260,
+            325,
+            390,
+            455,
+            520,
+            585,
+            650,
+            715,
+            780,
+            845,
+            910,
+            975,
+            1040,
+            1105,
+            1170,
+            1235,
+            1300,
+            1365,
+            1430,
+            1495,
+            1560,
+            1625,
+            1690,
+            1755,
+            1820,
+            1885,
+            1950,
+            2015,
+            2080,
+            2145,
+            2210,
+            2275,
+            2340,
+            2405,
+            2470,
+            2535,
+            2600,
+            2665,
+            2730,
+            2795,
+            2860,
+            2925,
+            2990,
+            3055,
+            3120,
+            3185,
+            3250,
+            3315,
+            3380,
+            3445,
+            3510,
+            3575,
+            3640,
+            3705,
+            3770,
+            3835,
+            3900,
+            3965,
+            4030,
+            4095
+          ]
+        },
+        "features_sha256": "57584a89ffbf2cd2ecb408a34b268a056beea97532429eaeb584c41bb99c9dcd",
+        "labels_sha256": "c2d1ceb31354a084f39fee74d2457454ab5d2930641c276cf3b3dad588ae9a47"
+      },
+      "params_by_device": {
+        "cpu": {
+          "device": "cpu",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "mps": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        }
+      },
+      "training_median_seconds": {
+        "cpu": 45.62369079119526,
+        "mps": 110.07516675000079
+      },
+      "dmatrix_plus_training_median_seconds": {
+        "cpu": 45.92361170728691,
+        "mps": 110.334624750074
+      },
+      "mps_over_cpu_training_median": 2.4126756262175038,
+      "gpu_counter_median_seconds": {
+        "split_gpu_time_ns": 69.203470369,
+        "gpu_time_ns": 12.062726817,
+        "cuda_sketch_gpu_time_ns": 1.453861197,
+        "input_prepare_gpu_time_ns": 0.441948284,
+        "ellpack_gpu_time_ns": 0.063218456,
+        "partition_gpu_time_ns": 0.037419494,
+        "vector_gpu_time_ns": 0.023815125,
+        "metric_gpu_time_ns": 0.007726412,
+        "objective_gpu_time_ns": 0.006543061,
+        "prediction_gpu_time_ns": 0.004143365,
+        "gradient_sum_gpu_time_ns": 0.001972649,
+        "column_sampling_gpu_time_ns": 0.000270605,
+        "base_score_gpu_time_ns": 1.7333e-05,
+        "label_validation_gpu_time_ns": 9.999e-06
+      },
+      "comparisons": [
+        {
+          "repeat": 0,
+          "margin_max_abs_difference": 4.484622955322266,
+          "margin_rmse_difference": 1.258810281305665,
+          "class_disagreement_fraction": 0.2724,
+          "accuracy_difference": -0.01880000000000004,
+          "logloss_difference": -0.008965277882680311,
+          "margin_values_outside_atol_rtol_2e_5": 2500,
+          "total_margin_values": 2500,
+          "strict_margin_equivalence_passed": false
+        },
+        {
+          "repeat": 1,
+          "margin_max_abs_difference": 4.484622955322266,
+          "margin_rmse_difference": 1.258810281305665,
+          "class_disagreement_fraction": 0.2724,
+          "accuracy_difference": -0.01880000000000004,
+          "logloss_difference": -0.008965277882680311,
+          "margin_values_outside_atol_rtol_2e_5": 2500,
+          "total_margin_values": 2500,
+          "strict_margin_equivalence_passed": false
+        },
+        {
+          "repeat": 2,
+          "margin_max_abs_difference": 4.484622955322266,
+          "margin_rmse_difference": 1.258810281305665,
+          "class_disagreement_fraction": 0.2724,
+          "accuracy_difference": -0.01880000000000004,
+          "logloss_difference": -0.008965277882680311,
+          "margin_values_outside_atol_rtol_2e_5": 2500,
+          "total_margin_values": 2500,
+          "strict_margin_equivalence_passed": false
+        }
+      ],
+      "checks": {
+        "cpu_repeated_models_and_margins_bitwise_equal": true,
+        "mps_repeated_models_and_margins_bitwise_equal": true,
+        "identical_cpu_mps_dataset_hashes_and_shapes": true,
+        "all_margins_finite": true,
+        "saved_artifact_hashes_verified": true
+      },
+      "runs": [
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-06T08:00:44.352670+00:00",
+          "loading_seconds": 0.6748361249919981,
+          "dmatrix_seconds": 0.2357297909911722,
+          "training_seconds": 44.26792324986309,
+          "wall_seconds": 44.26857280731201,
+          "prediction_seconds": 0.006244125077500939,
+          "test_accuracy": 0.7036,
+          "test_logloss": 0.5963073588455347,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1511735296,
+              "system_swap": "total = 17408.00M  used = 16646.38M  free = 761.62M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 3908272128,
+              "system_swap": "total = 17408.00M  used = 16494.38M  free = 913.62M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "model_sha256": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+          "margins_sha256": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+          "dispatch_counters": {
+            "histogram_dispatches": 0,
+            "split_dispatches": 0,
+            "cuda_integer_split_dispatches": 0,
+            "resident_histogram_dispatches": 0,
+            "resident_split_dispatches": 0,
+            "shared_histogram_dispatches": 0,
+            "objective_dispatches": 0,
+            "prediction_dispatches": 0
+          }
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-06T08:01:30.981782+00:00",
+          "loading_seconds": 0.6657012500800192,
+          "dmatrix_seconds": 0.2179490418639034,
+          "training_seconds": 107.04999845800921,
+          "wall_seconds": 107.05155897140503,
+          "prediction_seconds": 0.08703433279879391,
+          "test_accuracy": 0.6848,
+          "test_logloss": 0.5873420809628543,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1532936192,
+              "system_swap": "total = 17408.00M  used = 16462.38M  free = 945.62M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2352529408,
+              "system_swap": "total = 19456.00M  used = 17833.81M  free = 1622.19M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "split_gpu_time_ns": 68.284113128,
+            "gpu_time_ns": 11.935810328,
+            "cuda_sketch_gpu_time_ns": 1.589905616,
+            "input_prepare_gpu_time_ns": 0.441948284,
+            "ellpack_gpu_time_ns": 0.060406372,
+            "partition_gpu_time_ns": 0.037419494,
+            "vector_gpu_time_ns": 0.024672293,
+            "metric_gpu_time_ns": 0.007726412,
+            "objective_gpu_time_ns": 0.006494939,
+            "prediction_gpu_time_ns": 0.004187728,
+            "gradient_sum_gpu_time_ns": 0.001844112,
+            "column_sampling_gpu_time_ns": 0.000270605,
+            "base_score_gpu_time_ns": 1.6832e-05,
+            "label_validation_gpu_time_ns": 1.0041e-05
+          },
+          "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+          "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+          "dispatch_counters": {
+            "histogram_dispatches": 600,
+            "split_dispatches": 600,
+            "cuda_integer_split_dispatches": 600,
+            "resident_histogram_dispatches": 600,
+            "resident_split_dispatches": 600,
+            "shared_histogram_dispatches": 100,
+            "objective_dispatches": 100,
+            "prediction_dispatches": 100
+          }
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-06T08:03:20.700529+00:00",
+          "loading_seconds": 0.6225944159086794,
+          "dmatrix_seconds": 0.2594580000732094,
+          "training_seconds": 110.07516675000079,
+          "wall_seconds": 110.07677221298218,
+          "prediction_seconds": 0.13642870890907943,
+          "test_accuracy": 0.6848,
+          "test_logloss": 0.5873420809628543,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1532870656,
+              "system_swap": "total = 19456.00M  used = 17817.81M  free = 1638.19M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2352496640,
+              "system_swap": "total = 18432.00M  used = 17784.44M  free = 647.56M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "split_gpu_time_ns": 69.203470369,
+            "gpu_time_ns": 12.062726817,
+            "cuda_sketch_gpu_time_ns": 1.104933532,
+            "input_prepare_gpu_time_ns": 0.43504461,
+            "ellpack_gpu_time_ns": 0.063218456,
+            "partition_gpu_time_ns": 0.039098737,
+            "vector_gpu_time_ns": 0.02192694,
+            "metric_gpu_time_ns": 0.00777607,
+            "objective_gpu_time_ns": 0.006543061,
+            "prediction_gpu_time_ns": 0.004102478,
+            "gradient_sum_gpu_time_ns": 0.001972649,
+            "column_sampling_gpu_time_ns": 0.000269152,
+            "base_score_gpu_time_ns": 1.7333e-05,
+            "label_validation_gpu_time_ns": 9.999e-06
+          },
+          "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+          "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+          "dispatch_counters": {
+            "histogram_dispatches": 600,
+            "split_dispatches": 600,
+            "cuda_integer_split_dispatches": 600,
+            "resident_histogram_dispatches": 600,
+            "resident_split_dispatches": 600,
+            "shared_histogram_dispatches": 100,
+            "objective_dispatches": 100,
+            "prediction_dispatches": 100
+          }
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-06T08:05:13.823175+00:00",
+          "loading_seconds": 0.8067646250128746,
+          "dmatrix_seconds": 0.2999209160916507,
+          "training_seconds": 45.62369079119526,
+          "wall_seconds": 45.624361991882324,
+          "prediction_seconds": 0.00537858298048377,
+          "test_accuracy": 0.7036,
+          "test_logloss": 0.5963073588455347,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1511751680,
+              "system_swap": "total = 18432.00M  used = 17760.44M  free = 671.56M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 4587470848,
+              "system_swap": "total = 18432.00M  used = 16712.44M  free = 1719.56M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "model_sha256": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+          "margins_sha256": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+          "dispatch_counters": {
+            "histogram_dispatches": 0,
+            "split_dispatches": 0,
+            "cuda_integer_split_dispatches": 0,
+            "resident_histogram_dispatches": 0,
+            "resident_split_dispatches": 0,
+            "shared_histogram_dispatches": 0,
+            "objective_dispatches": 0,
+            "prediction_dispatches": 0
+          }
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-06T08:06:01.931163+00:00",
+          "loading_seconds": 0.6847425419837236,
+          "dmatrix_seconds": 0.2171826248522848,
+          "training_seconds": 51.38779670908116,
+          "wall_seconds": 51.38855028152466,
+          "prediction_seconds": 0.0061602911446243525,
+          "test_accuracy": 0.7036,
+          "test_logloss": 0.5963073588455347,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1511735296,
+              "system_swap": "total = 18432.00M  used = 16712.44M  free = 1719.56M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 3702046720,
+              "system_swap": "total = 17408.00M  used = 15813.75M  free = 1594.25M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "model_sha256": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+          "margins_sha256": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+          "dispatch_counters": {
+            "histogram_dispatches": 0,
+            "split_dispatches": 0,
+            "cuda_integer_split_dispatches": 0,
+            "resident_histogram_dispatches": 0,
+            "resident_split_dispatches": 0,
+            "shared_histogram_dispatches": 0,
+            "objective_dispatches": 0,
+            "prediction_dispatches": 0
+          }
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-06T08:06:56.469355+00:00",
+          "loading_seconds": 0.859124334063381,
+          "dmatrix_seconds": 0.2725995001383126,
+          "training_seconds": 116.57535162498243,
+          "wall_seconds": 116.59463286399841,
+          "prediction_seconds": 0.1260828331578523,
+          "test_accuracy": 0.6848,
+          "test_logloss": 0.5873420809628543,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1532952576,
+              "system_swap": "total = 17408.00M  used = 15773.75M  free = 1634.25M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2352365568,
+              "system_swap": "total = 18432.00M  used = 17589.56M  free = 842.44M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "split_gpu_time_ns": 69.406478234,
+            "gpu_time_ns": 12.373010247,
+            "cuda_sketch_gpu_time_ns": 1.453861197,
+            "input_prepare_gpu_time_ns": 0.443222322,
+            "ellpack_gpu_time_ns": 0.064417914,
+            "partition_gpu_time_ns": 0.03731701,
+            "vector_gpu_time_ns": 0.023815125,
+            "metric_gpu_time_ns": 0.007500747,
+            "objective_gpu_time_ns": 0.007203521,
+            "prediction_gpu_time_ns": 0.004143365,
+            "gradient_sum_gpu_time_ns": 0.00213923,
+            "column_sampling_gpu_time_ns": 0.000275532,
+            "base_score_gpu_time_ns": 7.7957e-05,
+            "label_validation_gpu_time_ns": 9.333e-06
+          },
+          "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+          "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+          "dispatch_counters": {
+            "histogram_dispatches": 600,
+            "split_dispatches": 600,
+            "cuda_integer_split_dispatches": 600,
+            "resident_histogram_dispatches": 600,
+            "resident_split_dispatches": 600,
+            "shared_histogram_dispatches": 100,
+            "objective_dispatches": 100,
+            "prediction_dispatches": 100
+          }
+        }
+      ]
+    }
+  },
+  "interpretation": [
+    "CPU is faster in all six matched pairs. No end-to-end speedup claim.",
+    "Split evaluation is the largest measured GPU family, especially with 4096 columns. Software binary64 in the split gain path is a profiling hypothesis, not an isolated causal measurement.",
+    "Timing drift and substantial system-wide swap limit interpretation of the exact ratios. A hot component does not prove how much of its cost is avoidable."
+  ],
+  "local_evidence_sha256": {
+    "results/high-dimensional-20261106/wide-1024/cpu-0.json": "74582facb81cf56e33fda0be9b584f17aa70393b91d5c54c93d4a2ee1a890b5b",
+    "results/high-dimensional-20261106/wide-1024/cpu-0.log": "da3c96e6929bc4ed667527309f875402fd896c6d1eb3f96df1c540f6fffec40f",
+    "results/high-dimensional-20261106/wide-1024/cpu-0.margins.npy": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+    "results/high-dimensional-20261106/wide-1024/cpu-0.progress.json": "154eccd2e2f6f31acd58cae8fefd11bbecbc1b48bb7424f3c305945ad7994bb3",
+    "results/high-dimensional-20261106/wide-1024/cpu-0.ubj": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+    "results/high-dimensional-20261106/wide-1024/cpu-1.json": "97181f6a1bf9d61940394b03c19c46d090728f241b0b19178ab6b32723794ee4",
+    "results/high-dimensional-20261106/wide-1024/cpu-1.log": "617bf78c6c594e08c32275f0fc9863231904f84e89230e35625a29f87c7d47df",
+    "results/high-dimensional-20261106/wide-1024/cpu-1.margins.npy": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+    "results/high-dimensional-20261106/wide-1024/cpu-1.progress.json": "cdea77f88323be4b863c39e1bdfa64ff2e8d7d1ff1dd44054748de18cef2c1d4",
+    "results/high-dimensional-20261106/wide-1024/cpu-1.ubj": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+    "results/high-dimensional-20261106/wide-1024/cpu-2.json": "fce515a81fee9b46fc01f535833d7aea5b75bfb1f33736cf5bbc75060d4d0f88",
+    "results/high-dimensional-20261106/wide-1024/cpu-2.log": "e66a637af4af57c19b4592d93916cf836a6230581e5ac73004586fa20ca673ea",
+    "results/high-dimensional-20261106/wide-1024/cpu-2.margins.npy": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+    "results/high-dimensional-20261106/wide-1024/cpu-2.progress.json": "b5f7b8216d41d197a72f1a04d02fb16f7dd1147661961633eed6078bf2c0ecf1",
+    "results/high-dimensional-20261106/wide-1024/cpu-2.ubj": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+    "results/high-dimensional-20261106/wide-1024/mps-0.json": "8210f1199c3cac37c5310523675fcd9fdd3dc509513b2bf7394368e9f5a4e7ba",
+    "results/high-dimensional-20261106/wide-1024/mps-0.log": "0f2f54576eadb050340e7517a85ea5c2cf1a09333c2c233355fa2b2d32818bb7",
+    "results/high-dimensional-20261106/wide-1024/mps-0.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/high-dimensional-20261106/wide-1024/mps-0.progress.json": "50862a4c633613d317ffd5299cf2599d07e77d53953a45c7e8e899e1316457e0",
+    "results/high-dimensional-20261106/wide-1024/mps-0.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/high-dimensional-20261106/wide-1024/mps-1.json": "44682f7cbf40af333ea4e9f02cedd323215b1768f4f21c2126b223ffe43d336b",
+    "results/high-dimensional-20261106/wide-1024/mps-1.log": "85b53181d04c2ce41e18b5cdec803c6130ab8d17c7339d04442e38fc1d129e37",
+    "results/high-dimensional-20261106/wide-1024/mps-1.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/high-dimensional-20261106/wide-1024/mps-1.progress.json": "7f11f12f7f2451e8db02320c0da09336e6612a56c03b61e26996462000cd1eb9",
+    "results/high-dimensional-20261106/wide-1024/mps-1.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/high-dimensional-20261106/wide-1024/mps-2.json": "ab124350b6a14d16f43c22bcad922abc9da8e4de8cb709fe35bf82234589cf72",
+    "results/high-dimensional-20261106/wide-1024/mps-2.log": "5b4ac196cfa195243f205ca524ab1d6deeec34158370df796f0354961ea3d84b",
+    "results/high-dimensional-20261106/wide-1024/mps-2.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/high-dimensional-20261106/wide-1024/mps-2.progress.json": "7b9d0e6abec8fc18b1df70c74b9e6c04d6aeeff82615b0d3c7cec6886a71ae9b",
+    "results/high-dimensional-20261106/wide-1024/mps-2.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/high-dimensional-20261106/wide-1024/summary.json": "0872c2d3b63c20363c460158ad6db55b2cdb863411a8f565c3f66ad5f1101fe5",
+    "results/high-dimensional-20261106/wide-4096/cpu-0.json": "0e960471d276e78633a57caba9365465dbf98e4a04f9272a1e3ddd74d342e5a7",
+    "results/high-dimensional-20261106/wide-4096/cpu-0.log": "80406938065ac1cc8f02aa75523647c326425f74322c29d31bfe8414e5031505",
+    "results/high-dimensional-20261106/wide-4096/cpu-0.margins.npy": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+    "results/high-dimensional-20261106/wide-4096/cpu-0.progress.json": "bf4491021a0c35ca75c3215debd75f3e5417f5d1bd808438253e307d22adbaa1",
+    "results/high-dimensional-20261106/wide-4096/cpu-0.ubj": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+    "results/high-dimensional-20261106/wide-4096/cpu-1.json": "c51bd028f5a11a036f2b67af7efc3126ea69f000d2bb467606c1965fab1e7935",
+    "results/high-dimensional-20261106/wide-4096/cpu-1.log": "3e2869ebd022036b58706ab57204786cf649763ba82bd8baf849761be93191ca",
+    "results/high-dimensional-20261106/wide-4096/cpu-1.margins.npy": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+    "results/high-dimensional-20261106/wide-4096/cpu-1.progress.json": "de323a81c4bf3db71e636395b342838c0e74fad9391ce44ecdaec7aa14272f49",
+    "results/high-dimensional-20261106/wide-4096/cpu-1.ubj": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+    "results/high-dimensional-20261106/wide-4096/cpu-2.json": "3e38660afb335d63819f9c2bbf9cb0efc9bd5330002471ef08e65a7609e396cf",
+    "results/high-dimensional-20261106/wide-4096/cpu-2.log": "becd069397adbe634ad8ddddf3dd0d82859e401d5b51eeab8fb3962175932437",
+    "results/high-dimensional-20261106/wide-4096/cpu-2.margins.npy": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+    "results/high-dimensional-20261106/wide-4096/cpu-2.progress.json": "74ff63f6e488bc8c4cf11d43a5220c7a72d8bd9731426a1ca876ed6aa1c875eb",
+    "results/high-dimensional-20261106/wide-4096/cpu-2.ubj": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+    "results/high-dimensional-20261106/wide-4096/mps-0.json": "7f606ecdaec14eb74840984ce068639f2cc85cba35bb363af566465164d42aa6",
+    "results/high-dimensional-20261106/wide-4096/mps-0.log": "37d7b1cf6b47326918b910f4fa56a524160f0bcf4dd06165011acb5a4b0f6e30",
+    "results/high-dimensional-20261106/wide-4096/mps-0.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/high-dimensional-20261106/wide-4096/mps-0.progress.json": "8894cdd0d416053517571c33b390c2ccbc7292ad523b2981738a8c6b458d9b05",
+    "results/high-dimensional-20261106/wide-4096/mps-0.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/high-dimensional-20261106/wide-4096/mps-1.json": "79d3d400d35511281fe7a9bff32cff38d38b6068bf9e204adb79e6a117a9862f",
+    "results/high-dimensional-20261106/wide-4096/mps-1.log": "04d399fe78bd86c170edbfb3ab83b346723a1b7e987d05fea09df10cf8612f45",
+    "results/high-dimensional-20261106/wide-4096/mps-1.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/high-dimensional-20261106/wide-4096/mps-1.progress.json": "c838a4fa3b13edf154a63a86bd0f16e0b43c17a84fe95830219c12b404d48c8b",
+    "results/high-dimensional-20261106/wide-4096/mps-1.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/high-dimensional-20261106/wide-4096/mps-2.json": "8fac4a637f8a61111b6072d167ad84603e1a5d692dc4705a1f83bfc955e28bd7",
+    "results/high-dimensional-20261106/wide-4096/mps-2.log": "19d4ba84ed4d06c153b02f5dbb67507ff77b3119fc2d8e7c488f027230b8ec40",
+    "results/high-dimensional-20261106/wide-4096/mps-2.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/high-dimensional-20261106/wide-4096/mps-2.progress.json": "7977bda8ad0c366c7ae391ada1aab49795d230b4918834d32f950e3322281542",
+    "results/high-dimensional-20261106/wide-4096/mps-2.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/high-dimensional-20261106/wide-4096/summary.json": "b674ed98a515dbc105d7a26cb1787dadc822951c4b98379c508679893609bae5",
+    "results/high-dimensional-20261106/source.json": "c16838b7f6ec18d9143e526872f7bcdc98effd479f1356255e0644181e2baf2d",
+    "results/high-dimensional-20261106/run.sh": "26e225b4dcd6d41df21124a8bb232f031401cf008d2e67f28e99c4ae531a5167",
+    "results/high-dimensional-20261106/run.log": "c027a604843391779b2373273110117d0805a6a0e950c489b2a70c0ea12396e1",
+    "results/high-dimensional-20261106/smoke/summary.json": "294b05e162c60ff6efee0e4859a96db5d5b9b6f7086ff7cb110f3b576f9e9a15"
+  }
+}

@@ -74,12 +74,27 @@ def worker(args):
         rng = np.random.default_rng(1701)
         test_rows = min(100_000, max(1000, rows // 10))
         x = rng.standard_normal((rows + test_rows, args.features), dtype=np.float32)
-        score = 2 * x[:, 0] - x[:, 1] + 0.5 * x[:, 2] ** 2 - 0.5
+        if args.informative_features is None:
+            score = 2 * x[:, 0] - x[:, 1] + 0.5 * x[:, 2] ** 2 - 0.5
+            signal = {"formula": "2*x[0] - x[1] + 0.5*x[2]**2 - 0.5",
+                      "features": [0, 1, 2]}
+        else:
+            features = np.linspace(0, args.features - 1, args.informative_features, dtype=int)
+            score = np.zeros(len(x), dtype=np.float32)
+            for i, feature in enumerate(features):
+                value = x[:, feature]
+                term = (value * value - 1) / np.sqrt(np.float32(2)) if i % 4 == 0 else value
+                score += term if i % 2 == 0 else -term
+            score *= np.float32(2 / np.sqrt(len(features)))
+            signal = {"formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+                      "features": features.tolist()}
         y = (rng.random(len(x)) < 1 / (1 + np.exp(-score))).astype(np.float32)
         train_x, train_y = x[:rows], y[:rows]
         test_x, test_y = x[rows:], y[rows:]
         dataset = {"generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
-                   "numpy_version": np.__version__}
+                   "numpy_version": np.__version__, "signal": signal,
+                   "features_sha256": hashlib.sha256(memoryview(x)).hexdigest(),
+                   "labels_sha256": hashlib.sha256(memoryview(y)).hexdigest()}
     loading_seconds = time.perf_counter() - load_start
     print(f"PROFILE {args.worker}: train={train_x.shape}, test={test_x.shape}", flush=True)
     setup = time.perf_counter()
@@ -191,6 +206,7 @@ def main(args):
                 write_json(args.output / "summary.json", report)
             if "cpu" in pair and "mps" in pair:
                 import numpy as np
+                assert pair["cpu"]["dataset"] == pair["mps"]["dataset"], "CPU/MPS datasets differ"
                 cpu, mps = [np.load(args.output / f"{d}-{repeat}.margins.npy") for d in ("cpu", "mps")]
                 report["comparisons"].append({
                     "repeat": repeat, "margin_max_abs_difference": float(np.max(np.abs(cpu - mps))),
@@ -218,6 +234,8 @@ if __name__ == "__main__":
     parser.add_argument("--package-dir", type=Path, default=ROOT / "xgboost/python-package")
     parser.add_argument("--rows", type=int)
     parser.add_argument("--features", type=int, default=128, help="Feature count for the wide case")
+    parser.add_argument("--informative-features", type=int,
+                        help="Wide case: spread this many additive linear/quadratic signal columns across the matrix; default retains the original three-column target")
     parser.add_argument("--rounds", type=int, default=100)
     parser.add_argument("--threads", type=int, default=os.cpu_count())
     parser.add_argument("--repeats", type=int, default=3)
@@ -230,4 +248,8 @@ if __name__ == "__main__":
         parser.error("counts must be positive and features must be at least three")
     if len(set(args.devices)) != len(args.devices):
         parser.error("devices must be unique")
+    if args.informative_features is not None and (
+        args.case != "wide" or not 1 <= args.informative_features <= args.features
+    ):
+        parser.error("informative-features requires the wide case and a count in [1, features]")
     main(args)

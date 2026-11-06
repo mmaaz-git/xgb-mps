@@ -584,3 +584,74 @@ clang++ -O2 -std=c++17 -fobjc-arc scripts/metal_feature_sort_benchmark.mm \
 results/feature-sort-benchmark xgboost/src/common/metal_histogram.metal \
   > results/feature-sort-stages.json
 ```
+
+## High-dimensional synthetic workloads
+
+The 2026-11-06 experiment uses the unchanged engine at `59f0451` and adds an
+optional `--informative-features` flag to the profiler. These are new synthetic
+workloads, not published CUDA replays. Dense FP32 normal features have 64 signal
+columns spread across the full width, an additive linear/quadratic target and
+stochastic binary labels. No column sampling is used. Both cases have 102.4M
+training feature values (409.6 MB before XGBoost allocations); the wider case
+has fewer rows to bound memory. This is not a constant-row scaling study.
+
+Each case uses 100 rounds, depth 6, 256 bins, eight CPU threads and three
+alternating CPU/MPS pairs in fresh processes. The runtime is warmed; training
+includes quantization and held-out evaluation every round. Data generation,
+matrix construction and final prediction are excluded. Held-out sets contain
+10,000 and 2,500 rows, respectively. Dataset hashes and shapes agree across
+CPU/MPS workers. The profiler's default three-feature target remains unchanged.
+
+| Training shape | CPU median | MPS median | MPS / CPU time | Split GPU median | Histogram GPU median |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 100,000 × 1,024 | 18.762 s | 27.353 s | 1.46× | 14.439 s | 3.427 s |
+| 25,000 × 4,096 | 45.624 s | 110.075 s | 2.41× | 69.203 s | 12.063 s |
+
+CPU is faster in all six matched pairs. Including matrix setup gives median
+CPU/MPS times of 19.002 / 27.566 seconds and 45.924 / 110.335 seconds.
+Individual training times in repeat order are:
+
+| Workload | CPU runs, seconds | MPS runs, seconds |
+| --- | --- | --- |
+| 1,024 columns | 14.097, 18.762, 28.318 | 27.353, 25.727, 34.491 |
+| 4,096 columns | 44.268, 45.624, 51.388 | 107.050, 110.075, 116.575 |
+
+Split evaluation is the largest measured GPU cost. The quantized split gain
+path uses software binary64 arithmetic; its contribution, scan/reduction costs
+and dispatch geometry need to be isolated before an optimization is selected.
+The measured GPU time means launch overhead alone does not explain the slowdown.
+Family counters can overlap and must not be summed as independent work.
+
+Every MPS model produces bit-identical margins with the CPU predictor, and all
+three saved models/margin arrays match within each device and dataset. All
+predictions are finite. Independently trained CPU/MPS models are **not numerically
+equivalent**: 9,999 of 10,000 and all 2,500 margins fail `atol=rtol=2e-5`.
+
+| Columns | CPU / MPS accuracy | CPU / MPS log loss | Class disagreement |
+| --- | --- | --- | ---: |
+| 1,024 | 0.7311 / 0.7304 | 0.530385 / 0.531930 | 19.57% |
+| 4,096 | 0.7036 / 0.6848 | 0.596307 / 0.587342 | 27.24% |
+
+Different CPU/CUDA-style sketches can yield different trained models, but these
+datasets have no common-cut diagnosis. Similar aggregate quality does not prove
+training equivalence. No engine arithmetic, precision or tolerances changed.
+
+All runs used AC power and passed clock checks. This task ran no concurrent
+builds, tests or other benchmarks; unrelated sessions and applications were
+not controlled. Recorded system-wide swap use was about 13,548–17,834 MB and
+peak process RSS ranged from 2.26 to 4.59 GB. Timing drift limits the exact ratios;
+these observations do not isolate hardware limits from implementation costs.
+
+The [recorded evidence](../validation/high-dimensional-m3.json) includes all
+12 workers, source/library hashes, dataset descriptions, output checks, quality
+differences and hashes of local logs/models. A small CPU/MPS smoke run also passed.
+Reproduce with new output directories:
+
+```sh
+.venv/bin/python scripts/profile_training.py --case wide --rows 100000 \
+  --features 1024 --informative-features 64 --rounds 100 --threads 8 \
+  --repeats 3 --output results/profile-wide-1024
+.venv/bin/python scripts/profile_training.py --case wide --rows 25000 \
+  --features 4096 --informative-features 64 --rounds 100 --threads 8 \
+  --repeats 3 --output results/profile-wide-4096
+```
