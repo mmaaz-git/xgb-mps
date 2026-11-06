@@ -350,7 +350,7 @@ class Runtime {
   id<MTLComputePipelineState> ellpack_adapter_pipeline, ellpack_null_pipeline, ellpack_csr_pipeline;
   id<MTLComputePipelineState> snappy_compress_pipeline, snappy_decompress_pipeline;
   id<MTLComputePipelineState> ellpack_histogram_pipeline, ellpack_shared_histogram_pipeline,
-      ellpack_partition_pipeline, ellpack_input_pipeline;
+      ellpack_tiled_histogram_pipeline, ellpack_partition_pipeline, ellpack_input_pipeline;
   id<MTLComputePipelineState> adapter_count_pipeline, adapter_scatter_pipeline,
       adapter_offsets_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
@@ -467,6 +467,7 @@ class Runtime {
       snappy_decompress_pipeline = make_pipeline(@"xgb_snappy_decompress");
       ellpack_histogram_pipeline = make_pipeline(@"xgb_histogram_ellpack");
       ellpack_shared_histogram_pipeline = make_pipeline(@"xgb_histogram_dense_shared_ellpack");
+      ellpack_tiled_histogram_pipeline = make_pipeline(@"xgb_histogram_dense_tiled_ellpack");
       ellpack_partition_pipeline = make_pipeline(@"xgb_partition_classify_ellpack");
       ellpack_input_pipeline = make_pipeline(@"xgb_prepare_ellpack_input");
       adapter_count_pipeline = make_pipeline(@"xgb_adapter_count");
@@ -1930,16 +1931,27 @@ class MetalHistogram final : public Histogram {
       id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
       CHECK(encoder) << "Metal compute encoder allocation failed.";
       std::size_t max_feature_bins = 0;
+      std::size_t min_feature_bins = std::numeric_limits<std::size_t>::max();
       auto const& cuts = gidx.cut.Ptrs();
-      for (std::size_t f = 1; f < cuts.size(); ++f)
+      for (std::size_t f = 1; f < cuts.size(); ++f) {
         max_feature_bins = std::max<std::size_t>(max_feature_bins, cuts[f] - cuts[f - 1]);
+        min_feature_bins = std::min<std::size_t>(min_feature_bins, cuts[f] - cuts[f - 1]);
+      }
       auto shared_bytes = max_feature_bins * sizeof(QuantizedPair);
       bool use_shared = gidx.IsDense() && total_rows >= 16384 &&
                         shared_bytes <= rt_.device.maxThreadgroupMemoryLength &&
                         params.n_features <= 65535;
+      // Keep the register-reduction path for binary features and the existing
+      // single-feature path when four histograms would exceed shared memory.
+      bool use_tiled = use_shared && page->IsCompressed() && params.n_features >= 4 &&
+                       min_feature_bins > 2 &&
+                       shared_bytes <= rt_.device.maxThreadgroupMemoryLength / 4;
+      auto features_per_group = use_tiled ? 4u : 1u;
+      shared_bytes *= features_per_group;
       auto pipeline = page->IsCompressed() ? (use_shared ? rt_.ellpack_shared_histogram_pipeline
                                                          : rt_.ellpack_histogram_pipeline)
                                            : (use_shared ? rt_.shared_pipeline : rt_.pipeline);
+      if (use_tiled) pipeline = rt_.ellpack_tiled_histogram_pipeline;
       [encoder setComputePipelineState:pipeline];
       [encoder setBuffer:page->index offset:0 atIndex:0];
       [encoder setBuffer:page->row_ptr offset:0 atIndex:1];
@@ -1968,7 +1980,10 @@ class MetalHistogram final : public Histogram {
         EnsureBuffer(rt_, &block_buffer_, block_bytes);
         std::memcpy(block_buffer_.contents, block_ptr.data(), block_bytes);
         [encoder setBuffer:block_buffer_ offset:0 atIndex:9];
-        [encoder dispatchThreadgroups:MTLSizeMake(block_ptr.back(), params.n_features, 1)
+        [encoder dispatchThreadgroups:MTLSizeMake(
+                                         block_ptr.back(),
+                                         (params.n_features + features_per_group - 1) /
+                                             features_per_group, 1)
                 threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
       } else if (total_rows) {
         [encoder dispatchThreads:MTLSizeMake(total_rows, 1, 1)

@@ -437,3 +437,68 @@ command above applies to the two source/library snapshots. The
 [result record](../validation/sigmoid-reuse-m3.json) retains exact source/library
 hashes, every timing, model hashes, power, memory and clock observations.
 The final optimized wheel also passed a [fresh installation check](../validation/python-install-m3.json).
+
+## Reusing gradients across dense histogram columns
+
+On 2026-11-05, the new `scripts/profile_training.py` measured HIGGS and a wide
+synthetic classification dataset after the full correctness baseline passed.
+The resulting optimization processes four adjacent dense ELLPACK features per
+workgroup, sharing row IDs and quantized gradients. Integer sums, quantization,
+tree algorithms and test tolerances are unchanged. Binary columns and layouts
+that cannot fit four histograms in threadgroup memory retain the existing path.
+
+Three repeats per CPU/baseline-MPS/optimized-MPS variant used fresh processes,
+isolated package/library copies, eight CPU threads and **100 rounds**. Variant
+order rotated between repeats; all workers ran sequentially on AC power.
+Training includes quantization and per-round held-out evaluation, after warming
+the runtime. Data loading, DMatrix construction and final prediction are separate.
+
+| Workload | CPU median | MPS before | MPS after | Histogram GPU before / after |
+| --- | ---: | ---: | ---: | ---: |
+| Wide: 1M training rows × 128 features | 9.919 s | 16.691 s | 11.481 s | 3.992 / 1.954 s |
+| HIGGS: 10.5M training rows × 28 features | 36.531 s | 40.792 s | 37.894 s | 10.950 / 6.740 s |
+
+Histogram GPU time improved in every pair, with ratios of median times of
+**2.04× wide / 1.62× HIGGS**. Ratios of total-training medians are **1.45× / 1.08×**; medians of
+the paired training ratios are **1.21× / 1.06×**. These different summaries reflect
+substantial timing variability. CPU remains faster on both workloads.
+
+| Workload / variant | Training runs in repeat order, seconds |
+| --- | --- |
+| Wide CPU | 8.584, 9.919, 14.988 |
+| Wide MPS before | 13.880, 16.691, 19.731 |
+| Wide MPS after | 11.481, 11.432, 18.193 |
+| HIGGS CPU | 38.576, 35.601, 36.531 |
+| HIGGS MPS before | 41.592, 39.570, 40.792 |
+| HIGGS MPS after | 37.894, 37.248, 38.643 |
+
+All six MPS models and prediction arrays per dataset are bit-identical. Each
+MPS model also produces identical margins with the CPU predictor. Independently
+trained CPU/MPS models differ; the report retains their held-out quality and
+margin differences. Four native groups and 89 Python tests passed, with one
+expected skip, followed by the final compressed-consumer assertions and three
+installed-package workflows. The full 106-group/4,001-test baseline predates
+this kernel change.
+
+User applications remained open, with roughly 21–24 GB of system-wide swap;
+this is not the benchmark's own swap allocation. No assistant build/test job
+overlapped timing. The result supports this optimization, not a general CPU
+speedup, a cold-start improvement, or a repeat of the published 1,000-round run.
+HIGGS partition GPU time remains about 7.7 seconds and sketch time about 5 seconds;
+these are the next costs to investigate. Counter families can overlap.
+
+The [acceptance record](../validation/histogram-tiling-m3.json) retains all 18
+timings, source/library hashes, memory/power observations, output comparisons,
+and the earlier exploratory timings. To profile the current build, use a new
+output directory for each invocation:
+
+```sh
+.venv/bin/python scripts/profile_training.py --case wide --rows 1000000 \
+  --features 128 --rounds 100 --threads 8 --repeats 3 --output results/profile-wide
+.venv/bin/python scripts/profile_training.py --case higgs --rounds 100 \
+  --threads 8 --repeats 3 --output results/profile-higgs
+```
+
+For before/after comparisons, build separate revisions and point `--package-dir`
+at their respective Python packages. The record specifies the exact worker order
+and command used here; retain fresh workers and the CPU controls.

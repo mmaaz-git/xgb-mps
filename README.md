@@ -66,18 +66,24 @@ bash scripts/test.sh --python tests/test_metal_objectives.py
 bash scripts/test.sh --python tests/test_metal_workflows.py
 ```
 
-The test runner builds first and supports focused checks or `--full`. Fresh-wheel
-validation passed 77 workflow/model-state tests, with one expected skip, plus
-regression/classification train/predict/save/load and CPU model interchange.
-[Packaging evidence](validation/python-only-m3.json) and [validation commands/results](docs/VALIDATION.md)
-record the tested revisions. CUDA CI compiles the NVIDIA backend; it does not run CUDA kernels.
+The test runner builds first and supports focused checks or `--full`. The latest
+full baseline passed 106 native groups and 4,001 Python tests, with two expected
+platform skips. Workflows include preprocessing, cross-validation, categorical
+classification, early stopping, ranking and model persistence. The subsequent
+histogram optimization passed focused native/Python checks and installed-package
+workflows. [Validation commands/results](docs/VALIDATION.md) record the exact
+revisions and scope. CUDA CI compiles the NVIDIA backend; it does not run CUDA kernels.
 
 ## Performance
 
-Speedups depend on the workload. The recorded 1,000-round HIGGS benchmark at
-`68c800e` took **288 s CPU / 469 s MPS** median training on this M3. A later
-objective-kernel optimization improved a focused measurement, but a general CPU
-speedup is not established. See [complete timings and limitations](docs/PUBLISHED_BENCHMARKS.md).
+The latest optimization made GPU histogram accumulation **2.04× faster** on
+1M rows × 128 columns and **1.62× faster** on HIGGS, comparing median times.
+In three repeats of 100-round
+training, optimized MPS took **11.48 / 37.89 s**, versus CPU **9.92 / 36.53 s**:
+CPU still won both workloads. All before/after MPS models and predictions matched
+exactly; timings varied under system memory pressure. These are shorter runs
+than the historical 1,000-round HIGGS result at `68c800e` (**288 s CPU / 469 s MPS**).
+See [complete timings and limitations](docs/PUBLISHED_BENCHMARKS.md).
 
 Large-workload profiling is separate from the tests:
 

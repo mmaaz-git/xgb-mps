@@ -106,6 +106,14 @@ turn a historical full run into a current full run.
 
 ## Recorded results
 
+- **Four-feature histogram tiling:** four native groups and 89 Python tests
+  passed, with one expected no-GPU-test skip. The final compressed-consumer
+  assertions also passed separately: 316 cases and 72,700,780 exact checked
+  fields. Three real Python workflows passed against the newly installed wheel
+  outside the checkout. Across two large datasets, all six MPS models and margin
+  arrays per dataset match exactly before/after. This is focused acceptance of
+  the optimization; the full run below predates it.
+  [Source hashes, checks and all repeated timings](../validation/histogram-tiling-m3.json).
 - **Python workflow baseline before the next performance change:** `0dfde8b` plus
   `test_metal_workflows.py`, 106 native groups and 4,001 Python passes with two
   expected platform skips. New workflows cover mixed-column pipelines and

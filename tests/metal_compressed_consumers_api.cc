@@ -141,7 +141,7 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
     Check(after.ellpack_histogram_dispatches - stats.ellpack_histogram_dispatches ==
               (rows.Data()->empty() ? 0 : 1),
           "Compressed histogram dispatch");
-    if (mode == 0 && rows.Data()->size() >= 16384 && maximum <= 17)
+    if (mode == 0 && rows.Data()->size() >= 16384 && maximum <= 257)
       Check(after.shared_histogram_dispatches > stats.shared_histogram_dispatches,
             "Shared compressed histogram path");
     ++histograms;
@@ -282,7 +282,9 @@ int main() {
       }
       for (unsigned mode = 0; mode < 4; ++mode)
         Case(17, mode, .23, false, 0, lazy);
-      for (unsigned maximum : {2u, 17u})
+      // Seven columns exercise a partial four-feature tile. Include 9-bit
+      // symbols and split head/tail storage on the large shared-histogram path.
+      for (unsigned maximum : {2u, 17u, 257u})
         for (double ratio : {0., .5, 1.})
           Case(maximum, 0, ratio, false, 16513, lazy);
       Case(17, 2, .5, true, 5000, lazy); // Non-serial partition prefix.

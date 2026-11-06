@@ -285,6 +285,62 @@ kernel void xgb_histogram_dense_shared_ellpack(
                                         simd_lane, simd_width, tail, compressed_page);
 }
 
+// Dense ELLPACK stores adjacent features together. Reuse each row ID and
+// quantized gradient across four features instead of rereading them in four
+// independent workgroups. Accumulation and merging remain exact integer sums.
+kernel void xgb_histogram_dense_tiled_ellpack(
+    device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
+    device const uint* offsets [[buffer(2)]], device const long2* gradients [[buffer(3)]],
+    device const ulong* rows [[buffer(4)]], device atomic_uint* hist [[buffer(5)]],
+    constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
+    device const ulong* row_begin [[buffer(8)]], device const ulong* block_ptr [[buffer(9)]],
+    device const uchar* tail [[buffer(10)]],
+    constant CompressedParams& c [[buffer(11)]],
+    threadgroup atomic_uint* local_hist [[threadgroup(0)]],
+    uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+    uint3 threads [[threads_per_threadgroup]]) {
+  uint feature_begin = group.y * 4;
+  uint feature_end = min(feature_begin + 4, p.n_features);
+  uint bin_begin = offsets[feature_begin], bins = offsets[feature_end] - bin_begin;
+  uint lo = 0, hi = p.n_nodes;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (block_ptr[mid + 1] <= group.x)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  uint node = lo;
+  ulong begin = node_ptr[node] + (ulong(group.x) - block_ptr[node]) * threads.x * p.rows_per_lane;
+  ulong end = min(node_ptr[node + 1], begin + threads.x * p.rows_per_lane);
+  if (begin >= end) return;
+  for (uint word = tid; word < bins * 4; word += threads.x)
+    atomic_store_explicit(local_hist + word, 0, memory_order_relaxed);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (ulong r = begin + tid; r < end; r += threads.x) {
+    ulong row = rows[row_begin[node] + r - node_ptr[node]];
+    long2 g = gradients[row];
+    if (g.x == 0 && g.y == 0) continue;
+    for (uint feature = feature_begin; feature < feature_end; ++feature) {
+      uint bin = offsets[feature] - bin_begin +
+                 xgb_histogram_local_bin<true>(index, row_ptr, tail, c, p,
+                                               row - p.base_rowid, feature);
+      add_i64(local_hist + bin * 4, g.x);
+      add_i64(local_hist + bin * 4 + 2, g.y);
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint bin = tid; bin < bins; bin += threads.x) {
+    ulong dst = (ulong(node) * p.n_bins + bin_begin + bin) * 4;
+    for (uint component = 0; component < 2; ++component) {
+      uint word = bin * 4 + component * 2;
+      ulong low = atomic_load_explicit(local_hist + word, memory_order_relaxed);
+      ulong high = atomic_load_explicit(local_hist + word + 1, memory_order_relaxed);
+      add_i64(hist + dst + component * 2, as_type<long>(low | (high << 32)));
+    }
+  }
+}
+
 // CUDA GradientQuantiser::ToFixedPointImpl truncates float * 2^exponent.
 // Bit decoding is exact (the equivalent FP64 multiplication is a power-of-two
 // scaling), preserves FP32 subnormals, and avoids unsupported native FP64.

@@ -14,6 +14,16 @@ NVIDIA numerical equivalence, or a general performance advantage.
 
 Completed checks and results:
 
+- The full baseline passed 106 native groups and 4,001 Python tests, with two
+  expected skips. New workflows cover preprocessing and cross-validation,
+  weighted categorical classification, early stopping, grouped ranking and
+  persistence. [Workflow evidence](../validation/python-workflows-full-m3.json).
+- Large-workload profiling now lives in `scripts/profile_training.py`, separate
+  from tests. A four-feature histogram tile reuses row IDs and gradients; median
+  histogram GPU time improved 2.04× on wide data and 1.62× on HIGGS. Focused
+  correctness and installed-package checks passed; before/after models and
+  predictions are bit-identical. CPU remains faster on both measured workloads.
+  [Optimization evidence](../validation/histogram-tiling-m3.json).
 - CPU/Metal builds and Python-only wheel/source packaging passed. A fresh wheel
   installation passed 77 workflow/model-state tests with one expected skip, plus
   regression/classification train/predict/save/load and CPU model interchange.
@@ -28,15 +38,17 @@ Completed checks and results:
 
 ## Next steps
 
-1. **Test real Python workloads.** Compare predictive quality and model
-   interchange with CPU; use operation-appropriate checks where CUDA and CPU
-   algorithms differ. Fix demonstrated bugs or gaps with focused regressions.
-2. **Profile representative workloads.** Measure end-to-end time, GPU work,
-   transfers and memory pressure. Include large datasets and cases where CPU
-   wins. Reuse the existing benchmark tools and recorded baselines.
-3. **Optimize measured bottlenecks.** Preserve algorithms, required precision,
-   data ownership and test tolerances. Report paired before/after timings and
-   correctness results; retain only supported improvements.
+1. **Investigate row partitioning and first-round setup.** In the latest HIGGS
+   measurements, partition GPU time is about 7.7 seconds and sketch time about
+   5 seconds. Inspect memory traffic and synchronization before changing code;
+   GPU counters can overlap and cannot be summed into total training time.
+2. **Optimize one measured cost at a time.** Preserve algorithms, precision,
+   ownership and test tolerances. Use focused correctness checks and paired
+   before/after workloads with CPU controls; keep all timings, including losses.
+3. **Recheck end-to-end performance at a milestone.** The current experiments
+   use full dataset sizes but 100 rounds. A later 1,000-round HIGGS replay and
+   broader dataset checks should follow meaningful cumulative improvements.
+   Existing real-workflow tests remain regression gates.
 
 Broader validation needs actual NVIDIA execution, additional Apple GPUs and
 multi-host testing. Current hardware evidence is concentrated on one M3;
