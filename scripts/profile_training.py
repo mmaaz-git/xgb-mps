@@ -1,7 +1,7 @@
 """Profile large training jobs separately from correctness tests.
 
-Each CPU/MPS repeat runs in a fresh process. HIGGS uses the prepared cache from
-prepare_published_data.py; wide generates deterministic FP32 data. GPU diagnostic
+Each CPU/MPS repeat runs in a fresh process. HIGGS and Covertype use the prepared
+cache from prepare_published_data.py; wide and categorical generate deterministic data. GPU diagnostic
 durations can overlap and must not be added to estimate CPU or total wall time.
 """
 
@@ -53,10 +53,12 @@ def worker(args):
         objective="binary:logitraw" if args.case == "higgs" else "binary:logistic",
         eval_metric="error" if args.case == "higgs" else "logloss", verbosity=3,
     )
+    if args.case == "covtype":
+        params.update(objective="multi:softprob", num_class=7, eval_metric="mlogloss")
     if args.worker == "mps":
         assert xgb.metal_info()["available"]
     warm = xgb.DMatrix(np.arange(64, dtype=np.float32).reshape(32, 2),
-                       label=np.arange(32) % 2, nthread=args.threads)
+                       label=np.arange(32) % (7 if args.case == "covtype" else 2), nthread=args.threads)
     xgb.train(params | {"verbosity": 0}, warm, num_boost_round=1)
     del warm
 
@@ -70,36 +72,75 @@ def worker(args):
         train_x, train_y = x[:rows], y[:rows]
         test_x, test_y = x[10_500_000:], y[10_500_000:]
         dataset = json.loads((args.cache / "higgs/manifest.json").read_text())
+    elif args.case == "covtype":
+        from sklearn.model_selection import train_test_split
+        x = np.load(args.cache / "covtype/X.npy", mmap_mode="r")
+        y = np.load(args.cache / "covtype/y.npy", mmap_mode="r")
+        train_indices, test_indices = train_test_split(
+            np.arange(len(y)), test_size=0.2, random_state=1701, stratify=y)
+        if args.rows is not None:
+            if args.rows > len(train_indices):
+                raise ValueError("Covertype rows exceed the 80% training split")
+            train_indices = train_indices[:args.rows]
+        train_x, train_y = x[train_indices], y[train_indices] - 1
+        test_x, test_y = x[test_indices], y[test_indices] - 1
+        dataset = json.loads((args.cache / "covtype/manifest.json").read_text()) | {
+            "split": "Stratified 80/20 train/test, random_state=1701; optional training prefix",
+            "label_transform": "Original classes 1..7 mapped to 0..6",
+            "train_indices_sha256": hashlib.sha256(train_indices.astype("<i8").tobytes()).hexdigest(),
+            "test_indices_sha256": hashlib.sha256(test_indices.astype("<i8").tobytes()).hexdigest(),
+        }
     else:
         rng = np.random.default_rng(1701)
         test_rows = min(100_000, max(1000, rows // 10))
-        x = rng.standard_normal((rows + test_rows, args.features), dtype=np.float32)
-        if args.informative_features is None:
-            score = 2 * x[:, 0] - x[:, 1] + 0.5 * x[:, 2] ** 2 - 0.5
-            signal = {"formula": "2*x[0] - x[1] + 0.5*x[2]**2 - 0.5",
-                      "features": [0, 1, 2]}
-        else:
-            features = np.linspace(0, args.features - 1, args.informative_features, dtype=int)
+        if args.case == "categorical":
+            x = rng.integers(0, args.categories, size=(rows + test_rows, args.features)).astype(np.float32)
+            features = np.linspace(0, args.features - 1,
+                                   args.informative_features or min(16, args.features), dtype=int)
+            weights = rng.standard_normal((len(features), args.categories), dtype=np.float32)
             score = np.zeros(len(x), dtype=np.float32)
             for i, feature in enumerate(features):
-                value = x[:, feature]
-                term = (value * value - 1) / np.sqrt(np.float32(2)) if i % 4 == 0 else value
-                score += term if i % 2 == 0 else -term
+                score += weights[i, x[:, feature].astype(int)]
             score *= np.float32(2 / np.sqrt(len(features)))
-            signal = {"formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
-                      "features": features.tolist()}
+            signal = {"formula": "2/sqrt(k) * sum(normal_lookup[i, x[f_i]])",
+                      "features": features.tolist(), "categories": args.categories,
+                      "weights_sha256": hashlib.sha256(memoryview(weights)).hexdigest()}
+        else:
+            x = rng.standard_normal((rows + test_rows, args.features), dtype=np.float32)
+            if args.informative_features is None:
+                score = 2 * x[:, 0] - x[:, 1] + 0.5 * x[:, 2] ** 2 - 0.5
+                signal = {"formula": "2*x[0] - x[1] + 0.5*x[2]**2 - 0.5",
+                          "features": [0, 1, 2]}
+            else:
+                features = np.linspace(0, args.features - 1, args.informative_features, dtype=int)
+                score = np.zeros(len(x), dtype=np.float32)
+                for i, feature in enumerate(features):
+                    value = x[:, feature]
+                    term = (value * value - 1) / np.sqrt(np.float32(2)) if i % 4 == 0 else value
+                    score += term if i % 2 == 0 else -term
+                score *= np.float32(2 / np.sqrt(len(features)))
+                signal = {"formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+                          "features": features.tolist()}
         y = (rng.random(len(x)) < 1 / (1 + np.exp(-score))).astype(np.float32)
+        if args.missing_fraction:
+            x[rng.random(x.shape, dtype=np.float32) < args.missing_fraction] = np.nan
         train_x, train_y = x[:rows], y[:rows]
         test_x, test_y = x[rows:], y[rows:]
-        dataset = {"generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+        dataset = {"generator": ("numpy.default_rng(1701); uniform category IDs; random per-category effects; noisy logistic target"
+                                 if args.case == "categorical" else
+                                 "numpy.default_rng(1701); FP32 normal features; noisy logistic target"),
                    "numpy_version": np.__version__, "signal": signal,
                    "features_sha256": hashlib.sha256(memoryview(x)).hexdigest(),
                    "labels_sha256": hashlib.sha256(memoryview(y)).hexdigest()}
+        if args.missing_fraction:
+            dataset["missing_fraction"] = args.missing_fraction
     loading_seconds = time.perf_counter() - load_start
     print(f"PROFILE {args.worker}: train={train_x.shape}, test={test_x.shape}", flush=True)
     setup = time.perf_counter()
-    train = xgb.DMatrix(train_x, label=train_y, nthread=args.threads)
-    test = xgb.DMatrix(test_x, label=test_y, nthread=args.threads)
+    matrix_options = ({"enable_categorical": True, "feature_types": ["c"] * args.features}
+                      if args.case == "categorical" else {})
+    train = xgb.DMatrix(train_x, label=train_y, nthread=args.threads, **matrix_options)
+    test = xgb.DMatrix(test_x, label=test_y, nthread=args.threads, **matrix_options)
     setup_seconds = time.perf_counter() - setup
     segments = []
     before = xgb.metal_info()
@@ -144,6 +185,13 @@ def worker(args):
         model.set_param({"device": "cpu"})
         np.testing.assert_array_equal(model.predict(test, output_margin=True), margins)
     z = margins.astype(np.float64)
+    if margins.ndim == 1:
+        classes = margins > 0
+        loss = np.logaddexp(0, z) - test_y * z
+    else:
+        classes = np.argmax(margins, axis=1)
+        z -= np.max(z, axis=1, keepdims=True)
+        loss = np.log(np.exp(z).sum(axis=1)) - z[np.arange(len(test_y)), test_y.astype(int)]
     report = {
         "status": "complete" if clock_valid else "invalid_clock_discontinuity",
         "started_utc": datetime.fromtimestamp(wall_start, timezone.utc).isoformat(),
@@ -153,8 +201,8 @@ def worker(args):
         "loading_seconds": loading_seconds, "dmatrix_seconds": setup_seconds,
         "training_seconds": training_seconds, "wall_seconds": wall_seconds,
         "prediction_seconds": prediction_seconds, "metric_history": history,
-        "test_accuracy": float(np.mean((margins > 0) == test_y)),
-        "test_logloss": float(np.mean(np.logaddexp(0, z) - test_y * z)),
+        "test_accuracy": float(np.mean(classes == test_y)),
+        "test_logloss": float(np.mean(loss)),
         "memory": {"before": memory_before, "after": memory_snapshot()},
         "power": {"before": power_before, "after": power_after},
         "power_source_unchanged": power_before.splitlines()[0] == power_after.splitlines()[0],
@@ -211,7 +259,9 @@ def main(args):
                 report["comparisons"].append({
                     "repeat": repeat, "margin_max_abs_difference": float(np.max(np.abs(cpu - mps))),
                     "margin_rmse_difference": float(np.sqrt(np.mean((cpu.astype(float) - mps) ** 2))),
-                    "class_disagreement_fraction": float(np.mean((cpu > 0) != (mps > 0))),
+                    "class_disagreement_fraction": float(np.mean(
+                        ((cpu > 0) != (mps > 0)) if cpu.ndim == 1 else
+                        (np.argmax(cpu, axis=1) != np.argmax(mps, axis=1)))),
                     "accuracy_difference": pair["mps"]["test_accuracy"] - pair["cpu"]["test_accuracy"],
                     "logloss_difference": pair["mps"]["test_logloss"] - pair["cpu"]["test_logloss"],
                 })
@@ -228,14 +278,18 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=["higgs", "wide"], required=True)
+    parser.add_argument("--case", choices=["higgs", "covtype", "wide", "categorical"], required=True)
     parser.add_argument("--output", type=Path, required=True, help="New directory for reports and worker logs")
     parser.add_argument("--cache", type=Path, default=ROOT / ".cache/datasets")
     parser.add_argument("--package-dir", type=Path, default=ROOT / "xgboost/python-package")
     parser.add_argument("--rows", type=int)
-    parser.add_argument("--features", type=int, default=128, help="Feature count for the wide case")
+    parser.add_argument("--features", type=int, default=128, help="Feature count for synthetic cases")
     parser.add_argument("--informative-features", type=int,
-                        help="Wide case: spread this many additive linear/quadratic signal columns across the matrix; default retains the original three-column target")
+                        help="Synthetic cases: number of informative columns spread across the matrix; defaults to three for wide and up to sixteen for categorical")
+    parser.add_argument("--categories", type=int, default=256,
+                        help="Distinct values per feature for the categorical case")
+    parser.add_argument("--missing-fraction", type=float, default=0,
+                        help="Synthetic cases: independently replace this fraction of features with NaN after generating labels")
     parser.add_argument("--rounds", type=int, default=100)
     parser.add_argument("--threads", type=int, default=os.cpu_count())
     parser.add_argument("--repeats", type=int, default=3)
@@ -249,7 +303,13 @@ if __name__ == "__main__":
     if len(set(args.devices)) != len(args.devices):
         parser.error("devices must be unique")
     if args.informative_features is not None and (
-        args.case != "wide" or not 1 <= args.informative_features <= args.features
+        args.case not in {"wide", "categorical"} or not 1 <= args.informative_features <= args.features
     ):
-        parser.error("informative-features requires the wide case and a count in [1, features]")
+        parser.error("informative-features requires wide/categorical and a count in [1, features]")
+    if args.case == "categorical" and not 2 <= args.categories <= 65536:
+        parser.error("categories must be in [2, 65536]")
+    if not 0 <= args.missing_fraction < 1 or (
+        args.missing_fraction and args.case not in {"wide", "categorical"}
+    ):
+        parser.error("missing-fraction requires wide/categorical and a value in [0, 1)")
     main(args)

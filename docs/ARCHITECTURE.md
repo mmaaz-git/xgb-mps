@@ -40,6 +40,9 @@ buffers; resident vector parents bind their owned buffer directly. Borrowed
 inputs remain alive until the synchronous call returns, and outputs are read
 only after completion.
 
+Packed host input owns its copied payload. Only alignment padding is zero-filled;
+the payload is appended directly, preserving offsets and completion lifetime.
+
 ## Numerical and refactoring boundaries
 
 Quantized histogram and split paths preserve integer state. Reconstructing exact
@@ -57,6 +60,11 @@ fall through. Screening forms widened FP32 intervals directly from integer sums;
 the Hessian lower bound must prove child eligibility before a gain lower bound
 can raise the cutoff. Category-weight scratch holds numeric upper bounds, with each
 lane reading only its own entries. No precision or selection tolerance changes.
+
+FP32 ordering in quantized splits uses exact integer bit comparisons. NaNs are
+unordered, signed zeros compare equal, and negative magnitudes sort in reverse.
+This preserves subnormals without converting each operand to software binary64;
+it changes no gain arithmetic or tie rule.
 
 At the `6f3dcbd` review baseline the runtime/shader contained roughly 20,000 lines
 and 218 kernel entry points. If a concrete maintenance need justifies future

@@ -142,6 +142,64 @@ void CheckQuantizedBounds(id<MTLDevice> device, id<MTLLibrary> library) {
                "cannot raise cutoff, %zu finite midpoint cases\n",
                data.size(), finite, unbounded, invalid, midpoint_finite);
 }
+struct FloatComparisonInput {
+  std::uint32_t a, b;
+};
+void CheckFloatOrdering(id<MTLDevice> device, id<MTLLibrary> library) {
+  NSError* error = nil;
+  auto pipeline = [device newComputePipelineStateWithFunction:
+      [library newFunctionWithName:@"test_float_comparison"] error:&error];
+  Check(pipeline != nil, "Missing FP32 comparison check pipeline");
+  std::mt19937 random(391047);
+  std::vector<FloatComparisonInput> data;
+  for (std::size_t i = 0; i < 1000000; ++i) {
+    auto a = random(), b = random();
+    data.push_back({a, b});
+    if (i % 10 == 0) {
+      data.push_back({a, a});
+      data.push_back({a, a + 1});
+      data.push_back({a, a - 1});
+      data.push_back({a, a ^ 0x80000000u});
+    }
+  }
+  std::vector<std::uint32_t> special{0, 1, 2, 0x7fffff, 0x800000, 0x800001,
+      0x3f7fffff, 0x3f800000, 0x3f800001, 0x7f7fffff, 0x7f800000,
+      0x7f800001, 0x7fc00000, 0x7fffffff};
+  auto count = special.size();
+  for (std::size_t i = 0; i < count; ++i) special.push_back(special[i] | 0x80000000u);
+  for (auto a : special) for (auto b : special) data.push_back({a, b});
+  auto input = [device newBufferWithBytes:data.data() length:data.size() * sizeof(FloatComparisonInput)
+                                  options:MTLResourceStorageModeShared];
+  auto output = [device newBufferWithLength:data.size() * sizeof(FloatComparisonInput)
+                                   options:MTLResourceStorageModeShared];
+  auto command = [[device newCommandQueue] commandBuffer];
+  auto encoder = [command computeCommandEncoder];
+  [encoder setComputePipelineState:pipeline];
+  [encoder setBuffer:input offset:0 atIndex:0];
+  [encoder setBuffer:output offset:0 atIndex:1];
+  [encoder dispatchThreads:MTLSizeMake(data.size(), 1, 1)
+       threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [encoder endEncoding];
+  [command commit];
+  [command waitUntilCompleted];
+  Check(command.status == MTLCommandBufferStatusCompleted, "FP32 comparison command failed");
+  auto results = static_cast<FloatComparisonInput const*>(output.contents);
+  for (std::size_t i = 0; i < data.size(); ++i) {
+    float a, b;
+    std::memcpy(&a, &data[i].a, sizeof(a));
+    std::memcpy(&b, &data[i].b, sizeof(b));
+    if (results[i].a != std::uint32_t(a < b) || results[i].b != std::uint32_t(a <= b)) {
+      std::fprintf(stderr, "pair=%zu a=%08x b=%08x actual=%u/%u expected=%u/%u\n",
+                   i, data[i].a, data[i].b, results[i].a, results[i].b,
+                   unsigned(a < b), unsigned(a <= b));
+      throw std::runtime_error("FP32 comparison differs from native IEEE ordering");
+    }
+  }
+  std::printf("PASS %zu exact FP32 less-than/less-equal pairs; signed zeros, subnormals, "
+               "infinities, signaling/quiet NaNs, adjacent values and random bit patterns\n",
+               data.size());
+}
+
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
@@ -158,6 +216,12 @@ kernel void test_quantized_bound(device const BoundCheckInput* data [[buffer(0)]
   auto v = data[i];
   output[i] = xgb_quantized_split_gain_bound(v.left, v.right, v.scale, v.params);
 }
+kernel void test_float_comparison(device const uint2* input [[buffer(0)]],
+                                  device uint2* output [[buffer(1)]],
+                                  uint i [[thread_position_in_grid]]) {
+  float a = as_type<float>(input[i].x), b = as_type<float>(input[i].y);
+  output[i] = uint2(xgb_cuda_float_lt(a, b), xgb_cuda_float_le(a, b));
+}
 )";
       auto options = [MTLCompileOptions new];
       options.fastMathEnabled = NO;
@@ -167,6 +231,7 @@ kernel void test_quantized_bound(device const BoundCheckInput* data [[buffer(0)]
                                             error:&error];
       if (!library) throw std::runtime_error(error.localizedDescription.UTF8String);
       CheckQuantizedBounds(device, library);
+      CheckFloatOrdering(device, library);
       auto pipeline = [device newComputePipelineStateWithFunction:
                                   [library newFunctionWithName:@"xgb_evaluate_quantized_splits"]
                                                             error:&error];

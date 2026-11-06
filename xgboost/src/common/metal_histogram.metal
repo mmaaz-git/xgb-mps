@@ -6510,7 +6510,11 @@ inline DoublePair xgb_split_dequantize(ulong2 value, GradientScale scale) {
 // Metal native FP32 comparisons can flush subnormals. CUDA's default IEEE
 // comparisons retain them, including stable category ordering and gain ties.
 inline bool xgb_cuda_float_lt(float a, float b) {
-  return xgb_dlt(xgb_dfrom_float(a), xgb_dfrom_float(b));
+  uint ua = as_type<uint>(a), ub = as_type<uint>(b);
+  uint aa = ua & 0x7fffffffu, bb = ub & 0x7fffffffu;
+  if (aa > 0x7f800000u || bb > 0x7f800000u) return false;
+  if ((ua ^ ub) & 0x80000000u) return (aa || bb) && bool(ua & 0x80000000u);
+  return ua & 0x80000000u ? aa > bb : aa < bb;
 }
 inline bool xgb_cuda_float_le(float a, float b) {
   uint aa = as_type<uint>(a) & 0x7fffffffu, bb = as_type<uint>(b) & 0x7fffffffu;

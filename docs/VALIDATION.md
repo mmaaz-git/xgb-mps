@@ -106,6 +106,15 @@ turn a historical full run into a current full run.
 
 ## Recorded results
 
+- **Fresh full regression, exact FP32 ordering and input staging:** clean
+  `28908e1` passed all 106 native groups and 4,001 Python tests, with two expected
+  platform skips. The subsequent candidate passed seven native groups and 427
+  Python tests, followed by three installed-package workflows. Direct ordering
+  checks cover 1,400,784 FP32 pairs. All 26 MPS benchmark runs reproduce baseline
+  models, margins and metric histories exactly across dense, missing-value,
+  categorical, Covertype and full-row 1,000-round HIGGS workloads. The full run
+  predates the optimization; final acceptance is focused. No NVIDIA execution.
+  [Sources, all 41 timings and checks](../validation/regression-and-benchmarks-m3.json).
 - **Batched split commands, wide histogram dispatch and native conservative
   bounds:** eight native groups and 300 Python tests passed, with one expected
   empty-dataset warning, followed by three installed-package workflows. Direct

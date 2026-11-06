@@ -6,6 +6,167 @@ or revisions. CUDA is not available on this Mac.
 
 ## Current M3 results
 
+The 2026-11-06 milestone starts from `28908e1`. Its full standard regression
+passed 106 native groups and 4,001 Python tests, with two expected platform
+skips. The final optimization then passed seven native groups, 427 Python tests
+and three installed-package workflows. Exact sources, commands, all timings and
+output hashes are in the [acceptance record](../validation/regression-and-benchmarks-m3.json).
+
+Each CPU/candidate cell below is the median of three fresh-process runs on this
+M3 (10-core GPU, eight CPU cores, 16 GB RAM). Runtime initialization is warmed.
+Training includes quantization and held-out evaluation every round; loading,
+matrix creation and final prediction are separate. All cases use depth 6 and
+256 bins. GPU timing counters may overlap and must not be summed.
+
+| Training data | Rounds | CPU | MPS |
+| --- | ---: | ---: | ---: |
+| 100K × 32 categorical, synthetic | 100 | 1.48 s | 5.12 s |
+| 100K × 128, 20% missing, synthetic | 100 | 1.78 s | 5.20 s |
+| 25K × 4,096 dense, synthetic | 100 | 44.82 s | 62.44 s |
+| Covertype: 464,809 × 54 | 500 | 72.54 s | 142.96 s |
+| HIGGS: 10.5M × 28 | 1,000 | 389.05 s | 308.96 s |
+
+The categorical synthetic workload uses 256 values per feature and random
+per-category effects on 16 informative columns. Dense and missing-value
+synthetic cases use 64 informative columns; missing entries are introduced
+after generating labels. Covertype maps classes 1–7 to 0–6 and uses a stratified
+80/20 split (seed 1701), with 116,203 held-out rows. Its seven-class, 500-round
+configuration differs from the historical eight-class/60–20–20 replay below.
+HIGGS uses all 10.5M training rows, 500K held-out rows and the full 1,000 rounds.
+
+### Repeats and before/after comparison
+
+| Workload / variant | Training seconds, in repeat order |
+| --- | --- |
+| 100K × 32 categorical, synthetic / CPU | 1.427, 1.479, 1.520 |
+| 100K × 32 categorical, synthetic / previous MPS | 9.194, 8.889, 9.457 |
+| 100K × 32 categorical, synthetic / new MPS | 5.118, 5.098, 5.170 |
+| 100K × 128, 20% missing, synthetic / CPU | 1.730, 1.779, 1.860 |
+| 100K × 128, 20% missing, synthetic / previous MPS | 5.333, 5.159, 5.162 |
+| 100K × 128, 20% missing, synthetic / new MPS | 5.295, 5.203, 5.126 |
+| 25K × 4,096 dense, synthetic / CPU | 30.780, 44.815, 46.327 |
+| 25K × 4,096 dense, synthetic / previous MPS | 81.556, 50.450, 58.732 |
+| 25K × 4,096 dense, synthetic / new MPS | 79.061, 62.437, 59.031 |
+| Covertype: 464,809 × 54 / CPU | 67.909, 80.437, 72.545 |
+| Covertype: 464,809 × 54 / previous MPS (one correctness reference) | 141.388 |
+| Covertype: 464,809 × 54 / new MPS | 137.886, 142.957, 144.295 |
+| HIGGS: 10.5M × 28 / CPU | 384.968, 395.181, 389.052 |
+| HIGGS: 10.5M × 28 / previous MPS (one correctness reference) | 305.300 |
+| HIGGS: 10.5M × 28 / new MPS | 308.965, 308.270, 321.067 |
+
+The three short workloads rotate CPU/baseline/candidate order across repeats.
+Covertype and HIGGS alternate three CPU/candidate pairs, with one additional
+baseline MPS reference each. Those single long baseline timings do not support
+a robust before/after speedup claim.
+
+Categorical training improves 1.80× by median (9.194 → 5.118 seconds), with all
+three pairs improving. Missing-value training is effectively flat
+(5.162 → 5.203 seconds). The wide median is slower (58.732 → 62.437 seconds);
+its runs vary substantially and system swap grows during the experiment. CPU
+is faster than new MPS in every pair of these three synthetic cases. Preserve
+all repeats rather than selecting favorable values or combining them with
+earlier sessions. Other applications were not controlled, and no local builds,
+correctness tests or other benchmarks from this task overlapped these timings.
+
+Including matrix construction, CPU/new-MPS median seconds are:
+
+- 100K × 32 categorical, synthetic: 1.485 / 5.124.
+- 100K × 128, 20% missing, synthetic: 1.807 / 5.234.
+- 25K × 4,096 dense, synthetic: 45.083 / 62.783.
+- Covertype: 464,809 × 54: 72.645 / 143.031.
+- HIGGS: 10.5M × 28: 391.032 / 310.989.
+
+### Held-out quality
+
+These compare independently trained CPU and MPS models. Before/after MPS
+outputs are exact, but independent CPU/MPS training can produce different trees.
+The wide accuracy difference below is also present in the baseline MPS model;
+its numerical cause has not been isolated. Test tolerances were not relaxed.
+
+| Workload | CPU accuracy | MPS accuracy | CPU log loss | MPS log loss |
+| --- | ---: | ---: | ---: | ---: |
+| 100K × 32 categorical, synthetic | 0.7178 | 0.7178 | 0.6190 | 0.6190 |
+| 100K × 128, 20% missing, synthetic | 0.6989 | 0.6989 | 0.5729 | 0.5748 |
+| 25K × 4,096 dense, synthetic | 0.7036 | 0.6848 | 0.5963 | 0.5873 |
+| Covertype: 464,809 × 54 | 0.9463 | 0.9461 | 0.1510 | 0.1512 |
+| HIGGS: 10.5M × 28 | 0.7612 | 0.7617 | 0.4828 | 0.4827 |
+
+### Where to profile next
+
+Median recorded GPU-family durations across the three candidate runs:
+
+| Workload | Row partition | Histogram | Objective | Split |
+| --- | ---: | ---: | ---: | ---: |
+| Covertype: 464,809 × 54 | 11.72 s | 24.01 s | 24.73 s | 3.86 s |
+| HIGGS: 10.5M × 28 | 69.51 s | 66.91 s | 12.80 s | 2.29 s |
+
+These diagnostic counters can overlap; they are not additive and do not isolate
+CPU overhead. They point to row partitioning/histograms on HIGGS and
+objective/histogram work on Covertype as candidates for the next focused profile.
+Wide-workload memory pressure needs separate investigation before attributing
+its timing variation to any kernel.
+
+### What changed and what was rejected
+
+- FP32 ordering now compares bit patterns directly, preserving NaNs, signed
+  zeros, subnormals, infinities and strict ties. Gain calculations still use
+  their original precision. Isolated partitioned-category scoring improves
+  1.75–2.30×; numeric/one-hot microbenchmarks are mixed, including a 9.1%
+  regression for one numeric-with-missing shape. The whole-training missing
+  control above is effectively flat.
+- Packed input initializes only alignment padding before copying its payload.
+  A separate CPU sample of the accepted baseline observed 3.1% of main-thread
+  samples in redundant staging zero fill. Removing it preserves ownership,
+  offsets, counters and command boundaries. No isolated whole-training gain
+  is attributed to this change.
+- A direct-store histogram prototype was rejected: all 1,024 outputs matched
+  CPU exactly, but 56 of 64 timings regressed.
+- Cross-tree scratch retention was deferred after the current profile showed
+  only 1.1% of main-thread samples in split allocations, with a potentially
+  longer high-water memory lifetime. It is absent from the accepted code.
+
+All 26 MPS benchmark runs reproduce the corresponding baseline models, margins
+and metric histories exactly, including 1,000-round HIGGS and 500-round
+Covertype. Every MPS worker also checks same-model CPU prediction exactly.
+Independent CPU/MPS training differences and held-out quality are recorded;
+no NVIDIA kernels were executed. New direct comparisons cover 1,400,784 FP32
+pairs; scalar/vector split, input layout, categories and Python workflow checks
+also pass. The full suite precedes this optimization; its subsequent checks
+are focused acceptance.
+
+Peak RSS is process-wide. Current end-of-worker RSS is sampled after prediction,
+model saving and CPU validation, not immediately after training, and does not
+measure the complete Metal physical footprint. Swap is system-wide. All timings
+pass power-source and wall/monotonic-clock checks; detailed memory and power
+observations are retained in the record.
+
+### Reproduce the workloads
+
+Prepare the two UCI caches once. Use new output directories for each run.
+
+```sh
+.venv/bin/python scripts/prepare_published_data.py higgs covtype
+.venv/bin/python scripts/profile_training.py --case categorical --rows 100000 \
+  --features 32 --categories 256 --informative-features 16 --rounds 100 \
+  --threads 8 --repeats 3 --output results/profile-categorical
+.venv/bin/python scripts/profile_training.py --case wide --rows 100000 \
+  --features 128 --informative-features 64 --missing-fraction 0.2 --rounds 100 \
+  --threads 8 --repeats 3 --output results/profile-missing
+.venv/bin/python scripts/profile_training.py --case wide --rows 25000 \
+  --features 4096 --informative-features 64 --rounds 100 --threads 8 \
+  --repeats 3 --output results/profile-wide-4096
+.venv/bin/python scripts/profile_training.py --case covtype --rounds 500 \
+  --threads 8 --repeats 3 --output results/profile-covtype
+.venv/bin/python scripts/profile_training.py --case higgs --rounds 1000 \
+  --threads 8 --repeats 3 --output results/profile-higgs-1000
+```
+
+Before/after worker commands use isolated `--package-dir` paths and are listed
+in the acceptance record. The historical measurements below retain their own
+revisions and workload definitions.
+
+## Command batching and histogram dispatch milestone (28908e1)
+
 The 2026-11-06 comparison starts from `9919a31`, the previous accepted MPS build.
 Three subagents developed and cross-reviewed command batching, wider eligibility
 for existing shared histogram kernels, and cheaper conservative split bounds.

@@ -21,6 +21,9 @@ def memory_snapshot():
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     result = {"process_peak_rss_bytes": int(rss * (1 if sys.platform == "darwin" else 1024))}
     if sys.platform == "darwin":
+        # Current RSS distinguishes retained workspace from the process lifetime peak.
+        result["process_current_rss_bytes"] = 1024 * int(subprocess.check_output(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())], text=True).strip())
         result["system_swap"] = subprocess.run(["sysctl", "-n", "vm.swapusage"],
                                                  capture_output=True, text=True, check=True).stdout.strip()
     return result

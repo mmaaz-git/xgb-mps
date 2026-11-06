@@ -7940,8 +7940,13 @@ struct PackedInput {
     auto offset = (bytes.size() + 7) & ~std::size_t{7};
     CHECK_LE(n, GetRuntime().device.maxBufferLength);
     CHECK_LE(offset, GetRuntime().device.maxBufferLength - n);
-    bytes.resize(offset + n);
-    if (n) std::memcpy(bytes.data() + offset, ptr, n);
+    // Only alignment padding needs zero initialization; append the owned payload
+    // directly instead of zero-filling it before overwriting it with a copy.
+    bytes.resize(offset);
+    if (n) {
+      auto first = static_cast<std::uint8_t const*>(ptr);
+      bytes.insert(bytes.end(), first, first + n);
+    }
     input_staging_bytes.fetch_add(n, std::memory_order_relaxed);
     return offset;
   }
