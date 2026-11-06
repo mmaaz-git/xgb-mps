@@ -6,6 +6,7 @@
 // Optional comparison: pass candidate.metal baseline.metal bins_per_feature.
 // This alternates both kernels and checks every sum against the same CPU oracle.
 // Append --ellpack to compare the compressed row-major page path (1-8 bit symbols).
+// Append --ellpack ROWS FEATURES to compare global/shared/tiled paths on that shape.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <algorithm>
@@ -32,10 +33,11 @@ void Check(bool ok, char const* message) {
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
-      Check(argc == 2 || argc == 4 || (argc == 5 && std::string(argv[4]) == "--ellpack"),
-            "Pass candidate shader [baseline shader bins_per_feature [--ellpack]]");
+      Check(argc == 2 || argc == 4 || ((argc == 5 || argc == 7) && std::string(argv[4]) == "--ellpack"),
+            "Pass candidate shader [baseline shader bins_per_feature [--ellpack [ROWS FEATURES]]]");
       bool compare = argc >= 4;
-      bool compressed = argc == 5 && std::string(argv[4]) == "--ellpack";
+      bool compressed = argc >= 5 && std::string(argv[4]) == "--ellpack";
+      bool all_paths = argc == 7;
       auto device = MTLCreateSystemDefaultDevice();
       Check(device != nil, "No Metal GPU");
       std::ifstream file(argv[1]);
@@ -52,6 +54,15 @@ int main(int argc, char** argv) {
       auto pipeline = [device newComputePipelineStateWithFunction:function error:&error];
       Check(pipeline != nil, "Missing histogram pipeline");
       id<MTLComputePipelineState> baseline_pipeline = nil;
+      id<MTLComputePipelineState> global_pipeline = nil, baseline_global_pipeline = nil,
+                                  tiled_pipeline = nil;
+      if (all_paths) {
+        global_pipeline = [device newComputePipelineStateWithFunction:
+            [library newFunctionWithName:@"xgb_histogram_ellpack"] error:&error];
+        tiled_pipeline = [device newComputePipelineStateWithFunction:
+            [library newFunctionWithName:@"xgb_histogram_dense_tiled_ellpack"] error:&error];
+        Check(global_pipeline != nil && tiled_pipeline != nil, "Missing global/tiled histogram pipeline");
+      }
       if (compare) {
         std::ifstream baseline_file(argv[2]);
         Check(baseline_file.good(), "Missing baseline shader");
@@ -66,13 +77,19 @@ int main(int argc, char** argv) {
         baseline_pipeline = [device newComputePipelineStateWithFunction:baseline_function
                                                                   error:&error];
         Check(baseline_pipeline != nil, "Missing baseline histogram pipeline");
+        if (all_paths) {
+          baseline_global_pipeline = [device newComputePipelineStateWithFunction:
+              [baseline_library newFunctionWithName:@"xgb_histogram_ellpack"] error:&error];
+          Check(baseline_global_pipeline != nil, "Missing baseline global histogram pipeline");
+        }
       }
       auto queue = [device newCommandQueue];
       auto upload = [&](void const* data, size_t bytes) {
         return [device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];
       };
-      constexpr uint64_t n = 1000000;
-      constexpr uint32_t features = 32;
+      uint64_t n = all_paths ? std::stoull(argv[5]) : 1000000;
+      uint32_t features = all_paths ? std::stoul(argv[6]) : 32;
+      Check(n > 0 && n <= UINT32_MAX && features >= 4, "Rows/features out of range");
       uint32_t per_feature = compare ? std::stoi(argv[3]) : 256;
       Check(per_feature >= 1 && per_feature <= 256, "This benchmark uses 8-bit indices");
       uint32_t symbol_bits = 1;
@@ -133,16 +150,19 @@ int main(int argc, char** argv) {
              boundaries = upload(node_ptr.data(), node_ptr.size() * sizeof(uint64_t));
         auto output = [device newBufferWithLength:reference.size() * sizeof(Pair)
                                           options:MTLResourceStorageModeShared];
-        std::vector<uint32_t> choices =
+        std::vector<uint32_t> choices = all_paths ? std::vector<uint32_t>{0, 0, 8, 32, 8, 32} :
             compare ? std::vector<uint32_t>{8, 32, 8, 32} : std::vector<uint32_t>{1, 8, 16, 32, 64};
         std::vector<std::vector<double>> gpu_times(choices.size());
         // One warmup for each geometry, followed by shuffled alternating trials.
         for (int repeat = -1; repeat < 5; ++repeat) {
-          std::vector<size_t> order =
+          std::vector<size_t> order = all_paths ? std::vector<size_t>{0, 1, 2, 3, 4, 5} :
               compare ? std::vector<size_t>{0, 1, 2, 3} : std::vector<size_t>{0, 1, 2, 3, 4};
           std::shuffle(order.begin(), order.end(), rng);
           for (auto choice : order) {
-            auto rows_per_lane = choices[choice];
+            auto rows_per_lane = std::max(1u, choices[choice]);
+            bool shared = !all_paths || choice >= 2;
+            bool tiled = all_paths && choice >= 4;
+            auto features_per_group = tiled ? 4u : 1u;
             std::vector<uint64_t> block_ptr{0};
             for (uint32_t node = 0; node < nodes; ++node)
               block_ptr.push_back(block_ptr.back() +
@@ -155,7 +175,10 @@ int main(int argc, char** argv) {
             [clear fillBuffer:output range:NSMakeRange(0, output.length) value:0];
             [clear endEncoding];
             auto e = [command computeCommandEncoder];
-            [e setComputePipelineState:compare && choice < 2 ? baseline_pipeline : pipeline];
+            auto selected = all_paths ? (choice == 0 ? baseline_global_pipeline :
+                choice == 1 ? global_pipeline : tiled ? tiled_pipeline : pipeline) :
+                compare && choice < 2 ? baseline_pipeline : pipeline;
+            [e setComputePipelineState:selected];
             [e setBuffer:index offset:0 atIndex:0];
             [e setBuffer:ptr offset:0 atIndex:1];
             [e setBuffer:offset offset:0 atIndex:2];
@@ -165,17 +188,22 @@ int main(int argc, char** argv) {
             [e setBytes:&p length:sizeof(p) atIndex:6];
             [e setBuffer:boundaries offset:0 atIndex:7];
             [e setBuffer:boundaries offset:0 atIndex:8];
-            [e setBuffer:blocks offset:0 atIndex:9];
+            if (shared) [e setBuffer:blocks offset:0 atIndex:9];
             if (compressed) {
               struct Compressed { uint64_t split; uint32_t stride, bits, symbols, dense, features, padding; };
               static_assert(sizeof(Compressed) == 32);
               Compressed page{index.length, features, symbol_bits, per_feature, 1, features, 0};
-              [e setBuffer:index offset:0 atIndex:10];  // Unused tail, still a valid binding.
-              [e setBytes:&page length:sizeof(page) atIndex:11];
+              auto slot = shared ? 10u : 9u;
+              [e setBuffer:index offset:0 atIndex:slot];  // Unused tail, still a valid binding.
+              [e setBytes:&page length:sizeof(page) atIndex:slot + 1];
             }
-            [e setThreadgroupMemoryLength:per_feature * sizeof(Pair) atIndex:0];
-            [e dispatchThreadgroups:MTLSizeMake(block_ptr.back(), features, 1)
-                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+            if (shared) {
+              [e setThreadgroupMemoryLength:per_feature * sizeof(Pair) * features_per_group atIndex:0];
+              [e dispatchThreadgroups:MTLSizeMake(block_ptr.back(), (features + features_per_group - 1) / features_per_group, 1)
+                  threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+            } else {
+              [e dispatchThreads:MTLSizeMake(n, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+            }
             [e endEncoding];
             [command commit];
             [command waitUntilCompleted];
@@ -193,6 +221,8 @@ int main(int argc, char** argv) {
           if (c) printf(",");
           printf(
               "{\"variant\":\"%s\",\"bins_per_feature\":%u,\"rows_per_lane\":%u,\"gpu_seconds\":[",
+              all_paths ? (c == 0 ? "baseline-global" : c == 1 ? "candidate-global" :
+                           c < 4 ? "shared" : "tiled") :
               compare ? (c < 2 ? "baseline" : "candidate") : "current", per_feature, choices[c]);
           for (size_t r = 0; r < gpu_times[c].size(); ++r)
             printf("%s%.9f", r ? "," : "", gpu_times[c][r]);

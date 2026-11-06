@@ -71,31 +71,35 @@ full baseline passed 106 native groups and 4,001 Python tests, with two expected
 platform skips. Workflows include preprocessing, cross-validation, categorical
 classification, early stopping, ranking and model persistence. The subsequent
 optimizations passed focused native/Python checks and installed-package
-workflows; the latest split-evaluation build passed 178 Python tests and five
-native groups. [Validation commands/results](docs/VALIDATION.md) record the exact
-revisions and scope. CUDA CI compiles the NVIDIA backend; it does not run CUDA kernels.
+workflows; the latest build passed 300 Python tests, eight native groups and
+three installed-package workflows. [Validation commands/results](docs/VALIDATION.md)
+record the exact revisions and scope. CUDA CI compiles the NVIDIA backend;
+it does not run CUDA kernels.
 
 ## Performance
 
-Split evaluation now avoids duplicate calculations and skips candidates that
-cannot win, while retaining full-precision scoring for possible winners. On
-two dense synthetic workloads, median timings across three paired repeats are:
+The latest changes batch split-stage commands, select existing shared histogram
+kernels for more wide workloads, and make conservative split screening cheaper.
+Exact split scoring is unchanged. Fresh median timings across three paired
+repeats, compared with the previous MPS build (`9919a31`):
 
 | Training data | CPU | MPS before | MPS after | MPS improvement |
 | --- | ---: | ---: | ---: | ---: |
-| 100K rows × 1,024 columns | 19.99 s | 34.37 s | 18.71 s | **1.84×** |
-| 25K rows × 4,096 columns | 39.01 s | 115.31 s | 55.97 s | **2.06×** |
+| 100K rows × 1,024 columns, synthetic | 18.39 s | 16.16 s | 15.17 s | **1.06×** |
+| 25K rows × 4,096 columns, synthetic | 35.61 s | 45.64 s | 31.41 s | **1.45×** |
+| 10.5M rows × 28 columns, HIGGS | 33.69 s | 33.13 s | 31.24 s | **1.06×** |
 
-Each run uses 100 rounds, depth 6, 256 bins, eight CPU threads and 64 informative
-features, without column sampling. Split GPU time improved **5.17× / 5.29×**.
-Before/after models, predictions and per-round metric histories are bit-identical.
-CPU remains faster on the wider case; the small CPU/MPS difference at 1,024
-columns does not establish a general GPU advantage. User applications and
-substantial system-wide swap limit timing stability.
+Each run uses 100 rounds, depth 6, 256 bins and eight CPU threads. Synthetic data
+has 64 informative features; no column sampling is used. All 18 before/after MPS
+models, predictions and metric histories match exactly.
 
-Earlier changes improved histograms, row partitioning and sketch sorting.
-All timings and limitations, including losses and the historical 1,000-round
-workloads, are retained in the [benchmark record](docs/PUBLISHED_BENCHMARKS.md).
+All six synthetic before/after pairs improved; one HIGGS pair was slightly slower.
+CPU won two of the three 4,096-column pairs despite its higher median, so these
+runs do not establish a general GPU advantage. User applications and system-wide
+swap affect timing stability. Use whole-training timings for this comparison: command
+batching changed the scope of the split GPU counter.
+See [current results, all repeats and limitations](docs/PUBLISHED_BENCHMARKS.md#current-m3-results);
+earlier experiments remain below that section.
 
 Large-workload profiling is separate from the tests:
 

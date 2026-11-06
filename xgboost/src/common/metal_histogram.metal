@@ -6539,13 +6539,41 @@ inline float xgb_quantized_split_gain(ulong2 left, ulong2 right, GradientScale s
 // existing unconstrained binary64 evaluator's conservative interval contract.
 inline float2 xgb_quantized_split_gain_bound(ulong2 left, ulong2 right, GradientScale scale,
                                             SplitParameters p) {
-  DoublePair l = xgb_split_dequantize(left, scale), r = xgb_split_dequantize(right, scale);
-  XGBDouble minimum = xgb_dfrom_float(p.min_child_weight);
-  if (!xgb_dlt({0}, l.h) || !xgb_dlt({0}, r.h) || xgb_dlt(l.h, minimum) || xgb_dlt(r.h, minimum))
-    return float2(-INFINITY);
-  float2 lb = xgb_unconstrained_gain_bound(l, p.reg_lambda);
-  float2 rb = xgb_unconstrained_gain_bound(r, p.reg_lambda);
-  return float2(xgb_round_down(lb.x + rb.x), xgb_round_up(lb.y + rb.y));
+  // Native FP32 is used only to enclose the software binary64 inputs. Two
+  // outward ULPs cover integer conversion and integer->double->float rounding
+  // boundaries; ldexp is exact whenever its result is normal. Anything outside
+  // the existing finite gain-bound range retains the full evaluator.
+  if (scale.grad_exponent < -96 || scale.grad_exponent > 96 ||
+      scale.hess_exponent < -96 || scale.hess_exponent > 96 ||
+      !(p.reg_lambda >= 0.0f && p.reg_lambda <= 1.0e8f))
+    return float2(-INFINITY, INFINITY);
+  float2 g = abs(ldexp(float2(as_type<long>(left.x), as_type<long>(right.x)),
+                       int2(-scale.grad_exponent)));
+  float2 h = ldexp(float2(as_type<long>(left.y), as_type<long>(right.y)),
+                   int2(-scale.hess_exponent));
+  if (!all(h >= 1.0e-8f) || !all(h <= 1.0e8f) ||
+      (left.x && !(g.x >= 1.0e-8f && g.x <= 1.0e8f)) ||
+      (right.x && !(g.y >= 1.0e-8f && g.y <= 1.0e8f)))
+    return float2(-INFINITY, INFINITY);
+  float2 low(0), high(0);
+  for (uint i = 0; i < 2; ++i) {
+    float hl = xgb_round_down(xgb_round_down(h[i]));
+    float hh = xgb_round_up(xgb_round_up(h[i]));
+    // A lower gain bound is usable only when the candidate is certainly valid.
+    // Near min_child_weight (including exact equality), fall back unbounded.
+    if (!(hl > 0.0f && hl >= p.min_child_weight)) return float2(-INFINITY, INFINITY);
+    if ((i == 0 ? left.x : right.x) == 0) continue;
+    float gl = xgb_round_down(xgb_round_down(g[i]));
+    float gh = xgb_round_up(xgb_round_up(g[i]));
+    float al = xgb_round_down(hl + p.reg_lambda);
+    float ah = xgb_round_up(hh + p.reg_lambda);
+    float lo = xgb_round_down(xgb_round_down(gl * gl) / ah);
+    float hi = xgb_round_up(xgb_round_up(gh * gh) / al);
+    constexpr float margin = 0x1p-18f;
+    low[i] = xgb_round_down(lo * (1.0f - margin));
+    high[i] = xgb_round_up(hi * (1.0f + margin));
+  }
+  return float2(xgb_round_down(low.x + low.y), xgb_round_up(high.x + high.y));
 }
 inline void xgb_quantized_split_update(float gain, ulong2 left, ulong2 right, uint bin,
                                        uint missing, uint partition,

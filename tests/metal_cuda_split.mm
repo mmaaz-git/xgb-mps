@@ -13,6 +13,135 @@ void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
 std::size_t cases = 0, bins_checked = 0, cancellation_cases = 0;
+struct BoundInput {
+  ref::Pair left, right;
+  ref::Scale scale;
+  ref::Parameters params;
+};
+static_assert(sizeof(BoundInput) == 64);
+
+void CheckQuantizedBounds(id<MTLDevice> device, id<MTLLibrary> library) {
+  NSError* error = nil;
+  auto pipeline = [device newComputePipelineStateWithFunction:
+      [library newFunctionWithName:@"test_quantized_bound"] error:&error];
+  Check(pipeline != nil, "Missing quantized bound check pipeline");
+  std::mt19937_64 random(994791);
+  std::vector<BoundInput> data;
+  for (std::size_t i = 0; i < 1000000; ++i) {
+    auto grad = [&]() { return ref::Signed(random()); };
+    auto hess = [&]() { return std::int64_t(random() >> 1); };
+    ref::Scale scale{int(35 + random() % 60), int(35 + random() % 60)};
+    if (i % 3 == 0) scale = {int(random() % 340) - 170, int(random() % 340) - 170};
+    BoundInput v{{grad(), hess()}, {grad(), hess()}, scale,
+                 {i % 5 ? float(std::ldexp(1.0, int(random() % 50) - 25)) : 0.f,
+                  0, 0, i % 7 ? 0.f : 1.f}};
+    if (i % 11 == 0) v.left.g = 0;
+    if (i % 13 == 0) v.right.h = -v.right.h;
+    if (i % 17 == 0) v.left.h = 0;
+    if (i % 19 == 0) {
+      v.params.minimum = float(ref::Dequantize(v.left, scale).h);
+      if (i % 2)
+        v.params.minimum = std::nextafter(v.params.minimum, i % 4 == 1 ? INFINITY : -INFINITY);
+    }
+    if (i % 23 == 0) v.params.lambda = 1e9f;
+    if (i % 29 == 0) v.params.minimum = std::numeric_limits<float>::denorm_min();
+    data.push_back(v);
+  }
+  // Include integer->double->float double rounding on either side of FP32
+  // midpoints, including above 2^53. Test both usable intervals and uncertainty
+  // at min_child_weight; the latter must never create a spurious lower bound.
+  auto midpoint_begin = data.size();
+  for (int shift = 1; shift <= 39; ++shift) {
+    for (std::uint64_t mantissa : {0x800000ULL, 0x800001ULL, 0xfffffeULL, 0xffffffULL}) {
+      auto mid = std::int64_t((2 * mantissa + 1) << (shift - 1));
+      for (std::int64_t offset : {-257LL, -2LL, -1LL, 0LL, 1LL, 2LL, 257LL}) {
+        for (int sign : {-1, 1}) {
+          for (float lambda : {0.f, 1.f, 1e-8f, 1e8f, 1e9f}) {
+            BoundInput v{{sign * (mid + offset), mid + offset},
+                         {-(mid - offset), mid - offset},
+                         {shift + 23, shift + 23}, {lambda, 0, 0, 0}};
+            data.push_back(v);
+            for (int direction : {-1, 0, 1}) {
+              v.params.minimum = float(ref::Dequantize(v.left, v.scale).h);
+              if (direction)
+                v.params.minimum = std::nextafter(v.params.minimum, direction * INFINITY);
+              data.push_back(v);
+            }
+          }
+        }
+      }
+    }
+  }
+  auto midpoint_end = data.size();
+  for (int exponent : {-200, -150, -149, -148, -127, -126, -125, -97, -96, -95,
+                        0, 95, 96, 97, 125, 126, 127, 148, 149, 150, 200}) {
+    for (std::int64_t raw : {0LL, 1LL, -1LL, 2LL, -2LL, (1LL << 62), -(1LL << 62)}) {
+      for (float minimum : {0.f, 1e-8f, 1.f, 1e8f, INFINITY})
+        data.push_back({{raw, raw}, {-raw, raw}, {exponent, exponent}, {1, 0, 0, minimum}});
+    }
+  }
+  // Both sides of the supported finite interval endpoints.
+  for (auto edge : {1e-8f, 1e8f}) {
+    int exponent = edge < 1.f ? 60 : 20;
+    auto center = std::int64_t(std::ldexp(double(edge), exponent));
+    for (std::int64_t offset : {-2049LL, -1025LL, -1LL, 0LL, 1LL, 1025LL, 2049LL}) {
+      for (float lambda : {0.f, 1.f, 1e8f, 1e9f})
+        data.push_back({{center + offset, center + offset}, {-center, center},
+                        {exponent, exponent}, {lambda, 0, 0, 0}});
+    }
+  }
+  for (auto raw : {std::numeric_limits<std::int64_t>::min(),
+                   std::numeric_limits<std::int64_t>::max()}) {
+    for (int exponent : {-97, -96, 0, 63, 96, 97})
+      data.push_back({{raw, 1LL << 62}, {raw, 1LL << 62},
+                      {exponent, exponent}, {1, 0, 0, 0}});
+  }
+  auto input = [device newBufferWithBytes:data.data() length:data.size() * sizeof(BoundInput)
+                                  options:MTLResourceStorageModeShared];
+  auto output = [device newBufferWithLength:data.size() * sizeof(float) * 2
+                                   options:MTLResourceStorageModeShared];
+  auto command = [[device newCommandQueue] commandBuffer];
+  auto encoder = [command computeCommandEncoder];
+  [encoder setComputePipelineState:pipeline];
+  [encoder setBuffer:input offset:0 atIndex:0];
+  [encoder setBuffer:output offset:0 atIndex:1];
+  [encoder dispatchThreads:MTLSizeMake(data.size(), 1, 1)
+       threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+  [encoder endEncoding];
+  [command commit];
+  [command waitUntilCompleted];
+  Check(command.status == MTLCommandBufferStatusCompleted, "Quantized bound command failed");
+  auto bounds = static_cast<float const*>(output.contents);
+  std::size_t finite = 0, unbounded = 0, invalid = 0, midpoint_finite = 0;
+  for (std::size_t i = 0; i < data.size(); ++i) {
+    auto v = data[i];
+    auto l = ref::Dequantize(v.left, v.scale), r = ref::Dequantize(v.right, v.scale);
+    float lo = bounds[2 * i], hi = bounds[2 * i + 1];
+    bool valid = l.h > 0 && r.h > 0 && l.h >= v.params.minimum && r.h >= v.params.minimum;
+    if (!valid) {
+      Check(lo == -INFINITY, "Invalid candidate could raise split cutoff");
+      ++invalid;
+    }
+    if (lo == -INFINITY && hi == INFINITY) {
+      ++unbounded;
+      continue;
+    }
+    ref::Task task{0, 0, 0, 0, ref::Add(v.left, v.right), -INFINITY, INFINITY, 0};
+    float actual = ref::SplitGain(v.left, v.right, v.scale, task, v.params);
+    if (!(lo <= actual && actual <= hi)) {
+      std::fprintf(stderr, "bound=%zu scale=%d/%d min=%a gain=%a interval=%a/%a valid=%d\n",
+                   i, v.scale.ge, v.scale.he, v.params.minimum, actual, lo, hi, valid);
+      throw std::runtime_error("Quantized bound excluded full-precision CUDA-formula gain");
+    }
+    ++finite;
+    if (i >= midpoint_begin && i < midpoint_end && v.params.minimum == 0) ++midpoint_finite;
+  }
+  Check(finite > 100000 && unbounded > 100000 && invalid > 10000 && midpoint_finite > 8000,
+        "Insufficient quantized bound/fallback/midpoint coverage");
+  std::printf("PASS %zu quantized gain intervals: %zu finite, %zu unbounded, %zu invalid "
+               "cannot raise cutoff, %zu finite midpoint cases\n",
+               data.size(), finite, unbounded, invalid, midpoint_finite);
+}
 int main(int argc, char** argv) {
   @autoreleasepool {
     try {
@@ -21,6 +150,15 @@ int main(int argc, char** argv) {
       Check(device != nil, "No Metal device");
       std::ifstream f(argv[1]);
       std::string source{std::istreambuf_iterator<char>(f), {}};
+      source += R"(
+struct BoundCheckInput { ulong2 left, right; GradientScale scale; SplitParameters params; };
+kernel void test_quantized_bound(device const BoundCheckInput* data [[buffer(0)]],
+                                 device float2* output [[buffer(1)]],
+                                 uint i [[thread_position_in_grid]]) {
+  auto v = data[i];
+  output[i] = xgb_quantized_split_gain_bound(v.left, v.right, v.scale, v.params);
+}
+)";
       auto options = [MTLCompileOptions new];
       options.fastMathEnabled = NO;
       NSError* error = nil;
@@ -28,6 +166,7 @@ int main(int argc, char** argv) {
                                           options:options
                                             error:&error];
       if (!library) throw std::runtime_error(error.localizedDescription.UTF8String);
+      CheckQuantizedBounds(device, library);
       auto pipeline = [device newComputePipelineStateWithFunction:
                                   [library newFunctionWithName:@"xgb_evaluate_quantized_splits"]
                                                             error:&error];

@@ -16,7 +16,8 @@ int main(int argc, char** argv) {
         std::string source{std::istreambuf_iterator<char>(f), {}};
         auto options = [MTLCompileOptions new];
         options.fastMathEnabled = NO;
-        options.preprocessorMacros = @{@"XGB_METAL_SPLIT_FILTER" : @(variant == 2)};
+        // The supplied baseline may already include screening; preserve it.
+        options.preprocessorMacros = @{@"XGB_METAL_SPLIT_FILTER" : @(variant != 1)};
         NSError* error = nil;
         auto library = [device newLibraryWithSource:[NSString stringWithUTF8String:source.c_str()]
                                             options:options error:&error];

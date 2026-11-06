@@ -32,6 +32,14 @@ API call and retain its export across iterator passes; separate calls need fresh
 exports. Current operations generally wait before returning. Asynchronous work
 requires an explicit ownership/readiness contract.
 
+Resident feature split evaluation has two command completions: one for the
+allocation length/error readback, then one after task construction, histogram
+gathering, scoring, finalization and winner extraction. Nodes share encoders
+within each stage. Integer and precise parent inputs have separate staging
+buffers; resident vector parents bind their owned buffer directly. Borrowed
+inputs remain alive until the synchronous call returns, and outputs are read
+only after completion.
+
 ## Numerical and refactoring boundaries
 
 Quantized histogram and split paths preserve integer state. Reconstructing exact
@@ -45,14 +53,16 @@ monotone constraints and leaf-weight bounds are absent. These reject candidates 
 upper bound is strictly below another candidate's lower bound. Surviving
 candidates use the original binary64 calculation; ties are retained. Values
 outside the interval helper's supported range receive unbounded intervals and
-fall through. Category-weight scratch holds numeric upper bounds, with each
+fall through. Screening forms widened FP32 intervals directly from integer sums;
+the Hessian lower bound must prove child eligibility before a gain lower bound
+can raise the cutoff. Category-weight scratch holds numeric upper bounds, with each
 lane reading only its own entries. No precision or selection tolerance changes.
 
 At the `6f3dcbd` review baseline the runtime/shader contained roughly 20,000 lines
-and 218 kernel entry points. Existing family headers supply extraction boundaries.
-Extract infrastructure, then one family per change; preserve arithmetic, APIs,
-lifetimes and shader dependencies. Keep algorithm changes, lazy pipeline creation
-and asynchronous submission separate from extraction.
+and 218 kernel entry points. If a concrete maintenance need justifies future
+extraction, existing family headers supply boundaries. Extract one family at a
+time, preserving arithmetic, APIs, lifetimes and shader dependencies; keep
+behavioral changes separate from extraction.
 
 `tests/` is executable validation, `validation/` is revision-qualified evidence,
 and ignored `results/` holds local logs/caches. `docs/archive/` preserves history;

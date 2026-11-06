@@ -1,0 +1,3212 @@
+{
+  "status": "accepted",
+  "hardware": "Apple M3, 10-core GPU, 16 GB RAM",
+  "baseline": {
+    "revision": "9919a310193c0029214194105974a5b7294d0da4",
+    "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+    "sha256": {
+      "xgboost/src/common/metal_histogram.metal": "4bae9b0e4bf1fbc36394d54fc3b7214ac90bfad5c85f9f86dada02929b79ea72",
+      "xgboost/src/common/metal_histogram.mm": "f2f872d5c9812cebecf8a92c12480494ab252c9325abf04fef470f8483daddac",
+      "scripts/profile_training.py": "2a0eb3e2c39ea315b43d66ae26c2260f42ac807c3cafdae53133790a2dfd8020"
+    }
+  },
+  "candidate": {
+    "base_revision": "9919a310193c0029214194105974a5b7294d0da4",
+    "sha256": {
+      "xgboost/src/common/metal_histogram.metal": "b77c9ae004ea7dcc3f7815b8f216a322f35473dde643c70948be60b899fe0dbb",
+      "xgboost/src/common/metal_histogram.mm": "70c8d1573bbffc8d9c2ec77815fbfd2564a7048e4fa5e62b20a5d92bbb53ea79",
+      "scripts/profile_training.py": "2a0eb3e2c39ea315b43d66ae26c2260f42ac807c3cafdae53133790a2dfd8020",
+      "scripts/metal_histogram_benchmark.mm": "5aa03245053fd61ba8f7c389f780be0e6f1b46f2dff26824504b03ed7f9bd3e6",
+      "scripts/metal_quantized_split_benchmark.mm": "ebd5339b0dbf8bf0f25754c1c949afdca5e3cfb10fd581512a453064f528b9de",
+      "tests/metal_cuda_split.mm": "b391a1e2684833d797a0c20772e27ea7ed3a7079c24183027fac9748fd380c89",
+      "tests/metal_feature_split_api.cc": "b47de1066979b428c81a274870546d221b322204d91a52831591e5df53f0b6a0",
+      "tests/metal_compressed_consumers_api.cc": "250a5e50c2d3b7978f3e6c3ad15127a00453416b38a2f5202b1d42c49cd50416",
+      "xgboost/lib/libxgboost.dylib": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034"
+    }
+  },
+  "changes": [
+    "Resident split evaluation keeps the allocation/error readback, then encodes task/gather, scoring, finalization and winner extraction in one command. Five completions become two; encoders are reused across nodes. Public calls remain synchronous.",
+    "Separate integer and precise parent staging prevents queued-input overwrite. Resident vector parents bind their owned buffer directly. Completed operation counts are preserved; shared command duration is recorded once.",
+    "Dense compressed histogram pages with at least 1024 features and 4096 selected rows can use the existing shared/tiled kernels, retaining the old 16384-row rule and all density/capacity guards. No histogram shader arithmetic changes.",
+    "Conservative split screening uses widened native FP32 intervals from integer sums. Hessian lower bounds must prove child validity; unsupported or uncertain cases receive unbounded intervals. Survivor scoring stays binary64."
+  ],
+  "reviews": "Three subagents owned the host, histogram and bound changes. Host/histogram agents independently reviewed queued ownership; host and root reviewed conservative bound validity. No new public API or runtime tuning flag.",
+  "correctness": {
+    "native_groups": 8,
+    "python_passed": 300,
+    "python_skipped": 0,
+    "python_warnings": 1,
+    "warning": "Expected empty-dataset warning in external-cache edge case.",
+    "command": "bash scripts/test.sh --native metal_feature_split_api metal_split_finalize metal_cuda_split metal_cuda_multi_split metal_split_sum_api metal_compressed_consumers_api metal_ellpack_api metal_split_bounds --python tests/test_metal_cuda_splits.py tests/test_metal_cuda_multi_splits.py tests/test_metal_splits.py tests/test_metal_split_categories.py tests/test_metal_split_finalize.py tests/test_metal_training.py tests/test_metal_workflows.py tests/test_metal_external_host.py --log-dir results/parallel-perf-20261106/focused",
+    "quantized_bound_containment": {
+      "cases": 1044483,
+      "finite": 377191,
+      "unbounded": 667292,
+      "invalid_cannot_raise_cutoff": 236180,
+      "finite_double_rounding_midpoint_cases": 8736
+    },
+    "scalar_cuda_formula_splits": {
+      "cases": 1992,
+      "bins": 426234,
+      "cancellation_cases": 72,
+      "comparison": "Exact children, materialized sums, gain bits, bins, missing directions, partitions, category order and guards."
+    },
+    "existing_gain_bound_containment": 1000300,
+    "compressed_consumers": {
+      "cases": 318,
+      "exact_fields": 73234428,
+      "histograms": 636,
+      "partitions": 5964,
+      "input_chunks": 948
+    },
+    "feature_tasks": {
+      "cases": 48,
+      "exact_fields": 5584,
+      "rejected_inputs": 80,
+      "new_case": "Read-only mapped integer/precise parents force separate staging while GPU work remains queued; repeated/growing workspaces."
+    },
+    "before_after": "All 18 MPS models, margin arrays and per-round metric histories match the historical references exactly; all 9 CPU controls reproduce their CPU references. Every MPS worker also checks exact same-model CPU prediction.",
+    "scope": "Focused acceptance, not a full-suite rerun. Independent CPU/MPS training still differs. No NVIDIA execution."
+  },
+  "cpu_sampling": {
+    "source": "9919a31 baseline, 25Kx4096, 40 rounds; separate diagnostic excluded from timing comparisons.",
+    "main_thread_samples": 3469,
+    "wait_until_completed_samples": 3329,
+    "samples_beneath_feature_split_waits": 1660,
+    "peak_physical_footprint_gb": 6.5,
+    "interpretation": "Waiting includes necessary GPU execution and scheduling; 96% wait samples do not imply 96% avoidable overhead.",
+    "successful_command": "/usr/bin/sample 66620 5 1 -file results/parallel-perf-20261106/diagnostic-v2/sample.txt",
+    "initial_attempt": "PATH sample resolved to a broken Python entrypoint; initial diagnostic terminated without a valid result. Retried using the macOS utility; failed attempt retained and excluded."
+  },
+  "histogram_path_diagnostic": {
+    "status": "kernel_paths_checked; integration awaiting combined build",
+    "shader": "results/parallel-perf-20261106/baseline-metal_histogram.metal",
+    "shader_sha256": "4bae9b0e4bf1fbc36394d54fc3b7214ac90bfad5c85f9f86dada02929b79ea72",
+    "benchmark_source_sha256": "5aa03245053fd61ba8f7c389f780be0e6f1b46f2dff26824504b03ed7f9bd3e6",
+    "recommendation": "Retain old >=16384 rows eligibility; additionally allow compressed dense pages with >=1024 features and >=4096 selected rows, retaining all capacity guards and geometry. No kernel arithmetic changes.",
+    "cases": [
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-12500x4096.json",
+        "rows": 12500,
+        "features": 4096,
+        "layout": "root",
+        "nodes": 1,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.01903725,
+          "candidate-global-0": 0.01892875,
+          "shared-8": 0.00652775,
+          "shared-32": 0.006484042,
+          "tiled-8": 0.005192208,
+          "tiled-32": 0.004132
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-12500x4096.json",
+        "rows": 12500,
+        "features": 4096,
+        "layout": "balanced",
+        "nodes": 2,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.019705875,
+          "candidate-global-0": 0.019468,
+          "shared-8": 0.007431417,
+          "shared-32": 0.007386417,
+          "tiled-8": 0.005895083,
+          "tiled-32": 0.004927542
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-12500x4096.json",
+        "rows": 12500,
+        "features": 4096,
+        "layout": "balanced",
+        "nodes": 8,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.035238,
+          "candidate-global-0": 0.037384625,
+          "shared-8": 0.009012125,
+          "shared-32": 0.008957042,
+          "tiled-8": 0.007185833,
+          "tiled-32": 0.007077375
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-12500x4096.json",
+        "rows": 12500,
+        "features": 4096,
+        "layout": "balanced",
+        "nodes": 32,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.055741875,
+          "candidate-global-0": 0.055230458,
+          "shared-8": 0.021557667,
+          "shared-32": 0.02143975,
+          "tiled-8": 0.021212541,
+          "tiled-32": 0.021179125
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-12500x4096.json",
+        "rows": 12500,
+        "features": 4096,
+        "layout": "skewed",
+        "nodes": 32,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.025847417,
+          "candidate-global-0": 0.026536458,
+          "shared-8": 0.0185495,
+          "shared-32": 0.019560833,
+          "tiled-8": 0.015559333,
+          "tiled-32": 0.015277083
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-4096x1024.json",
+        "rows": 4096,
+        "features": 1024,
+        "layout": "root",
+        "nodes": 1,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.001900875,
+          "candidate-global-0": 0.001882542,
+          "shared-8": 0.000485125,
+          "shared-32": 0.000564125,
+          "tiled-8": 0.000428625,
+          "tiled-32": 0.000359792
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-4096x1024.json",
+        "rows": 4096,
+        "features": 1024,
+        "layout": "balanced",
+        "nodes": 2,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.001961375,
+          "candidate-global-0": 0.001945292,
+          "shared-8": 0.000591792,
+          "shared-32": 0.000615875,
+          "tiled-8": 0.000477542,
+          "tiled-32": 0.000489375
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-4096x1024.json",
+        "rows": 4096,
+        "features": 1024,
+        "layout": "balanced",
+        "nodes": 8,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.002256875,
+          "candidate-global-0": 0.002251542,
+          "shared-8": 0.001403417,
+          "shared-32": 0.001428083,
+          "tiled-8": 0.00137375,
+          "tiled-32": 0.001310208
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-4096x1024.json",
+        "rows": 4096,
+        "features": 1024,
+        "layout": "balanced",
+        "nodes": 32,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.004366375,
+          "candidate-global-0": 0.004371417,
+          "shared-8": 0.004219667,
+          "shared-32": 0.004238667,
+          "tiled-8": 0.004381375,
+          "tiled-32": 0.004312
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-4096x1024.json",
+        "rows": 4096,
+        "features": 1024,
+        "layout": "skewed",
+        "nodes": 32,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.003427125,
+          "candidate-global-0": 0.003466625,
+          "shared-8": 0.003497083,
+          "shared-32": 0.003366125,
+          "tiled-8": 0.002661,
+          "tiled-32": 0.0026955
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-4096x4096.json",
+        "rows": 4096,
+        "features": 4096,
+        "layout": "root",
+        "nodes": 1,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.007651375,
+          "candidate-global-0": 0.007629542,
+          "shared-8": 0.00217825,
+          "shared-32": 0.00228475,
+          "tiled-8": 0.001633083,
+          "tiled-32": 0.001521125
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-4096x4096.json",
+        "rows": 4096,
+        "features": 4096,
+        "layout": "balanced",
+        "nodes": 2,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.00794425,
+          "candidate-global-0": 0.00780625,
+          "shared-8": 0.00252,
+          "shared-32": 0.002418042,
+          "tiled-8": 0.00201925,
+          "tiled-32": 0.001926458
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-4096x4096.json",
+        "rows": 4096,
+        "features": 4096,
+        "layout": "balanced",
+        "nodes": 8,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.009119917,
+          "candidate-global-0": 0.008937833,
+          "shared-8": 0.005246875,
+          "shared-32": 0.00530075,
+          "tiled-8": 0.0051545,
+          "tiled-32": 0.005193792
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-4096x4096.json",
+        "rows": 4096,
+        "features": 4096,
+        "layout": "balanced",
+        "nodes": 32,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.01823825,
+          "candidate-global-0": 0.017731125,
+          "shared-8": 0.017718833,
+          "shared-32": 0.018024333,
+          "tiled-8": 0.01789525,
+          "tiled-32": 0.017381625
+        }
+      },
+      {
+        "file": "results/parallel-perf-20261106/histogram/paths-4096x4096.json",
+        "rows": 4096,
+        "features": 4096,
+        "layout": "skewed",
+        "nodes": 32,
+        "median_gpu_seconds": {
+          "baseline-global-0": 0.013845458,
+          "candidate-global-0": 0.014614708,
+          "shared-8": 0.013568833,
+          "shared-32": 0.013465958,
+          "tiled-8": 0.011312792,
+          "tiled-32": 0.0111025
+        }
+      }
+    ]
+  },
+  "native_bound_diagnostic": {
+    "source": {
+      "results/parallel-perf-20261106/split-fast-bound-v1.metal": "b77c9ae004ea7dcc3f7815b8f216a322f35473dde643c70948be60b899fe0dbb",
+      "results/parallel-perf-20261106/baseline-metal_histogram.metal": "4bae9b0e4bf1fbc36394d54fc3b7214ac90bfad5c85f9f86dada02929b79ea72",
+      "results/parallel-perf-20261106/quantized_bound_test.mm": "43b839124718d091cc11d270f34b08526a5d239e993b0eacb4ce3f846604c0f5",
+      "scripts/metal_quantized_split_benchmark.mm": "ebd5339b0dbf8bf0f25754c1c949afdca5e3cfb10fd581512a453064f528b9de",
+      "tests/metal_cuda_split.mm": "65b83a1670baaa3420ed565e257787d9d687d59f9f8a56d9b1b7021e5054a86c",
+      "tests/cuda_split_reference.h": "05306e3f3cc7ce97499b4330d8c1e0af6043f573cdec40819e5c7f1a609ea279"
+    },
+    "timings": {
+      "device": "Apple M3",
+      "bins": 256,
+      "repeats": 5,
+      "cases": [
+        {
+          "feature_tasks": 128,
+          "missing": false,
+          "gpu_seconds": {
+            "baseline": [
+              0.000223,
+              0.000216125,
+              0.000221125,
+              0.00020875,
+              0.0002625
+            ],
+            "reuse_only": [
+              0.000307,
+              0.000239875,
+              0.000230958,
+              0.000227458,
+              0.000232208
+            ],
+            "screened": [
+              0.000204542,
+              0.000192125,
+              0.000199875,
+              0.000195375,
+              0.0002005
+            ]
+          },
+          "median_gpu_seconds": {
+            "baseline": 0.000221125,
+            "reuse_only": 0.000232208,
+            "screened": 0.000199875
+          },
+          "baseline_over_candidate": 1.1063164477798624
+        },
+        {
+          "feature_tasks": 1024,
+          "missing": false,
+          "gpu_seconds": {
+            "baseline": [
+              0.000593375,
+              0.00064825,
+              0.000611083,
+              0.000659125,
+              0.000591333
+            ],
+            "reuse_only": [
+              0.001402333,
+              0.001420417,
+              0.00126425,
+              0.001342,
+              0.001265625
+            ],
+            "screened": [
+              0.000525,
+              0.000520583,
+              0.000509958,
+              0.000517875,
+              0.000599
+            ]
+          },
+          "median_gpu_seconds": {
+            "baseline": 0.000611083,
+            "reuse_only": 0.001342,
+            "screened": 0.000520583
+          },
+          "baseline_over_candidate": 1.1738435561668359
+        },
+        {
+          "feature_tasks": 8192,
+          "missing": false,
+          "gpu_seconds": {
+            "baseline": [
+              0.00370925,
+              0.003478417,
+              0.0036205,
+              0.003576,
+              0.003687458
+            ],
+            "reuse_only": [
+              0.009613375,
+              0.010206833,
+              0.0093345,
+              0.009445667,
+              0.009783125
+            ],
+            "screened": [
+              0.002987,
+              0.002873583,
+              0.00311025,
+              0.00300125,
+              0.002869583
+            ]
+          },
+          "median_gpu_seconds": {
+            "baseline": 0.0036205,
+            "reuse_only": 0.009613375,
+            "screened": 0.002987
+          },
+          "baseline_over_candidate": 1.2120857047204552
+        },
+        {
+          "feature_tasks": 128,
+          "missing": true,
+          "gpu_seconds": {
+            "baseline": [
+              0.000441625,
+              0.000445083,
+              0.000476167,
+              0.000474792,
+              0.000441792
+            ],
+            "reuse_only": [
+              0.00044875,
+              0.000436083,
+              0.000431542,
+              0.000430208,
+              0.000437333
+            ],
+            "screened": [
+              0.00044375,
+              0.0004365,
+              0.000481625,
+              0.000430208,
+              0.000471208
+            ]
+          },
+          "median_gpu_seconds": {
+            "baseline": 0.000445083,
+            "reuse_only": 0.000436083,
+            "screened": 0.00044375
+          },
+          "baseline_over_candidate": 1.0030039436619718
+        },
+        {
+          "feature_tasks": 1024,
+          "missing": true,
+          "gpu_seconds": {
+            "baseline": [
+              0.00255625,
+              0.00237575,
+              0.002375375,
+              0.002383125,
+              0.002391584
+            ],
+            "reuse_only": [
+              0.002459,
+              0.002507,
+              0.002691125,
+              0.002532625,
+              0.002571792
+            ],
+            "screened": [
+              0.00250575,
+              0.002638667,
+              0.002486625,
+              0.002565667,
+              0.002571292
+            ]
+          },
+          "median_gpu_seconds": {
+            "baseline": 0.002383125,
+            "reuse_only": 0.002532625,
+            "screened": 0.002565667
+          },
+          "baseline_over_candidate": 0.9288520295112341
+        },
+        {
+          "feature_tasks": 8192,
+          "missing": true,
+          "gpu_seconds": {
+            "baseline": [
+              0.01788275,
+              0.01948575,
+              0.018109667,
+              0.018378417,
+              0.018344625
+            ],
+            "reuse_only": [
+              0.018134208,
+              0.017923375,
+              0.018044958,
+              0.018119042,
+              0.0178795
+            ],
+            "screened": [
+              0.020304,
+              0.018451292,
+              0.018129625,
+              0.018498167,
+              0.0181165
+            ]
+          },
+          "median_gpu_seconds": {
+            "baseline": 0.018344625,
+            "reuse_only": 0.018044958,
+            "screened": 0.018451292
+          },
+          "baseline_over_candidate": 0.9942189956128816
+        }
+      ]
+    },
+    "note": "Frozen prototype passed 1033495 containment checks and 1992 scalar cases. Production adds boundary cases; final counts above. Baseline screening is enabled for a fair 9919a31 comparison. Retains the 7% missing-data regression in one microbenchmark shape."
+  },
+  "training": {
+    "status": "passed-bitwise-before-after",
+    "orders": [
+      [
+        "cpu",
+        "baseline",
+        "candidate"
+      ],
+      [
+        "candidate",
+        "cpu",
+        "baseline"
+      ],
+      [
+        "baseline",
+        "candidate",
+        "cpu"
+      ]
+    ],
+    "runs": [
+      {
+        "started_utc": "2026-11-06T08:59:48.192051+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 27.04454299993813,
+        "wall_seconds": 27.045093059539795,
+        "dmatrix_seconds": 0.34344441699795425,
+        "prediction_seconds": 0.003621250158175826,
+        "gpu_counter_seconds": {},
+        "model_sha256": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+        "margins_sha256": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+        "test_accuracy": 0.7036,
+        "test_logloss": 0.5963073588455347,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1484013568,
+            "system_swap": "total = 14336.00M  used = 12774.69M  free = 1561.31M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 3173023744,
+            "system_swap": "total = 14336.00M  used = 13420.31M  free = 915.69M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 0,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-4096-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-0.json",
+        "original_reference": "results/high-dimensional-20261106/wide-4096/cpu-0.json",
+        "first_round_seconds": 3.064174917060882,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "shared_histogram_dispatches": 0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:00:17.288306+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 38.307220875052735,
+        "wall_seconds": 38.30800199508667,
+        "dmatrix_seconds": 0.1841883750166744,
+        "prediction_seconds": 0.09313970897346735,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 11.483964014,
+          "gpu_time_ns": 9.668738705,
+          "cuda_sketch_gpu_time_ns": 1.388134865,
+          "input_prepare_gpu_time_ns": 0.360129572,
+          "ellpack_gpu_time_ns": 0.045534164,
+          "partition_gpu_time_ns": 0.026790143,
+          "vector_gpu_time_ns": 0.025094345,
+          "metric_gpu_time_ns": 0.006261448,
+          "objective_gpu_time_ns": 0.005168406,
+          "prediction_gpu_time_ns": 0.003712023,
+          "gradient_sum_gpu_time_ns": 0.00201863,
+          "column_sampling_gpu_time_ns": 0.000298554,
+          "base_score_gpu_time_ns": 1.7749e-05,
+          "label_validation_gpu_time_ns": 9.833e-06
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1533116416,
+            "system_swap": "total = 14336.00M  used = 13420.31M  free = 915.69M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2352693248,
+            "system_swap": "total = 16384.00M  used = 15859.12M  free = 524.88M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 0,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-4096-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-0.json",
+        "original_reference": "results/high-dimensional-20261106/wide-4096/mps-0.json",
+        "first_round_seconds": 2.5755955839995295,
+        "split_seconds": 11.483964014,
+        "histogram_seconds": 9.668738705,
+        "shared_histogram_dispatches": 100,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:00:58.280063+00:00",
+        "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034",
+        "training_seconds": 30.737109542125836,
+        "wall_seconds": 30.73773694038391,
+        "dmatrix_seconds": 0.19104441697709262,
+        "prediction_seconds": 0.0734362080693245,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 13.492470229,
+          "gpu_time_ns": 6.016790082,
+          "cuda_sketch_gpu_time_ns": 1.140499201,
+          "input_prepare_gpu_time_ns": 0.359501618,
+          "ellpack_gpu_time_ns": 0.046319331,
+          "partition_gpu_time_ns": 0.025888858,
+          "vector_gpu_time_ns": 0.020028567,
+          "metric_gpu_time_ns": 0.006230788,
+          "objective_gpu_time_ns": 0.005116112,
+          "prediction_gpu_time_ns": 0.0032084,
+          "gradient_sum_gpu_time_ns": 0.001563586,
+          "column_sampling_gpu_time_ns": 0.000275343,
+          "base_score_gpu_time_ns": 1.7416e-05,
+          "label_validation_gpu_time_ns": 1e-05
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1538113536,
+            "system_swap": "total = 16384.00M  used = 15859.12M  free = 524.88M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2357690368,
+            "system_swap": "total = 16384.00M  used = 15777.12M  free = 606.88M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 0,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-4096-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/candidate-package",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-0.json",
+        "original_reference": "results/high-dimensional-20261106/wide-4096/mps-0.json",
+        "first_round_seconds": 2.2727072089910507,
+        "split_seconds": 13.492470229,
+        "histogram_seconds": 6.016790082,
+        "shared_histogram_dispatches": 412,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:01:31.188118+00:00",
+        "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034",
+        "training_seconds": 31.405173500068486,
+        "wall_seconds": 31.405813932418823,
+        "dmatrix_seconds": 0.20688029215671122,
+        "prediction_seconds": 0.07926475000567734,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 13.880977786,
+          "gpu_time_ns": 6.093786274,
+          "cuda_sketch_gpu_time_ns": 1.073552153,
+          "input_prepare_gpu_time_ns": 0.368246738,
+          "ellpack_gpu_time_ns": 0.047207788,
+          "partition_gpu_time_ns": 0.026214703,
+          "vector_gpu_time_ns": 0.02010425,
+          "metric_gpu_time_ns": 0.006325992,
+          "objective_gpu_time_ns": 0.005362357,
+          "prediction_gpu_time_ns": 0.003357932,
+          "gradient_sum_gpu_time_ns": 0.001764642,
+          "column_sampling_gpu_time_ns": 0.000221925,
+          "base_score_gpu_time_ns": 1.7499e-05,
+          "label_validation_gpu_time_ns": 1.0166e-05
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1532870656,
+            "system_swap": "total = 16384.00M  used = 15769.12M  free = 614.88M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2352431104,
+            "system_swap": "total = 16384.00M  used = 15612.81M  free = 771.19M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 1,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-4096-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/candidate-package",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-1.json",
+        "original_reference": "results/high-dimensional-20261106/wide-4096/mps-0.json",
+        "first_round_seconds": 1.9577650830615312,
+        "split_seconds": 13.880977786,
+        "histogram_seconds": 6.093786274,
+        "shared_histogram_dispatches": 412,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:02:04.800683+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 35.6050665830262,
+        "wall_seconds": 35.60579204559326,
+        "dmatrix_seconds": 0.19567341706715524,
+        "prediction_seconds": 0.003962749848142266,
+        "gpu_counter_seconds": {},
+        "model_sha256": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+        "margins_sha256": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+        "test_accuracy": 0.7036,
+        "test_logloss": 0.5963073588455347,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1511833600,
+            "system_swap": "total = 16384.00M  used = 15612.81M  free = 771.19M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 4892606464,
+            "system_swap": "total = 16384.00M  used = 15364.81M  free = 1019.19M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 1,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-4096-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-1.json",
+        "original_reference": "results/high-dimensional-20261106/wide-4096/cpu-0.json",
+        "first_round_seconds": 2.524062625132501,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "shared_histogram_dispatches": 0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:02:42.446201+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 47.25074804201722,
+        "wall_seconds": 47.251709938049316,
+        "dmatrix_seconds": 0.20872687501832843,
+        "prediction_seconds": 0.09581708302721381,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 12.53472401,
+          "gpu_time_ns": 10.771874863,
+          "cuda_sketch_gpu_time_ns": 1.276950071,
+          "input_prepare_gpu_time_ns": 0.400737076,
+          "ellpack_gpu_time_ns": 0.054781831,
+          "partition_gpu_time_ns": 0.029470135,
+          "vector_gpu_time_ns": 0.020423635,
+          "metric_gpu_time_ns": 0.006869991,
+          "objective_gpu_time_ns": 0.0058919,
+          "prediction_gpu_time_ns": 0.003322894,
+          "gradient_sum_gpu_time_ns": 0.001767366,
+          "column_sampling_gpu_time_ns": 0.000249411,
+          "base_score_gpu_time_ns": 1.7666e-05,
+          "label_validation_gpu_time_ns": 1.0041e-05
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1533034496,
+            "system_swap": "total = 16384.00M  used = 15364.81M  free = 1019.19M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2352611328,
+            "system_swap": "total = 16384.00M  used = 15911.06M  free = 472.94M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 1,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-4096-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-1.json",
+        "original_reference": "results/high-dimensional-20261106/wide-4096/mps-0.json",
+        "first_round_seconds": 2.507916250033304,
+        "split_seconds": 12.53472401,
+        "histogram_seconds": 10.771874863,
+        "shared_histogram_dispatches": 100,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:03:32.114853+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 45.636567207984626,
+        "wall_seconds": 45.637497901916504,
+        "dmatrix_seconds": 0.218963332939893,
+        "prediction_seconds": 0.0996383330784738,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 12.296258688,
+          "gpu_time_ns": 10.53138336,
+          "cuda_sketch_gpu_time_ns": 1.08926795,
+          "input_prepare_gpu_time_ns": 0.397239779,
+          "ellpack_gpu_time_ns": 0.049843038,
+          "partition_gpu_time_ns": 0.029388985,
+          "vector_gpu_time_ns": 0.020467602,
+          "metric_gpu_time_ns": 0.00692237,
+          "objective_gpu_time_ns": 0.005734396,
+          "prediction_gpu_time_ns": 0.00336132,
+          "gradient_sum_gpu_time_ns": 0.001739529,
+          "column_sampling_gpu_time_ns": 0.000245119,
+          "base_score_gpu_time_ns": 1.779e-05,
+          "label_validation_gpu_time_ns": 9.541e-06
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1533329408,
+            "system_swap": "total = 16384.00M  used = 15895.06M  free = 488.94M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2352873472,
+            "system_swap": "total = 16384.00M  used = 15821.25M  free = 562.75M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 2,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-4096-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-2.json",
+        "original_reference": "results/high-dimensional-20261106/wide-4096/mps-0.json",
+        "first_round_seconds": 2.29990966594778,
+        "split_seconds": 12.296258688,
+        "histogram_seconds": 10.53138336,
+        "shared_histogram_dispatches": 100,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:04:20.476979+00:00",
+        "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034",
+        "training_seconds": 40.66380212502554,
+        "wall_seconds": 40.66463303565979,
+        "dmatrix_seconds": 0.21403958299197257,
+        "prediction_seconds": 0.15714704082347453,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 17.695768573,
+          "gpu_time_ns": 6.482950109,
+          "cuda_sketch_gpu_time_ns": 1.074121407,
+          "input_prepare_gpu_time_ns": 0.395040287,
+          "ellpack_gpu_time_ns": 0.05122658,
+          "partition_gpu_time_ns": 0.02802503,
+          "vector_gpu_time_ns": 0.021304844,
+          "metric_gpu_time_ns": 0.006932369,
+          "objective_gpu_time_ns": 0.005712019,
+          "prediction_gpu_time_ns": 0.003361316,
+          "gradient_sum_gpu_time_ns": 0.001801986,
+          "column_sampling_gpu_time_ns": 0.000249155,
+          "base_score_gpu_time_ns": 1.7666e-05,
+          "label_validation_gpu_time_ns": 1.0624e-05
+        },
+        "model_sha256": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+        "margins_sha256": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+        "test_accuracy": 0.6848,
+        "test_logloss": 0.5873420809628543,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1533116416,
+            "system_swap": "total = 16384.00M  used = 15821.25M  free = 562.75M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2352693248,
+            "system_swap": "total = 17408.00M  used = 16015.50M  free = 1392.50M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 2,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-4096-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/candidate-package",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-2.json",
+        "original_reference": "results/high-dimensional-20261106/wide-4096/mps-0.json",
+        "first_round_seconds": 2.3469825838692486,
+        "split_seconds": 17.695768573,
+        "histogram_seconds": 6.482950109,
+        "shared_histogram_dispatches": 412,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:05:03.935461+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 36.50024508405477,
+        "wall_seconds": 36.50098896026611,
+        "dmatrix_seconds": 0.2072265420574695,
+        "prediction_seconds": 0.003880542004480958,
+        "gpu_counter_seconds": {},
+        "model_sha256": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+        "margins_sha256": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+        "test_accuracy": 0.7036,
+        "test_logloss": 0.5963073588455347,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1511948288,
+            "system_swap": "total = 17408.00M  used = 15959.50M  free = 1448.50M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 4890198016,
+            "system_swap": "total = 16384.00M  used = 15270.31M  free = 1113.69M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-4096",
+        "repeat": 2,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "25000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-4096-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "4096",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-2.json",
+        "original_reference": "results/high-dimensional-20261106/wide-4096/cpu-0.json",
+        "first_round_seconds": 2.721509709022939,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "shared_histogram_dispatches": 0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:05:42.553709+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 17.72449279204011,
+        "wall_seconds": 17.724853992462158,
+        "dmatrix_seconds": 0.22544112522155046,
+        "prediction_seconds": 0.005121540976688266,
+        "gpu_counter_seconds": {},
+        "model_sha256": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+        "margins_sha256": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+        "test_accuracy": 0.7311,
+        "test_logloss": 0.5303854689651541,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1513734144,
+            "system_swap": "total = 16384.00M  used = 15270.31M  free = 1113.69M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2895151104,
+            "system_swap": "total = 16384.00M  used = 15246.31M  free = 1137.69M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 0,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-1024-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-0.json",
+        "original_reference": "results/high-dimensional-20261106/wide-1024/cpu-0.json",
+        "first_round_seconds": 1.9512475410010666,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "shared_histogram_dispatches": 0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:06:02.255339+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 17.515463249990717,
+        "wall_seconds": 17.5158212184906,
+        "dmatrix_seconds": 0.19424312515184283,
+        "prediction_seconds": 0.08073600009083748,
+        "gpu_counter_seconds": {
+          "gpu_time_ns": 3.743913792,
+          "split_gpu_time_ns": 3.44981812,
+          "cuda_sketch_gpu_time_ns": 1.515384782,
+          "input_prepare_gpu_time_ns": 0.301287246,
+          "partition_gpu_time_ns": 0.086204623,
+          "ellpack_gpu_time_ns": 0.050170291,
+          "vector_gpu_time_ns": 0.020674585,
+          "metric_gpu_time_ns": 0.015110197,
+          "objective_gpu_time_ns": 0.013675389,
+          "prediction_gpu_time_ns": 0.008491857,
+          "gradient_sum_gpu_time_ns": 0.004369853,
+          "column_sampling_gpu_time_ns": 0.000346779,
+          "base_score_gpu_time_ns": 1.6915e-05,
+          "label_validation_gpu_time_ns": 1.4041e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1534918656,
+            "system_swap": "total = 16384.00M  used = 15246.31M  free = 1137.69M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355101696,
+            "system_swap": "total = 16384.00M  used = 15056.38M  free = 1327.62M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 0,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-1024-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-0.json",
+        "original_reference": "results/high-dimensional-20261106/wide-1024/mps-0.json",
+        "first_round_seconds": 2.0694807088002563,
+        "split_seconds": 3.44981812,
+        "histogram_seconds": 3.743913792,
+        "shared_histogram_dispatches": 367,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:06:22.094320+00:00",
+        "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034",
+        "training_seconds": 15.52238520886749,
+        "wall_seconds": 15.522700786590576,
+        "dmatrix_seconds": 0.2205929160118103,
+        "prediction_seconds": 0.08899912494234741,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 2.896925761,
+          "gpu_time_ns": 2.68525208,
+          "cuda_sketch_gpu_time_ns": 1.451200532,
+          "input_prepare_gpu_time_ns": 0.295593124,
+          "partition_gpu_time_ns": 0.082328692,
+          "ellpack_gpu_time_ns": 0.054335621,
+          "vector_gpu_time_ns": 0.020809529,
+          "metric_gpu_time_ns": 0.01504375,
+          "objective_gpu_time_ns": 0.013516449,
+          "prediction_gpu_time_ns": 0.008391065,
+          "gradient_sum_gpu_time_ns": 0.004337304,
+          "column_sampling_gpu_time_ns": 0.000195477,
+          "base_score_gpu_time_ns": 1.7707e-05,
+          "label_validation_gpu_time_ns": 1.3916e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535115264,
+            "system_swap": "total = 16384.00M  used = 15048.38M  free = 1335.62M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355314688,
+            "system_swap": "total = 16384.00M  used = 15501.69M  free = 882.31M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 0,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-1024-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/candidate-package",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-0.json",
+        "original_reference": "results/high-dimensional-20261106/wide-1024/mps-0.json",
+        "first_round_seconds": 2.0282313749194145,
+        "split_seconds": 2.896925761,
+        "histogram_seconds": 2.68525208,
+        "shared_histogram_dispatches": 581,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:06:40.014255+00:00",
+        "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034",
+        "training_seconds": 15.173099916893989,
+        "wall_seconds": 15.17340874671936,
+        "dmatrix_seconds": 0.21908666705712676,
+        "prediction_seconds": 0.0869740410707891,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 3.009735111,
+          "gpu_time_ns": 2.785645458,
+          "cuda_sketch_gpu_time_ns": 1.224042447,
+          "input_prepare_gpu_time_ns": 0.298693497,
+          "partition_gpu_time_ns": 0.082990055,
+          "ellpack_gpu_time_ns": 0.049114081,
+          "vector_gpu_time_ns": 0.020331038,
+          "metric_gpu_time_ns": 0.015663072,
+          "objective_gpu_time_ns": 0.014580978,
+          "prediction_gpu_time_ns": 0.008366736,
+          "gradient_sum_gpu_time_ns": 0.004410309,
+          "column_sampling_gpu_time_ns": 0.000199611,
+          "base_score_gpu_time_ns": 1.704e-05,
+          "label_validation_gpu_time_ns": 1.3791e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535033344,
+            "system_swap": "total = 16384.00M  used = 15477.69M  free = 906.31M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355200000,
+            "system_swap": "total = 16384.00M  used = 15674.88M  free = 709.12M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 1,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-1024-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/candidate-package",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-1.json",
+        "original_reference": "results/high-dimensional-20261106/wide-1024/mps-0.json",
+        "first_round_seconds": 1.7929538330063224,
+        "split_seconds": 3.009735111,
+        "histogram_seconds": 2.785645458,
+        "shared_histogram_dispatches": 581,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:06:57.324922+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 18.38519687508233,
+        "wall_seconds": 18.38557195663452,
+        "dmatrix_seconds": 0.19600500003434718,
+        "prediction_seconds": 0.005025375168770552,
+        "gpu_counter_seconds": {},
+        "model_sha256": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+        "margins_sha256": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+        "test_accuracy": 0.7311,
+        "test_logloss": 0.5303854689651541,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1513799680,
+            "system_swap": "total = 16384.00M  used = 15666.88M  free = 717.12M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2889646080,
+            "system_swap": "total = 16384.00M  used = 15586.88M  free = 797.12M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 1,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-1024-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-1.json",
+        "original_reference": "results/high-dimensional-20261106/wide-1024/cpu-0.json",
+        "first_round_seconds": 1.9611969999969006,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "shared_histogram_dispatches": 0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:07:17.720551+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 15.94280254188925,
+        "wall_seconds": 15.943127870559692,
+        "dmatrix_seconds": 0.21470925002358854,
+        "prediction_seconds": 0.08041399996727705,
+        "gpu_counter_seconds": {
+          "gpu_time_ns": 3.796187912,
+          "split_gpu_time_ns": 3.51406889,
+          "cuda_sketch_gpu_time_ns": 1.253178072,
+          "input_prepare_gpu_time_ns": 0.300602621,
+          "partition_gpu_time_ns": 0.086473285,
+          "ellpack_gpu_time_ns": 0.049452289,
+          "vector_gpu_time_ns": 0.020841496,
+          "metric_gpu_time_ns": 0.015664191,
+          "objective_gpu_time_ns": 0.013920146,
+          "prediction_gpu_time_ns": 0.008420535,
+          "gradient_sum_gpu_time_ns": 0.00461177,
+          "column_sampling_gpu_time_ns": 0.000197984,
+          "base_score_gpu_time_ns": 1.7582e-05,
+          "label_validation_gpu_time_ns": 1.3999e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535016960,
+            "system_swap": "total = 16384.00M  used = 15578.88M  free = 805.12M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355167232,
+            "system_swap": "total = 16384.00M  used = 15747.44M  free = 636.56M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 1,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-1024-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-1.json",
+        "original_reference": "results/high-dimensional-20261106/wide-1024/mps-0.json",
+        "first_round_seconds": 1.800515125039965,
+        "split_seconds": 3.51406889,
+        "histogram_seconds": 3.796187912,
+        "shared_histogram_dispatches": 367,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:07:35.784802+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 16.155196791049093,
+        "wall_seconds": 16.155527114868164,
+        "dmatrix_seconds": 0.20035641617141664,
+        "prediction_seconds": 0.07951587485149503,
+        "gpu_counter_seconds": {
+          "gpu_time_ns": 3.797833537,
+          "split_gpu_time_ns": 3.505151778,
+          "cuda_sketch_gpu_time_ns": 1.117888447,
+          "input_prepare_gpu_time_ns": 0.299717241,
+          "partition_gpu_time_ns": 0.08675178,
+          "ellpack_gpu_time_ns": 0.051003373,
+          "vector_gpu_time_ns": 0.020248977,
+          "metric_gpu_time_ns": 0.015394613,
+          "objective_gpu_time_ns": 0.014018942,
+          "prediction_gpu_time_ns": 0.008506233,
+          "gradient_sum_gpu_time_ns": 0.004344852,
+          "column_sampling_gpu_time_ns": 0.000195989,
+          "base_score_gpu_time_ns": 1.7874e-05,
+          "label_validation_gpu_time_ns": 1.3833e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535098880,
+            "system_swap": "total = 16384.00M  used = 15739.44M  free = 644.56M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355298304,
+            "system_swap": "total = 16384.00M  used = 15659.44M  free = 724.56M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 2,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-1024-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-2.json",
+        "original_reference": "results/high-dimensional-20261106/wide-1024/mps-0.json",
+        "first_round_seconds": 1.6511015829164535,
+        "split_seconds": 3.505151778,
+        "histogram_seconds": 3.797833537,
+        "shared_histogram_dispatches": 367,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:07:54.069278+00:00",
+        "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034",
+        "training_seconds": 15.020737041952088,
+        "wall_seconds": 15.0210440158844,
+        "dmatrix_seconds": 0.21962870890274644,
+        "prediction_seconds": 0.08572524995543063,
+        "gpu_counter_seconds": {
+          "split_gpu_time_ns": 3.038033366,
+          "gpu_time_ns": 2.8362665,
+          "cuda_sketch_gpu_time_ns": 1.194799031,
+          "input_prepare_gpu_time_ns": 0.301083782,
+          "partition_gpu_time_ns": 0.085244306,
+          "ellpack_gpu_time_ns": 0.053756831,
+          "vector_gpu_time_ns": 0.02054426,
+          "metric_gpu_time_ns": 0.016138906,
+          "objective_gpu_time_ns": 0.014574974,
+          "prediction_gpu_time_ns": 0.008485529,
+          "gradient_sum_gpu_time_ns": 0.004522767,
+          "column_sampling_gpu_time_ns": 0.000213319,
+          "base_score_gpu_time_ns": 1.75e-05,
+          "label_validation_gpu_time_ns": 1.3541e-05
+        },
+        "model_sha256": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+        "margins_sha256": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+        "test_accuracy": 0.7304,
+        "test_logloss": 0.5319301076758718,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1535049728,
+            "system_swap": "total = 16384.00M  used = 15651.44M  free = 732.56M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2355216384,
+            "system_swap": "total = 16384.00M  used = 15293.31M  free = 1090.69M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 2,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-1024-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/candidate-package",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-2.json",
+        "original_reference": "results/high-dimensional-20261106/wide-1024/mps-0.json",
+        "first_round_seconds": 1.7368842910509557,
+        "split_seconds": 3.038033366,
+        "histogram_seconds": 2.8362665,
+        "shared_histogram_dispatches": 581,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:08:11.216049+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 18.397708584088832,
+        "wall_seconds": 18.398083925247192,
+        "dmatrix_seconds": 0.2116163750179112,
+        "prediction_seconds": 0.006488375132903457,
+        "gpu_counter_seconds": {},
+        "model_sha256": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+        "margins_sha256": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+        "test_accuracy": 0.7311,
+        "test_logloss": 0.5303854689651541,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 1513766912,
+            "system_swap": "total = 16384.00M  used = 15269.31M  free = 1114.69M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 2887401472,
+            "system_swap": "total = 16384.00M  used = 15221.31M  free = 1162.69M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "wide-1024",
+        "repeat": 2,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "wide",
+          "--rows",
+          "100000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/wide-1024-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package",
+          "--features",
+          "1024",
+          "--informative-features",
+          "64"
+        ],
+        "report": "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-2.json",
+        "original_reference": "results/high-dimensional-20261106/wide-1024/cpu-0.json",
+        "first_round_seconds": 1.9916344170924276,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "shared_histogram_dispatches": 0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:08:32.129648+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 33.68982937512919,
+        "wall_seconds": 33.69051694869995,
+        "dmatrix_seconds": 1.3853332090657204,
+        "prediction_seconds": 0.13040504092350602,
+        "gpu_counter_seconds": {},
+        "model_sha256": "294e0c71764d10844dc8026c19c8fce2590b29cdae89422da4071595702e60fa",
+        "margins_sha256": "afeca5e5bf65f41e93ac6d75b49d4b7f7d93f47b823ded616dceab411a33f9da",
+        "test_accuracy": 0.741512,
+        "test_logloss": 0.5112943479298138,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 4117331968,
+            "system_swap": "total = 16384.00M  used = 15213.31M  free = 1170.69M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 5166792704,
+            "system_swap": "total = 16384.00M  used = 14989.31M  free = 1394.69M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "higgs",
+        "repeat": 0,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "higgs",
+          "--rows",
+          "10500000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/higgs-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package"
+        ],
+        "report": "results/parallel-perf-20261106/paired/higgs-cpu/cpu-0.json",
+        "original_reference": "results/sketch-sort-profile-20261105/paired/higgs-cpu/cpu-0.json",
+        "first_round_seconds": 5.734384875046089,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "shared_histogram_dispatches": 0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:09:08.087984+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 33.17345245787874,
+        "wall_seconds": 33.164397954940796,
+        "dmatrix_seconds": 0.729433833854273,
+        "prediction_seconds": 0.1389755830168724,
+        "gpu_counter_seconds": {
+          "partition_gpu_time_ns": 6.985090594,
+          "gpu_time_ns": 6.659910832,
+          "cuda_sketch_gpu_time_ns": 3.713342596,
+          "objective_gpu_time_ns": 1.16890021,
+          "split_gpu_time_ns": 0.465412043,
+          "input_prepare_gpu_time_ns": 0.370935145,
+          "prediction_gpu_time_ns": 0.248869177,
+          "gradient_sum_gpu_time_ns": 0.210827243,
+          "ellpack_gpu_time_ns": 0.143045249,
+          "vector_gpu_time_ns": 0.090633306,
+          "metric_gpu_time_ns": 0.024214539,
+          "label_validation_gpu_time_ns": 0.00098525,
+          "column_sampling_gpu_time_ns": 0.00023654
+        },
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+        "test_accuracy": 0.742178,
+        "test_logloss": 0.5109559910015393,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 4138975232,
+            "system_swap": "total = 16384.00M  used = 14989.31M  free = 1394.69M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 4882006016,
+            "system_swap": "total = 17408.00M  used = 15996.06M  free = 1411.94M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "higgs",
+        "repeat": 0,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "higgs",
+          "--rows",
+          "10500000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/higgs-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package"
+        ],
+        "report": "results/parallel-perf-20261106/paired/higgs-baseline/mps-0.json",
+        "original_reference": "results/sketch-sort-profile-20261105/paired/higgs-candidate/mps-0.json",
+        "first_round_seconds": 7.033040165901184,
+        "split_seconds": 0.465412043,
+        "histogram_seconds": 6.659910832,
+        "shared_histogram_dispatches": 600,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:09:44.450143+00:00",
+        "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034",
+        "training_seconds": 31.222368832910433,
+        "wall_seconds": 31.221478939056396,
+        "dmatrix_seconds": 1.1655809169169515,
+        "prediction_seconds": 0.12528333393856883,
+        "gpu_counter_seconds": {
+          "partition_gpu_time_ns": 6.89295339,
+          "gpu_time_ns": 6.78254628,
+          "cuda_sketch_gpu_time_ns": 3.658685557,
+          "objective_gpu_time_ns": 1.202159331,
+          "input_prepare_gpu_time_ns": 0.380554009,
+          "prediction_gpu_time_ns": 0.247794217,
+          "gradient_sum_gpu_time_ns": 0.211563998,
+          "split_gpu_time_ns": 0.194318001,
+          "ellpack_gpu_time_ns": 0.141085163,
+          "vector_gpu_time_ns": 0.087690898,
+          "metric_gpu_time_ns": 0.024491784,
+          "label_validation_gpu_time_ns": 0.000989125,
+          "column_sampling_gpu_time_ns": 0.000237369
+        },
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+        "test_accuracy": 0.742178,
+        "test_logloss": 0.5109559910015393,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 4138827776,
+            "system_swap": "total = 17408.00M  used = 15980.06M  free = 1427.94M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 6326796288,
+            "system_swap": "total = 17408.00M  used = 16496.69M  free = 911.31M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "higgs",
+        "repeat": 0,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "higgs",
+          "--rows",
+          "10500000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/higgs-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "0",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/candidate-package"
+        ],
+        "report": "results/parallel-perf-20261106/paired/higgs-candidate/mps-0.json",
+        "original_reference": "results/sketch-sort-profile-20261105/paired/higgs-candidate/mps-0.json",
+        "first_round_seconds": 6.334812375018373,
+        "split_seconds": 0.194318001,
+        "histogram_seconds": 6.78254628,
+        "shared_histogram_dispatches": 600,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:10:18.721136+00:00",
+        "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034",
+        "training_seconds": 31.24435366690159,
+        "wall_seconds": 31.24472188949585,
+        "dmatrix_seconds": 1.2583950830157846,
+        "prediction_seconds": 0.12150358292274177,
+        "gpu_counter_seconds": {
+          "partition_gpu_time_ns": 6.952762018,
+          "gpu_time_ns": 6.815740617,
+          "cuda_sketch_gpu_time_ns": 3.83892414,
+          "objective_gpu_time_ns": 1.196506278,
+          "input_prepare_gpu_time_ns": 0.376161925,
+          "prediction_gpu_time_ns": 0.251777103,
+          "gradient_sum_gpu_time_ns": 0.213464489,
+          "split_gpu_time_ns": 0.196383101,
+          "ellpack_gpu_time_ns": 0.137874206,
+          "vector_gpu_time_ns": 0.08163274,
+          "metric_gpu_time_ns": 0.024473746,
+          "label_validation_gpu_time_ns": 0.000948,
+          "column_sampling_gpu_time_ns": 0.000235793
+        },
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+        "test_accuracy": 0.742178,
+        "test_logloss": 0.5109559910015393,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 4138942464,
+            "system_swap": "total = 17408.00M  used = 16488.69M  free = 919.31M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 6575046656,
+            "system_swap": "total = 17408.00M  used = 16282.62M  free = 1125.38M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "higgs",
+        "repeat": 1,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "higgs",
+          "--rows",
+          "10500000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/higgs-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/candidate-package"
+        ],
+        "report": "results/parallel-perf-20261106/paired/higgs-candidate/mps-1.json",
+        "original_reference": "results/sketch-sort-profile-20261105/paired/higgs-candidate/mps-0.json",
+        "first_round_seconds": 6.206569874892011,
+        "split_seconds": 0.196383101,
+        "histogram_seconds": 6.815740617,
+        "shared_histogram_dispatches": 600,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:10:52.887125+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 32.93758750008419,
+        "wall_seconds": 32.93812084197998,
+        "dmatrix_seconds": 1.144499917048961,
+        "prediction_seconds": 0.15124945901334286,
+        "gpu_counter_seconds": {},
+        "model_sha256": "294e0c71764d10844dc8026c19c8fce2590b29cdae89422da4071595702e60fa",
+        "margins_sha256": "afeca5e5bf65f41e93ac6d75b49d4b7f7d93f47b823ded616dceab411a33f9da",
+        "test_accuracy": 0.741512,
+        "test_logloss": 0.5112943479298138,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 4117331968,
+            "system_swap": "total = 17408.00M  used = 16282.62M  free = 1125.38M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 5288771584,
+            "system_swap": "total = 17408.00M  used = 16042.62M  free = 1365.38M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "higgs",
+        "repeat": 1,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "higgs",
+          "--rows",
+          "10500000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/higgs-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package"
+        ],
+        "report": "results/parallel-perf-20261106/paired/higgs-cpu/cpu-1.json",
+        "original_reference": "results/sketch-sort-profile-20261105/paired/higgs-cpu/cpu-0.json",
+        "first_round_seconds": 5.43906074995175,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "shared_histogram_dispatches": 0,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:11:28.180675+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 33.13127600005828,
+        "wall_seconds": 33.13182997703552,
+        "dmatrix_seconds": 0.7507560830563307,
+        "prediction_seconds": 0.12681899988092482,
+        "gpu_counter_seconds": {
+          "partition_gpu_time_ns": 7.000956916,
+          "gpu_time_ns": 6.5572332,
+          "cuda_sketch_gpu_time_ns": 3.698287678,
+          "objective_gpu_time_ns": 1.161301109,
+          "split_gpu_time_ns": 0.473639864,
+          "input_prepare_gpu_time_ns": 0.366900446,
+          "prediction_gpu_time_ns": 0.247989255,
+          "gradient_sum_gpu_time_ns": 0.210843077,
+          "ellpack_gpu_time_ns": 0.140672663,
+          "vector_gpu_time_ns": 0.092477303,
+          "metric_gpu_time_ns": 0.023907835,
+          "label_validation_gpu_time_ns": 0.000942375,
+          "column_sampling_gpu_time_ns": 0.000268458
+        },
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+        "test_accuracy": 0.742178,
+        "test_logloss": 0.5109559910015393,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 4138958848,
+            "system_swap": "total = 17408.00M  used = 15946.62M  free = 1461.38M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 5775998976,
+            "system_swap": "total = 17408.00M  used = 16366.75M  free = 1041.25M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "higgs",
+        "repeat": 1,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "higgs",
+          "--rows",
+          "10500000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/higgs-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "1",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package"
+        ],
+        "report": "results/parallel-perf-20261106/paired/higgs-baseline/mps-1.json",
+        "original_reference": "results/sketch-sort-profile-20261105/paired/higgs-candidate/mps-0.json",
+        "first_round_seconds": 6.696883541997522,
+        "split_seconds": 0.473639864,
+        "histogram_seconds": 6.5572332,
+        "shared_histogram_dispatches": 600,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:12:04.615873+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 30.999370124889538,
+        "wall_seconds": 30.999885082244873,
+        "dmatrix_seconds": 1.3388333341572434,
+        "prediction_seconds": 0.14426741586066782,
+        "gpu_counter_seconds": {
+          "partition_gpu_time_ns": 6.825257277,
+          "gpu_time_ns": 6.547817832,
+          "cuda_sketch_gpu_time_ns": 3.853930056,
+          "objective_gpu_time_ns": 1.168230166,
+          "split_gpu_time_ns": 0.446506479,
+          "input_prepare_gpu_time_ns": 0.36828356,
+          "prediction_gpu_time_ns": 0.243362065,
+          "gradient_sum_gpu_time_ns": 0.206816281,
+          "ellpack_gpu_time_ns": 0.140272956,
+          "vector_gpu_time_ns": 0.088293483,
+          "metric_gpu_time_ns": 0.023810277,
+          "label_validation_gpu_time_ns": 0.000938999,
+          "column_sampling_gpu_time_ns": 0.000237579
+        },
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+        "test_accuracy": 0.742178,
+        "test_logloss": 0.5109559910015393,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 4138975232,
+            "system_swap": "total = 17408.00M  used = 16334.75M  free = 1073.25M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 6379847680,
+            "system_swap": "total = 18432.00M  used = 16846.75M  free = 1585.25M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "higgs",
+        "repeat": 2,
+        "variant": "baseline",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "higgs",
+          "--rows",
+          "10500000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/higgs-baseline",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package"
+        ],
+        "report": "results/parallel-perf-20261106/paired/higgs-baseline/mps-2.json",
+        "original_reference": "results/sketch-sort-profile-20261105/paired/higgs-candidate/mps-0.json",
+        "first_round_seconds": 6.263415541965514,
+        "split_seconds": 0.446506479,
+        "histogram_seconds": 6.547817832,
+        "shared_histogram_dispatches": 600,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:12:38.943530+00:00",
+        "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034",
+        "training_seconds": 31.276731874793768,
+        "wall_seconds": 31.277254819869995,
+        "dmatrix_seconds": 1.2184736670460552,
+        "prediction_seconds": 0.14307758398354053,
+        "gpu_counter_seconds": {
+          "partition_gpu_time_ns": 6.916645097,
+          "gpu_time_ns": 6.83580957,
+          "cuda_sketch_gpu_time_ns": 3.735338803,
+          "objective_gpu_time_ns": 1.207409112,
+          "input_prepare_gpu_time_ns": 0.377863824,
+          "prediction_gpu_time_ns": 0.249896798,
+          "gradient_sum_gpu_time_ns": 0.212958658,
+          "split_gpu_time_ns": 0.193592792,
+          "ellpack_gpu_time_ns": 0.142765954,
+          "vector_gpu_time_ns": 0.084799765,
+          "metric_gpu_time_ns": 0.024712571,
+          "label_validation_gpu_time_ns": 0.000937708,
+          "column_sampling_gpu_time_ns": 0.000236455
+        },
+        "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+        "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+        "test_accuracy": 0.742178,
+        "test_logloss": 0.5109559910015393,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 4139433984,
+            "system_swap": "total = 17408.00M  used = 16587.19M  free = 820.81M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 6516654080,
+            "system_swap": "total = 18432.00M  used = 16691.94M  free = 1740.06M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "higgs",
+        "repeat": 2,
+        "variant": "candidate",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "higgs",
+          "--rows",
+          "10500000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/higgs-candidate",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "mps",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/candidate-package"
+        ],
+        "report": "results/parallel-perf-20261106/paired/higgs-candidate/mps-2.json",
+        "original_reference": "results/sketch-sort-profile-20261105/paired/higgs-candidate/mps-0.json",
+        "first_round_seconds": 6.259513708995655,
+        "split_seconds": 0.193592792,
+        "histogram_seconds": 6.83580957,
+        "shared_histogram_dispatches": 600,
+        "exact_original_model_margins_and_metric_history": true
+      },
+      {
+        "started_utc": "2026-11-06T09:13:13.324032+00:00",
+        "library_sha256": "f0a7a292f07d20e431295176cf406899567265b8a12c071912d314c5f565867b",
+        "training_seconds": 33.929352208040655,
+        "wall_seconds": 33.92992091178894,
+        "dmatrix_seconds": 1.111255916999653,
+        "prediction_seconds": 0.1402201249729842,
+        "gpu_counter_seconds": {},
+        "model_sha256": "294e0c71764d10844dc8026c19c8fce2590b29cdae89422da4071595702e60fa",
+        "margins_sha256": "afeca5e5bf65f41e93ac6d75b49d4b7f7d93f47b823ded616dceab411a33f9da",
+        "test_accuracy": 0.741512,
+        "test_logloss": 0.5112943479298138,
+        "power": {
+          "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+          "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+        },
+        "memory": {
+          "before": {
+            "process_peak_rss_bytes": 4117397504,
+            "system_swap": "total = 17408.00M  used = 16552.81M  free = 855.19M  (encrypted)"
+          },
+          "after": {
+            "process_peak_rss_bytes": 5283282944,
+            "system_swap": "total = 17408.00M  used = 16048.81M  free = 1359.19M  (encrypted)"
+          }
+        },
+        "power_source_unchanged": true,
+        "case": "higgs",
+        "repeat": 2,
+        "variant": "cpu",
+        "command": [
+          "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+          "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+          "--case",
+          "higgs",
+          "--rows",
+          "10500000",
+          "--output",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/paired/higgs-cpu",
+          "--rounds",
+          "100",
+          "--threads",
+          "8",
+          "--worker",
+          "cpu",
+          "--repeat-index",
+          "2",
+          "--package-dir",
+          "/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/baseline-package"
+        ],
+        "report": "results/parallel-perf-20261106/paired/higgs-cpu/cpu-2.json",
+        "original_reference": "results/sketch-sort-profile-20261105/paired/higgs-cpu/cpu-0.json",
+        "first_round_seconds": 5.512921500019729,
+        "split_seconds": 0.0,
+        "histogram_seconds": 0.0,
+        "shared_histogram_dispatches": 0,
+        "exact_original_model_margins_and_metric_history": true
+      }
+    ],
+    "cases": {
+      "wide-4096": {
+        "medians": {
+          "cpu": {
+            "training_seconds": 35.6050665830262,
+            "dmatrix_seconds": 0.2072265420574695,
+            "first_round_seconds": 2.721509709022939,
+            "split_seconds": 0.0,
+            "histogram_seconds": 0.0
+          },
+          "baseline": {
+            "training_seconds": 45.636567207984626,
+            "dmatrix_seconds": 0.20872687501832843,
+            "first_round_seconds": 2.507916250033304,
+            "split_seconds": 12.296258688,
+            "histogram_seconds": 10.53138336
+          },
+          "candidate": {
+            "training_seconds": 31.405173500068486,
+            "dmatrix_seconds": 0.20688029215671122,
+            "first_round_seconds": 2.2727072089910507,
+            "split_seconds": 13.880977786,
+            "histogram_seconds": 6.093786274
+          }
+        },
+        "training_speedup": 1.4531544367326965,
+        "histogram_speedup": 1.7282167254427079,
+        "cpu_over_candidate": 1.133732522858011,
+        "exact_original_model_margins_and_metric_history": true,
+        "split_counter_ratio_not_kernel_speedup": 0.8858351967396484,
+        "pairs": [
+          {
+            "repeat": 0,
+            "baseline_over_candidate": 1.2462857258113977,
+            "cpu_over_candidate": 0.8798661748878187,
+            "independent_cpu_mps_margin_max_abs_difference": 4.484622955322266,
+            "independent_cpu_mps_margin_rmse_difference": 1.258810281305665,
+            "independent_cpu_mps_margin_outside_atol_rtol_2e_5": 2500,
+            "margin_count": 2500,
+            "class_disagreement_fraction": 0.2724
+          },
+          {
+            "repeat": 1,
+            "baseline_over_candidate": 1.5045530011771526,
+            "cpu_over_candidate": 1.133732522858011,
+            "independent_cpu_mps_margin_max_abs_difference": 4.484622955322266,
+            "independent_cpu_mps_margin_rmse_difference": 1.258810281305665,
+            "independent_cpu_mps_margin_outside_atol_rtol_2e_5": 2500,
+            "margin_count": 2500,
+            "class_disagreement_fraction": 0.2724
+          },
+          {
+            "repeat": 2,
+            "baseline_over_candidate": 1.1222897226302093,
+            "cpu_over_candidate": 0.8976102375235488,
+            "independent_cpu_mps_margin_max_abs_difference": 4.484622955322266,
+            "independent_cpu_mps_margin_rmse_difference": 1.258810281305665,
+            "independent_cpu_mps_margin_outside_atol_rtol_2e_5": 2500,
+            "margin_count": 2500,
+            "class_disagreement_fraction": 0.2724
+          }
+        ],
+        "paired_speedup_median": 1.2462857258113977,
+        "cpu_faster_pairs": 2,
+        "dmatrix_plus_training_medians": {
+          "cpu": 35.800740000093356,
+          "baseline": 45.85553054092452,
+          "candidate": 31.612053792225197
+        },
+        "dataset": {
+          "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+          "numpy_version": "2.5.4",
+          "signal": {
+            "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+            "features": [
+              0,
+              65,
+              130,
+              195,
+              260,
+              325,
+              390,
+              455,
+              520,
+              585,
+              650,
+              715,
+              780,
+              845,
+              910,
+              975,
+              1040,
+              1105,
+              1170,
+              1235,
+              1300,
+              1365,
+              1430,
+              1495,
+              1560,
+              1625,
+              1690,
+              1755,
+              1820,
+              1885,
+              1950,
+              2015,
+              2080,
+              2145,
+              2210,
+              2275,
+              2340,
+              2405,
+              2470,
+              2535,
+              2600,
+              2665,
+              2730,
+              2795,
+              2860,
+              2925,
+              2990,
+              3055,
+              3120,
+              3185,
+              3250,
+              3315,
+              3380,
+              3445,
+              3510,
+              3575,
+              3640,
+              3705,
+              3770,
+              3835,
+              3900,
+              3965,
+              4030,
+              4095
+            ]
+          },
+          "features_sha256": "57584a89ffbf2cd2ecb408a34b268a056beea97532429eaeb584c41bb99c9dcd",
+          "labels_sha256": "c2d1ceb31354a084f39fee74d2457454ab5d2930641c276cf3b3dad588ae9a47"
+        },
+        "train_shape": [
+          25000,
+          4096
+        ],
+        "test_shape": [
+          2500,
+          4096
+        ],
+        "params_by_device": {
+          "cpu": {
+            "device": "cpu",
+            "tree_method": "hist",
+            "max_depth": 6,
+            "max_bin": 256,
+            "nthread": 8,
+            "seed": 0,
+            "base_score": 0.5,
+            "eta": 0.3,
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+            "verbosity": 3
+          },
+          "baseline": {
+            "device": "mps",
+            "tree_method": "hist",
+            "max_depth": 6,
+            "max_bin": 256,
+            "nthread": 8,
+            "seed": 0,
+            "base_score": 0.5,
+            "eta": 0.3,
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+            "verbosity": 3
+          },
+          "candidate": {
+            "device": "mps",
+            "tree_method": "hist",
+            "max_depth": 6,
+            "max_bin": 256,
+            "nthread": 8,
+            "seed": 0,
+            "base_score": 0.5,
+            "eta": 0.3,
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+            "verbosity": 3
+          }
+        }
+      },
+      "wide-1024": {
+        "medians": {
+          "cpu": {
+            "training_seconds": 18.38519687508233,
+            "dmatrix_seconds": 0.2116163750179112,
+            "first_round_seconds": 1.9611969999969006,
+            "split_seconds": 0.0,
+            "histogram_seconds": 0.0
+          },
+          "baseline": {
+            "training_seconds": 16.155196791049093,
+            "dmatrix_seconds": 0.20035641617141664,
+            "first_round_seconds": 1.800515125039965,
+            "split_seconds": 3.505151778,
+            "histogram_seconds": 3.796187912
+          },
+          "candidate": {
+            "training_seconds": 15.173099916893989,
+            "dmatrix_seconds": 0.21962870890274644,
+            "first_round_seconds": 1.7929538330063224,
+            "split_seconds": 3.009735111,
+            "histogram_seconds": 2.785645458
+          }
+        },
+        "training_speedup": 1.0647261851259293,
+        "histogram_speedup": 1.3627677926844057,
+        "cpu_over_candidate": 1.2116968171159235,
+        "exact_original_model_margins_and_metric_history": true,
+        "split_counter_ratio_not_kernel_speedup": 1.1646047405266158,
+        "pairs": [
+          {
+            "repeat": 0,
+            "baseline_over_candidate": 1.1284002435389013,
+            "cpu_over_candidate": 1.1418665722787642,
+            "independent_cpu_mps_margin_max_abs_difference": 3.6570234298706055,
+            "independent_cpu_mps_margin_rmse_difference": 0.8512070967063291,
+            "independent_cpu_mps_margin_outside_atol_rtol_2e_5": 9999,
+            "margin_count": 10000,
+            "class_disagreement_fraction": 0.1957
+          },
+          {
+            "repeat": 1,
+            "baseline_over_candidate": 1.0507281062677418,
+            "cpu_over_candidate": 1.2116968171159235,
+            "independent_cpu_mps_margin_max_abs_difference": 3.6570234298706055,
+            "independent_cpu_mps_margin_rmse_difference": 0.8512070967063291,
+            "independent_cpu_mps_margin_outside_atol_rtol_2e_5": 9999,
+            "margin_count": 10000,
+            "class_disagreement_fraction": 0.1957
+          },
+          {
+            "repeat": 2,
+            "baseline_over_candidate": 1.0755262372231482,
+            "cpu_over_candidate": 1.224820628488805,
+            "independent_cpu_mps_margin_max_abs_difference": 3.6570234298706055,
+            "independent_cpu_mps_margin_rmse_difference": 0.8512070967063291,
+            "independent_cpu_mps_margin_outside_atol_rtol_2e_5": 9999,
+            "margin_count": 10000,
+            "class_disagreement_fraction": 0.1957
+          }
+        ],
+        "paired_speedup_median": 1.0755262372231482,
+        "cpu_faster_pairs": 0,
+        "dmatrix_plus_training_medians": {
+          "cpu": 18.581201875116676,
+          "baseline": 16.35555320722051,
+          "candidate": 15.392186583951116
+        },
+        "dataset": {
+          "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+          "numpy_version": "2.5.4",
+          "signal": {
+            "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+            "features": [
+              0,
+              16,
+              32,
+              48,
+              64,
+              81,
+              97,
+              113,
+              129,
+              146,
+              162,
+              178,
+              194,
+              211,
+              227,
+              243,
+              259,
+              276,
+              292,
+              308,
+              324,
+              341,
+              357,
+              373,
+              389,
+              405,
+              422,
+              438,
+              454,
+              470,
+              487,
+              503,
+              519,
+              535,
+              552,
+              568,
+              584,
+              600,
+              617,
+              633,
+              649,
+              665,
+              682,
+              698,
+              714,
+              730,
+              746,
+              763,
+              779,
+              795,
+              811,
+              828,
+              844,
+              860,
+              876,
+              893,
+              909,
+              925,
+              941,
+              958,
+              974,
+              990,
+              1006,
+              1023
+            ]
+          },
+          "features_sha256": "57584a89ffbf2cd2ecb408a34b268a056beea97532429eaeb584c41bb99c9dcd",
+          "labels_sha256": "b7db05ecfdf19fe780854fc423272ea08616e12c1f11d14e7ef50abe696fd576"
+        },
+        "train_shape": [
+          100000,
+          1024
+        ],
+        "test_shape": [
+          10000,
+          1024
+        ],
+        "params_by_device": {
+          "cpu": {
+            "device": "cpu",
+            "tree_method": "hist",
+            "max_depth": 6,
+            "max_bin": 256,
+            "nthread": 8,
+            "seed": 0,
+            "base_score": 0.5,
+            "eta": 0.3,
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+            "verbosity": 3
+          },
+          "baseline": {
+            "device": "mps",
+            "tree_method": "hist",
+            "max_depth": 6,
+            "max_bin": 256,
+            "nthread": 8,
+            "seed": 0,
+            "base_score": 0.5,
+            "eta": 0.3,
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+            "verbosity": 3
+          },
+          "candidate": {
+            "device": "mps",
+            "tree_method": "hist",
+            "max_depth": 6,
+            "max_bin": 256,
+            "nthread": 8,
+            "seed": 0,
+            "base_score": 0.5,
+            "eta": 0.3,
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+            "verbosity": 3
+          }
+        }
+      },
+      "higgs": {
+        "medians": {
+          "cpu": {
+            "training_seconds": 33.68982937512919,
+            "dmatrix_seconds": 1.144499917048961,
+            "first_round_seconds": 5.512921500019729,
+            "split_seconds": 0.0,
+            "histogram_seconds": 0.0
+          },
+          "baseline": {
+            "training_seconds": 33.13127600005828,
+            "dmatrix_seconds": 0.7507560830563307,
+            "first_round_seconds": 6.696883541997522,
+            "split_seconds": 0.465412043,
+            "histogram_seconds": 6.5572332
+          },
+          "candidate": {
+            "training_seconds": 31.24435366690159,
+            "dmatrix_seconds": 1.2184736670460552,
+            "first_round_seconds": 6.259513708995655,
+            "split_seconds": 0.194318001,
+            "histogram_seconds": 6.815740617
+          }
+        },
+        "training_speedup": 1.0603924265252311,
+        "histogram_speedup": 0.9620719989908031,
+        "cpu_over_candidate": 1.0782693645802057,
+        "exact_original_model_margins_and_metric_history": true,
+        "split_counter_ratio_not_kernel_speedup": 2.395105140053391,
+        "pairs": [
+          {
+            "repeat": 0,
+            "baseline_over_candidate": 1.0624899294287926,
+            "cpu_over_candidate": 1.0790286142420396,
+            "independent_cpu_mps_margin_max_abs_difference": 2.4722471237182617,
+            "independent_cpu_mps_margin_rmse_difference": 0.27019159342644933,
+            "independent_cpu_mps_margin_outside_atol_rtol_2e_5": 499917,
+            "margin_count": 500000,
+            "class_disagreement_fraction": 0.054434
+          },
+          {
+            "repeat": 1,
+            "baseline_over_candidate": 1.0603924265252311,
+            "cpu_over_candidate": 1.0541932744467784,
+            "independent_cpu_mps_margin_max_abs_difference": 2.4722471237182617,
+            "independent_cpu_mps_margin_rmse_difference": 0.27019159342644933,
+            "independent_cpu_mps_margin_outside_atol_rtol_2e_5": 499917,
+            "margin_count": 500000,
+            "class_disagreement_fraction": 0.054434
+          },
+          {
+            "repeat": 2,
+            "baseline_over_candidate": 0.9911320098591324,
+            "cpu_over_candidate": 1.0848113013810328,
+            "independent_cpu_mps_margin_max_abs_difference": 2.4722471237182617,
+            "independent_cpu_mps_margin_rmse_difference": 0.27019159342644933,
+            "independent_cpu_mps_margin_outside_atol_rtol_2e_5": 499917,
+            "margin_count": 500000,
+            "class_disagreement_fraction": 0.054434
+          }
+        ],
+        "paired_speedup_median": 1.0603924265252311,
+        "cpu_faster_pairs": 0,
+        "dmatrix_plus_training_medians": {
+          "cpu": 35.04060812504031,
+          "baseline": 33.88203208311461,
+          "candidate": 32.49520554183982
+        },
+        "dataset": {
+          "url": "https://archive.ics.uci.edu/ml/machine-learning-databases/00280/HIGGS.csv.gz",
+          "citation": "Whiteson, D. (2014). HIGGS. https://doi.org/10.24432/C5V312",
+          "rows": 11000000,
+          "features": 28,
+          "label_column": 0,
+          "name": "higgs",
+          "license": "CC BY 4.0",
+          "dtype": "float32",
+          "archive_bytes": 2816407858,
+          "archive_sha256": "ea302c18164d4e3d916a1e2e83a9a8d07069fa6ebc7771e4c0540d54e593b698",
+          "conversion_seconds": 26.2906495409552,
+          "preprocessing": "Original row order; header=None; labels unchanged; no scaling"
+        },
+        "train_shape": [
+          10500000,
+          28
+        ],
+        "test_shape": [
+          500000,
+          28
+        ],
+        "params_by_device": {
+          "cpu": {
+            "device": "cpu",
+            "tree_method": "hist",
+            "max_depth": 6,
+            "max_bin": 256,
+            "nthread": 8,
+            "seed": 0,
+            "base_score": 0.5,
+            "eta": 0.3,
+            "objective": "binary:logitraw",
+            "eval_metric": "error",
+            "verbosity": 3
+          },
+          "baseline": {
+            "device": "mps",
+            "tree_method": "hist",
+            "max_depth": 6,
+            "max_bin": 256,
+            "nthread": 8,
+            "seed": 0,
+            "base_score": 0.5,
+            "eta": 0.3,
+            "objective": "binary:logitraw",
+            "eval_metric": "error",
+            "verbosity": 3
+          },
+          "candidate": {
+            "device": "mps",
+            "tree_method": "hist",
+            "max_depth": 6,
+            "max_bin": 256,
+            "nthread": 8,
+            "seed": 0,
+            "base_score": 0.5,
+            "eta": 0.3,
+            "objective": "binary:logitraw",
+            "eval_metric": "error",
+            "verbosity": 3
+          }
+        }
+      }
+    },
+    "note": "Fresh workers; 100 rounds, depth 6, max_bin 256, eight threads. CPU and isolated baseline/candidate MPS variants run sequentially. Wide datasets have 64 informative features without column sampling. HIGGS has 10.5M training and 500K test rows."
+  },
+  "split_counter_note": "Baseline sums four separate command intervals after allocation readback; candidate records one contiguous span for task/gather, scoring, finalization and winner extraction, including inter-encoder/scheduling gaps. First allocation readback and standalone calls are separately timed. Ratios are not isolated scoring-kernel speedups; the difference may include actual scheduling changes as well as changed measurement boundaries.",
+  "installed_package": {
+    "status": "passed",
+    "pytest_exit_code": 0,
+    "package": "/Users/maaz/Documents/xgb-mps/.venv/lib/python3.13/site-packages/xgboost/__init__.py",
+    "library": "/Users/maaz/Documents/xgb-mps/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.dylib",
+    "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034",
+    "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+    "cwd": "/private/tmp",
+    "pytest_args": [
+      "-q",
+      "/Users/maaz/Documents/xgb-mps/tests/test_metal_workflows.py",
+      "-o",
+      "pythonpath=",
+      "--require-metal",
+      "--junitxml=/Users/maaz/Documents/xgb-mps/results/parallel-perf-20261106/installed-workflows.xml"
+    ],
+    "isolation": "python -I; cwd outside checkout; no PYTHONPATH or DYLD_LIBRARY_PATH; pytest pythonpath override empty",
+    "wheel": {
+      "filename": "xgboost-3.4.2-py3-none-macosx_26_0_arm64.whl",
+      "sha256": "1632dab34cb74a7d70fbc2b6281cc5f86a9ee2f495d8cd46db4dadba07d23f21",
+      "library_sha256": "b5f1582e87ec2feadcd42a1a6d996231d759db8ba3fd4d6f84afc43fb03ce034"
+    },
+    "workflow_tests_passed": 3
+  },
+  "limits": [
+    "Warm runtime, fresh worker/matrices, 100 rounds, depth 6, max_bin 256, eight CPU threads. Training includes quantization/evaluation; generation/loading, matrix setup and final prediction are separate.",
+    "Wide cases use 64 informative columns without column sampling: 100000x1024 and 25000x4096. HIGGS uses 10.5M training/500K test rows and 28 features, but 100 rather than the published 1000 rounds.",
+    "This task ran no concurrent builds/tests/benchmarks during timing. Unrelated sessions and applications were not controlled. AC power throughout, clock checks pass, system-wide swap substantial.",
+    "GPU family counters can overlap; do not sum them or subtract them from wall time to infer host work.",
+    "Three repeats on one M3. All six wide before/after pairs improve; one HIGGS pair regresses slightly. CPU wins two of three 4096-column pairs despite its higher median, so the ratio of medians alone is misleading for that CPU comparison."
+  ],
+  "local_evidence_sha256": {
+    "results/parallel-perf-20261106/baseline-metal_histogram.metal": "4bae9b0e4bf1fbc36394d54fc3b7214ac90bfad5c85f9f86dada02929b79ea72",
+    "results/parallel-perf-20261106/baseline-metal_histogram.mm": "f2f872d5c9812cebecf8a92c12480494ab252c9325abf04fef470f8483daddac",
+    "results/parallel-perf-20261106/baseline-profile_training.py": "2a0eb3e2c39ea315b43d66ae26c2260f42ac807c3cafdae53133790a2dfd8020",
+    "results/parallel-perf-20261106/baseline-source.json": "ab736cb7b027a37eaf168463a40cde08d96dd84140099bdd8580fd863fdec8ec",
+    "results/parallel-perf-20261106/candidate-source.json": "507c84007ec870b3b74ba2ce887d85d7db7a890a52882875d2c353215ef7adab",
+    "results/parallel-perf-20261106/check-installed.py": "820c149b2ccfc1b78144e891c6a5b8f25bc2aa00f6995bcd465a80cb75e422cd",
+    "results/parallel-perf-20261106/diagnostic/mps-0.log": "23ee4389c369b260145bff9e395380954b8ffbe63171ca7e0ac5c4ef90a2c238",
+    "results/parallel-perf-20261106/diagnostic/mps-0.progress.json": "6f00cb9161252c20a908211467b1305a39719c2fb69ddb0698234843e536c97d",
+    "results/parallel-perf-20261106/diagnostic/sample-command.log": "1174bfab94a44944ac99339dec05740c4265224f55944214d4e60b1c5e30ee6d",
+    "results/parallel-perf-20261106/diagnostic-v2/mps-0.json": "03c932e5853c817a59d8e9ef5cb91c8b5f4510098710dcf7af3028af5aa87722",
+    "results/parallel-perf-20261106/diagnostic-v2/mps-0.log": "264c7cb205ddd6607ed21e3a1f017fc1fad3eab2191313a296ed25bfc1027d2a",
+    "results/parallel-perf-20261106/diagnostic-v2/mps-0.margins.npy": "76493f762459e4c3da2de51bb81951b9fb227cc7ff733390787f0d1a1d830b75",
+    "results/parallel-perf-20261106/diagnostic-v2/mps-0.progress.json": "c9e74a6b4be9fa704847c64bad1ab85e6693e93936040bcbc50da5411bf31c49",
+    "results/parallel-perf-20261106/diagnostic-v2/mps-0.ubj": "fbfe30e2800f3e4d0a4ab054e9e29db84f1e3b5b32ad3f8614b3337141d69bd9",
+    "results/parallel-perf-20261106/diagnostic-v2/sample-command.log": "4209af44482cacd11a34f31c96448e41ce4c0a0387044a6ba444f96c7aa8a53f",
+    "results/parallel-perf-20261106/diagnostic-v2/sample.txt": "e4da09f47663031b571b9e29382c8ed6d1d556165809529093256a0acb20e1db",
+    "results/parallel-perf-20261106/float_compare_test.mm": "7831349a8eaa8b4da167c579efea3e655ebbc25d6c26018213e9e4df8eca7515",
+    "results/parallel-perf-20261106/focused/001-build-metal.log": "48f07645f90c97f3555c0b1dad89cf6038266e7464e3775f95db90b8e92af6a7",
+    "results/parallel-perf-20261106/focused/002-compile-metal_split_bounds.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/parallel-perf-20261106/focused/003-metal_split_bounds.log": "fe741416eedb8e25322a6f8accb78b68784ef4a3d5c082128b27980464e0a43f",
+    "results/parallel-perf-20261106/focused/004-compile-metal_cuda_split.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/parallel-perf-20261106/focused/005-metal_cuda_split.log": "1095acdf7fd6d97c0837adf1e9dab64bbf755280861e94bcaf9bac187f70adf3",
+    "results/parallel-perf-20261106/focused/006-compile-metal_cuda_multi_split.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/parallel-perf-20261106/focused/007-metal_cuda_multi_split.log": "ed1e1d51a00e858e9ebee0e113e2953e39d16753b632a28997ea34218bbaddb8",
+    "results/parallel-perf-20261106/focused/008-compile-metal_ellpack_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/parallel-perf-20261106/focused/009-metal_ellpack_api.log": "92de0fcbe9983f93b41dbc8a0d54034b640f6638703e4d148673ef01f36c54c9",
+    "results/parallel-perf-20261106/focused/010-compile-metal_compressed_consumers_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/parallel-perf-20261106/focused/011-metal_compressed_consumers_api.log": "f2547a426d87491db15f0d1a25ae020b0d35167d2e42bee72f0e29484ec429a9",
+    "results/parallel-perf-20261106/focused/012-compile-metal_split_finalize.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/parallel-perf-20261106/focused/013-metal_split_finalize.log": "2dbfa7a63052b1b5d63a575df6524533eb572e67528313116f566d225056afb5",
+    "results/parallel-perf-20261106/focused/014-compile-metal_feature_split_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/parallel-perf-20261106/focused/015-metal_feature_split_api.log": "15c2478231726c1635539644c6563e2c8ed334cb959f7257143e2557f10987ab",
+    "results/parallel-perf-20261106/focused/016-compile-metal_split_sum_api.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "results/parallel-perf-20261106/focused/017-metal_split_sum_api.log": "41b590907d6d25127a4646a8b4854d56e2e235241c70d82a3d557e4c3ffbf66d",
+    "results/parallel-perf-20261106/focused/018-pytest.log": "2c711ad049a6a493532d01ef5190201f2a4ef8ef06c3ca97da2ddb2a01c163d1",
+    "results/parallel-perf-20261106/focused/summary.json": "3217755cbf6aa1bab308488aeed50817bf2fa4b87e35a3ab15f8f30f74ad56cc",
+    "results/parallel-perf-20261106/histogram/confirm-paths.log": "2e58353d23ef0df6fba14ddb8bff2775850467bb96303788790ebcddcdd9ec82",
+    "results/parallel-perf-20261106/histogram/confirm-paths.sh": "b43d4495f0b46a693ec2fed22a64f23cc0c9a490aea6bf7e7cdf56f785aa2c6a",
+    "results/parallel-perf-20261106/histogram/paths-12500x4096.json": "401776f675608ca59f8d097c5a705ebf905821193b13018b01fe297b088b5fa2",
+    "results/parallel-perf-20261106/histogram/paths-4096x1024.json": "c7b400e7b47fab2b3cb09af8b87bd17e41fc062419d0fa81294abbaaa2d59118",
+    "results/parallel-perf-20261106/histogram/paths-4096x4096.json": "f8cd14a1f11f2c7dd616c0bdc624345f07eaea4486de9959a0b5c29441123cf5",
+    "results/parallel-perf-20261106/histogram/run-paths.log": "d2263097ba0b0b40b6ea0ae9f0017acc25736f27beb99bb09e13089b23855d09",
+    "results/parallel-perf-20261106/histogram/run-paths.sh": "92d2331b7f5110c8cdb181becac680a91946450853d48d9229dc045c7c01a28d",
+    "results/parallel-perf-20261106/histogram/summary.json": "0e33906aa114ecbc4614ed5eea4fc02046d02d48fa581a0970036ad646db92be",
+    "results/parallel-perf-20261106/install.log": "ce0461b5608d54685cd64b2a1f28394693a864ca333798ba1ce4c1ebebe0de18",
+    "results/parallel-perf-20261106/install.sh": "6cc4036e1ae98c66cf3e945d0213da52e20cf97fd7c84e79bfe8469021ac50d9",
+    "results/parallel-perf-20261106/installed-workflows.json": "d6f130a71a81210ec6aceb8d706e6518e2c11774117810db0e6a4a186a80f040",
+    "results/parallel-perf-20261106/installed-workflows.xml": "f106932ae5feb9fcdc0a6a2d3a0db861d72d3a7c552258738d3a2412250a2ced",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-0.json": "4ea0e39213cab7a8521ae602447d1e725577b0dc45cfa81ea8ae9cbf1f252c9a",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-0.log": "b89786cc260a040566ed36d6645018011be341fddac6e95a9dc2edbb7b525861",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-0.margins.npy": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-0.progress.json": "b6cadc8293d08879433859c60c6231c5b13c58055db415c0cfbdbf0366a2d677",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-0.ubj": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-1.json": "fb44470b31c156d143703d9e40cf14a2188ecad70c4bba68e984d2f10af1e65a",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-1.log": "49ae716650cd902a2784b27658fa1e236b3926398e5b89dd9163162c8e20ae93",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-1.margins.npy": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-1.progress.json": "f69cd9b0e2cc06c6fd3230eed1c51d9340fd5499f9aacd6b2af73317d0efc13a",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-1.ubj": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-2.json": "119602cc1c6b94df130899d7520643bcc8b25f5394cdf1560ffa1f44c9b29752",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-2.log": "2966ac8250b439445891c94c447d5f339258311990605111ed1f45dce75ccf5d",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-2.margins.npy": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-2.progress.json": "e0bc6a8034cb75ce53e0a4ab667e0c336426990b4a626a0bcb9e2360cd614fc1",
+    "results/parallel-perf-20261106/paired/higgs-baseline/mps-2.ubj": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-0.json": "83765dcdadf5ccb3181f6cf7fb264fdedb2e42c14d103be8709e144df80842e3",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-0.log": "807f0796265d4e0f94405995bb1b6a35ba481abd1fa3fdc0dabb527448605d4c",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-0.margins.npy": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-0.progress.json": "eb85449032d4bdcf14ca5ba72d2949cb0cd1ff666f7fe3f63178f52d3fd978fe",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-0.ubj": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-1.json": "b13c72345e1a9114c07bfa91cfede052384bc25340c806c7fefa9c7d691b7cf4",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-1.log": "db15c50215309493309a29630cf47f9724f67c326194ba514b01d56a90639e1e",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-1.margins.npy": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-1.progress.json": "3dacac1d02fe1dc50112369799146f16445bc96a3b067e561c7dfee85a217bc0",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-1.ubj": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-2.json": "28b932da16a2aa1e8a480f07652220c1a2dae2f6621ccaa5fd00bbf1b75057ce",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-2.log": "aa717a785e50de1e1928c01cf2ae3f49a0b4e147efce76fbf10c142ba507f0d6",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-2.margins.npy": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-2.progress.json": "4da1f44ffad05beb0cb791ef32d04dd0cc338583e4f78355dc822d542dcf20e3",
+    "results/parallel-perf-20261106/paired/higgs-candidate/mps-2.ubj": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-0.json": "09c9ae8ef2268ce4fa9611c7b18238ffac1fbd2ce887f1b808fa5739133b8eaf",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-0.log": "464f90e1ff3928506c70ee9bb8161b890c3822b2641d7cbbb3622bfa6c909a5d",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-0.margins.npy": "afeca5e5bf65f41e93ac6d75b49d4b7f7d93f47b823ded616dceab411a33f9da",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-0.progress.json": "53574b36f449209f07159b2bfc16bd7337d6a53321dfb4b02b0080aae2cc50c2",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-0.ubj": "294e0c71764d10844dc8026c19c8fce2590b29cdae89422da4071595702e60fa",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-1.json": "b5706332f4876b52a8205e1e1f3a75ea4e9f5d477e2db310c8f3b10c9a34fcf9",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-1.log": "9f640685ffa261f22805d85957e81db695ab8cd0fdf908032245f476c5535350",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-1.margins.npy": "afeca5e5bf65f41e93ac6d75b49d4b7f7d93f47b823ded616dceab411a33f9da",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-1.progress.json": "81a9807ad7b1eee3e1896592ab3934fc9d555ff773221fa9e59c2079cd0b7d5b",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-1.ubj": "294e0c71764d10844dc8026c19c8fce2590b29cdae89422da4071595702e60fa",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-2.json": "530198f2205b8e2745ce9b3ac163f976e13ff8709dc02faf02007e95643e0199",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-2.log": "e2e4c2f1b3ea400319ecd8a637e9a43c3fe68036f5ae4f1b0ed771c70561732c",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-2.margins.npy": "afeca5e5bf65f41e93ac6d75b49d4b7f7d93f47b823ded616dceab411a33f9da",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-2.progress.json": "ea17bd916171e73c5e5bd2c03dd4226d61acf22659b29ad4b3bf8f64fc5a9ef8",
+    "results/parallel-perf-20261106/paired/higgs-cpu/cpu-2.ubj": "294e0c71764d10844dc8026c19c8fce2590b29cdae89422da4071595702e60fa",
+    "results/parallel-perf-20261106/paired/summary.json": "2411804a4690ed5805e04acfc0b3a9a17c008cb863a08366c619ad633c054290",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-0.json": "f99dd502d9a31fc72d7e1d523035bcbd8005ef6138b2cf7b90065da5576b7898",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-0.log": "00467a086013c5734d7c7284079e67d3142fbe8d82d2c18201e1759183c9fdc5",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-0.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-0.progress.json": "5a0eac481116c36a7e8ad52a35559b4fa30d4319c444eacc10774d8e52ea79bb",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-0.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-1.json": "f175d56f644ffb23cbe3ac567d48e2a3a93edf999897d6741ed672bdbe491b02",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-1.log": "01bdb4bb9f516a2c2764c6a5a041000207650dfe109f3a363255d842b72d9a5b",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-1.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-1.progress.json": "43a77e42fb5c7e49168a93da47c1c67b634e856e83824aefd80e793c7eee4b56",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-1.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-2.json": "61a64920ee0e6316f3a59c4d30828c4b0db575fd35e21230b67b0c71bee6577f",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-2.log": "295a7d3702f619fb56cb8aedee103864d249183ed1ce7eccff05f9db8180030a",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-2.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-2.progress.json": "144e317dae30f5b621e20492cdaf4cf1e4ffe8eb20871e19225d40f149b74023",
+    "results/parallel-perf-20261106/paired/wide-1024-baseline/mps-2.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-0.json": "5a2c82cbd306131ad19f1309cf39b5289e90e3832b86ca61fa898280cfbaddcf",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-0.log": "1b351ff103d17126a7d53ec69f0ca0f052b88194c9abec19da81433a0906197c",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-0.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-0.progress.json": "7854b6f4baab7c6818484ea129ad84bd9c10e9dc251b0a20d1da79be69d2c5bf",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-0.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-1.json": "0fc052e428642469af5a791ace8c35acc932e0ef3619bc4cb0ef1f0ae7149a1e",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-1.log": "0805ae4036e5c8dbcba44b5f48081be417abc288ec47d9fcedce96f0760af6a3",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-1.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-1.progress.json": "b29069f57e0e00c13847c06b929f6a23c71656598f63a312ebc56921d2147cfa",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-1.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-2.json": "e693aa4c379d891be6c795226e2320453c39b6a17b2db2ff23f73d246c248605",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-2.log": "dd6b16b973daf534bf35d9ed71f22c7213218169b91d8f8f6d1d073135d3a19a",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-2.margins.npy": "c0ec7c2582a15879d09cf1d076a098e8eefd0be160b29fa5ac930827e4403c0b",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-2.progress.json": "a854279284cf4cf4ac65e2b8f29e4654125bc6dd5c6d22c723c984781feb21a9",
+    "results/parallel-perf-20261106/paired/wide-1024-candidate/mps-2.ubj": "dbe2fc450b372ce9d6f6a88aef5fb338329dec1abddecc61ce3af4472e071dd0",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-0.json": "244df7500806da79aeb3751b17e2202578d5e7c0e017fd91f51d8d7ac6a6a71a",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-0.log": "542889954bb01950ca5425935f80cfb14fbfe712d3746795faf6b498d11c4a3d",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-0.margins.npy": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-0.progress.json": "9a3f168377bde4f927b8e2d6adb4a847724dc086d8c039017ea4d7432ea42e5a",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-0.ubj": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-1.json": "aed00e6d944495b58bfcc09400eaef355cdfc9b988c45209f1a5feb8a8d77b77",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-1.log": "6b3b3ef81a98fb2d5fd196273b6ad2e247fb7214a4a34a9dfa194fff827fe774",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-1.margins.npy": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-1.progress.json": "d6eb2c609cd414f9dff5daa22e943be93e333389d145349d9222298f8cba9fba",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-1.ubj": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-2.json": "571cca3a102bfb7c56ba2e0edf0357e0fd4dfbf61d96bd7696f447f1c3cd67ec",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-2.log": "767199727886428bde9143f6cd9fbf1419df48d0efa8edf34ce4477b94e7df88",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-2.margins.npy": "6376666d265822a8192b5097ff40539a6a3e6a9692463d22f140e823e85de558",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-2.progress.json": "6615bf2fa8b9a66bf6d769d7af89c6dbc359ed0fbd27f9f8b97a71aef2066801",
+    "results/parallel-perf-20261106/paired/wide-1024-cpu/cpu-2.ubj": "38f0d5fa46688489cc97f78cffdebf58147356021be8afe8ff435cf8243a3eb4",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-0.json": "d9a7682c7b710290edb2534f518761a5a975e529f9a75213a37fd24d191aa2c4",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-0.log": "ae4bef5617f51464ac02ab8da431aee01c95c7007c3b33511c021848e6f3de55",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-0.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-0.progress.json": "1224e15fe49722774db35a91030068aebdd996bd622baa81e031d39d1b3d3f84",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-0.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-1.json": "c0f3b07a50dd6fad6d2d8e2d0dbc2d3dbd82693045fd407166b97acac990e08e",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-1.log": "ab95610f7a0187e90d5e8d8de5aaad312a47dbc670bca9b4f83d9ece68c2fb8b",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-1.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-1.progress.json": "ca0ad1a4874c8fb9a61d9e9903be1b21613340079efd7c2bafaf174154172d8a",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-1.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-2.json": "401f52d33d6e4ea58e72c8f3c03caf7a0f4d3b97fa437de81ca7cba28b3a5757",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-2.log": "2bd2e24ba1ce6fefa7ba07198cfa1ffeb621e69b090f0d75ff813f79665b588d",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-2.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-2.progress.json": "aa1250f4d3c974b2212550e9be12fe5fbee972fa76ff5dd79ef9f0f6ff0df661",
+    "results/parallel-perf-20261106/paired/wide-4096-baseline/mps-2.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-0.json": "8f4b8857d512c6bc7ebc8ead45aac18d899e3de84eba9645db8c1ce178446dea",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-0.log": "d0da5a314e5a0e332dd615fa682a6691f6cff6ddd248375ec2d2b3fe264e15b5",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-0.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-0.progress.json": "9872f1b19b63f4b5724cd93d728b061395133e414f439a2d9404cdaddda390da",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-0.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-1.json": "2f66132bc9fa9abbcd8d037471f5c9d73c56d7b8ca95658ff82497717e0c921d",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-1.log": "1f2fab952b1958477cdf63e1334b31d4fbabce2cf45c76af2c792eeb0d0f7874",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-1.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-1.progress.json": "d2ed5e2158d23d0cc46d288437d3e14b0f7ae6d7f6667adee0db8393d24dbdd8",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-1.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-2.json": "4a3746d352b2d6e0120563ed7923e6a9ac5f75331ef32a21031c7df70dfa0e4c",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-2.log": "1fe32bd836baf14c3a6ec1af4646d93a7dd99f26af0517567482983d840ec5d7",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-2.margins.npy": "0ef3f8338e0bce4bad4fe5a002bc456fd26d1f8a1cf0b956cd6a8fb1c2e890f7",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-2.progress.json": "8ca52057638b1ec2019ab2c05dbd9878a926e15ea1c3f4410b7a5cf793d77412",
+    "results/parallel-perf-20261106/paired/wide-4096-candidate/mps-2.ubj": "ae1f5087a6e225484ed6a00eb86380b7bd6a8b538b5c7be466db28cabe1780b8",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-0.json": "6651228fe37d0bf84ab2001227d0e2ac734282ccf058ae2a6fe37a3462acc34b",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-0.log": "0292ce5c537a5817767b7fc7565e30b4ece7f588091b9696c5268c33de78b767",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-0.margins.npy": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-0.progress.json": "263141f4c2798658e73b118bb40312ea9ee8161d392e7f7c122badba3f836380",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-0.ubj": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-1.json": "de7ff8f8e0b30f8206254cbe9b3e3b7e26df3064fc14603e9df6136e9a7bfb51",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-1.log": "968e5c184553203d05a587d7a66a55ba73873986f6f5e3f0f7a201df4542f91e",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-1.margins.npy": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-1.progress.json": "450761ba8cc911ceff7036cf8c7fd988b6d401a0c5ae1db932ed8711472f27c9",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-1.ubj": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-2.json": "b700234bf5e5d5304daada15736df06b1df689395b7354385a9745eeabd0dc1b",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-2.log": "4114350cd7a2e6d2f0b0f5f4848f26b8ffbb883011490c91e4b0d97dbd2699a5",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-2.margins.npy": "9378a8c9e42aaa9ee421bf7de6eab3ad3992b999dfda97dbf1d1345d72c1ef4d",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-2.progress.json": "2564c5f15aac552d18f88b15525f741ae96cae0962ad68a4ba90524972cf91c6",
+    "results/parallel-perf-20261106/paired/wide-4096-cpu/cpu-2.ubj": "d6db1d7d6baace3717532a9b611096d76846f2a6d68374fae597df09afb60850",
+    "results/parallel-perf-20261106/paired.log": "98e02237272bd1b7096cac3264a965395369af791bf2a46c0f317f654d318bf7",
+    "results/parallel-perf-20261106/paired.py": "ef1d9cbd90dc9d300c653a91f69799b32f6dabd0e1c0285fbf92ebadfe1fbbe9",
+    "results/parallel-perf-20261106/quantized_bound_test.mm": "43b839124718d091cc11d270f34b08526a5d239e993b0eacb4ce3f846604c0f5",
+    "results/parallel-perf-20261106/record.py": "2681c6f87c119f672a44c2a8c0f5d434d952407991dd15890a0e899d3541514a",
+    "results/parallel-perf-20261106/sample-v2.log": "86238c20c423f0a78d30743ac7b94d521b49c6873828cdf557e75a72d5072468",
+    "results/parallel-perf-20261106/sample-v2.sh": "e4e694c5f9f044ff87c020cbe8dd6405b3864181a5450e38090b1dba7f598391",
+    "results/parallel-perf-20261106/sample.log": "8c3ecb8347ae63729ba855d29fa36a65acd7840f7643d7512114260ebb89f9b5",
+    "results/parallel-perf-20261106/sample.sh": "c74ad326ba897365b975e1c7b1e2b6d5917735b060077fb47f2559af4f6a1467",
+    "results/parallel-perf-20261106/split-bound-prototype/run.log": "d75a06d7d5ad89c0b420fc33cfd68fb6363fa13b1486f4a5a985edf6076737a1",
+    "results/parallel-perf-20261106/split-bound-prototype/run.sh": "51adce28e644423c011daf7c4aa1ec92695b54eade41b93bd389c47cd51924c2",
+    "results/parallel-perf-20261106/split-bound-prototype/source.json": "f99b83730f3d7212c0360b803a44bca3460a671aecbf288426bafa5fc3698721",
+    "results/parallel-perf-20261106/split-bound-prototype/timings.json": "4bb176d6bebdcc442a064c6c6c9eccb02d9aa5312682b8f1c1e612277124b9bf",
+    "results/parallel-perf-20261106/split-exact-compare-v1.metal": "9891f7af3044a975767cd80fe5f5c12a3dcfc6a3b543a35ba12bb3835ce72cfa",
+    "results/parallel-perf-20261106/split-fast-bound-v1.metal": "b77c9ae004ea7dcc3f7815b8f216a322f35473dde643c70948be60b899fe0dbb",
+    "results/parallel-perf-20261106/split-promoted-source.json": "3c03fdddabf18fae5af2c42f8ca9d6aa844cb72a73234bce3126a5716157396f",
+    "results/parallel-perf-20261106/validate.log": "f44b7656c43ec44aa914db2f8763cf680cd4c1b378ea41f5e1d8ede11a2517ac",
+    "results/parallel-perf-20261106/validate.sh": "ceee3b1486f21ddf5015da89bf4da00b690ca70a50c81cdb36ffbd4aa2b5de92",
+    "results/parallel-perf-20261106/wheel.json": "b2d4f94699a191445de539d25ab7285921cab1dd5c2157dd54e31a21c7e97ecc"
+  }
+}

@@ -106,6 +106,15 @@ turn a historical full run into a current full run.
 
 ## Recorded results
 
+- **Batched split commands, wide histogram dispatch and native conservative
+  bounds:** eight native groups and 300 Python tests passed, with one expected
+  empty-dataset warning, followed by three installed-package workflows. Direct
+  quantized-bound containment covers 1,044,483 cases; the scalar oracle checks
+  1,992 split tasks. Compressed consumers pass 318 cases and 73,234,428 exact
+  fields. New mapped-parent inputs exercise queued staging ownership. All 18 MPS
+  models, margin arrays and metric histories match before/after on two synthetic
+  datasets and full-row HIGGS. This is focused acceptance, not a full-suite rerun
+  or NVIDIA execution. [Sources, all 27 timings and checks](../validation/parallel-tuning-m3.json).
 - **Conservative quantized split screening and identical-gain reuse:** five native
   groups and 178 Python tests passed, followed by three installed-package workflows.
   The expanded independent CUDA-formula oracle checks 1,992 tasks and 426,234 bins,

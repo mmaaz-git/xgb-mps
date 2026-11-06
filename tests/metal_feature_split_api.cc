@@ -8,6 +8,8 @@
 #include <numeric>
 #include <stdexcept>
 #include <vector>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "../xgboost/src/common/metal_gradient.h"
 #include "../xgboost/src/common/metal_histogram.h"
@@ -30,6 +32,38 @@ template <typename F> void Reject(F fn) {
 template <typename T> void Same(T const& a, T const& b, char const* message) {
   Check(std::memcmp(&a, &b, sizeof(T)) == 0, message);
 }
+
+// Read-only mappings cannot be borrowed as writable Metal memory. They force
+// distinct integer/precise staging inputs while the GPU command is still queued.
+class ReadOnlyParents {
+  void* data_;
+  std::size_t count_, stride_;
+ public:
+  ReadOnlyParents(ReadOnlyParents const&) = delete;
+  ReadOnlyParents& operator=(ReadOnlyParents const&) = delete;
+  ReadOnlyParents(std::vector<GradientPairInt64> const& integers,
+                  std::vector<GradientPairPrecise> const& precise) : count_{integers.size()} {
+    static_assert(sizeof(GradientPairInt64) == sizeof(GradientPairPrecise));
+    Check(integers.size() == precise.size(), "Parent shape mismatch");
+    auto bytes = count_ * sizeof(GradientPairInt64), page = std::size_t(getpagesize());
+    stride_ = ((bytes + page - 1) / page) * page;
+    data_ = mmap(nullptr, 2 * stride_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    Check(data_ != MAP_FAILED, "Cannot allocate read-only parent inputs");
+    std::memcpy(data_, integers.data(), bytes);
+    std::memcpy(static_cast<char*>(data_) + stride_, precise.data(), bytes);
+    if (mprotect(data_, 2 * stride_, PROT_READ)) {
+      munmap(data_, 2 * stride_);
+      throw std::runtime_error("Cannot protect parent inputs");
+    }
+  }
+  ~ReadOnlyParents() { munmap(data_, 2 * stride_); }
+  Span<GradientPairInt64 const> Integers() const {
+    return {static_cast<GradientPairInt64 const*>(data_), count_};
+  }
+  Span<GradientPairPrecise const> Precise() const {
+    return {reinterpret_cast<GradientPairPrecise const*>(static_cast<char*>(data_) + stride_), count_};
+  }
+};
 
 void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) {
   Context ctx;
@@ -165,13 +199,15 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
     }
     HostDeviceVector<GradientPairInt64> resident_parents(node_parents, device);
     HostDeviceVector<GradientPairPrecise> resident_fp(node_fp, device);
+    ReadOnlyParents read_only{node_parents, node_fp};
     std::vector<metal::SplitNodeResult> actual, expected;
     std::vector<metal::FeatureSplitResult> selected;
     auto resident_bounds = metal::GatherSplitBounds(
         node_ids, targets, constrained ? bound_state->Lower() : Span<float const>{},
         constrained ? bound_state->Upper() : Span<float const>{}, workspace.get());
     metal::EvaluateFeatureSplits(inputs, features, ptr, cut_span, types, monotone, onehot, 4,
-                                 resident_parents.ConstDeviceSpan(), resident_fp.ConstDeviceSpan(),
+                                 repeat == 2 ? read_only.Integers() : resident_parents.ConstDeviceSpan(),
+                                 repeat == 2 ? read_only.Precise() : resident_fp.ConstDeviceSpan(),
                                  resident_bounds, parameters, vector_leaf, &actual, &selected, nullptr,
                                  workspace.get());
     std::vector<metal::SplitWeightCopy> copies;
@@ -183,6 +219,11 @@ void Run(unsigned targets, bool vector_leaf, unsigned onehot, bool constrained) 
         categories.push_back({actual[node].winner, selected[node].cut_begin});
     metal::BuildSplitCategories(cut_span, categories, 1, nullptr, workspace.get());
     auto after = metal::GetStatistics();
+    if (repeat == 2) {
+      Check(after.split_sum_host_input_bytes - before.split_sum_host_input_bytes ==
+                2 * node_parents.size() * sizeof(GradientPairInt64),
+            "Read-only parents did not exercise both integer and precise staging");
+    }
     Check(!resident_cuts.HostCanRead(), "Winner/category handling requested a cut host mirror");
     Check(after.split_bounds_gather_dispatches == before.split_bounds_gather_dispatches + 1 &&
               after.split_bounds_gather_values - before.split_bounds_gather_values == sets.size() * targets &&

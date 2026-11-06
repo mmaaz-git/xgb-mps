@@ -26,8 +26,8 @@ void Same(float actual, float expected) {
         "CUDA reconstructed input value");
 }
 void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
-          std::size_t n = 37, bool lazy = false, float snappy = -1.0f) {
-  constexpr unsigned cols = 7;
+          std::size_t n = 37, bool lazy = false, float snappy = -1.0f,
+          unsigned cols = 7, bool histogram_only = false) {
   constexpr std::size_t base = 73;
   Context ctx;
   ctx.Init({{"device", "cpu"}, {"nthread", "1"}});
@@ -141,10 +141,23 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
     Check(after.ellpack_histogram_dispatches - stats.ellpack_histogram_dispatches ==
               (rows.Data()->empty() ? 0 : 1),
           "Compressed histogram dispatch");
-    if (mode == 0 && rows.Data()->size() >= 16384 && maximum <= 257)
-      Check(after.shared_histogram_dispatches > stats.shared_histogram_dispatches,
-            "Shared compressed histogram path");
+    bool expect_shared = mode == 0 && maximum <= 257 &&
+                         (rows.Data()->size() >= 16384 ||
+                          (cols >= 1024 && rows.Data()->size() >= 4096));
+    Check((after.shared_histogram_dispatches > stats.shared_histogram_dispatches) == expect_shared,
+          "Shared/global compressed histogram path");
     ++histograms;
+  }
+
+  if (histogram_only) {
+    auto after = metal::GetStatistics();
+    Check(after.index_uploads == before.index_uploads &&
+              after.ellpack_restore_dispatches == before.ellpack_restore_dispatches &&
+              after.ellpack_debug_readback_bytes == before.ellpack_debug_readback_bytes,
+          "Wide histograms consume retained compressed storage without host mirrors");
+    if (lazy) Check(!page.HostReadable(), "Wide histograms leave host mirrors absent");
+    ++cases;
+    return;
   }
 
   auto rows = metal::MakeDeviceRows();
@@ -331,6 +344,11 @@ int main() {
         for (float compression : {.4f, 1.f})
           for (bool copy : {false, true})
             Case(257, mode, ratio, copy, 513, true, compression);
+    // A partial row block and partial four-feature tile on wide, short pages.
+    // Full rows use shared accumulation; the selected subset uses the global
+    // fallback. Both must exactly match independently summed CPU histograms.
+    for (unsigned maximum : {2u, 256u})
+      Case(maximum, 0, .5, false, 4099, true, -1.f, 1027, true);
     std::printf(
         "PASS %zu cases / %zu exact fields / %zu histograms / %zu partitions / %zu input chunks\n",
         cases, fields, histograms, partitions, inputs);

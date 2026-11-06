@@ -1,10 +1,118 @@
-# Replaying published CUDA workloads on Apple Metal
+# Performance benchmarks
 
-The purpose is to test workloads on which CUDA demonstrated substantial gains,
-and identify where this backend falls short. A historical GPU/CPU ratio is not a
-prediction for an M3. These runs compare the current CPU `hist` implementation
-with this repository's Metal implementation on the same machine. CUDA is not
-available on this Mac.
+Current results are first; published CUDA references and earlier local milestones
+remain below as historical evidence. Do not combine ratios from different sessions
+or revisions. CUDA is not available on this Mac.
+
+## Current M3 results
+
+The 2026-11-06 comparison starts from `9919a31`, the previous accepted MPS build.
+Three subagents developed and cross-reviewed command batching, wider eligibility
+for existing shared histogram kernels, and cheaper conservative split bounds.
+The candidate's exact source/library hashes and all commands are in the
+[acceptance record](../validation/parallel-tuning-m3.json).
+
+All runs use this M3's eight CPU cores and 10-core GPU, 16 GB RAM, 100 rounds,
+depth 6 and 256 bins. Each variant runs in a fresh process with a warmed runtime;
+CPU/original-MPS/candidate-MPS order rotates across three repeats. Training
+includes quantization and held-out evaluation each round; generation/loading,
+matrix construction and final prediction are separate. Synthetic data has 64
+informative columns and no column sampling. HIGGS uses all 10.5M training and
+500K test rows, but 100 rather than the historical publication's 1,000 rounds.
+
+| Workload | CPU median | Previous MPS median | New MPS median | Previous / new MPS |
+| --- | ---: | ---: | ---: | ---: |
+| 100K × 1,024 synthetic | 18.385 s | 16.155 s | 15.173 s | 1.06× |
+| 25K × 4,096 synthetic | 35.605 s | 45.637 s | 31.405 s | 1.45× |
+| 10.5M × 28 HIGGS | 33.690 s | 33.131 s | 31.244 s | 1.06× |
+
+All six synthetic before/after pairs improve. At 4,096 columns the median of
+the **paired** improvement ratios is 1.25×, below the 1.45× ratio of medians
+because timings vary. One HIGGS pair regresses by 0.9%; its median improvement is
+modest. CPU wins two of three 4,096-column pairs despite having a higher median.
+New MPS is faster than CPU in all three pairs for each other workload. These
+observations do not establish a general advantage over CPU or CUDA.
+
+| Workload / variant | Training runs in repeat order, seconds |
+| --- | --- |
+| 1,024 columns CPU | 17.724, 18.385, 18.398 |
+| 1,024 columns previous MPS | 17.515, 15.943, 16.155 |
+| 1,024 columns new MPS | 15.522, 15.173, 15.021 |
+| 4,096 columns CPU | 27.045, 35.605, 36.500 |
+| 4,096 columns previous MPS | 38.307, 47.251, 45.637 |
+| 4,096 columns new MPS | 30.737, 31.405, 40.664 |
+| HIGGS CPU | 33.690, 32.938, 33.929 |
+| HIGGS previous MPS | 33.173, 33.131, 30.999 |
+| HIGGS new MPS | 31.222, 31.244, 31.277 |
+
+Including matrix setup, median CPU/previous-MPS/new-MPS times are
+18.581 / 16.356 / 15.392 seconds, 35.801 / 45.856 / 31.612 seconds, and
+35.041 / 33.882 / 32.495 seconds, respectively.
+
+The changes address three specific costs:
+
+- Resident split evaluation reduces command completions from five to two and
+  reuses encoders across nodes. Separate integer/precise parent staging protects
+  queued inputs; public calls remain synchronous. A separate baseline CPU sample
+  found 3,329 of 3,469 main-thread samples waiting for Metal completion. This
+  includes necessary GPU work and is not an estimate of removable overhead.
+- Dense compressed pages with at least 1,024 features can use existing shared
+  histogram kernels at 4,096 selected rows, retaining the prior 16,384-row rule
+  and all capacity guards. No histogram arithmetic changed. Median histogram
+  GPU time falls from 3.796 to 2.786 seconds at 1,024 columns and 10.531 to 6.094
+  seconds at 4,096 columns. HIGGS's histogram time changes from 6.557 to 6.816
+  seconds; it does not use the new wide-page condition.
+- Split screening constructs widened FP32 intervals directly from integer sums,
+  retaining binary64 scoring for survivors and unbounded fallback when validity
+  is uncertain. The standalone dense kernel improves 1.11–1.21×. Missing-data
+  microbenchmarks are mostly unchanged, with a 7% regression in one shape.
+
+**Split-counter boundaries changed.** After allocation readback, the baseline
+sums four command intervals; the candidate measures one contiguous span through
+task/gather, scoring, finalization and winner extraction. This includes gaps
+between encoders and scheduling effects. The first readback and standalone
+operations remain separately timed. At 4,096 columns the counter rises from
+12.296 to 13.881 seconds; this does not establish a scoring-kernel regression,
+and the entire rise cannot be attributed to instrumentation alone. Use whole
+training for the combined comparison and unchanged-boundary standalone kernel
+timings for the bound optimization. GPU families can overlap.
+
+All 18 MPS models, prediction arrays and per-round metric histories match
+before/after and reproduce the prior saved outputs exactly. All nine CPU controls
+also reproduce their saved outputs. Each MPS model's CPU prediction matches
+exactly; independently trained CPU/MPS models remain different. Eight native
+groups, 300 Python tests and three installed-package workflows passed. New
+checks include 1,044,483 bound cases, queued staging ownership and wide compressed
+histograms. No precision tolerance changed and no NVIDIA execution was performed.
+
+This task ran no concurrent builds/tests/benchmarks during timing. Unrelated
+sessions and applications were not controlled. All runs used AC power and passed
+clock checks; maximum wall/monotonic discrepancy was 0.0091 seconds. System-wide
+swap was substantial, and peak process RSS ranged from 2.35 to 6.58 GB. All raw
+timings, quality differences, memory/power observations, source hashes and
+microbenchmark commands are retained in the acceptance record.
+
+Reproduce current-build profiles in new output directories. For before/after
+comparisons, use `--package-dir` with isolated packages; the record lists the
+exact rotated worker commands used above.
+
+```sh
+.venv/bin/python scripts/profile_training.py --case wide --rows 100000 \
+  --features 1024 --informative-features 64 --rounds 100 --threads 8 \
+  --repeats 3 --output results/profile-wide-1024
+.venv/bin/python scripts/profile_training.py --case wide --rows 25000 \
+  --features 4096 --informative-features 64 --rounds 100 --threads 8 \
+  --repeats 3 --output results/profile-wide-4096
+.venv/bin/python scripts/profile_training.py --case higgs --rounds 100 \
+  --threads 8 --repeats 3 --output results/profile-higgs
+```
+
+## Published CUDA workloads and earlier milestones
+
+The replays below test workloads on which CUDA demonstrated substantial gains,
+and identify where this backend fell short at each recorded revision. A historical
+GPU/CPU ratio is not a prediction for an M3. Each local comparison uses CPU `hist`
+and the corresponding Metal implementation on the same machine.
 
 ## Primary sources
 
