@@ -1057,12 +1057,16 @@ class MetalRows final : public DeviceRows {
     CHECK_LE(splits.size(), std::numeric_limits<std::uint32_t>::max());
     std::vector<Block> blocks;
     std::size_t largest_block_count = 0;
+    bool full_coverage = true;
+    std::size_t covered = 0;
     for (std::size_t node = 0; node < splits.size(); ++node) {
       auto& split = splits[node];
       CHECK_LE(split.cat_begin, categories.size());
       CHECK_LE(split.cat_size, categories.size() - split.cat_begin);
       CHECK_LE(split.end, size_);
       CHECK_LE(split.begin, split.end);
+      full_coverage = full_coverage && split.begin == covered;
+      covered = split.end;
       split.block_begin = blocks.size();
       for (auto begin = split.begin; begin < split.end; begin += 256)
         blocks.push_back(
@@ -1071,6 +1075,7 @@ class MetalRows final : public DeviceRows {
       largest_block_count =
           std::max(largest_block_count, std::size_t{split.block_end - split.block_begin});
     }
+    full_coverage = full_coverage && covered == size_;
     bool serial_prefix = largest_block_count <= 16;
     std::vector<std::uint64_t> result(splits.size(), 0);
     if (blocks.empty()) return result;
@@ -1116,7 +1121,10 @@ class MetalRows final : public DeviceRows {
       [encoder setBuffer:cats.buffer offset:cats.offset atIndex:7];
       [encoder setBuffer:ranks_ offset:0 atIndex:8];
       [encoder setBuffer:counts offset:0 atIndex:9];
-      [encoder setBuffer:saved_rows_ offset:0 atIndex:10];
+      // A complete ordered cover can scatter into the spare buffer and swap
+      // ownership. Partial or unordered segments retain the copy/in-place path
+      // so rows outside the selected ranges are preserved.
+      [encoder setBuffer:(full_coverage ? rows_ : saved_rows_) offset:0 atIndex:10];
       [encoder setBytes:&p length:sizeof(p) atIndex:11];
       if (page->IsCompressed()) {
         [encoder setBuffer:page->tail offset:0 atIndex:12];
@@ -1145,8 +1153,8 @@ class MetalRows final : public DeviceRows {
       encoder = [command computeCommandEncoder];
       CHECK(encoder);
       [encoder setComputePipelineState:rt_.partition_scatter_pipeline];
-      [encoder setBuffer:rows_ offset:0 atIndex:0];
-      [encoder setBuffer:saved_rows_ offset:0 atIndex:1];
+      [encoder setBuffer:(full_coverage ? saved_rows_ : rows_) offset:0 atIndex:0];
+      [encoder setBuffer:(full_coverage ? rows_ : saved_rows_) offset:0 atIndex:1];
       [encoder setBuffer:split_buffer offset:0 atIndex:2];
       [encoder setBuffer:block_buffer offset:0 atIndex:3];
       [encoder setBuffer:ranks_ offset:0 atIndex:4];
@@ -1156,6 +1164,7 @@ class MetalRows final : public DeviceRows {
               threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
       [encoder endEncoding];
       CompleteTraining(command);
+      if (full_coverage) std::swap(rows_, saved_rows_);
       this->MarkReady();
       std::memcpy(result.data(), left.contents, result.size() * sizeof(std::uint64_t));
       partition_dispatches.fetch_add(1, std::memory_order_relaxed);
@@ -11305,7 +11314,12 @@ class MetalCudaSketch final : public CudaSketch {
       p.mode = 1;
       CSDispatch(command, rt_.cs_sort_keys_pipeline, count, {source, records, by_feature}, &p,
                    {source_offset, 0, 0});
-      records = EncodeRadixRecords(rt_, command, by_feature, shape);
+      // Feature IDs lie in [0, columns_). Higher zero-key radix passes are
+      // stable identity operations, so omit them without changing value/tie order.
+      std::uint32_t feature_bits = 0;
+      for (auto key = columns_ - 1; key; key >>= 1) ++feature_bits;
+      records = feature_bits ? EncodeRadixRecords(rt_, command, by_feature, shape, feature_bits)
+                             : by_feature;
       CSDeviceSummary raw{Allocate(rt_, count * sizeof(WQSummary<>::Entry)),
                           Allocate(rt_, (std::size_t{columns_} + 1) * sizeof(std::uint64_t)),
                           count};

@@ -1,0 +1,2044 @@
+{
+  "status": "accepted-targeted-gpu-improvements",
+  "hardware": "Apple M3, 10-core GPU, 16 GB RAM",
+  "baseline": {
+    "revision": "581f4c1a673d2c27e5ee19e583ce6a1ce2497653",
+    "source_sha256": {
+      "xgboost/src/common/metal_histogram.metal": "2542c32c3d1a2bc8f1cc4346ffd6f5511fc56b59f5a9925d34205a8e92c8fc0f",
+      "xgboost/src/common/metal_histogram.mm": "d8ef71da9028429694fdc0ad2b562359e94612ab25d393c03409d0e47b83d7b1"
+    },
+    "library_sha256": "1de178ec1c0de8910152a2172180b4669d3b4bc07769027269fa52784cea70c5"
+  },
+  "partition_only_candidate": {
+    "base_revision": "581f4c1a673d2c27e5ee19e583ce6a1ce2497653",
+    "source_sha256": {
+      "xgboost/src/common/metal_histogram.mm": "ad40a8a861dce76a79b0eb0a98a7feff73069e2b5066431e66a08a939f2052e4",
+      "xgboost/src/common/metal_histogram.metal": "47915fd956dde85695f2b43fb87d9f7342b55e6240e14b0be756b746899782ff",
+      "tests/metal_compressed_consumers_api.cc": "7460f0720a549d7fe24a55023df1a5421f340c65b4741ef0d7d3bb2b62cfb69b",
+      "scripts/metal_partition_benchmark.mm": "7daa2b2f3323aa2ecf5aff7947dae0bf506d8507891964cdd6f7ea292952ccc7"
+    },
+    "library_sha256": "cc9aeb00702841c6a29ab47fd61e8b1e77014d947630c109be8fa3e3907f9563"
+  },
+  "final_candidate": {
+    "base_revision": "581f4c1a673d2c27e5ee19e583ce6a1ce2497653",
+    "source_sha256": {
+      "xgboost/src/common/metal_histogram.mm": "b553569ce6edf36d81267f0f8aea86ddfb3434e17eae1b315d5472670c355ff0",
+      "xgboost/src/common/metal_histogram.metal": "47915fd956dde85695f2b43fb87d9f7342b55e6240e14b0be756b746899782ff",
+      "tests/metal_compressed_consumers_api.cc": "7460f0720a549d7fe24a55023df1a5421f340c65b4741ef0d7d3bb2b62cfb69b",
+      "tests/metal_cuda_sketch_api.cc": "2a01b918d35e6aad7fbae584ac6c8e94c38baef91543221265cda40e57bf1d08",
+      "scripts/metal_partition_benchmark.mm": "7daa2b2f3323aa2ecf5aff7947dae0bf506d8507891964cdd6f7ea292952ccc7"
+    },
+    "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f"
+  },
+  "changes": [
+    "Complete ordered row partitions scatter directly into the existing spare buffer, then swap ownership. Partial/unordered ranges keep the original copy/in-place path.",
+    "Stable feature-key radix sorting uses only the bits needed for feature IDs in [0, columns). All-zero high-key passes are omitted; the one-feature case skips the feature sort."
+  ],
+  "measurement": "Two sequential experiments, each 18 fresh workers: three CPU controls, three baseline MPS and three candidate MPS per workload. 100 rounds, eight CPU threads, warmed runtime; loading/setup/final prediction excluded from training and reported separately. This task ran no concurrent builds/tests/other benchmarks; unrelated sessions and applications were not controlled.",
+  "partition_only": {
+    "orders": [
+      [
+        "cpu",
+        "baseline",
+        "candidate"
+      ],
+      [
+        "candidate",
+        "cpu",
+        "baseline"
+      ],
+      [
+        "baseline",
+        "candidate",
+        "cpu"
+      ]
+    ],
+    "cases": {
+      "wide": {
+        "medians": {
+          "cpu": {
+            "training_seconds": 9.783394208177924,
+            "dmatrix_seconds": 0.3328778329305351,
+            "first_round_seconds": 2.076067208079621,
+            "histogram_seconds": 0.0,
+            "sketch_seconds": 0.0,
+            "partition_seconds": 0.0
+          },
+          "baseline": {
+            "training_seconds": 11.580120832892135,
+            "dmatrix_seconds": 0.2994437909219414,
+            "first_round_seconds": 2.4290530409198254,
+            "histogram_seconds": 1.964377872,
+            "sketch_seconds": 1.858578365,
+            "partition_seconds": 0.858310221
+          },
+          "candidate": {
+            "training_seconds": 11.646954374853522,
+            "dmatrix_seconds": 0.26771900011226535,
+            "first_round_seconds": 2.5124808750115335,
+            "histogram_seconds": 1.952237854,
+            "sketch_seconds": 1.98181899,
+            "partition_seconds": 0.800086233
+          }
+        },
+        "variants": {
+          "cpu": {
+            "training_seconds": [
+              9.783394208177924,
+              9.721658790949732,
+              12.552626125048846
+            ],
+            "dmatrix_seconds": [
+              0.4924444160424173,
+              0.28252970799803734,
+              0.3328778329305351
+            ],
+            "first_round_seconds": [
+              2.076067208079621,
+              2.0070854171644896,
+              2.486436374951154
+            ],
+            "histogram_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "sketch_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "partition_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "accuracy": [
+              0.79727,
+              0.79727,
+              0.79727
+            ],
+            "logloss": [
+              0.4310167794488399,
+              0.4310167794488399,
+              0.4310167794488399
+            ],
+            "prediction_seconds": [
+              0.02104975003749132,
+              0.020990833174437284,
+              0.02629612502641976
+            ],
+            "clock_disagreement_seconds": [
+              0.00017178989946842194,
+              0.00017110025510191917,
+              0.00022006826475262642
+            ],
+            "peak_rss_bytes": [
+              2140667904,
+              2366554112,
+              2369388544
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 15360.00M  used = 14496.62M  free = 863.38M  (encrypted)",
+                "total = 16384.00M  used = 15454.50M  free = 929.50M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18939.44M  free = 516.56M  (encrypted)",
+                "total = 19456.00M  used = 18875.44M  free = 580.56M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18258.38M  free = 1197.62M  (encrypted)",
+                "total = 19456.00M  used = 18042.31M  free = 1413.69M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "1de178ec1c0de8910152a2172180b4669d3b4bc07769027269fa52784cea70c5"
+          },
+          "baseline": {
+            "training_seconds": [
+              13.501756082987413,
+              11.580120832892135,
+              11.560535999946296
+            ],
+            "dmatrix_seconds": [
+              0.3379420409910381,
+              0.27947104210034013,
+              0.2994437909219414
+            ],
+            "first_round_seconds": [
+              3.890622708015144,
+              2.2886996250599623,
+              2.4290530409198254
+            ],
+            "histogram_seconds": [
+              1.964377872,
+              1.964529568,
+              1.935131571
+            ],
+            "sketch_seconds": [
+              2.288767908,
+              1.787180073,
+              1.858578365
+            ],
+            "partition_seconds": [
+              0.867449693,
+              0.858310221,
+              0.848699284
+            ],
+            "accuracy": [
+              0.79628,
+              0.79628,
+              0.79628
+            ],
+            "logloss": [
+              0.43133505066598254,
+              0.43133505066598254,
+              0.43133505066598254
+            ],
+            "prediction_seconds": [
+              0.08598279091529548,
+              0.08485837513580918,
+              0.07988595799542964
+            ],
+            "clock_disagreement_seconds": [
+              0.00023781158961355686,
+              0.0002042937558144331,
+              0.00020327884703874588
+            ],
+            "peak_rss_bytes": [
+              2242756608,
+              2933522432,
+              2933571584
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 16384.00M  used = 15454.50M  free = 929.50M  (encrypted)",
+                "total = 18432.00M  used = 17299.88M  free = 1132.12M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18859.44M  free = 596.56M  (encrypted)",
+                "total = 19456.00M  used = 18832.50M  free = 623.50M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18824.50M  free = 631.50M  (encrypted)",
+                "total = 20480.00M  used = 19127.75M  free = 1352.25M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "1de178ec1c0de8910152a2172180b4669d3b4bc07769027269fa52784cea70c5"
+          },
+          "candidate": {
+            "training_seconds": [
+              11.922388750128448,
+              11.646954374853522,
+              11.55100708315149
+            ],
+            "dmatrix_seconds": [
+              0.26541529200039804,
+              0.26771900011226535,
+              0.28115641698241234
+            ],
+            "first_round_seconds": [
+              2.764750000089407,
+              2.5124808750115335,
+              2.2873110407963395
+            ],
+            "histogram_seconds": [
+              1.952237854,
+              1.947834652,
+              1.978113557
+            ],
+            "sketch_seconds": [
+              2.072058532,
+              1.98181899,
+              1.770108406
+            ],
+            "partition_seconds": [
+              0.807121878,
+              0.79324701,
+              0.800086233
+            ],
+            "accuracy": [
+              0.79628,
+              0.79628,
+              0.79628
+            ],
+            "logloss": [
+              0.43133505066598254,
+              0.43133505066598254,
+              0.43133505066598254
+            ],
+            "prediction_seconds": [
+              0.08899237518198788,
+              0.08042679191567004,
+              0.08019054098986089
+            ],
+            "clock_disagreement_seconds": [
+              0.00021128077059984207,
+              0.0002047247253358364,
+              0.0002037971280515194
+            ],
+            "peak_rss_bytes": [
+              2938765312,
+              2933735424,
+              2933522432
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 18432.00M  used = 17235.88M  free = 1196.12M  (encrypted)",
+                "total = 19456.00M  used = 18205.75M  free = 1250.25M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18181.75M  free = 1274.25M  (encrypted)",
+                "total = 19456.00M  used = 18947.44M  free = 508.56M  (encrypted)"
+              ],
+              [
+                "total = 20480.00M  used = 19047.75M  free = 1432.25M  (encrypted)",
+                "total = 20480.00M  used = 19001.94M  free = 1478.06M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "cc9aeb00702841c6a29ab47fd61e8b1e77014d947630c109be8fa3e3907f9563"
+          }
+        },
+        "train_shape": [
+          1000000,
+          128
+        ],
+        "test_shape": [
+          100000,
+          128
+        ],
+        "params": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "rounds": 100,
+        "dataset": {
+          "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+          "numpy_version": "2.5.4"
+        },
+        "ratio_of_median_times": {
+          "training_seconds": 0.9942617151393943,
+          "histogram_seconds": 1.0062185137815691,
+          "sketch_seconds": 0.9378143888912882,
+          "partition_seconds": 1.072772140799978
+        },
+        "paired_training_ratios": [
+          1.132470712535854,
+          0.9942617151393943,
+          1.0008249425116107
+        ],
+        "paired_sketch_ratios": [
+          1.1045865127134353,
+          0.901787742481971,
+          1.0499799665942042
+        ],
+        "paired_partition_ratios": [
+          1.0747443684087572,
+          1.08202137566204,
+          1.0607597643790478
+        ],
+        "independent_cpu_mps_quality_note": "CPU and MPS train with different sketches; comparable quality is not bitwise training equivalence. Each MPS worker also checked exact CPU prediction of its own model."
+      },
+      "higgs": {
+        "medians": {
+          "cpu": {
+            "training_seconds": 53.89443224994466,
+            "dmatrix_seconds": 1.4147901248652488,
+            "first_round_seconds": 6.0417556669563055,
+            "histogram_seconds": 0.0,
+            "sketch_seconds": 0.0,
+            "partition_seconds": 0.0
+          },
+          "baseline": {
+            "training_seconds": 47.21141808386892,
+            "dmatrix_seconds": 1.9280125838704407,
+            "first_round_seconds": 14.135367665905505,
+            "histogram_seconds": 6.903265587,
+            "sketch_seconds": 5.557942227,
+            "partition_seconds": 8.403150695
+          },
+          "candidate": {
+            "training_seconds": 42.18452599993907,
+            "dmatrix_seconds": 2.2383925830945373,
+            "first_round_seconds": 10.931199958082289,
+            "histogram_seconds": 6.437019527,
+            "sketch_seconds": 5.07445689,
+            "partition_seconds": 7.305532718
+          }
+        },
+        "variants": {
+          "cpu": {
+            "training_seconds": [
+              57.11761495890096,
+              53.89443224994466,
+              37.459508874919266
+            ],
+            "dmatrix_seconds": [
+              1.4328286671079695,
+              1.2758124170359224,
+              1.4147901248652488
+            ],
+            "first_round_seconds": [
+              6.628157500177622,
+              6.01511341589503,
+              6.0417556669563055
+            ],
+            "histogram_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "sketch_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "partition_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "accuracy": [
+              0.741512,
+              0.741512,
+              0.741512
+            ],
+            "logloss": [
+              0.5112943479298138,
+              0.5112943479298138,
+              0.5112943479298138
+            ],
+            "prediction_seconds": [
+              0.2871999170165509,
+              0.3345010420307517,
+              0.14689033292233944
+            ],
+            "clock_disagreement_seconds": [
+              0.0010051983408629894,
+              0.0009477701969444752,
+              0.0006599635817110538
+            ],
+            "peak_rss_bytes": [
+              4900077568,
+              4961796096,
+              5275435008
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 19456.00M  used = 17946.25M  free = 1509.75M  (encrypted)",
+                "total = 17408.00M  used = 16538.00M  free = 870.00M  (encrypted)"
+              ],
+              [
+                "total = 20480.00M  used = 18886.62M  free = 1593.38M  (encrypted)",
+                "total = 18432.00M  used = 16821.12M  free = 1610.88M  (encrypted)"
+              ],
+              [
+                "total = 20480.00M  used = 18892.88M  free = 1587.12M  (encrypted)",
+                "total = 19456.00M  used = 17957.19M  free = 1498.81M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "1de178ec1c0de8910152a2172180b4669d3b4bc07769027269fa52784cea70c5"
+          },
+          "baseline": {
+            "training_seconds": [
+              46.26654079207219,
+              47.21141808386892,
+              50.93751091696322
+            ],
+            "dmatrix_seconds": [
+              1.7908485839143395,
+              2.6205263750161976,
+              1.9280125838704407
+            ],
+            "first_round_seconds": [
+              15.62158504105173,
+              14.135367665905505,
+              10.969383124960586
+            ],
+            "histogram_seconds": [
+              6.476738114,
+              6.903265587,
+              7.339395961
+            ],
+            "sketch_seconds": [
+              6.007526303,
+              5.557942227,
+              5.12587039
+            ],
+            "partition_seconds": [
+              7.917875652,
+              8.403150695,
+              8.858594808
+            ],
+            "accuracy": [
+              0.742178,
+              0.742178,
+              0.742178
+            ],
+            "logloss": [
+              0.5109559910015393,
+              0.5109559910015393,
+              0.5109559910015393
+            ],
+            "prediction_seconds": [
+              0.14917495800182223,
+              0.16717937495559454,
+              0.17164120892994106
+            ],
+            "clock_disagreement_seconds": [
+              0.0008153652306646109,
+              0.0008278572931885719,
+              0.0008969809859991074
+            ],
+            "peak_rss_bytes": [
+              4799447040,
+              4008083456,
+              4881809408
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 17408.00M  used = 16514.00M  free = 894.00M  (encrypted)",
+                "total = 19456.00M  used = 18367.12M  free = 1088.88M  (encrypted)"
+              ],
+              [
+                "total = 18432.00M  used = 16797.12M  free = 1634.88M  (encrypted)",
+                "total = 20480.00M  used = 19523.12M  free = 956.88M  (encrypted)"
+              ],
+              [
+                "total = 20480.00M  used = 19371.12M  free = 1108.88M  (encrypted)",
+                "total = 19456.00M  used = 18236.81M  free = 1219.19M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "1de178ec1c0de8910152a2172180b4669d3b4bc07769027269fa52784cea70c5"
+          },
+          "candidate": {
+            "training_seconds": [
+              42.5773876667954,
+              38.18721216684207,
+              42.18452599993907
+            ],
+            "dmatrix_seconds": [
+              2.2383925830945373,
+              1.3507899581454694,
+              2.6624162499792874
+            ],
+            "first_round_seconds": [
+              10.931199958082289,
+              9.80144437495619,
+              12.406945791095495
+            ],
+            "histogram_seconds": [
+              6.437019527,
+              6.321851418,
+              7.643323452
+            ],
+            "sketch_seconds": [
+              5.457068184,
+              5.07445689,
+              5.013265136
+            ],
+            "partition_seconds": [
+              7.305532718,
+              7.127480923,
+              7.459806392
+            ],
+            "accuracy": [
+              0.742178,
+              0.742178,
+              0.742178
+            ],
+            "logloss": [
+              0.5109559910015393,
+              0.5109559910015393,
+              0.5109559910015393
+            ],
+            "prediction_seconds": [
+              0.14371449989266694,
+              0.13139716582372785,
+              0.13776054186746478
+            ],
+            "clock_disagreement_seconds": [
+              0.0007473467849195004,
+              0.0006719254888594151,
+              0.0007428789976984262
+            ],
+            "peak_rss_bytes": [
+              4253171712,
+              4849156096,
+              4102897664
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 19456.00M  used = 17838.88M  free = 1617.12M  (encrypted)",
+                "total = 19456.00M  used = 18615.31M  free = 840.69M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18479.31M  free = 976.69M  (encrypted)",
+                "total = 20480.00M  used = 18974.62M  free = 1505.38M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 17996.75M  free = 1459.25M  (encrypted)",
+                "total = 20480.00M  used = 18972.88M  free = 1507.12M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "cc9aeb00702841c6a29ab47fd61e8b1e77014d947630c109be8fa3e3907f9563"
+          }
+        },
+        "train_shape": [
+          10500000,
+          28
+        ],
+        "test_shape": [
+          500000,
+          28
+        ],
+        "params": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logitraw",
+          "eval_metric": "error",
+          "verbosity": 3
+        },
+        "rounds": 100,
+        "dataset": {
+          "url": "https://archive.ics.uci.edu/ml/machine-learning-databases/00280/HIGGS.csv.gz",
+          "citation": "Whiteson, D. (2014). HIGGS. https://doi.org/10.24432/C5V312",
+          "rows": 11000000,
+          "features": 28,
+          "label_column": 0,
+          "name": "higgs",
+          "license": "CC BY 4.0",
+          "dtype": "float32",
+          "archive_bytes": 2816407858,
+          "archive_sha256": "ea302c18164d4e3d916a1e2e83a9a8d07069fa6ebc7771e4c0540d54e593b698",
+          "conversion_seconds": 26.2906495409552,
+          "preprocessing": "Original row order; header=None; labels unchanged; no scaling"
+        },
+        "ratio_of_median_times": {
+          "training_seconds": 1.1191643609776987,
+          "histogram_seconds": 1.0724319785025254,
+          "sketch_seconds": 1.0952782430673087,
+          "partition_seconds": 1.1502447554981987
+        },
+        "paired_training_ratios": [
+          1.0866458307434823,
+          1.2363148657618572,
+          1.2074927881621045
+        ],
+        "paired_sketch_ratios": [
+          1.1008706690918635,
+          1.0952782430673087,
+          1.0224614599358386
+        ],
+        "paired_partition_ratios": [
+          1.0838190666768566,
+          1.178979051053435,
+          1.1875100160106138
+        ],
+        "independent_cpu_mps_quality_note": "CPU and MPS train with different sketches; comparable quality is not bitwise training equivalence. Each MPS worker also checked exact CPU prediction of its own model."
+      }
+    }
+  },
+  "combined": {
+    "orders": [
+      [
+        "cpu",
+        "baseline",
+        "candidate"
+      ],
+      [
+        "candidate",
+        "cpu",
+        "baseline"
+      ],
+      [
+        "baseline",
+        "candidate",
+        "cpu"
+      ]
+    ],
+    "cases": {
+      "wide": {
+        "medians": {
+          "cpu": {
+            "training_seconds": 18.6222190419212,
+            "dmatrix_seconds": 0.5713946670293808,
+            "first_round_seconds": 3.6985333329066634,
+            "histogram_seconds": 0.0,
+            "sketch_seconds": 0.0,
+            "partition_seconds": 0.0
+          },
+          "baseline": {
+            "training_seconds": 17.778934832895175,
+            "dmatrix_seconds": 0.5232582499738783,
+            "first_round_seconds": 4.634851250099018,
+            "histogram_seconds": 2.366862696,
+            "sketch_seconds": 2.729856658,
+            "partition_seconds": 0.971561449
+          },
+          "candidate": {
+            "training_seconds": 20.753088583005592,
+            "dmatrix_seconds": 0.6278227500151843,
+            "first_round_seconds": 4.40640270896256,
+            "histogram_seconds": 2.282567829,
+            "sketch_seconds": 2.253823241,
+            "partition_seconds": 0.888331583
+          }
+        },
+        "variants": {
+          "cpu": {
+            "training_seconds": [
+              19.319972124882042,
+              18.6222190419212,
+              18.497964959125966
+            ],
+            "dmatrix_seconds": [
+              0.5713946670293808,
+              0.480907249962911,
+              0.5849088749382645
+            ],
+            "first_round_seconds": [
+              3.6152280420064926,
+              3.6985333329066634,
+              4.510139625053853
+            ],
+            "histogram_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "sketch_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "partition_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "accuracy": [
+              0.79727,
+              0.79727,
+              0.79727
+            ],
+            "logloss": [
+              0.4310167794488399,
+              0.4310167794488399,
+              0.4310167794488399
+            ],
+            "prediction_seconds": [
+              0.039655250031501055,
+              0.03642333298921585,
+              0.03635220881551504
+            ],
+            "clock_disagreement_seconds": [
+              0.0003418056294322014,
+              0.00032810773700475693,
+              0.0003262949176132679
+            ],
+            "peak_rss_bytes": [
+              2300084224,
+              2365571072,
+              2368159744
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 17408.00M  used = 16215.19M  free = 1192.81M  (encrypted)",
+                "total = 17408.00M  used = 16047.19M  free = 1360.81M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18079.56M  free = 1376.44M  (encrypted)",
+                "total = 19456.00M  used = 17895.56M  free = 1560.44M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18183.56M  free = 1272.44M  (encrypted)",
+                "total = 19456.00M  used = 17895.56M  free = 1560.44M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "1de178ec1c0de8910152a2172180b4669d3b4bc07769027269fa52784cea70c5"
+          },
+          "baseline": {
+            "training_seconds": [
+              22.088190875016153,
+              17.778934832895175,
+              17.42092270916328
+            ],
+            "dmatrix_seconds": [
+              0.7546069170348346,
+              0.5232582499738783,
+              0.4745705418754369
+            ],
+            "first_round_seconds": [
+              5.38636212493293,
+              4.634851250099018,
+              3.8164683328941464
+            ],
+            "histogram_seconds": [
+              2.366862696,
+              2.32517483,
+              2.555163165
+            ],
+            "sketch_seconds": [
+              2.729856658,
+              2.582832199,
+              2.740278323
+            ],
+            "partition_seconds": [
+              0.971561449,
+              0.946670358,
+              0.992230368
+            ],
+            "accuracy": [
+              0.79628,
+              0.79628,
+              0.79628
+            ],
+            "logloss": [
+              0.43133505066598254,
+              0.43133505066598254,
+              0.43133505066598254
+            ],
+            "prediction_seconds": [
+              0.24173825001344085,
+              0.09843245800584555,
+              0.1343064159154892
+            ],
+            "clock_disagreement_seconds": [
+              0.0003899717703461647,
+              0.0003129278775304556,
+              0.0003071301616728306
+            ],
+            "peak_rss_bytes": [
+              1900363776,
+              2933342208,
+              2933997568
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 17408.00M  used = 15967.19M  free = 1440.81M  (encrypted)",
+                "total = 18432.00M  used = 17613.06M  free = 818.94M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 17879.56M  free = 1576.44M  (encrypted)",
+                "total = 19456.00M  used = 18381.19M  free = 1074.81M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18181.19M  free = 1274.81M  (encrypted)",
+                "total = 19456.00M  used = 18453.88M  free = 1002.12M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "1de178ec1c0de8910152a2172180b4669d3b4bc07769027269fa52784cea70c5"
+          },
+          "candidate": {
+            "training_seconds": [
+              23.62541512493044,
+              20.753088583005592,
+              17.94249966717325
+            ],
+            "dmatrix_seconds": [
+              0.6278227500151843,
+              0.6421603339258581,
+              0.4494861669372767
+            ],
+            "first_round_seconds": [
+              4.930183624848723,
+              4.40640270896256,
+              3.0482992918696254
+            ],
+            "histogram_seconds": [
+              2.263688323,
+              2.282567829,
+              2.615051186
+            ],
+            "sketch_seconds": [
+              2.414200946,
+              2.253823241,
+              1.923886822
+            ],
+            "partition_seconds": [
+              0.888331583,
+              0.885748407,
+              0.925285603
+            ],
+            "accuracy": [
+              0.79628,
+              0.79628,
+              0.79628
+            ],
+            "logloss": [
+              0.43133505066598254,
+              0.43133505066598254,
+              0.43133505066598254
+            ],
+            "prediction_seconds": [
+              0.18071008403785527,
+              0.1426200841087848,
+              0.14251499995589256
+            ],
+            "clock_disagreement_seconds": [
+              0.00041719432920217514,
+              0.0003696784842759371,
+              0.0003175439778715372
+            ],
+            "peak_rss_bytes": [
+              2897395712,
+              2933637120,
+              2933719040
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 18432.00M  used = 17373.06M  free = 1058.94M  (encrypted)",
+                "total = 19456.00M  used = 17925.19M  free = 1530.81M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 17805.19M  free = 1650.81M  (encrypted)",
+                "total = 19456.00M  used = 18319.56M  free = 1136.44M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18437.88M  free = 1018.12M  (encrypted)",
+                "total = 19456.00M  used = 18375.62M  free = 1080.38M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f"
+          }
+        },
+        "train_shape": [
+          1000000,
+          128
+        ],
+        "test_shape": [
+          100000,
+          128
+        ],
+        "params": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "rounds": 100,
+        "dataset": {
+          "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+          "numpy_version": "2.5.4"
+        },
+        "ratio_of_median_times": {
+          "training_seconds": 0.8566886206737483,
+          "histogram_seconds": 1.0369298410014522,
+          "sketch_seconds": 1.2112115131037466,
+          "partition_seconds": 1.0936923414553414
+        },
+        "paired_training_ratios": [
+          0.9349334501939756,
+          0.8566886206737483,
+          0.9709306413440137
+        ],
+        "paired_sketch_ratios": [
+          1.130749560231512,
+          1.1459781548148478,
+          1.4243448687648426
+        ],
+        "paired_partition_ratios": [
+          1.0936923414553414,
+          1.068780198212651,
+          1.0723503800155854
+        ],
+        "independent_cpu_mps_quality_note": "CPU and MPS train with different sketches; comparable quality is not bitwise training equivalence. Each MPS worker also checked exact CPU prediction of its own model."
+      },
+      "higgs": {
+        "medians": {
+          "cpu": {
+            "training_seconds": 58.595430832821876,
+            "dmatrix_seconds": 1.7489310000091791,
+            "first_round_seconds": 7.6924532919656485,
+            "histogram_seconds": 0.0,
+            "sketch_seconds": 0.0,
+            "partition_seconds": 0.0
+          },
+          "baseline": {
+            "training_seconds": 90.53390158293769,
+            "dmatrix_seconds": 3.893848584033549,
+            "first_round_seconds": 39.94277241593227,
+            "histogram_seconds": 8.376029143,
+            "sketch_seconds": 6.187363263,
+            "partition_seconds": 8.72372784
+          },
+          "candidate": {
+            "training_seconds": 48.28248266596347,
+            "dmatrix_seconds": 1.6149086251389235,
+            "first_round_seconds": 10.131854084087536,
+            "histogram_seconds": 6.712813341,
+            "sketch_seconds": 4.455744055,
+            "partition_seconds": 7.578442869
+          }
+        },
+        "variants": {
+          "cpu": {
+            "training_seconds": [
+              58.595430832821876,
+              49.72264187503606,
+              126.09602104197256
+            ],
+            "dmatrix_seconds": [
+              1.7489310000091791,
+              1.6784003749489784,
+              3.7229183751624078
+            ],
+            "first_round_seconds": [
+              7.6924532919656485,
+              6.744773166021332,
+              12.984593791887164
+            ],
+            "histogram_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "sketch_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "partition_seconds": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "accuracy": [
+              0.741512,
+              0.741512,
+              0.741512
+            ],
+            "logloss": [
+              0.5112943479298138,
+              0.5112943479298138,
+              0.5112943479298138
+            ],
+            "prediction_seconds": [
+              0.2544329999946058,
+              0.23063962487503886,
+              0.4577580001205206
+            ],
+            "clock_disagreement_seconds": [
+              0.0010311785154044628,
+              0.0008760197088122368,
+              0.0017870806623250246
+            ],
+            "peak_rss_bytes": [
+              5217304576,
+              4402446336,
+              4455432192
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 19456.00M  used = 17895.56M  free = 1560.44M  (encrypted)",
+                "total = 18432.00M  used = 17253.00M  free = 1179.00M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18461.38M  free = 994.62M  (encrypted)",
+                "total = 18432.00M  used = 16820.00M  free = 1612.00M  (encrypted)"
+              ],
+              [
+                "total = 20480.00M  used = 19043.38M  free = 1436.62M  (encrypted)",
+                "total = 18432.00M  used = 17540.19M  free = 891.81M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "1de178ec1c0de8910152a2172180b4669d3b4bc07769027269fa52784cea70c5"
+          },
+          "baseline": {
+            "training_seconds": [
+              47.543225874891505,
+              90.53390158293769,
+              103.80090508284047
+            ],
+            "dmatrix_seconds": [
+              1.4197734580375254,
+              4.756543416995555,
+              3.893848584033549
+            ],
+            "first_round_seconds": [
+              12.267283624969423,
+              39.94277241593227,
+              43.081188374897465
+            ],
+            "histogram_seconds": [
+              6.921699116,
+              8.406101066,
+              8.376029143
+            ],
+            "sketch_seconds": [
+              5.46258197,
+              7.794084301,
+              6.187363263
+            ],
+            "partition_seconds": [
+              8.335101562,
+              8.72372784,
+              8.94603431
+            ],
+            "accuracy": [
+              0.742178,
+              0.742178,
+              0.742178
+            ],
+            "logloss": [
+              0.5109559910015393,
+              0.5109559910015393,
+              0.5109559910015393
+            ],
+            "prediction_seconds": [
+              0.1737812920473516,
+              0.2735981249716133,
+              0.30423370795324445
+            ],
+            "clock_disagreement_seconds": [
+              0.0008381700608879328,
+              0.0015934598632156849,
+              0.0018259542994201183
+            ],
+            "peak_rss_bytes": [
+              4112433152,
+              3537338368,
+              3604185088
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 18432.00M  used = 17253.00M  free = 1179.00M  (encrypted)",
+                "total = 19456.00M  used = 18544.38M  free = 911.62M  (encrypted)"
+              ],
+              [
+                "total = 17408.00M  used = 16336.88M  free = 1071.12M  (encrypted)",
+                "total = 20480.00M  used = 19246.00M  free = 1234.00M  (encrypted)"
+              ],
+              [
+                "total = 20480.00M  used = 19110.00M  free = 1370.00M  (encrypted)",
+                "total = 20480.00M  used = 19696.44M  free = 783.56M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "1de178ec1c0de8910152a2172180b4669d3b4bc07769027269fa52784cea70c5"
+          },
+          "candidate": {
+            "training_seconds": [
+              45.16506274999119,
+              48.28248266596347,
+              71.45576125010848
+            ],
+            "dmatrix_seconds": [
+              1.6149086251389235,
+              1.4668080830015242,
+              9.920143957948312
+            ],
+            "first_round_seconds": [
+              8.604109874926507,
+              10.131854084087536,
+              20.578145334031433
+            ],
+            "histogram_seconds": [
+              6.712813341,
+              6.424429326,
+              8.755714894
+            ],
+            "sketch_seconds": [
+              3.695784265,
+              4.455744055,
+              5.949955846
+            ],
+            "partition_seconds": [
+              7.578442869,
+              7.537220859,
+              8.141769053
+            ],
+            "accuracy": [
+              0.742178,
+              0.742178,
+              0.742178
+            ],
+            "logloss": [
+              0.5109559910015393,
+              0.5109559910015393,
+              0.5109559910015393
+            ],
+            "prediction_seconds": [
+              0.1598733328282833,
+              0.16302824998274446,
+              0.31467541586607695
+            ],
+            "clock_disagreement_seconds": [
+              0.0007952803280204535,
+              0.0008492050692439079,
+              0.007106121629476547
+            ],
+            "peak_rss_bytes": [
+              4974952448,
+              4862754816,
+              3435642880
+            ],
+            "system_swap_before_after": [
+              [
+                "total = 19456.00M  used = 18488.38M  free = 967.62M  (encrypted)",
+                "total = 19456.00M  used = 18258.38M  free = 1197.62M  (encrypted)"
+              ],
+              [
+                "total = 19456.00M  used = 18162.38M  free = 1293.62M  (encrypted)",
+                "total = 19456.00M  used = 18629.38M  free = 826.62M  (encrypted)"
+              ],
+              [
+                "total = 20480.00M  used = 18872.38M  free = 1607.62M  (encrypted)",
+                "total = 20480.00M  used = 19291.38M  free = 1188.62M  (encrypted)"
+              ]
+            ],
+            "power_source": [
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'",
+              "Now drawing from 'AC Power'"
+            ],
+            "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f"
+          }
+        },
+        "train_shape": [
+          10500000,
+          28
+        ],
+        "test_shape": [
+          500000,
+          28
+        ],
+        "params": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logitraw",
+          "eval_metric": "error",
+          "verbosity": 3
+        },
+        "rounds": 100,
+        "dataset": {
+          "url": "https://archive.ics.uci.edu/ml/machine-learning-databases/00280/HIGGS.csv.gz",
+          "citation": "Whiteson, D. (2014). HIGGS. https://doi.org/10.24432/C5V312",
+          "rows": 11000000,
+          "features": 28,
+          "label_column": 0,
+          "name": "higgs",
+          "license": "CC BY 4.0",
+          "dtype": "float32",
+          "archive_bytes": 2816407858,
+          "archive_sha256": "ea302c18164d4e3d916a1e2e83a9a8d07069fa6ebc7771e4c0540d54e593b698",
+          "conversion_seconds": 26.2906495409552,
+          "preprocessing": "Original row order; header=None; labels unchanged; no scaling"
+        },
+        "ratio_of_median_times": {
+          "training_seconds": 1.8750879528976494,
+          "histogram_seconds": 1.2477673245942262,
+          "sketch_seconds": 1.388626273552869,
+          "partition_seconds": 1.1511240489368662
+        },
+        "paired_training_ratios": [
+          1.0526549279487223,
+          1.8750879528976494,
+          1.4526597053457728
+        ],
+        "paired_sketch_ratios": [
+          1.4780575862427943,
+          1.7492217247653377,
+          1.0399007023152287
+        ],
+        "paired_partition_ratios": [
+          1.0998435570577632,
+          1.1574196913154302,
+          1.0987826173604927
+        ],
+        "independent_cpu_mps_quality_note": "CPU and MPS train with different sketches; comparable quality is not bitwise training equivalence. Each MPS worker also checked exact CPU prediction of its own model."
+      }
+    }
+  },
+  "partition_stage_diagnostic": {
+    "device": "Apple M3",
+    "repeats": 5,
+    "candidate_swaps_rows": true,
+    "cases": [
+      {
+        "rows": 1000000,
+        "features": 128,
+        "nodes": 1,
+        "variants": [
+          {
+            "name": "candidate",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.0016585,
+                2.0458e-05,
+                0.000245792
+              ],
+              [
+                0.001214,
+                1.9625e-05,
+                0.000267083
+              ],
+              [
+                0.000882083,
+                1.8917e-05,
+                0.000209416
+              ],
+              [
+                0.001083417,
+                1.9417e-05,
+                0.000216167
+              ],
+              [
+                0.00110975,
+                1.9333e-05,
+                0.000296
+              ]
+            ]
+          },
+          {
+            "name": "baseline",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.001399583,
+                4.2042e-05,
+                0.00048775
+              ],
+              [
+                0.001227,
+                1.9958e-05,
+                0.000284625
+              ],
+              [
+                0.001206,
+                1.9708e-05,
+                0.000284708
+              ],
+              [
+                0.001172125,
+                2.925e-05,
+                0.0003815
+              ],
+              [
+                0.001629042,
+                1.9e-05,
+                0.000228958
+              ]
+            ]
+          }
+        ],
+        "median_stage_sum_seconds": {
+          "candidate": 0.001425083,
+          "baseline": 0.001582875
+        },
+        "stage_sum_speedup": 1.1107247788374432
+      },
+      {
+        "rows": 1000000,
+        "features": 128,
+        "nodes": 8,
+        "variants": [
+          {
+            "name": "candidate",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.000987375,
+                1.6167e-05,
+                0.000233375
+              ],
+              [
+                0.00105175,
+                4.875e-06,
+                0.000215875
+              ],
+              [
+                0.000929833,
+                4.417e-06,
+                0.000221875
+              ],
+              [
+                0.001018083,
+                1.4791e-05,
+                0.000294125
+              ],
+              [
+                0.0011095,
+                4.875e-06,
+                0.000254583
+              ]
+            ]
+          },
+          {
+            "name": "baseline",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.0010715,
+                4.916e-06,
+                0.000290208
+              ],
+              [
+                0.001129625,
+                5e-06,
+                0.00024775
+              ],
+              [
+                0.001048708,
+                1.4e-05,
+                0.000301958
+              ],
+              [
+                0.001087708,
+                5.125e-06,
+                0.00022825
+              ],
+              [
+                0.001450958,
+                4.375e-06,
+                0.000221625
+              ]
+            ]
+          }
+        ],
+        "median_stage_sum_seconds": {
+          "candidate": 0.0012725,
+          "baseline": 0.001366624
+        },
+        "stage_sum_speedup": 1.0739677799607075
+      },
+      {
+        "rows": 1000000,
+        "features": 128,
+        "nodes": 32,
+        "variants": [
+          {
+            "name": "candidate",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.001085125,
+                3.75e-06,
+                0.000247458
+              ],
+              [
+                0.000948125,
+                3.625e-06,
+                0.000216875
+              ],
+              [
+                0.001213,
+                3.583e-06,
+                0.000205125
+              ],
+              [
+                0.001006875,
+                3.5e-06,
+                0.000211167
+              ],
+              [
+                0.001104958,
+                3.5e-06,
+                0.000203792
+              ]
+            ]
+          },
+          {
+            "name": "baseline",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.001343875,
+                3.583e-06,
+                0.00027975
+              ],
+              [
+                0.001098417,
+                3.833e-06,
+                0.000318042
+              ],
+              [
+                0.001073875,
+                3.5e-06,
+                0.000296209
+              ],
+              [
+                0.00108625,
+                3.75e-06,
+                0.000246875
+              ],
+              [
+                0.001136167,
+                3.375e-06,
+                0.000307125
+              ]
+            ]
+          }
+        ],
+        "median_stage_sum_seconds": {
+          "candidate": 0.00131225,
+          "baseline": 0.0014202919999999999
+        },
+        "stage_sum_speedup": 1.0823333968374926
+      },
+      {
+        "rows": 10500000,
+        "features": 28,
+        "nodes": 1,
+        "variants": [
+          {
+            "name": "candidate",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.007616125,
+                0.000177375,
+                0.003608667
+              ],
+              [
+                0.007181083,
+                0.0001865,
+                0.004092958
+              ],
+              [
+                0.005205875,
+                0.000171833,
+                0.003479958
+              ],
+              [
+                0.005446,
+                0.000180208,
+                0.004462583
+              ],
+              [
+                0.006084958,
+                0.000179,
+                0.003014708
+              ]
+            ]
+          },
+          {
+            "name": "baseline",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.00953575,
+                0.000366,
+                0.005362292
+              ],
+              [
+                0.00747475,
+                0.000368875,
+                0.004292958
+              ],
+              [
+                0.00799525,
+                0.000378,
+                0.004033292
+              ],
+              [
+                0.0075615,
+                0.000181875,
+                0.003718292
+              ],
+              [
+                0.007835375,
+                0.000312875,
+                0.004188792
+              ]
+            ]
+          }
+        ],
+        "median_stage_sum_seconds": {
+          "candidate": 0.010088791,
+          "baseline": 0.012337042000000001
+        },
+        "stage_sum_speedup": 1.2228464243138748
+      },
+      {
+        "rows": 10500000,
+        "features": 28,
+        "nodes": 8,
+        "variants": [
+          {
+            "name": "candidate",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.00870525,
+                2.6083e-05,
+                0.00258025
+              ],
+              [
+                0.009463792,
+                2.6375e-05,
+                0.002638875
+              ],
+              [
+                0.008821125,
+                2.675e-05,
+                0.002869875
+              ],
+              [
+                0.009339459,
+                2.6708e-05,
+                0.00288275
+              ],
+              [
+                0.009081792,
+                2.6e-05,
+                0.002766917
+              ]
+            ]
+          },
+          {
+            "name": "baseline",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.01063025,
+                2.65e-05,
+                0.002622
+              ],
+              [
+                0.010215792,
+                2.6625e-05,
+                0.002656125
+              ],
+              [
+                0.011570542,
+                2.6542e-05,
+                0.002527083
+              ],
+              [
+                0.01006525,
+                2.5375e-05,
+                0.002531042
+              ],
+              [
+                0.010549958,
+                2.5667e-05,
+                0.002581208
+              ]
+            ]
+          }
+        ],
+        "median_stage_sum_seconds": {
+          "candidate": 0.011874709,
+          "baseline": 0.013156833
+        },
+        "stage_sum_speedup": 1.1079709826994497
+      },
+      {
+        "rows": 10500000,
+        "features": 28,
+        "nodes": 32,
+        "variants": [
+          {
+            "name": "candidate",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.011779708,
+                1.1125e-05,
+                0.002907458
+              ],
+              [
+                0.01313275,
+                1.125e-05,
+                0.0032985
+              ],
+              [
+                0.012421917,
+                1.1083e-05,
+                0.0031485
+              ],
+              [
+                0.0108645,
+                1.0542e-05,
+                0.002566792
+              ],
+              [
+                0.011103083,
+                1.0875e-05,
+                0.002778125
+              ]
+            ]
+          },
+          {
+            "name": "baseline",
+            "classify_prefix_scatter_seconds": [
+              [
+                0.0133465,
+                1.075e-05,
+                0.002940625
+              ],
+              [
+                0.013761167,
+                1.0625e-05,
+                0.003050875
+              ],
+              [
+                0.013076625,
+                1.0833e-05,
+                0.003232583
+              ],
+              [
+                0.011610625,
+                1.0458e-05,
+                0.002882
+              ],
+              [
+                0.015246042,
+                1.0375e-05,
+                0.002876333
+              ]
+            ]
+          }
+        ],
+        "median_stage_sum_seconds": {
+          "candidate": 0.014698291,
+          "baseline": 0.016320041
+        },
+        "stage_sum_speedup": 1.1103359567449032
+      }
+    ],
+    "summary_note": "Ratio of median summed stage GPU durations; the stages run in separate command buffers. This is not training wall time."
+  },
+  "feature_sort_stage_diagnostic": {
+    "device": "Apple M3",
+    "records": 4194304,
+    "repeats": 5,
+    "cases": [
+      {
+        "features": 28,
+        "key_bits": 5,
+        "gpu_seconds": {
+          "full32": [
+            0.019802667,
+            0.019745333,
+            0.020458208,
+            0.019276167,
+            0.019085875
+          ],
+          "bounded": [
+            0.004890208,
+            0.004826542,
+            0.0054345,
+            0.004586083,
+            0.004676875
+          ]
+        },
+        "median_seconds": {
+          "full32": 0.019745333,
+          "bounded": 0.004826542
+        },
+        "stage_speedup": 4.090989573901978
+      },
+      {
+        "features": 128,
+        "key_bits": 7,
+        "gpu_seconds": {
+          "full32": [
+            0.01870275,
+            0.0183555,
+            0.0183525,
+            0.018381542,
+            0.019738666
+          ],
+          "bounded": [
+            0.004496,
+            0.005204542,
+            0.004454,
+            0.004492,
+            0.005087375
+          ]
+        },
+        "median_seconds": {
+          "full32": 0.018381542,
+          "bounded": 0.004496
+        },
+        "stage_speedup": 4.088421263345196
+      },
+      {
+        "features": 257,
+        "key_bits": 9,
+        "gpu_seconds": {
+          "full32": [
+            0.018327167,
+            0.018390792,
+            0.018336042,
+            0.018398875,
+            0.018436875
+          ],
+          "bounded": [
+            0.006701625,
+            0.006704167,
+            0.006898333,
+            0.007063042,
+            0.006873042
+          ]
+        },
+        "median_seconds": {
+          "full32": 0.018390792,
+          "bounded": 0.006873042
+        },
+        "stage_speedup": 2.675786354862956
+      },
+      {
+        "features": 4097,
+        "key_bits": 13,
+        "gpu_seconds": {
+          "full32": [
+            0.018842792,
+            0.018788,
+            0.019021083,
+            0.019419958,
+            0.019618875
+          ],
+          "bounded": [
+            0.00918025,
+            0.009800792,
+            0.010130875,
+            0.010234458,
+            0.010197875
+          ]
+        },
+        "median_seconds": {
+          "full32": 0.019021083,
+          "bounded": 0.010130875
+        },
+        "stage_speedup": 1.877536046985083
+      }
+    ]
+  },
+  "correctness": {
+    "partition_native_groups": [
+      "metal_partition",
+      "metal_compressed_consumers_api",
+      "metal_quantized_state_api"
+    ],
+    "partition_python_passed": 36,
+    "combined_native_groups": [
+      "metal_training_state_api",
+      "metal_compressed_consumers_api",
+      "metal_sketch_ingest_api",
+      "metal_cuda_sketch_api"
+    ],
+    "combined_python_selection": [
+      "tests/test_metal_sketch.py",
+      "tests/test_metal_distributed_sketch.py",
+      "tests/test_metal_training.py",
+      "tests/test_metal_workflows.py",
+      "tests/test_metal_external_host.py",
+      "tests/test_metal_leaf_fitting.py"
+    ],
+    "combined_python_passed": 171,
+    "combined_python_skipped": 0,
+    "combined_python_warnings": "One expected empty-dataset warning in an existing external-memory test.",
+    "compressed_consumer_result": "316 cases, 72703860 exact fields, 5964 partitions including repeated full/partial/unordered transitions.",
+    "cuda_source_sketch_result": "152 cases, 436 pushes, 2154194 input entries, 729080 exact fields. New weighted/unweighted feature-key cases include one feature, radix digit boundaries and signed-zero ties.",
+    "tolerances": "No existing precision, algorithm or test tolerance changed.",
+    "scope": "Focused final acceptance, not a new full standard suite or NVIDIA runtime comparison. The prior full baseline is recorded in validation/python-workflows-full-m3.json."
+  },
+  "installed_package": {
+    "status": "passed",
+    "pytest_exit_code": 0,
+    "package": "/Users/maaz/Documents/xgb-mps/.venv/lib/python3.13/site-packages/xgboost/__init__.py",
+    "library": "/Users/maaz/Documents/xgb-mps/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.dylib",
+    "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+    "python": "3.13.5 (main, Jun 12 2025, 12:22:43) [Clang 20.1.4 ]",
+    "cwd": "/private/tmp",
+    "pytest_args": [
+      "-q",
+      "/Users/maaz/Documents/xgb-mps/tests/test_metal_workflows.py",
+      "-o",
+      "pythonpath=",
+      "--require-metal",
+      "--junitxml=/Users/maaz/Documents/xgb-mps/results/sketch-sort-profile-20261105/installed-workflows.xml"
+    ],
+    "isolation": "python -I; cwd outside checkout; no PYTHONPATH or DYLD_LIBRARY_PATH; pytest pythonpath override empty",
+    "wheel": {
+      "filename": "xgboost-3.4.2-py3-none-macosx_26_0_arm64.whl",
+      "sha256": "d69046a54b8ddda91e11fe2f52d239ca37fb1e37cbccb8df7ddfe1848e260ca7",
+      "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f"
+    },
+    "workflow_tests_passed": 3
+  },
+  "cpu_sampling_diagnostic": {
+    "status": "passed",
+    "command": [
+      "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+      "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+      "--case",
+      "wide",
+      "--rows",
+      "1000000",
+      "--features",
+      "128",
+      "--rounds",
+      "100",
+      "--threads",
+      "8",
+      "--worker",
+      "mps",
+      "--repeat-index",
+      "0",
+      "--output",
+      "/Users/maaz/Documents/xgb-mps/results/sketch-sort-profile-20261105/host-profile",
+      "--package-dir",
+      "/Users/maaz/Documents/xgb-mps/results/sketch-sort-profile-20261105/candidate-package"
+    ],
+    "sample_command": [
+      "/usr/bin/sample",
+      "58394",
+      "5",
+      "1",
+      "-file",
+      "/Users/maaz/Documents/xgb-mps/results/sketch-sort-profile-20261105/host-profile/cpu-sample.txt"
+    ],
+    "scope": "CPU call stacks after first boosting round; profiling overhead invalidates performance comparisons. Models/margins match the unsampled candidate.",
+    "library_sha256": "8b1121d7ae7f4ac9f874114b845b3b7ac2a9249044ebddd246790d705347e06f",
+    "main_thread_samples": 3594,
+    "metal_command_wait_samples": 2671,
+    "metal_command_wait_sample_fraction": 0.743183082915971,
+    "evaluation_samples": 1046,
+    "update_samples": 2539,
+    "sampled_process_physical_footprint": "3.1 GB current / 6.9 GB peak as reported by macOS sample; differs from process RSS",
+    "interpretation": "Most captured main-thread stacks wait for Metal command completion, particularly in split evaluation and prediction. This includes necessary GPU execution and scheduling; the sample does not establish that all wait time can be removed or explain all benchmark variability."
+  },
+  "limits": [
+    "Targeted GPU timings improved; end-to-end training benefit is inconclusive under the observed system conditions. The combined wide-data candidate was slower in all three pairs. HIGGS baseline training ranged from 47.543 to 103.801 seconds; its apparent median speedup must not be generalized.",
+    "User applications remained open and system-wide swap was substantial. AC power and clock continuity were checked. These observations do not isolate memory pressure, other CPU/GPU activity or hardware limits.",
+    "Kernel stage diagnostics use five randomized alternating measurements per variant and exact CPU references. Partition stages use separate command buffers, unlike production. The feature-key diagnostic excludes value sorting and other sketch work; its speedup is not a training speedup.",
+    "GPU counter families may overlap and cannot be summed or subtracted from training wall time to infer CPU overhead.",
+    "The CPU-sampled worker is excluded from timing comparisons. Dataset sizes are full, but 100 rounds is not the historical 1000-round HIGGS workload. One Apple GPU was tested."
+  ],
+  "all_mps_outputs_bitwise_equal_across_both_experiments": {
+    "wide": {
+      "model_sha256": "f9e8f8ae732d1fb54bbec6c26f6e7b1b888a4d6cacb794854f190339ac110ef0",
+      "margins_sha256": "7f008da05c29281c2c8617262cb9df904b1288a449537722ab44b7cad7f65abb"
+    },
+    "higgs": {
+      "model_sha256": "fd776d65141b6b8bfe50b86f0c761e32f4715cf1f0762752a3d0c4f4e96e953e",
+      "margins_sha256": "d523c6d15996be12ab9720ffbd5d6b196191d80e79ab7e48e85d1d006f205705"
+    }
+  },
+  "local_evidence_sha256": {
+    "results/partition-profile-20261105/paired/wide-cpu/cpu-0.json": "693e106f43b68d834ef7593337f844aa94a0cdc105ee2cba13b21de08c431d26",
+    "results/partition-profile-20261105/paired/wide-cpu/cpu-1.json": "972166677cb87583194e004c408b2f953b4892e2fada11aefbdc80f29cc2deda",
+    "results/partition-profile-20261105/paired/wide-cpu/cpu-2.json": "5bb8fc72a673a7a171278ca6521a5b1da42829706b2b5d4ca2ad0e5feb7916ec",
+    "results/partition-profile-20261105/paired/wide-baseline/mps-0.json": "3ea54f0c7ffb11487f71d4eaf39d42594675857952a8ebb3e8034b675d5edfa7",
+    "results/partition-profile-20261105/paired/wide-baseline/mps-1.json": "cbb5d379d06348d278341bb41b268a517a7f6c3c77edddae4f228adc20e5d1a0",
+    "results/partition-profile-20261105/paired/wide-baseline/mps-2.json": "039b926da6e8d055b726cf017056fcd5f9d7f5dbf14d1613697d6e1f01840e39",
+    "results/partition-profile-20261105/paired/wide-candidate/mps-0.json": "cdc7f82d32f945011b09f873109e26a5c177646a3c96bbdea5908bcd82cd8cba",
+    "results/partition-profile-20261105/paired/wide-candidate/mps-1.json": "56feceae72734a9ba4b5b2f78d88100f605fea7e4170b6bfda7c27529ab5c918",
+    "results/partition-profile-20261105/paired/wide-candidate/mps-2.json": "ee7c4e16e9da3176601babe9ac4c71cb2d5f58a87d7de98a093062e98c5b2646",
+    "results/partition-profile-20261105/paired/higgs-cpu/cpu-0.json": "b1143fb00c732f51c9f2d2b6258f1e26d33e4985700beed06ac8b9946c74803e",
+    "results/partition-profile-20261105/paired/higgs-cpu/cpu-1.json": "e8c77cbfcda404b3e402c0086b26f25028960508e5ba1cbec7ad229730b616e9",
+    "results/partition-profile-20261105/paired/higgs-cpu/cpu-2.json": "c828f9ffd20a7e056bc4cfff2a71e82c4113a67679fe2aae175b4a7b449763da",
+    "results/partition-profile-20261105/paired/higgs-baseline/mps-0.json": "c288a384226046e92f18b90acc9a2198e5dc11fe90cd47b5264d08f00576b1d3",
+    "results/partition-profile-20261105/paired/higgs-baseline/mps-1.json": "b360d61749e4fcc13586e766d364cc025716887c2dcb5abfd0e88ebe6102c0cb",
+    "results/partition-profile-20261105/paired/higgs-baseline/mps-2.json": "1d11a24d14975828d5481599ce9c922bde1a072ed2856f96a0aac3a22b47a621",
+    "results/partition-profile-20261105/paired/higgs-candidate/mps-0.json": "932b432688dccfc4fd94f51de9270d57861d0bcd9bbdc574d542940242226196",
+    "results/partition-profile-20261105/paired/higgs-candidate/mps-1.json": "f9a3bed7d00971a6d10bc74f5bae96e192d13b90f5ae2c2a379bb51e6a75e3fb",
+    "results/partition-profile-20261105/paired/higgs-candidate/mps-2.json": "d153f93fd693731f865895d7a4c6c1deeb5c9a872cf9e2f0526ab6c026579ec3",
+    "results/sketch-sort-profile-20261105/paired/wide-cpu/cpu-0.json": "e67aebc58ec1dee456c35f402586da7b285342d4dfc23f4739983867576045f6",
+    "results/sketch-sort-profile-20261105/paired/wide-cpu/cpu-1.json": "3cd85e767a474381970f7d871991b9025f2253f2eda2e5fe769a4e3203ca43d6",
+    "results/sketch-sort-profile-20261105/paired/wide-cpu/cpu-2.json": "30525d6e4bfea531fafe2678fccc232ace787868ac288aba70da779df35f10e5",
+    "results/sketch-sort-profile-20261105/paired/wide-baseline/mps-0.json": "9de93a8a480a54b8e2f71a615b8dae6aecd0f90c853aa52abc7a8d0b3781358a",
+    "results/sketch-sort-profile-20261105/paired/wide-baseline/mps-1.json": "d4c72468d488a0d3745722faa91e68e211d557152250033c34bd5b4676067a6f",
+    "results/sketch-sort-profile-20261105/paired/wide-baseline/mps-2.json": "c6493f1a77e51debf8f3124e3d1a1c96ac9133b8b09dc67eb8babf38f735907a",
+    "results/sketch-sort-profile-20261105/paired/wide-candidate/mps-0.json": "49d1ba4aee15456ef8467f8afac1edd089c3b7a64656c195ab8df8cf44e554e8",
+    "results/sketch-sort-profile-20261105/paired/wide-candidate/mps-1.json": "ff70e137ab165be9acdf66ab6cbf9a59732ef6afce2366797ac0c392c5732246",
+    "results/sketch-sort-profile-20261105/paired/wide-candidate/mps-2.json": "9ddd33431363e2b635eeedf3911df4d10cc6470d92fc0728e4f1f7cc1dcb6a88",
+    "results/sketch-sort-profile-20261105/paired/higgs-cpu/cpu-0.json": "ad72e6c296ea811548743d32a26a741a6138960ef87198b7439f1896c0f59870",
+    "results/sketch-sort-profile-20261105/paired/higgs-cpu/cpu-1.json": "46d786709caa5a5e033628438cbfc443e0cbd2321695bea48bfcb6ee93a5c983",
+    "results/sketch-sort-profile-20261105/paired/higgs-cpu/cpu-2.json": "ce9725348884fb68189fd0796837b58c3cc77396808418dc43ebf7f2096da56e",
+    "results/sketch-sort-profile-20261105/paired/higgs-baseline/mps-0.json": "51704e14c120c4a5bcf6904d59b499f9e39c0985907c98180c659d1ac68c303f",
+    "results/sketch-sort-profile-20261105/paired/higgs-baseline/mps-1.json": "b67266ce4ab53305f8e7ba8ab7be1381299e34f1c8c993283d1229dbaafb5b83",
+    "results/sketch-sort-profile-20261105/paired/higgs-baseline/mps-2.json": "0d9b0a13f470f745bcee861ed460c3d370474ec496e52f4ffb2dbd8f1b2f4305",
+    "results/sketch-sort-profile-20261105/paired/higgs-candidate/mps-0.json": "f683b935bd1673246298164a999673421feb9ddc05c6f2cf942629db91e48804",
+    "results/sketch-sort-profile-20261105/paired/higgs-candidate/mps-1.json": "4d20d0585a63ab6ced2b0869b6a88b9745c52be113db518725e5b2ffb9610ca4",
+    "results/sketch-sort-profile-20261105/paired/higgs-candidate/mps-2.json": "d00888c3c7df73c8d50ea729cb0573288ba3e7a962ce6b34efa29cfd15fe6633",
+    "results/partition-profile-20261105/check/summary.json": "52a5cb85660809d6f3b125ef098db6a90660d5f43b442bad9eb6dfc6d7c71d72",
+    "results/partition-profile-20261105/combined-check/summary.json": "e33e9089024f06c4b824589b459313169476785d24cbebe8dde3aad0c0e010ff",
+    "results/partition-profile-20261105/stages-baseline.json": "4125ea359a471ecb59841963238c85bafad5f1f8ba38291b8ccb6601b6ca9090",
+    "results/partition-profile-20261105/stages-swap.json": "18f6dd3efc01706edddf2e3d087c5685a4160c8c0a2d19f14baa49b955d1c379",
+    "results/sketch-sort-profile-20261105/feature-sort-kernel.json": "c52633c60c0101f336c1bb717845708ce9406cdec6943442051cbe72408992af",
+    "results/sketch-sort-profile-20261105/host-profile/cpu-sample.txt": "f5f857c5dfa53bc6ab7453656ef40f47e1939df32946a2f979bdeec3912886ef",
+    "results/sketch-sort-profile-20261105/installed-workflows.xml": "d8220677ce5d87f70e90de1a743a411e44fedc073c1d6312cbcebba353c5bc5f",
+    "results/sketch-sort-profile-20261105/install.log": "5e352c9cfabbfe97f76616fb6b1394aa4c7d898ff86a8b78d6a7d4643f5fb606",
+    "scripts/metal_partition_benchmark.mm": "7daa2b2f3323aa2ecf5aff7947dae0bf506d8507891964cdd6f7ea292952ccc7",
+    "scripts/metal_feature_sort_benchmark.mm": "8e581b8bc6187f55fb274f3265d4266a8206abc0e366b2503d2fb184aed5bd1b",
+    "scripts/profile_training.py": "fb838c546e3d35dd138f6fa95c63c3070b81c7ef71b9be84ef127570621d6ed9"
+  }
+}

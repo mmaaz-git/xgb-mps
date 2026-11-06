@@ -598,7 +598,9 @@ inline void xgb_partition_classify_impl(
       } else
         left = long(bin) <= long(split.split_bin);
     }
-    saved_rows[pos] = row;
+    // When scatter writes into a separate output buffer, rows already holds
+    // the immutable input. Aliasing these bindings avoids a redundant copy.
+    if (saved_rows != rows) saved_rows[pos] = row;
   }
   uint count = simd_sum(uint(left)), rank = simd_prefix_inclusive_sum(uint(left));
   if (simd_lane == 0) sums[simd_group] = count;

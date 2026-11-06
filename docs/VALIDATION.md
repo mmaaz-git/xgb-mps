@@ -106,6 +106,15 @@ turn a historical full run into a current full run.
 
 ## Recorded results
 
+- **Partition-copy removal and bounded feature-key sorting:** the final build
+  passed four native groups and 171 Python tests, with no skips, followed by
+  three installed-package workflows outside the checkout. Partition-only checks
+  had also passed three native groups and 36 Python tests. New cases exercise
+  repeated full/partial/unordered partitions and weighted feature-key ties across
+  radix boundaries. All 24 MPS model/margin outputs across two large-workload
+  experiments match before/after. This is focused acceptance; the full standard
+  run below predates these optimizations. End-to-end performance remains mixed.
+  [Hashes, complete timings, kernel checks and CPU sample](../validation/partition-sketch-tuning-m3.json).
 - **Four-feature histogram tiling:** four native groups and 89 Python tests
   passed, with one expected no-GPU-test skip. The final compressed-consumer
   assertions also passed separately: 316 cases and 72,700,780 exact checked

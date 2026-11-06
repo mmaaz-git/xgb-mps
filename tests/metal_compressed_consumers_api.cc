@@ -203,6 +203,43 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
     }
   }
 
+  if (n >= 4) {
+    // Switch repeatedly between complete covers and partial/unordered ranges.
+    // This detects stale buffer ownership and corruption of untouched rows.
+    rows->Reset(n, base);
+    std::vector<bst_idx_t> expected(n), actual(n);
+    std::iota(expected.begin(), expected.end(), base);
+    auto split = [&](std::size_t begin, std::size_t end, unsigned feature) {
+      metal::PartitionSplit s{};
+      s.begin = begin;
+      s.end = end;
+      s.feature = feature;
+      s.split_bin = int(ptrs[feature] + maximum / 2) - 1;
+      s.default_left = feature % 2;
+      return s;
+    };
+    auto check = [&](std::vector<metal::PartitionSplit> const& splits) {
+      std::vector<std::uint64_t> expected_counts;
+      for (auto const& s : splits) {
+        auto middle = std::stable_partition(expected.begin() + s.begin, expected.begin() + s.end,
+            [&](bst_idx_t row) {
+              auto bin = oracle.GetGindex(row, s.feature);
+              return bin < 0 ? bool(s.default_left) : bin <= s.split_bin;
+            });
+        expected_counts.push_back(middle - (expected.begin() + s.begin));
+      }
+      Check(rows->Partition(page, splits, {}) == expected_counts, "Repeated partition counts");
+      rows->CopyToHost(actual);
+      Check(actual == expected, "Repeated stable partition preserves untouched rows");
+      ++partitions;
+    };
+    check({split(0, n, 0)});
+    check({split(1, n / 2, 1)});
+    check({split(0, n / 2, 3), split(n / 2, n / 2, 0), split(n / 2, n, 4)});
+    check({split(n / 2, n, 5), split(0, n / 2, 6)});
+    check({split(0, n, 1)});
+  }
+
   std::vector<std::int32_t> segments(cols + 2, maximum), mapping(maximum);
   segments[0] = segments[1] = segments[2] = 0;
   for (unsigned j = 0; j < maximum; ++j) mapping[j] = (j + 3) % maximum;

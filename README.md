@@ -70,20 +70,24 @@ The test runner builds first and supports focused checks or `--full`. The latest
 full baseline passed 106 native groups and 4,001 Python tests, with two expected
 platform skips. Workflows include preprocessing, cross-validation, categorical
 classification, early stopping, ranking and model persistence. The subsequent
-histogram optimization passed focused native/Python checks and installed-package
-workflows. [Validation commands/results](docs/VALIDATION.md) record the exact
+optimizations passed focused native/Python checks and installed-package
+workflows; the latest partition/sketch build passed 171 Python tests and four
+native groups. [Validation commands/results](docs/VALIDATION.md) record the exact
 revisions and scope. CUDA CI compiles the NVIDIA backend; it does not run CUDA kernels.
 
 ## Performance
 
-The latest optimization made GPU histogram accumulation **2.04× faster** on
-1M rows × 128 columns and **1.62× faster** on HIGGS, comparing median times.
-In three repeats of 100-round
-training, optimized MPS took **11.48 / 37.89 s**, versus CPU **9.92 / 36.53 s**:
-CPU still won both workloads. All before/after MPS models and predictions matched
-exactly; timings varied under system memory pressure. These are shorter runs
-than the historical 1,000-round HIGGS result at `68c800e` (**288 s CPU / 469 s MPS**).
-See [complete timings and limitations](docs/PUBLISHED_BENCHMARKS.md).
+Recent changes improved histogram accumulation and removed redundant row copies
+and feature-sort passes. Feature-key sorting is **about 4.1× faster** in an isolated
+GPU comparison for 28/128 features. Complete sketch construction improved
+**1.21× on wide data / 1.39× on HIGGS**, and partition GPU time improved **1.09–1.15×**.
+Before/after models and predictions remained bit-identical.
+
+These component gains have not established a reliable end-to-end CPU advantage.
+The latest wide-data candidate was slower overall, and HIGGS training times varied
+substantially alongside high system-wide swap use. Both improvements and losses,
+including the historical 1,000-round workloads, are retained in the
+[complete timings and limitations](docs/PUBLISHED_BENCHMARKS.md).
 
 Large-workload profiling is separate from the tests:
 

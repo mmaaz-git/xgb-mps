@@ -502,3 +502,85 @@ output directory for each invocation:
 For before/after comparisons, build separate revisions and point `--package-dir`
 at their respective Python packages. The record specifies the exact worker order
 and command used here; retain fresh workers and the CPU controls.
+
+## Removing partition copies and unnecessary feature-sort passes
+
+The next profiling pass starts at `581f4c1`. Dense partition diagnostics showed
+classification dominated prefix scanning. Complete ordered partitions now scatter
+into the existing spare row buffer and swap ownership, avoiding an intermediate
+row-ID copy. Partial or unordered ranges retain the original path. A separate
+setup change limits stable feature-key radix sorting to the bits needed by the
+feature count. For 28 or 128 features, this removes six of eight radix passes;
+the value sort, weighted tie order and sketch arithmetic are unchanged.
+
+Five randomized alternating kernel measurements check every result against CPU
+references. The median sum of partition-stage GPU times improves by **1.07–1.22×** across
+1M/10.5M rows and 1/8/32 nodes. For 4,194,304 feature-key records, full-width
+versus bounded sorting gives:
+
+| Features | Full 32-bit median | Bounded median | Stage speedup |
+| --- | ---: | ---: | ---: |
+| 28 | 19.745 ms | 4.827 ms | 4.09× |
+| 128 | 18.382 ms | 4.496 ms | 4.09× |
+| 257 | 18.391 ms | 6.873 ms | 2.68× |
+| 4097 | 19.021 ms | 10.131 ms | 1.88× |
+
+These measure selected stages, not whole training. In the combined 100-round
+training experiment, median complete-sketch GPU time changes from **2.730 to
+2.254 seconds** on wide data and **6.187 to 4.456 seconds** on HIGGS. Partition
+GPU time changes from **0.972 to 0.888 seconds** and **8.724 to 7.578 seconds**.
+Both targeted components improve in every pair.
+
+Total training results are mixed. Each experiment uses three CPU/baseline-MPS/
+candidate-MPS repeats per dataset, with rotated order and fresh isolated packages.
+The partition-only experiment has median MPS times of **11.580 / 11.647 seconds**
+on wide data and **47.211 / 42.185 seconds** on HIGGS. The combined experiment is:
+
+| Workload / variant | Training runs in repeat order, seconds |
+| --- | --- |
+| Wide CPU | 19.320, 18.622, 18.498 |
+| Wide MPS baseline | 22.088, 17.779, 17.421 |
+| Wide MPS combined | 23.625, 20.753, 17.942 |
+| HIGGS CPU | 58.595, 49.723, 126.096 |
+| HIGGS MPS baseline | 47.543, 90.534, 103.801 |
+| HIGGS MPS combined | 45.165, 48.282, 71.456 |
+
+The combined wide candidate is slower overall in all three pairs. HIGGS baseline
+timing varies by more than twofold, with large setup variation. The apparent
+HIGGS median speedup is **inconclusive as a general end-to-end improvement**.
+All runs used AC power and passed clock checks; user applications remained open
+and system-wide swap was substantial. This task ran no concurrent builds, tests
+or other benchmarks; unrelated sessions and applications were not controlled.
+The small changes are retained for their consistent targeted
+GPU improvements and exact outputs, without claiming reliable whole-training gains.
+
+Four native groups and 171 Python tests passed on the combined build, followed
+by three installed-package workflows. Across both experiments, all 12 MPS models
+and margin arrays **per dataset** match exactly. CPU prediction of each MPS model
+also agrees exactly; independent CPU training still uses a different sketch.
+No tolerance or precision was changed.
+
+A separate five-second CPU sampling diagnostic, excluded from timing comparisons,
+finds **2,671 of 3,594 main-thread samples (74%)** waiting for Metal command
+completion, particularly in split evaluation and prediction. This includes actual
+GPU execution and scheduling, not just avoidable overhead. The sampled wide worker
+reports a **6.9 GB peak physical footprint**, which differs from process RSS.
+Command dependencies and temporary-buffer lifetimes are the next investigations.
+
+The [complete record](../validation/partition-sketch-tuning-m3.json) retains all
+36 training timings, all source/library snapshots, memory/power observations,
+kernel timings, correctness checks and the sampling evidence. Large-workload
+commands in the previous section apply. Reproduce the stage diagnostics with:
+
+```sh
+mkdir -p results
+git show 581f4c1:xgboost/src/common/metal_histogram.metal > results/partition-baseline.metal
+clang++ -O2 -std=c++17 -fobjc-arc scripts/metal_partition_benchmark.mm \
+  -framework Metal -framework Foundation -o results/partition-benchmark
+results/partition-benchmark xgboost/src/common/metal_histogram.metal \
+  results/partition-baseline.metal --swap > results/partition-stages.json
+clang++ -O2 -std=c++17 -fobjc-arc scripts/metal_feature_sort_benchmark.mm \
+  -framework Metal -framework Foundation -o results/feature-sort-benchmark
+results/feature-sort-benchmark xgboost/src/common/metal_histogram.metal \
+  > results/feature-sort-stages.json
+```

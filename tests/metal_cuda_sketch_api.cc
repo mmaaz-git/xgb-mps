@@ -228,9 +228,45 @@ void Initialization() {
   Check(metal::GetStatistics().cuda_sketch_dispatches == before.cuda_sketch_dispatches,
         "Invalid constructor initialized GPU state");
 }
+void FeatureKeyWidths() {
+  // Stable feature sorting must preserve weighted value ties across radix
+  // digit boundaries, including the single-feature case with no key passes.
+  for (unsigned columns : {1u, 15u, 16u, 17u, 255u, 256u, 257u, 4097u}) {
+    for (bool weighted : {false, true}) {
+      current = "feature-key columns=" + std::to_string(columns) +
+                " weighted=" + std::to_string(weighted);
+      std::vector<float> values{-0.f, 0.f, -1.f, 2.f};
+      std::vector<float> weights = weighted ? std::vector<float>{1.f, .5f, 2.f, 4.f}
+                                            : std::vector<float>{};
+      std::vector<::xgboost::Entry> entries;
+      std::vector<ref::Raw> raw;
+      std::vector<bst_idx_t> rows{0};
+      for (std::size_t row = 0; row < values.size(); ++row) {
+        // Reverse feature order and repeated values expose an unstable sort.
+        for (unsigned f = columns; f-- > 0;) {
+          entries.emplace_back(f, values[row]);
+          raw.push_back({f, values[row], weighted ? weights[row] : 1.f});
+        }
+        rows.push_back(entries.size());
+      }
+      auto gpu = metal::MakeCudaSketch(columns, 3, {}, weights);
+      ref::Sketch oracle(columns, 3, std::vector<bool>(columns, false));
+      for (unsigned batch = 0; batch < 2; ++batch) {
+        gpu->Push(entries, rows, 0, 0, values.size());
+        oracle.Push(raw, values.size(), weighted);
+        Verify(gpu->Read(), oracle);
+        ++pushes;
+        input_entries += entries.size();
+      }
+      ++cases;
+      std::printf("PASS %s\n", current.c_str());
+    }
+  }
+}
 int main() {
   try {
     Initialization();
+    FeatureKeyWidths();
     OneRowDuplicateFeatures();
     for (unsigned mode = 0; mode < 8; ++mode) {
       for (std::size_t n : {0u, 1u, 17u, 257u, 8193u}) {

@@ -14,6 +14,12 @@ NVIDIA numerical equivalence, or a general performance advantage.
 
 Completed checks and results:
 
+- Partitioning now avoids a redundant row-ID copy for complete ordered ranges;
+  sketch feature sorting omits all-zero high-key passes. Final checks passed
+  four native groups, 171 Python tests and three installed-package workflows.
+  Before/after models and margin arrays match exactly within each dataset across
+  24 MPS runs. Targeted GPU costs improved; total training results remain mixed.
+  [Latest profiling and correctness evidence](../validation/partition-sketch-tuning-m3.json).
 - The full baseline passed 106 native groups and 4,001 Python tests, with two
   expected skips. New workflows cover preprocessing and cross-validation,
   weighted categorical classification, early stopping, grouped ranking and
@@ -38,16 +44,20 @@ Completed checks and results:
 
 ## Next steps
 
-1. **Investigate row partitioning and first-round setup.** In the latest HIGGS
-   measurements, partition GPU time is about 7.7 seconds and sketch time about
-   5 seconds. Inspect memory traffic and synchronization before changing code;
-   GPU counters can overlap and cannot be summed into total training time.
-2. **Optimize one measured cost at a time.** Preserve algorithms, precision,
+1. **Investigate command waits in split evaluation and prediction.** A separate
+   CPU sample found 74% of captured main-thread stacks waiting for Metal command
+   completion. This includes necessary GPU execution; inspect dependencies and
+   queue timing before attempting to batch commands. Resolve the wide-data
+   wall-time regression/variability before making general speedup claims.
+2. **Inspect sketch scratch-memory lifetimes.** The sampled wide worker reached
+   a 6.9 GB physical-footprint peak. Check whether sorted records and temporary
+   buffers can be reused without changing stable order or GPU ownership.
+3. **Optimize one measured cost at a time.** Preserve algorithms, precision,
    ownership and test tolerances. Use focused correctness checks and paired
    before/after workloads with CPU controls; keep all timings, including losses.
-3. **Recheck end-to-end performance at a milestone.** The current experiments
+4. **Recheck end-to-end performance at a milestone.** The current experiments
    use full dataset sizes but 100 rounds. A later 1,000-round HIGGS replay and
-   broader dataset checks should follow meaningful cumulative improvements.
+   broader dataset checks need more stable timing conditions.
    Existing real-workflow tests remain regression gates.
 
 Broader validation needs actual NVIDIA execution, additional Apple GPUs and
