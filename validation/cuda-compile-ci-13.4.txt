@@ -385,3 +385,15 @@ Build record SHA256: 4a8a72b3ed7ce1ff679c2eb9903ef0a4fd83c3cf8cfeca39b70b1537525
 Library SHA256: 5179e5232070987200039f20828be3cefe9df3636e82d205cfadc601d9230f5f
 Verifier: results/verify-cuda-ranking-metric.py; result: results/verified-cuda-42129587698.json.
 No NVIDIA GPU execution. Reader-change build 42133058442 is separate and running.
+
+Verified accepted ELLPACK reader build: run 42133058442
+Head: 818e11fa78c84171e11843c8e38cead7d39132e2
+URL: https://github.com/mmaaz-git/xgb-mps/actions/runs/42133058442
+Artifact verification recorded UTC: 2026-11-06T00:21:23.540490+00:00
+PASS: 85 input hashes, 197 production steps, eight comparison objects and executable links.
+PASS: nvCOMP loading; metric/linear/AUC registry, symbol and source isolation; 10,005 host RNG cases.
+log_sha256: 06a4d004b679cca1e53efb8af2dfc281509bcb5fee1b338391acc54b653dbe4b
+build_record_sha256: da2b7a60012827254c49a51ca9f8f08a317ba2097854efd39d5d61f0be69fd56
+library_sha256: c7933e0382effa2bc5d598a6256f0a5b415526ce993c5f260143c33de9dab7bf
+Verifier: results/verify-cuda-reader.py; result: results/verified-cuda-42133058442.json.
+No NVIDIA GPU execution. Predates the repository cleanup and sparse-checkout workflow change.

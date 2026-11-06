@@ -24,8 +24,8 @@ comparison has been performed, and current-source performance work remains open.
 The [machine-readable record](../validation/cuda-verify1-m3-run.json) maps all
 sixteen original missing/defective rows to their ten fixes, and every numerical
 contract to named passing fixtures and outstanding comparisons. The
-[original audit](CUDA_AUDIT.md) remains unchanged; its source locations and open
-findings describe `382f78c`, not current implementation status.
+[original audit](CUDA_AUDIT.md) retains its findings; its source locations and
+original open findings describe `382f78c`, not current implementation status.
 
 ## Gates and provenance
 

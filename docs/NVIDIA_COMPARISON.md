@@ -1,6 +1,13 @@
 # Running the shared numerical witnesses on NVIDIA
 
-VERIFY-2 requires actual GPU execution. The current native harness,
+**Advanced verification reference, not an automatic work queue.** This document
+describes the existing comparison tools, their corpora and their limits. Missing
+replay modes or unexecuted NVIDIA comparisons are verification gaps, not evidence
+that the corresponding MPS feature is missing. The [plan](PLAN.md) defines the
+next work; [VALIDATION.md](VALIDATION.md) maintains current validation and CI
+status. Dated runs below are evidence for their recorded revisions.
+
+VERIFY-2 requires actual GPU execution. The native harness,
 `numerical-v2`, covers **P5-N01, P5-N08, P5-N13 and P5-N14**, using the same 39
 inputs as the Metal numerical-contract test. A second native harness covers
 **P5-N02**, using the complete AFT corpus described below. A third covers
@@ -16,9 +23,11 @@ The integer leaf and cache modes retain every original page, weight and lifecycl
 A sixth executable covers the complete metric-term/reduction corpus, including
 its previously uncounted math, label and empty-input checks.
 A seventh executable adds the full linear operation corpus, extending
-**training-reduction-association** coverage. The other five numerical contracts and
-broader caller/integration comparisons remain work;
-these harnesses are not a full parity certificate.
+**training-reduction-association** coverage. An eighth covers the AUC and public
+metric corpora described below. The coverage limits for the other numerical
+contracts and broader caller/integration comparisons are documented here;
+these harnesses are not a full parity certificate or a requirement to add every
+possible replay mode before using the implemented backend.
 
 No NVIDIA execution result is published yet. The CUDA CI job compiles/links the
 harness on a CPU runner and retains its exact compiler command and input/library
@@ -62,7 +71,7 @@ Use a new output name; existing reports are never overwritten. The native test
 continues to enforce its exact Metal expectations before emitting observations.
 The existing [local acceptance](LOCAL_ACCEPTANCE.md) records the fixed production
 revision and limits; source changes require a new matching observation file.
-The [current M3 observations](../validation/cuda-comparison-metal-v2-m3.jsonl)
+The [recorded M3 observations](../validation/cuda-comparison-metal-v2-m3.jsonl)
 use the accepted `68c800e` production tree. Their
 [provenance](../validation/cuda-comparison-threshold-m3.json) retains commands,
 hashes, 39 witnesses / 3,491 exact native checks and twelve report-integrity
@@ -1505,5 +1514,7 @@ python3 scripts/compare_ranking_metrics.py compare \
 Use a new output path for each run. Retain the CUDA metadata sidecar, runtime log
 and matching build record. The remaining ranking label/cache-generation,
 public-metric state/lifetime and plan corpora are **not** covered by this batch;
-P5-N11 remains open. SHAP, compiler arithmetic, broader caller comparisons and
-actual NVIDIA execution also remain.
+P5-N11 remains unverified on NVIDIA. SHAP, compiler arithmetic and broader caller
+comparisons are also outside this batch's verification scope. Actual NVIDIA
+execution remains outstanding; selecting further replay work is a planning
+decision under [PLAN.md](PLAN.md), not an implied missing MPS implementation.

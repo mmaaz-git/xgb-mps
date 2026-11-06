@@ -2,79 +2,45 @@
 
 **Porting XGBoost to MPS, by Codex.**
 
-An experimental Apple GPU backend for XGBoost 3.4.2. It uses custom Metal
-compute kernels behind `device="mps"`; it is an independent fork, not an upstream
-XGBoost release.
+An experimental Apple GPU backend for XGBoost 3.4.2, using custom Metal compute
+kernels behind `device="mps"`. This is an independent fork, not an upstream release.
 
-**Training and prediction work. Full CUDA parity is not established.** A passing
-test suite does not prove that every CUDA operation has an equivalent Metal
-path. CUDA source defines the intended
-behavior; CPU comparisons apply where the algorithms agree. No NVIDIA GPU
-runtime comparison has been performed.
-
-Start with the [caller audit](docs/CUDA_AUDIT.md), [review findings](docs/REVIEW.md) and
-[implementation plan](docs/PLAN.md). Correctness and operation coverage take
-priority over further performance tuning.
+**The core backend trains and predicts on Apple GPUs. Full XGBoost ecosystem
+support and CUDA-equivalent numerical behavior are not yet established.**
+The latest bounded review found no missing major core training/prediction family;
+it did find unfinished binding integration, validation and maintainability work.
+See the [review](docs/REVIEW.md) and [short current plan](docs/PLAN.md).
 
 ## Current scope
 
-Implemented paths have local tests on an **Apple M3, 10-core GPU, 16 GB RAM**.
-This is the tested hardware, not a claim of validation across Apple devices.
+Tested hardware: **Apple M3, 10-core GPU, 16 GB RAM**.
 
 | Area | Implemented paths |
 | --- | --- |
-| Tree training | `hist` and `approx`, scalar and vector trees, missing/categorical data, row/column sampling, and reduced-gradient leaf fitting |
-| Objectives and metrics | GPU implementations for regression, classification, ranking, survival, and adaptive objectives; numerical qualifications are recorded in the parity ledger |
-| Prediction | Batch/inplace prediction, leaf outputs, and SHAP contributions/interactions |
-| Data | Ordinary/quantile matrices, native Metal tensor and columnar inputs, metadata, and host/disk external-memory caches |
-| Other training | Linear coordinate descent, TCP distributed trees, and optional federated gRPC trees |
+| Tree training | `hist` and `approx`, scalar/vector trees, missing/categorical data, sampling, constraints and leaf fitting |
+| Objectives and metrics | Regression, classification, ranking, survival and adaptive objectives |
+| Prediction | Batch/inplace prediction, leaf outputs, exact SHAP contributions/interactions |
+| Data | Ordinary/quantile matrices, native Metal tensors/columns, metadata, host/disk external-memory caches |
+| Other training | Linear coordinate descent, distributed trees and optional federated gRPC trees |
 
-The audit at `382f78c` identified **10 implementation tasks**, including weighted-
-quantile precision and vector-row validity bugs, plus GPU state/data-placement
-gaps. Its 174 logical rows and 1,078 classified lexical sites are an inventory,
-**not a completion percentage or proof of parity**. See the
-[findings and evidence](docs/CUDA_AUDIT.md) and [ordered plan](docs/PLAN.md).
-All ten tasks are locally complete. The [local acceptance report](docs/LOCAL_ACCEPTANCE.md)
-connects every original fix and all 17 numerical contracts to passing fixtures
-and states the remaining limits. Further review found an unnecessary AUC limit:
-`4a05813` now supports more than 65,535 outputs and matches CUDA's empty
-normalization semantics. Two native groups and 99 Python tests pass for this
-[focused fix](validation/auc-capacity-m3-run.json).
-`41d4dc2` removes the remaining five artificial output limits in initialization,
-quantization and leaf accumulation. Two new native groups pass 8.8 million exact
-checks around that boundary; a complete 65,536-target vector tree also matches CPU
-and analytic predictions. [Capacity evidence](validation/output-capacity-m3-run.json).
-The full native and Python regression also passes at `41d4dc2`.
-**Next: execute the existing comparisons on NVIDIA and fix observed mismatches.**
-No NVIDIA runtime host is configured. M3 performance work can proceed while that
-evidence remains unavailable; full parity stays unproven.
+The original audit's ten implementation tasks and two later capacity fixes have
+local acceptance. That does not prove every branch or deployment works.
+[Behavior, numerical and platform limits](docs/CUDA_PARITY.md).
 
-| Validation stage | Current status |
-| --- | --- |
-| Local Metal/CPU acceptance | Full regression passed at `41d4dc2`; details below |
-| CUDA compilation | [AUC/ROC and ranking replay build passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698); artifacts verified. The [reader-change build is running](https://github.com/mmaaz-git/xgb-mps/actions/runs/42133058442) |
-| CUDA-versus-Metal execution | Not run: actual NVIDIA hardware is required |
-| Performance | Mixed; the latest full HIGGS run is slower on MPS |
+**Remaining:** first-class Spark MPS GPU integration; standard R/JVM packaging
+and runtime validation; representative NVIDIA comparisons; additional Apple
+hardware and multi-host validation; and focused maintenance/performance work.
+The core Python package can build/package Metal with explicit configuration.
+Only Metal device ordinal 0 is supported, and native producer readiness is synchronous.
 
-The [NVIDIA comparison tools](docs/NVIDIA_COMPARISON.md) address twelve of the
-seventeen numerical contracts using shared inputs and saved Metal observations.
-Their AUC/ROC build passed; the [ranking sort/score build also passed](https://github.com/mmaaz-git/xgb-mps/actions/runs/42129587698).
-These compiler checks do not execute CUDA kernels.
-
-**Remaining:** run the available comparisons on NVIDIA and resolve observed
-differences; complete outstanding ranking, SHAP, compiler-arithmetic and caller
-coverage, including the full linear updater/selector. The immediate order is in
-[the plan](docs/PLAN.md#immediate-execution-order); further comparison infrastructure
-is deferred until the existing programs produce NVIDIA results.
-
-`tree_method="exact"` is unsupported on MPS. For linear GPU training, use
-`booster="gblinear", updater="coord_descent"`; the default `shotgun` updater
-remains on CPU, as it does with CUDA. Distributed `gblinear` is unsupported.
+`tree_method="exact"` is unsupported on both CUDA and MPS. For linear GPU
+training, use `booster="gblinear", updater="coord_descent"`; `shotgun` remains
+on CPU, as with CUDA. Distributed `gblinear` is unsupported upstream.
 
 ## Build and try it
 
 Requires an Apple GPU on macOS, Xcode command-line tools, Python **3.11+**, CMake,
-Ninja, and OpenMP. The commands below use the vendored Python package directly.
+Ninja and OpenMP. These commands use the vendored Python package:
 
 ```sh
 git clone https://github.com/mmaaz-git/xgb-mps.git
@@ -87,7 +53,7 @@ export PYTHONPATH="$PWD/xgboost/python-package"
 export DYLD_LIBRARY_PATH="$(brew --prefix libomp)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 ```
 
-Run this with `.venv/bin/python`:
+Run with `.venv/bin/python`:
 
 ```python
 import numpy as np
@@ -97,97 +63,56 @@ rng = np.random.default_rng(0)
 X = rng.normal(size=(10000, 32)).astype(np.float32)
 y = 2 * X[:, 0] - X[:, 1]
 
-print(xgb.metal_info())  # Check that Metal is built and available.
 model = xgb.XGBRegressor(device="mps", tree_method="hist", n_estimators=20)
 model.fit(X, y)
-prediction = model.predict(X)
+print(model.predict(X[:3]))
 ```
 
-To build quantiles on Metal from host arrays, use
-`xgb.QuantileDMatrix(X, y, device="mps")`. Native Metal inputs and outputs support
-DLPack interoperability with PyTorch and MLX. Ordinary `predict(DMatrix)` returns
-NumPy by default; native inplace prediction can retain GPU output.
+Use `xgb.QuantileDMatrix(X, y, device="mps")` for Metal quantile construction.
+PyTorch and MLX native inputs/outputs use DLPack interoperability; ordinary
+`predict(DMatrix)` returns NumPy by default.
 
 ## Validation
 
-Run the standard native and Python suites; the runner builds the current library first:
-
 ```sh
-brew install snappy  # Independent decoder used by native tests only.
-bash scripts/test.sh
+brew install snappy  # Independent decoder for native tests.
+bash scripts/test.sh --list
+bash scripts/test.sh --python tests/test_metal_objectives.py
+# Full standard suite, when appropriate:
+bash scripts/test.sh --full
 ```
 
-For focused work, use `bash scripts/test.sh --list`, then select native IDs and/or
-Python files with `--native` / `--python`. `--dry-run` prints commands without
-executing them. Logs and status are saved per run; see [validation instructions](docs/VALIDATION.md).
+The runner builds the library first and supports focused selections. CPU-only
+and federated configurations are separate checks. See [commands and exact
+revision-specific results](docs/VALIDATION.md); a historical full suite is not
+silently treated as validation of every later change.
 
-The suite requires an accessible GPU and uses completed-operation counters to
-check GPU execution. PyTorch and MLX are additional dependencies for their
-native-tensor tests. Optional federated tests require `brew install grpc protobuf`
-and run with `bash scripts/test_federated.sh` in separate build directories.
-
-Latest full regression covers `41d4dc2`: **106 native groups and 3,919 Python
-tests passed, with two expected skips** for Linux-only loader behavior and the
-no-GPU negative check. PyTorch and MLX GPU interop tests ran. The
-[record](validation/output-capacity-full-m3-run.json) identifies the exact source,
-library and logs. Subsequent AUC observation preparation has 22 separate passing
-source/helper and mocked build-driver checks. Its first CUDA compilation failed
-on an ambiguous test-helper call; the corrected helper passes a regression that
-reproduces the collision, and the corrected CUDA build also passed.
-
-The CPU-only build/API/schema and nine updater checks, plus 14 optional federated
-transport/sketch/learner groups, previously passed at `68c800e`. Those separate
-gates were not rerun for the capacity fix. Federated workers used the same M3,
-including TLS tests. [Historical acceptance evidence](docs/LOCAL_ACCEPTANCE.md).
-
-The [CUDA CI workflow](.github/workflows/cuda-compile.yml) uses NVIDIA's compiler
-on a Linux runner to build shared production code and the CUDA comparison programs.
-It also checks host-side loading and registration. The runner has **no NVIDIA
-GPU**: it cannot execute CUDA kernels or establish CUDA/MPS equivalence. Recent
-failures have been in new comparison-code integration; failed and corrected runs
-are retained in the [compiler record](validation/cuda-compile-ci-13.4.txt).
-New pushes preserve the active build and keep the newest revision pending,
-using [GitHub's concurrency queue](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+CUDA CI compiles the NVIDIA backend and comparison programs on a CPU runner.
+It does **not** execute CUDA kernels. [Advanced NVIDIA comparison instructions](docs/NVIDIA_COMPARISON.md)
+are available, but unfinished replay modes are not missing MPS features.
 
 ## Performance
 
-There is no general speedup promise. Existing M3 measurements include improvements,
-CPU wins, and failed strict-equivalence checks. The
-[published-workload replay notes](docs/PUBLISHED_BENCHMARKS.md) describe HIGGS and
-Covertype settings, timing boundaries, hardware, and reproduction commands.
-The latest full HIGGS replay covers the accepted `68c800e` production tree:
-three pairs of 1,000 rounds give **288 s CPU / 469 s MPS** median training time
-on this M3. MPS is slower, and strict prediction equivalence fails. The saved
-MPS model predicts identically on CPU; the independently trained models use
-different quantile cuts and differ from their first split. Holding cuts fixed
-passes the strict comparison for a separate 100-round diagnostic, with all splits
-agreeing. CUDA sketch agreement still needs NVIDIA execution.
-System-wide swap use was high, and CPU times ranged from 195 to 289 seconds.
-[Timings, correctness results and limits](docs/PUBLISHED_BENCHMARKS.md#accepted-production-tree-68c800e).
-A subsequent compressed-data reader optimization reduces median MPS training
-from **64.8 s to 55.2 s** in three before/after pairs using the full HIGGS rows
-and **100 rounds**. All six models and prediction arrays are bit-identical.
-This is a 1.17× improvement over the previous MPS version; CPU was not rerun.
-[Focused tests, every timing and measurement limits](docs/PUBLISHED_BENCHMARKS.md#compressed-ellpack-reader).
-
-Older measurements are historical; raw reports remain under [validation/](validation/).
+Performance is mixed. The latest full 1,000-round HIGGS measurement at `68c800e`
+gave **288 s CPU / 469 s MPS** median training on this M3. Independently trained
+CPU/MPS models have different quantile cuts; a separate fixed-cut diagnostic
+passes. A later reader optimization at `818e11f` improved a **100-round MPS-only**
+comparison from **64.8 s to 55.2 s**, with identical models and predictions.
+These are different experiments, not a current general CPU-speedup claim.
+[Workloads, every timing and limitations](docs/PUBLISHED_BENCHMARKS.md).
 
 ## Repository guide
 
-- [Review](docs/REVIEW.md): concrete findings, risks, and cleanup decisions.
-- [Caller audit](docs/CUDA_AUDIT.md): classified scope, two correctness findings, and ten implementation tasks.
-- [Plan](docs/PLAN.md): prioritized work and acceptance criteria.
-- [Implementation guide](docs/ARCHITECTURE.md): entry points, storage and module boundaries.
-- [Parity ledger](docs/CUDA_PARITY.md): current behavior and known differences.
-- [Operation map](docs/CUDA_OPERATION_MAP.md): CUDA sources, Metal entry points, and tests.
-- [Historical progress log](docs/archive/README-progress-2026-11-04.md): archived
-  implementation updates and old measurements; not current status.
-- `xgboost/`: vendored upstream source and Metal implementation; `tests/` contains
-  port-specific tests, `scripts/` build/test/benchmark tools, and `validation/`
-  committed evidence. Generated builds, caches, and `results/` are ignored.
+- [Plan](docs/PLAN.md): current scope and remaining work.
+- [Review](docs/REVIEW.md): confirmed findings and cleanup decisions.
+- [Behavior/limits](docs/CUDA_PARITY.md) and [architecture](docs/ARCHITECTURE.md).
+- [Validation](docs/VALIDATION.md): checks and evidence boundaries.
+- [Frozen audit](docs/CUDA_AUDIT.md) and [operation map](docs/CUDA_OPERATION_MAP.md).
+- `xgboost/`: vendored source and Metal backend; `tests/` and `scripts/`: checks/tools;
+  `validation/`: recorded evidence; `docs/archive/`: historical plans and progress.
+  Builds, caches and `results/` are ignored.
 
 ## License
 
-Apache-2.0; see [LICENSE](LICENSE). Upstream XGBoost copyright notices and
-third-party licenses are retained, including the fdlibm permission notice in
-the Metal source.
+Apache-2.0; see [LICENSE](LICENSE). Upstream and third-party notices, including
+fdlibm's permission notice in the Metal source, are retained.

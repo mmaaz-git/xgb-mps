@@ -132,9 +132,7 @@ def main():
         }
         steps.append((test["id"], test["run"], overrides))
     if full or args.python is not None:
-        steps.append(
-            ("linear-reference", ["bash", "tests/build_linear_reference.sh"], {})
-        )
+        # The linear test module builds its reference lazily when needed.
         steps.append(
             (
                 "pytest",

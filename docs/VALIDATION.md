@@ -15,8 +15,9 @@ bash scripts/test.sh --python tests/test_metal_metadata.py
 bash scripts/test.sh --full
 ```
 
-No selectors means the full standard run: 104 native groups, the independent
-linear reference build, then pytest with `--require-metal`. The manifest is
+No selectors means the full standard run: 106 native groups, then pytest with
+`--require-metal`. Linear tests build their independent reference only when
+selected and the reference is missing or stale. The manifest is
 [tests/native_tests.json](../tests/native_tests.json). The runner validates its
 native-source inventory and recompiles selected test binaries. Optional federated
 transport is deliberately in its separate build, not missing from this manifest.
@@ -82,27 +83,44 @@ learner selections and confirm `USE_METAL=false` for that package.
 
 The GitHub [CUDA workflow](../.github/workflows/cuda-compile.yml) compiles shared
 source with CUDA/NCCL/nvCOMP/federated dependencies on a CPU runner. It has no
-NVIDIA GPU and runs no Metal tests. A newer same-branch/PR run supersedes its old
-compile job. Runtime jobs remain a separate planned gate.
+NVIDIA GPU and runs no Metal tests. An active same-branch/PR build finishes;
+newer revisions replace only the pending build. The two Metal-only implementation
+files do not trigger it by themselves; shared headers, stubs and build files do.
+Sparse checkout includes compiler inputs, excluding recorded validation corpora.
+Runtime jobs remain a separate planned gate.
 The workflow now also compiles/links the [shared numerical comparison harness](NVIDIA_COMPARISON.md)
 without executing it. The report parser's synthetic integrity tests and a
 successful link must not be reported as NVIDIA runtime evidence.
 
 Publish concise records in `validation/` naming revision, commands, dependencies,
 hardware, passed/skipped/failed scope and limitations. Keep full local logs in
-ignored `results/`. The latest pre-review full regression is
-[native CSR storage](../validation/cuda-metal-native-csr-storage-m3.txt); review
-fixes have [their own record](../validation/repo-review-2026-11-05.txt).
+ignored `results/`. Evidence is revision-specific; later focused checks do not
+turn a historical full run into a current full run.
 
-Latest full local regression: [PORT-11](../validation/cuda-port11-m3.txt), source
-`68c800e`, 103 native groups and 3,647 Python passes with one expected skip,
-plus the separate CPU build/API/schema and nine updater checks.
-PyTorch and MLX interop ran. The optional federated suite passed 14 stage/world
-groups at the same revision, including TLS; all workers used one M3.
-The subsequent [local acceptance report](LOCAL_ACCEPTANCE.md) reconciles all
-audit fixes and numerical contracts. Four native groups and 49 Python tests
-passed in the focused numerical run; the added 104th group passed separately
-from the last full run. CUDA compilation/linking passed at `bf1ebea` on the same
-production tree. NVIDIA execution remains untested.
-The diagnostic schema remains at 303 native counters
-and 305 C API fields; initializer positions and CPU/Metal key agreement were checked.
+## Recorded results
+
+- **Last full native/Python regression:** `41d4dc2`, 106 native groups and 3,919
+  Python passes with two expected skips. See the
+  [PORT-13 full-run record](../validation/output-capacity-full-m3-run.json).
+- **Accepted reader optimization:** `818e11f`, six native groups and 160 Python
+  passes, plus bitwise model/margin comparisons across six 100-round MPS runs.
+  See [reader evidence](../validation/ellpack-read-m3-run.json).
+- **This cleanup:** based on `6f3dcbd`, two native groups and 186 Python tests
+  passed after removing unused host split bridges. The selected linear test
+  rebuilt its stale reference automatically. The existing CPU configuration
+  built and its 305-field schema/API/cache checks passed. The operation-map
+  reference check passed; it does not establish behavior. Exact source hashes,
+  commands and limitations are in the [cleanup record](../validation/repo-cleanup-2026-11-05.json).
+- **Separate historical CPU/federated acceptance:** `68c800e`, CPU schema/API
+  checks and nine updater selections; 14 federated stage/world groups including
+  TLS. All workers used one M3. See [PORT-11](../validation/cuda-port11-m3.txt).
+- **Latest verified CUDA compile before this cleanup:** `818e11f`,
+  [run 42133058442](https://github.com/mmaaz-git/xgb-mps/actions/runs/42133058442),
+  all 197 production steps and eight comparison executable links. Input hashes
+  and host loader/registry/source/RNG checks were verified. This predates the
+  cleanup and does not validate its new CI checkout configuration.
+  [Compiler history](../validation/cuda-compile-ci-13.4.txt).
+
+The [local acceptance report](LOCAL_ACCEPTANCE.md) reconciles the original audit
+fixes and numerical contracts. No NVIDIA GPU execution is recorded. Other Apple
+hardware and actual multi-host operation remain unvalidated.

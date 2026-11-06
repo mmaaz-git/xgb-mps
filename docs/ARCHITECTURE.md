@@ -38,8 +38,8 @@ Quantized histogram and split paths preserve integer state. Reconstructing exact
 integers from floating views loses that contract. CUDA-source checks, CPU
 comparisons and NVIDIA execution are distinct evidence; see [the ledger](CUDA_PARITY.md).
 
-The runtime/shader contain roughly 19,000 lines and 212 kernel entry points at
-the reviewed baseline. Existing family headers supply extraction boundaries.
+At the `6f3dcbd` review baseline the runtime/shader contained roughly 20,000 lines
+and 218 kernel entry points. Existing family headers supply extraction boundaries.
 Extract infrastructure, then one family per change; preserve arithmetic, APIs,
 lifetimes and shader dependencies. Keep algorithm changes, lazy pipeline creation
 and asynchronous submission separate from extraction.

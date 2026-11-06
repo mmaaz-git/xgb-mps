@@ -16,7 +16,8 @@ The implementation bodies behind the listed Metal interfaces live primarily in
 
 ## Current work and validation boundaries
 
-The [completion plan](PLAN.md) is the authoritative queue. The frozen
+The [plan](PLAN.md) defines the remaining scope; [VALIDATION.md](VALIDATION.md)
+maintains current tested revisions and CI evidence. The frozen
 [caller/numerical audit](CUDA_AUDIT.md) at `382f78c` classifies 174 logical
 operations and 1,078 lexical sites. Sixteen missing/defective rows map to ten
 implementation tasks, including two correctness fixes. NUM-1 has since been
@@ -46,16 +47,20 @@ NVIDIA execution and other Apple hardware are not represented by M3 tests.
 CUDA compilation/linking also passed at audit baseline `382f78c`
 ([run 41987882440](https://github.com/mmaaz-git/xgb-mps/actions/runs/41987882440)), including
 NCCL, nvCOMP and federated consumers. See [compiler evidence](../validation/cuda-compile-ci-13.4.txt).
-The latest successful compile covers `bf1ebea`, including PORT-10/11, on the
-same production tree as the final local gates ([run 42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238)).
+Another historical compile milestone covers `bf1ebea`, including PORT-10/11
+([run 42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238)).
+These links preserve revision-specific evidence, not the latest CI status.
 Compilation is not runtime or numerical equivalence. Performance follows
 operation/storage correctness; historical timings are not current measurements.
 
-## Mapped families
+## Frozen family classifications and implementation entry points
 
 “Mapped” means implementation and test entry points were located, **not complete**.
 “Backend adapted” identifies CUDA runtime/allocator mechanisms replaced by Metal
-mechanisms. Classifications below describe the frozen audit revision.
+mechanisms. Classifications below describe the frozen audit revision, including
+the historical `audited-with-open-tasks` labels. Those labels do not reopen the
+ten subsequently completed tasks; their disposition is recorded in
+[LOCAL_ACCEPTANCE.md](LOCAL_ACCEPTANCE.md).
 “Audited with open tasks” links gaps found at that revision; their current
 resolutions appear above and in the JSON's `resolved_after_audit` section.
 "Classified consumers" closes only the frozen inventory classification. The JSON
@@ -122,7 +127,7 @@ been addressed since the initial audit. The latter includes sketch/compression
 consumers, not only the importer. See
 [native matrix storage validation](../validation/cuda-metal-native-csr-storage-m3.txt)
 and [native gradient storage validation](../validation/cuda-metal-native-gradient-storage-m3.txt).
-Detailed algorithm, arithmetic and historical validation records remain in
-[CUDA_PARITY.md](CUDA_PARITY.md). Older broad statements there or in the development
-log are historical evidence; the concrete open items above take precedence for
-planning the next porting work.
+Detailed algorithm and arithmetic limits remain in
+[CUDA_PARITY.md](CUDA_PARITY.md). Use [VALIDATION.md](VALIDATION.md) for current
+evidence and [PLAN.md](PLAN.md) for scope. Historical classifications and the
+development log do not create additional implementation tasks.

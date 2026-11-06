@@ -4596,5 +4596,18 @@
     "raw_sha256": "8e254f9b32b4352a4c374d6950ff1e57d2b95b6176d76b51847c30374587fb96",
     "published_sha256": "92a44a018cefbb9d305367d510cbc9b60a4422ebd215081873c83cbf8aa14a2f",
     "normalization": "Trailing whitespace removed from the published text log; original retained in results/ellpack-read-final/acceptance.log."
+  },
+  "cuda_compile": {
+    "status": "passed-compile-link-and-host-checks",
+    "gpu_execution": false,
+    "run_id": 42133058442,
+    "head": "818e11fa78c84171e11843c8e38cead7d39132e2",
+    "url": "https://github.com/mmaaz-git/xgb-mps/actions/runs/42133058442",
+    "verified_input_hashes": 85,
+    "production_steps": 197,
+    "linked_binaries": 8,
+    "log_sha256": "06a4d004b679cca1e53efb8af2dfc281509bcb5fee1b338391acc54b653dbe4b",
+    "build_record_sha256": "da2b7a60012827254c49a51ca9f8f08a317ba2097854efd39d5d61f0be69fd56",
+    "library_sha256": "c7933e0382effa2bc5d598a6256f0a5b415526ce993c5f260143c33de9dab7bf"
   }
 }

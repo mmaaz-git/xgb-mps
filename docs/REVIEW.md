@@ -1,86 +1,101 @@
-# Repository review and cleanup
+# Current review and cleanup
 
-2026-11-04 local / 2026-11-05 UTC. Reviewed baseline `2eaad4d` and the interrupted
-vector-weight draft, now isolated at local branch
-`wip/vector-weight-storage-review`, commit `ca00777`.
+2026-11-05; reviewed baseline `6f3dcbd`. Three subagents independently examined
+feature coverage, production complexity, and repository/tests/CI hygiene. This
+was a bounded source review using the existing audits and tests, not a new
+exhaustive inventory or a proof of full CUDA parity.
 
-## Assessment
+**No confirmed missing major core CUDA training/prediction family was found.** The
+remaining ranking, SHAP and linear items in older plans mostly describe missing
+comparison coverage. Their Metal implementations and integration tests already
+exist. The [current plan](PLAN.md) separates implementation, validation,
+maintenance and performance work.
 
-The project contains substantial real Metal implementations and useful tests.
-It also accumulated serious maintainability and planning debt: a transcript-like
-README, overlapping status documents, a large shared runtime, and tests that could
-link a stale library. Passing aggregate test counts did not replace code review.
-Discarding the port or rewriting it wholesale is not supported by these findings.
+## What exists, and what remains uncertain
 
-Three independent reviewers covered native runtime/storage, tests/CI/evidence,
-and documentation/public API. The root integrated and checked their fixes.
-The review inspected the entire unfinished diff and sampled critical baseline
-paths; **it is not a proof of correctness of all 212 kernels**. No NVIDIA execution
-or performance benchmark was performed during this review.
-
-## Findings and disposition
-
-P1 denotes unsafe behavior or a blocker for the stated full-port goal. P2 denotes
-a reproduced API defect or material maintenance/validation risk; these labels
-are review priorities, not a security severity classification.
-
-| Finding | Evidence | Disposition |
+| Area | Source and existing tests | Remaining question |
 | --- | --- | --- |
-| **P1: unsafe CUDA view in unfinished root-weight change** | At `ca00777`, `updater_quantile_hist.cc:280` selects `ctx_->Device()` then runs CPU `std::transform` for non-MPS contexts. Manual updater selection can retain a CUDA context. | Draft quarantined, absent from main. Fix before PORT-1; source-confirmed unsafe path, not reproduced on NVIDIA. |
-| **P2: CPU diagnostic schema missing 17 fields** | Existing CPU library returned 261 keys vs 278 in Metal; AUC/ranking lookups could raise `KeyError`. | Fixed with one shared stats-to-JSON mapping and an unchanged plain Statistics header. Added actual CPU/Metal schema comparison; both builds pass. |
-| **P2: aliased metadata capsule consumed twice** | `set_info` and quantile setup independently transformed one raw DLPack capsule used as label and weight/base margin. | Deduplicate exports within the call, retain across quantile passes; focused ownership/single-use regressions added. Runtime verification recorded separately. |
-| **P1 coverage gap: three vector payload paths incomplete** | CPU weight/root work, selected category bits and exact node/child sums differ from CUDA device storage in `multi_evaluate_splits.cuh`. | Separate PORT-1/2/3, each with producer/consumer and growth/lifetime acceptance. Weight work alone cannot close vector coverage. |
-| **P2: test script could use a stale library** | Old `scripts/test.sh` compiled native tests but never rebuilt the library, including after Statistics ABI edits. | New runner builds first, selects tests, records commands/status/source and library fingerprints. |
-| **P2: repetitive, all-or-nothing validation** | 727-line shell script repeated compile/link commands; focused runs required ad hoc shell scripts. | Six-line wrapper plus one runner and native manifest. All 100 original compiler/run/environment combinations preserved and mechanically compared. |
-| **P2: optional dependency skips can weaken a “full” result** | `--require-metal` checks GPU availability, but PyTorch/MLX `importorskip` remains allowed. CPU/federated gates are separate too. | Document exact gate/dependency boundaries; mandatory interop acceptance must inspect skips. No claim these gaps invalidate the recorded baseline run. |
-| **P2: current status buried in historical prose** | README 3,458 lines; build instructions at line 897; test totals 3,554 and 1,278 both presented as current. Parity ledger 4,559 lines. | Concise entry point/current ledger; both originals archived with repaired links. One ordered plan with acceptance criteria. |
-| **P2: exact-capacity allocation growth** | `MetalVectorBuffer::Resize` copies the old prefix on each small capacity increase, yielding quadratic traffic under incremental growth. | PERF-2: checked amortized growth/reserve with copy-count tests and measurements. Impact not benchmarked in review. |
-| **P2: runtime/context coupling** | Roughly 19,000 runtime/shader lines, 212 kernels, eager pipeline creation; MPS context also reports CPU storage defaults. | MAINT-1 bounded extractions; PORT-4 caller classification. No global Device/HostSpan rewrite. |
-| **P2: per-operation waits and weak historical benchmark provenance** | Synchronous completion after many small operations; some older reports lack a top-level revision. | PERF-1/3 fixed-revision measurements after coverage. Old speedups are historical, not current claims. |
+| Hist/approx and quantiles | `hist_util.cc` dispatches Metal sketch construction; vector root/weight paths exist in `updater_quantile_hist.cc`; sketch and split tests cover dense/sparse, categories, weights and external pages. | HIGGS CPU/MPS cuts differ. Common-cut training agrees; actual NVIDIA comparison remains. |
+| Ranking | `rank_metric.cc` has Metal metric paths; `test_metal_ranking.py` checks cache reuse and metadata lifetime. | NVIDIA numerical and caller/lifecycle comparison. |
+| Exact SHAP | Metal entry points in `predictor/interpretability/shap.h` and `shap.cc`; `test_metal_shap.py` covers contributions/interactions and several model/data forms. | NVIDIA accumulation-order and numerical comparison. |
+| Linear training | `updater_coordinate.cc` uses Metal reductions/residual updates; `test_metal_linear.py` covers all five selectors and CUDA-source snapshot behavior. | Actual CUDA updater comparison. |
+| Distributed/federated trees | Metal collective and learner implementations, with local multi-worker tests. | Other Apple GPUs and real multi-host deployment. |
 
-## What changed in this cleanup
+**Full ecosystem support still has gaps.** In `python-package/xgboost/spark/core.py`,
+`set_device` accepts only CPU/CUDA/GPU, GPU detection uses `use_cuda`, and worker
+GPU assignment selects CUDA ordinals. Generic `setParams(device="mps")` can
+bypass the setter, so this is an incomplete first-class integration, not proof
+that every host-data Spark call fails. JNI's ordinary build script exposes CUDA
+but no Metal flag; R's regular Makevars omit Metal sources/link settings. Top-level
+CMake supports the binding options alongside Metal, so standard packaging and
+runtime acceptance are unfinished rather than proven absent core APIs.
 
-- Preserved unfinished feature work on a local WIP branch instead of mixing it
-  into cleanup or claiming it passed. Main remains based on the tested baseline.
-- Fixed the two independently reproduced API defects above. The 276 statistics
-  member types/order and Metal JSON expressions were independently verified
-  unchanged; the duplicate CPU counter mapping was removed.
-- Replaced the test harness without deleting native checks. Build-first execution,
-  focused selection, per-step logs and failure status are now standard.
-- Added same-branch/PR concurrency cancellation for superseded CUDA compile jobs.
-  The three initial dependency failures were followed by three passing runs.
-- Separated README, [plan](PLAN.md), [current status](CUDA_PARITY.md),
-  [implementation guide](ARCHITECTURE.md) and [validation instructions](VALIDATION.md)
-  from archived development history.
+Python wheel machinery can package a prebuilt Metal library or build with
+explicit CMake flags; Metal defaults off. Shared Dask parameter validation accepts
+`mps`; no missing Dask core dispatch was established by this review.
 
-No training arithmetic, Metal kernel, allocation strategy, numerical tolerance,
-or asynchronous execution contract was changed by this cleanup. No broad test
-deletion or benchmark rerun was used to make the repository look healthier.
+These restrictions are shared with upstream CUDA, not missing MPS features:
+`tree_method="exact"`, conditional SHAP, distributed `gblinear`, and coordinate
+descent over multiple CSC blocks. Approximate SHAP has a deliberate CPU path;
+the CUDA GPU predictor does not implement it either.
 
-## Validation and review limits
+Metal device ordinal 0, synchronous producer readiness and explicit size limits
+remain support boundaries. A UINT32 guard alone does not establish a narrower
+capability than CUDA: upstream grid-stride arithmetic also needs to be examined
+before claiming an extreme-size CUDA operation works.
 
-[Cleanup validation](../validation/repo-review-2026-11-05.txt) records exact checks,
-failures/fixes and final results. The prior full regression was at `dd44829`:
-100 native groups / 3,554 Python passes / one expected skip. It is not silently
-relabelled as a full regression of these changes.
+## Cleanup performed
 
-CUDA CI checks compilation/linking only. The last pre-cleanup run
-[41982974034](https://github.com/mmaaz-git/xgb-mps/actions/runs/41982974034) passed.
-Compilation cannot detect the quarantined host/device pointer defect and is not
-NVIDIA or Metal execution evidence.
+- Removed the unused non-quantized `metal::EvaluateSplits` and
+  `metal::EvaluateMultiSplits` host bridges, declarations and eager pipeline
+  creation: **145 net lines removed**. Tracked-code searches found no callers.
+  Production still uses `EvaluateFeatureSplits` and the quantized implementations.
+  Raw shader kernels/tests, shared helpers and statistics layout are retained.
+- Removed the unconditional linear-reference build from the test runner.
+  `test_metal_linear.py` already rebuilds its reference when missing or stale.
+- Limited CUDA trigger exclusions to the two implementation files included only
+  under `USE_METAL`. Shared headers, stubs, CMake and CUDA files still trigger CI. Source-only sparse
+  checkout avoids fetching recorded GPU corpora that this compiler job does not use.
+- Replaced the chronological plan with a short current queue; corrected stale
+  test counts, CI status/policy and claims that resolved audit tasks remain open.
 
-Independent notes retain source locations, reasoning and limitations:
-[runtime](reviews/2026-11-05-runtime.md),
-[validation/CI](reviews/2026-11-05-validation.md),
-[documentation](reviews/2026-11-05-docs.md),
-[public API](reviews/2026-11-05-public-api.md).
+No training arithmetic, tolerance, regression test or evidence corpus was removed.
+No new kernels, comparison framework or performance experiment was added.
 
-## Follow-up audit
+## Necessary complexity versus optional policy
 
-The subsequent [caller/numerical audit](CUDA_AUDIT.md) is now published at frozen
-revision `382f78c`: 174 logical operations and 1,078 classified lexical sites,
-with ten implementation tasks. It found two correctness defects and additional
-GPU-placement gaps. The [updated plan](PLAN.md) puts those correctness fixes
-before vector state work. The user subsequently resumed implementation;
-NUM-1 is locally fixed at `2404827` and PORT-9 at `1034657`. PORT-1 is next;
-see the plan and [latest validation record](../validation/cuda-port9-m3.txt).
+Some binary64 support is necessary: CUDA weighted quantiles use a double
+threshold (`common/stats.cuh`), and multiclass gradients accumulate a double
+sum (`objective/multiclass_obj.cu`). Replacing these with float can change the
+algorithm or selected observation.
+
+The FP32 arithmetic policy is a separate question. CUDA sigmoid uses `expf` and
+FP32 division (`common/math.h`); Metal's `xgb_metric_math::F` routes division and
+transcendentals through software binary64, and ranking helpers target CPU
+rounding. That particular implementation is not dictated by the CUDA source.
+It is a plausible simplification target, but this review does not establish that
+native replacements would meet the required accuracy. Existing checks must remain
+meaningful; numerical changes need an explicit accuracy decision and evidence.
+
+Legacy `metal::GradientSample` is used only by its native test, and
+`metal::UniformSample` has no callers. Production uses `MakeQuantizedGradients`
+and `SampleUniform`/`SampleGradient`. Their legacy kernels/pipelines were left
+untouched here; isolation or retirement is a separate small cleanup.
+
+The baseline had roughly 11,500 host-runtime lines, 8,500 shader lines and 218
+kernels in two main files. Structural extraction is warranted. Eager pipeline
+creation, synchronous waits and exact-capacity buffer growth are performance
+concerns, not missing feature families.
+
+## Evidence and history
+
+The test runner remains useful: it builds first, selects focused tests and records
+source/library provenance. No tracked build products or Python caches were found.
+Most repository bulk is intentional evidence: 680 MB in `validation/`, including
+671 MB of compressed corpora. Relocating that data needs a deliberate link/manifest
+migration; neither blind deletion nor history rewriting is part of this cleanup.
+
+Current validation is recorded in [VALIDATION.md](VALIDATION.md). The
+[previous review](archive/REVIEW-before-scope-reset-2026-11-05.md) and
+[frozen caller audit](CUDA_AUDIT.md) preserve earlier findings. The audit's ten
+implementation tasks have subsequent [local acceptance](LOCAL_ACCEPTANCE.md).

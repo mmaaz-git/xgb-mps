@@ -1,6 +1,8 @@
 # CUDA / Metal status
 
-This is the current summary. Detailed implementation history is preserved in the
+This is the implementation and support summary. Current tested revisions,
+regression results and CI evidence are maintained in [VALIDATION.md](VALIDATION.md).
+Detailed implementation history is preserved in the
 [archived ledger](archive/CUDA_PARITY-progress-2026-11-04.md). Historical sections
 describe different revisions and must not be read as current status.
 
@@ -80,9 +82,9 @@ quantiles. Its [boundary and caller tests](../validation/output-capacity-m3-run.
 pass at 65,535/65,536/65,537 outputs, including a complete 65,536-target vector tree
 with exact CPU/analytic predictions. Kernel index and device buffer limits remain;
 extreme-width per-column quantization is memory-intensive. The
-[full regression](../validation/output-capacity-full-m3-run.json) passes 106 native
-groups and 3,919 Python tests, with two expected platform skips. No NVIDIA
-execution or arbitrary-width training claim is implied.
+[full regression record](../validation/output-capacity-full-m3-run.json) records
+validation at `41d4dc2`; see [VALIDATION.md](VALIDATION.md) for the evidence summary.
+No NVIDIA execution or arbitrary-width training claim is implied.
 
 Scalar control fields, topology, serialization and finalizers that CUDA itself
 runs on the host are not missing kernels merely because they access host memory.
@@ -119,21 +121,20 @@ reproduced defects, confirmed gaps and architecture risks.
 
 ## Evidence boundary
 
-Latest full local regression covers `68c800e`: **103 native groups and 3,647
-Python passes, one expected skip**, plus CPU build/API/schema and nine updater
-tests. Both PyTorch and MLX GPU interop tests ran.
-[Configuration, source hashes and results](../validation/cuda-port11-m3.txt).
-Optional federated transport, sketches and learners also passed at this revision:
-14 stage/world groups including TLS, with all workers on the same M3. Earlier
-validation records retain their original scope and failures. The subsequent
-four-group/49-Python focused run includes 21 explicit numerical witnesses
-([record](../validation/cuda-verify1-m3-run.json)). The added 104th native group
-passed separately; the production library is unchanged.
+Use [VALIDATION.md](VALIDATION.md) for the current evidence summary, including
+which revisions received full regression, focused checks, compiler CI and timing.
+Every record applies to its recorded source and configuration.
 
-CUDA compile CI passed at `bf1ebea`, including PORT-10/11
-([run 42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238)).
-All 197 compilation/link steps completed on the same production tree as the
-local gates. CI uses a CPU runner. **No NVIDIA runtime comparison has been
-performed.** Other Apple
-hardware is also untested. [Historical benchmarks](PUBLISHED_BENCHMARKS.md)
-predate subsequent correctness changes and are not current-HEAD measurements.
+Historical acceptance evidence remains available: the
+[`68c800e` record](../validation/cuda-port11-m3.txt) includes CPU build/API/schema,
+updater, PyTorch/MLX interop and optional federated checks. Federated transport,
+sketches and learners were tested with all workers on the same M3, including TLS.
+The [VERIFY-1 record](../validation/cuda-verify1-m3-run.json) contains the subsequent
+local numerical witnesses. The historical CUDA compile milestone at `bf1ebea`
+([run 42027936238](https://github.com/mmaaz-git/xgb-mps/actions/runs/42027936238))
+is retained as evidence for that revision, not as the latest CI result.
+
+Compiler CI runs on a CPU runner. **No NVIDIA runtime comparison has been
+performed.** Other Apple hardware is also untested.
+[Published benchmarks](PUBLISHED_BENCHMARKS.md) retain their measured revisions
+and are not evidence for an unmeasured checkout.

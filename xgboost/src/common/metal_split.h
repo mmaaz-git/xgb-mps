@@ -58,9 +58,6 @@ struct SplitResult {
   std::int32_t bin;
   std::uint32_t default_left, partition;
 };
-void EvaluateSplits(Span<HistogramInput const> histograms, Span<SplitTask const> tasks,
-                    SplitParameters const& parameters, std::vector<SplitResult>* results,
-                    std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace);
 
 // Histograms are packed bin-major, target-minor. Parent sums and bounds are
 // packed by task, followed by target. Only the winning child sums are returned.
@@ -139,12 +136,6 @@ void EvaluateQuantizedMultiSplits(
     SplitParameters const& parameters, std::vector<QuantizedMultiSplitResult>* results,
     std::vector<GradientPairInt64>* integer_children, std::vector<GradientPairPrecise>* children,
     std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace);
-
-void EvaluateMultiSplits(Span<HistogramInput const> histograms, Span<MultiSplitTask const> tasks,
-                         Span<GradientPairPrecise const> parents, Span<SplitBounds const> bounds,
-                         SplitParameters const& parameters, std::vector<SplitResult>* results,
-                         std::vector<GradientPairPrecise>* children,
-                         std::vector<std::uint32_t>* sorted_categories, SplitWorkspace* workspace);
 
 // Finalize the resident output of EvaluateQuantized[Multi]Splits. Candidate
 // ranges and parent ranges are contiguous in node order. Empty ranges also
