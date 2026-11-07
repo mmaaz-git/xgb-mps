@@ -17,7 +17,7 @@ three installed-package workflows outside the checkout. These are focused
 checks; the full 106-native/4,001-Python run on `28908e1` predates both this and
 the previous optimization. There was no NVIDIA execution.
 
-### Repeated whole-training measurements
+### CPU versus MPS: repeated whole-training measurements
 
 Each cell is a median of three fresh-process runs on the M3 (10-core GPU,
 eight CPU cores, 16 GB RAM), rotating CPU/previous-MPS/new-MPS order. Runtime
@@ -25,11 +25,17 @@ initialization is warmed. All use 100 rounds, depth 6 and 256 bins. Training
 includes quantization, column-cache construction when eligible, and held-out
 evaluation each round. Loading, matrix creation and final prediction are separate.
 
-| Training data | CPU | Previous MPS | New MPS | Previous / new MPS |
-| --- | ---: | ---: | ---: | ---: |
-| 25K × 4,096 dense, synthetic | 39.00 s | 44.29 s | 44.48 s | 1.00× |
-| HIGGS: 10.5M × 28 | 37.78 s | 37.13 s | 30.50 s | 1.22× |
-| 100K × 32 categorical, synthetic | 2.09 s | 5.24 s | 5.09 s | 1.03× |
+| Training data | CPU | MPS | Speedup (CPU / MPS) |
+| --- | ---: | ---: | ---: |
+| HIGGS: 10.5M × 28 | 37.78 s | 30.50 s | **1.24×** |
+| 25K × 4,096 dense, synthetic | 39.00 s | 44.48 s | 0.88× |
+| 100K × 32 categorical, synthetic | 2.09 s | 5.09 s | 0.41× |
+
+MPS is 1.24× as fast as CPU on HIGGS. Ratios below 1 mean CPU is faster,
+as it is on both synthetic workloads. These are comparisons on the same M3,
+using all eight CPU cores and its 10-core GPU.
+
+### Before/after optimization comparison
 
 HIGGS improves **1.22×** by median. The wide case is essentially flat
 (44.29 → 44.48 s); its allocation saving is not a demonstrated training-speed

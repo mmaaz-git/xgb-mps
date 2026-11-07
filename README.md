@@ -77,42 +77,37 @@ it does not run CUDA kernels.
 
 ## Performance
 
-Median training times across three CPU/previous-MPS/new-MPS repeats on the
-**10-core M3, 16 GB RAM**, using all eight CPU cores, 100 rounds, depth 6 and
-256 bins:
+**MPS trains HIGGS 1.24× as fast as CPU** in the repeated 100-round benchmark
+on this **Apple M3, 10-core GPU, 16 GB RAM**. Both backends use depth 6 and
+256 bins; the CPU uses all eight cores.
 
-| Training data | CPU | Previous MPS | New MPS |
-| --- | ---: | ---: | ---: |
-| 25K × 4,096 dense, synthetic | 39.00 s | 44.29 s | 44.48 s |
-| HIGGS: 10.5M × 28 | 37.78 s | 37.13 s | 30.50 s |
-| 100K × 32 categorical, synthetic | 2.09 s | 5.24 s | 5.09 s |
+| Training data | Rounds | CPU | MPS | Speedup (CPU / MPS) | Measurement |
+| --- | ---: | ---: | ---: | ---: | --- |
+| HIGGS: 10.5M × 28 | 100 | 37.78 s | 30.50 s | **1.24×** | Median of 3 runs |
+| HIGGS: 10.5M × 28 | 1,000 | 296.40 s | 250.14 s | **1.18×** | Single run |
+| 25K × 4,096 dense, synthetic | 100 | 39.00 s | 44.48 s | 0.88× | Median of 3 runs |
+| 100K × 32 categorical, synthetic | 100 | 2.09 s | 5.09 s | 0.41× | Median of 3 runs |
 
-HIGGS improves **1.22×** over `048dc86`. A separate **single 1,000-round run per
-variant** took 271.79 s before, 250.14 s after and 296.40 s on CPU
-(1.18× CPU/new-MPS); it is not a three-repeat median.
-
-Wide training is effectively unchanged, but measured Metal buffer allocation
-falls by **256 MiB**. That does not establish a lower physical-memory peak.
-HIGGS's faster partition cache adds about **279 MiB** net Metal allocation;
-its eligibility and per-page size are bounded. CPU still wins the synthetic
-controls. Other applications and system paging were not controlled.
+Speedup above 1 means MPS is faster; below 1 means CPU is faster. HIGGS benefits
+from the GPU, while CPU wins these synthetic workloads. The 1,000-round result
+needs repeats before generalizing its speedup.
 
 Training includes quantization, cache construction and held-out evaluation each
-round; loading, matrix creation and final prediction are separate. All before/after
-MPS models, margins and metric histories match exactly. Independently trained
-CPU/MPS models can differ, including a pre-existing wide-data accuracy difference.
-[All repeats, memory measurements, quality and historical benchmarks](docs/PUBLISHED_BENCHMARKS.md#current-m3-results)
-are recorded. These results do not establish a general GPU advantage.
+round; loading, matrix creation and final prediction are separate. Runtime
+initialization is warmed. Other applications and system paging were not controlled.
+Independently trained CPU/MPS models can differ, including a wide-data accuracy
+difference documented in the [detailed results](docs/PUBLISHED_BENCHMARKS.md#current-m3-results).
+That report also contains all repeats, memory measurements and optimization history.
 
 Large-workload profiling stays separate from tests. Prepare the real-data caches
 with `scripts/prepare_published_data.py`; then, for example:
 
 ```sh
+.venv/bin/python scripts/profile_training.py --case higgs --rounds 100 \
+  --threads 8 --repeats 3 --output results/profile-higgs-100
 .venv/bin/python scripts/profile_training.py --case wide --rows 25000 \
   --features 4096 --informative-features 64 --rounds 100 --threads 8 \
   --repeats 3 --output results/profile-wide-4096
-.venv/bin/python scripts/profile_training.py --case covtype --rounds 500 \
-  --threads 8 --repeats 3 --output results/profile-covtype
 ```
 
 The profiler uses fresh processes, checks each MPS model's CPU predictions exactly,
