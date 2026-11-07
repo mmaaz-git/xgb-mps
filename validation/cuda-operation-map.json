@@ -10,7 +10,7 @@
     "xgboost/src/common/metal_histogram.mm",
     "xgboost/src/common/metal_histogram.metal"
   ],
-  "latest_local_regression": "validation/cuda-port11-m3.txt",
+  "latest_local_regression": "validation/missing-and-memory-m3.json",
   "groups": [
     {
       "id": "native-api",
@@ -1299,9 +1299,9 @@
     "validation/cuda-caller-audit.json",
     "validation/cuda-calls-inventory.json"
   ],
-  "review_record": "docs/REVIEW.md",
-  "completion_plan": "docs/PLAN.md",
-  "caller_audit_summary": "docs/CUDA_AUDIT.md",
+  "review_record": "docs/CUDA_PARITY.md",
+  "completion_plan": "docs/CUDA_PARITY.md",
+  "caller_audit_summary": "docs/CUDA_PARITY.md",
   "resolved_after_audit": {
     "NUM-1": {
       "source_commit": "24048272cc0105f27c3b37823969a0b9a927b03c",
@@ -1365,5 +1365,5 @@
     }
   },
   "task_status_scope": "Group status and open_tasks describe audit_revision; current task status is in resolved_after_audit and completion_plan.",
-  "current_acceptance": "validation/cuda-verify1-m3-run.json"
+  "current_acceptance": "validation/missing-and-memory-m3.json"
 }

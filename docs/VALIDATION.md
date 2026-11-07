@@ -1,40 +1,40 @@
-# Validation commands and evidence
+# Testing and validation
 
-Use the vendored Python package and the freshly built library. The canonical
-runner builds first so a changed header cannot accidentally test an old binary.
-Inspect existing outputs before repeating expensive jobs.
+The latest backend run (`61b2042`) passed **106 native groups and 4,001 Python
+tests**, with two expected skips: no-GPU behavior on a machine with a GPU, and
+Linux-only loader behavior on macOS. Three installed-wheel workflows also passed
+outside the checkout. All before/after MPS benchmark models, margins and metrics
+were exact. [Commands, source/library hashes and results](../validation/missing-and-memory-m3.json)
+are revision-specific; later code changes require appropriate new checks.
 
-The 2026-11-05 removal of R/JVM/Spark was checked with CPU and Metal builds,
-wheel/source-archive inspection, and a fresh wheel installation outside the
-checkout: 77 workflow/model-state tests passed, with one expected no-GPU skip.
-Regression/classification train/predict/save/load and CPU model interchange also
-passed. The Metal library hash is unchanged from `cb495ee`.
-[Recorded checks](../validation/python-only-m3.json).
+## Run checks
 
-## Select checks
+The canonical runner builds first and recompiles selected native tests. Its
+[manifest](../tests/native_tests.json) is the native-source inventory.
 
 ```sh
 bash scripts/test.sh --list
 bash scripts/test.sh --native 'metal_*model*' --dry-run
 bash scripts/test.sh --native metal_model_state_api \
   --python tests/test_metal_model_state.py
-bash scripts/test.sh --python tests/test_metal_metadata.py
+bash scripts/test.sh --python tests/test_metal_workflows.py
 bash scripts/test.sh --full
 ```
 
-No selectors means the full standard run: 106 native groups, then pytest with
-`--require-metal`. Linear tests build their independent reference only when
-selected and the reference is missing or stale. The manifest is
-[tests/native_tests.json](../tests/native_tests.json). The runner validates its
-native-source inventory and recompiles selected test binaries. Optional federated
-transport is deliberately in its separate build, not missing from this manifest.
+No selectors also means the full run. Python tests use `--require-metal`, which
+fails when XGBoost's GPU is unavailable. Native Snappy checks require `snappy`;
+interop acceptance also requires **both PyTorch and MLX**. Missing producer
+libraries can still be skipped by `pytest.importorskip`, so inspect skips.
 
-Logs default to a new `results/test-runs/<UTC>-<pid>/` directory. `--log-dir PATH`
-requires a new directory and will not overwrite an existing run. `summary.json`
-records selections, exact commands/environments, exit codes, source revision/diff,
-untracked-file hashes and the built library hash. A failed step stops the run.
+```sh
+.venv/bin/python -m pip install torch mlx
+.venv/bin/python -c 'import torch, mlx.core as mx; assert torch.backends.mps.is_available(); print(mx.default_device())'
+```
 
-For a long run:
+Logs default to a new `results/test-runs/<UTC>-<pid>/` directory. `summary.json`
+records commands, environments, exits, source diff and library hashes. A failed
+step stops the run. Linear tests rebuild their independent reference when stale.
+Inspect existing results before repeating expensive work; for a long job:
 
 ```sh
 tmux new-session -d -s xgb-validation \
@@ -42,32 +42,13 @@ tmux new-session -d -s xgb-validation \
 tail -n 20 results/validation-run.log
 ```
 
-Run from the repository root; use a fresh session/path if that name already
-exists. Check the existing process/log rather than starting a duplicate.
+Use a fresh session/path; `--log-dir` refuses to overwrite an existing directory.
+For installation acceptance, install the wheel and run workflows outside the
+checkout with source-path injection disabled; verify the loaded library hash.
 
-## Dependencies and skips
+## CPU-only and federated checks
 
-README describes the build dependencies. Native Snappy checks also need `snappy`.
-PyTorch and MLX are optional packages for general use but **both are required for
-interop acceptance**. Verify their GPU devices, then inspect the pytest skip
-summary. `--require-metal` only guarantees that Metal-dependent fixtures fail
-instead of skipping when the XGBoost GPU is unavailable; it does not override
-`pytest.importorskip` for producer libraries.
-
-```sh
-.venv/bin/python -m pip install torch mlx
-.venv/bin/python -c 'import torch, mlx.core as mx; assert torch.backends.mps.is_available(); print(mx.default_device())'
-```
-
-Counters establish execution of the counted operations. Residency/lifetime tests
-must inspect ownership and copy/readback counters before host comparison. CPU
-reading an MPS-trained model tests model/reader compatibility, not independent
-CPU-training equivalence. CUDA-source oracles and NVIDIA execution are different
-evidence classes too.
-
-## CPU-only and federated gates
-
-The standard runner does not silently include these configurations:
+These configurations are separate from the standard Metal run:
 
 ```sh
 cmake -S xgboost -B build-cpu -G Ninja -DUSE_METAL=OFF -DUSE_CUDA=OFF \
@@ -76,153 +57,106 @@ cmake -S xgboost -B build-cpu -G Ninja -DUSE_METAL=OFF -DUSE_CUDA=OFF \
 cmake --build build-cpu -j4
 DYLD_LIBRARY_PATH="$(brew --prefix libomp)/lib" .venv/bin/python \
   scripts/check_cpu_build.py --metal-library xgboost/lib/libxgboost.dylib
-
-# Optional, requires gRPC and Protobuf; separate library/Python package.
-bash scripts/test_federated.sh
+bash scripts/test_federated.sh  # Optional; requires gRPC and Protobuf.
 ```
 
-The CPU checker loads the two libraries in separate processes and compares their
-diagnostic schemas, then checks disabled Metal APIs and CPU matrix/cache behavior.
-It does not replace CPU learner tests. A milestone must explicitly list its CPU
-learner selections and confirm `USE_METAL=false` for that package.
+The CPU checker compares diagnostic schemas in separate processes and checks
+disabled Metal APIs plus CPU matrix/cache behavior. It does not replace CPU
+learner tests. Federated tests use a separate build/package; local workers do
+not establish multi-host coverage.
 
-## CI and publication
+## NVIDIA comparison
 
-The GitHub [CUDA workflow](../.github/workflows/cuda-compile.yml) compiles shared
-source with CUDA/NCCL/nvCOMP/federated dependencies on a CPU runner. It has no
-NVIDIA GPU and runs no Metal tests. An active same-branch/PR build finishes;
-newer revisions replace only the pending build. The two Metal-only implementation
-files do not trigger it by themselves; shared headers, stubs and build files do.
-Sparse checkout includes compiler inputs, excluding recorded validation corpora.
-Runtime jobs remain a separate planned gate.
-The workflow now also compiles/links the [shared numerical comparison harness](NVIDIA_COMPARISON.md)
-without executing it. The report parser's synthetic integrity tests and a
-successful link must not be reported as NVIDIA runtime evidence.
+**No NVIDIA execution results are published.** The [CUDA CI job](../.github/workflows/cuda-compile.yml)
+compiles production CUDA/NCCL/nvCOMP/federated paths and links comparison tools
+on a CPU runner. Shared-source changes trigger it; the two Metal-only backend
+files do not. Compiler success and synthetic parser tests are not GPU evidence.
 
-Publish concise records in `validation/` naming revision, commands, dependencies,
-hardware, passed/skipped/failed scope and limitations. Keep full local logs in
-ignored `results/`. Evidence is revision-specific; later focused checks do not
-turn a historical full run into a current full run.
+For actual comparison, use the same source and fixture revision on both machines.
+On macOS, export a fresh numerical observation file:
 
-## Recorded results
+```sh
+bash scripts/test.sh --native metal_numerical_contracts
+MTL_DEBUG_LAYER=1 results/metal_numerical_contracts_test \
+  xgboost/src/common/metal_histogram.metal --report results/metal-observations.jsonl
+python3 scripts/compare_numerical_contracts.py inspect results/metal-observations.jsonl
+```
 
-- **Missing-value and physical-memory optimization (`61b2042`):** a fresh standard
-  run of the final backend passed all 106 native groups and 4,001 Python tests,
-  with two expected platform skips. Three installed-wheel workflows passed
-  outside the checkout. All 30 MPS timing runs and six memory diagnostics match
-  their baseline models, margins and per-round metrics exactly. New native
-  coverage exercises sparse histogram ranges, empty/reordered nodes, split and
-  private storage, concurrent first-use cache publication, reuse, and first/later-page
-  accumulation. The preliminary full run exposed a disconnect-test startup
-  race; `10078de` prepares GPU payloads before starting the unchanged five-second
-  fault deadline. A six-second worker startup
-  delay passed both failure checks. Original failure evidence is retained.
-  [Full results, hashes, timings and limits](../validation/missing-and-memory-m3.json).
+On NVIDIA/Linux, set `CMAKE_CUDA_ARCHITECTURES` for that GPU (`80` is the CI
+configuration). The harness requires a shared library with visible C++ symbols
+and RMM disabled. The build driver preserves compiler flags and records input,
+binary and library hashes; it prints runtime commands but does not execute them.
 
-- **Direct histogram-cache accumulation and bounded partition columns:** the
-  final candidate passed five native groups and 148 Python tests with no skips,
-  followed by three installed-package workflows outside the checkout. The
-  histogram-only stage had passed five native groups and 247 Python tests.
-  New coverage includes 108 histogram layout/page cases, large compressed-page
-  cache ownership, concurrent initialization, reuse and fallback layouts.
-  All 20 MPS workers across 30 training runs reproduce baseline models, margins
-  and per-round metrics exactly. Three repeats per variant cover wide,
-  categorical and 100-round full-row HIGGS; 1,000-round HIGGS has one run per
-  variant. Physical-memory diagnostics and rejected kernel variants are recorded.
-  This is focused acceptance; the full suite below predates these changes.
-  [Exact sources, timings and checks](../validation/memory-and-partition-m3.json).
-- **Fresh full regression, exact FP32 ordering and input staging:** clean
-  `28908e1` passed all 106 native groups and 4,001 Python tests, with two expected
-  platform skips. The subsequent candidate passed seven native groups and 427
-  Python tests, followed by three installed-package workflows. Direct ordering
-  checks cover 1,400,784 FP32 pairs. All 26 MPS benchmark runs reproduce baseline
-  models, margins and metric histories exactly across dense, missing-value,
-  categorical, Covertype and full-row 1,000-round HIGGS workloads. The full run
-  predates the optimization; final acceptance is focused. No NVIDIA execution.
-  [Sources, all 41 timings and checks](../validation/regression-and-benchmarks-m3.json).
-- **Batched split commands, wide histogram dispatch and native conservative
-  bounds:** eight native groups and 300 Python tests passed, with one expected
-  empty-dataset warning, followed by three installed-package workflows. Direct
-  quantized-bound containment covers 1,044,483 cases; the scalar oracle checks
-  1,992 split tasks. Compressed consumers pass 318 cases and 73,234,428 exact
-  fields. New mapped-parent inputs exercise queued staging ownership. All 18 MPS
-  models, margin arrays and metric histories match before/after on two synthetic
-  datasets and full-row HIGGS. This is focused acceptance, not a full-suite rerun
-  or NVIDIA execution. [Sources, all 27 timings and checks](../validation/parallel-tuning-m3.json).
-- **Conservative quantized split screening and identical-gain reuse:** five native
-  groups and 178 Python tests passed, followed by three installed-package workflows.
-  The expanded independent CUDA-formula oracle checks 1,992 tasks and 426,234 bins,
-  including exact ties, near ties, zero curvature, cancellation and interval
-  fallback ranges. Over one million gain-bound checks also pass. All 12 MPS
-  models, margins and per-round metric histories in the paired large workloads
-  match before/after exactly. This is focused acceptance, not a full-suite rerun
-  or NVIDIA execution. [Sources, timings and checks](../validation/quantized-split-tuning-m3.json).
-- **Partition-copy removal and bounded feature-key sorting:** the final build
-  passed four native groups and 171 Python tests, with no skips, followed by
-  three installed-package workflows outside the checkout. Partition-only checks
-  had also passed three native groups and 36 Python tests. New cases exercise
-  repeated full/partial/unordered partitions and weighted feature-key ties across
-  radix boundaries. All 24 MPS model/margin outputs across two large-workload
-  experiments match before/after. This is focused acceptance; the full standard
-  run below predates these optimizations. End-to-end performance remains mixed.
-  [Hashes, complete timings, kernel checks and CPU sample](../validation/partition-sketch-tuning-m3.json).
-- **Four-feature histogram tiling:** four native groups and 89 Python tests
-  passed, with one expected no-GPU-test skip. The final compressed-consumer
-  assertions also passed separately: 316 cases and 72,700,780 exact checked
-  fields. Three real Python workflows passed against the newly installed wheel
-  outside the checkout. Across two large datasets, all six MPS models and margin
-  arrays per dataset match exactly before/after. This is focused acceptance of
-  the optimization; the full run below predates it.
-  [Source hashes, checks and all repeated timings](../validation/histogram-tiling-m3.json).
-- **Python workflow baseline before the next performance change:** `0dfde8b` plus
-  `test_metal_workflows.py`, 106 native groups and 4,001 Python passes with two
-  expected platform skips. New workflows cover mixed-column pipelines and
-  cross-validation, weighted categorical classification with early stopping,
-  and grouped ranking. Those three workflows also passed against the installed
-  package with source-path injection disabled.
-  [Revision, test hash and results](../validation/python-workflows-full-m3.json).
-- **Fresh Python installation, including the optimized sigmoid build:** the wheel's own package/library
-  loaded in a fresh environment outside the checkout, without `PYTHONPATH` or
-  `DYLD_LIBRARY_PATH`. Regression and classification train/predict/save/load/CPU
-  interchange passed, plus 77 existing workflow/model tests and one expected
-  no-GPU-test skip. [Installation record](../validation/python-install-m3.json).
-  The optimized wheel is also installed in the project's `.venv`, with its
-  loaded library hash and Metal train/predict dispatches checked outside the checkout.
-- **Sigmoid reuse optimization:** five native groups and 112 Python tests passed
-  with one expected skip. The existing sigmoid corpus now also checks the
-  objective entry point: 2,996,040 inputs agree exactly with its binary64 reference.
-  All six full-row, 100-round HIGGS models and margin arrays match before/after.
-  [Source hashes, complete timings and limits](../validation/sigmoid-reuse-m3.json).
-- **HIGGS source-reference diagnosis:** all 6,184 saved MPS cuts across 28
-  features exactly match CUDA-source equations; CPU cuts differ for 24 features.
-  No new training or NVIDIA execution. [Scope and command](../validation/higgs-cut-source-m3.json).
-- **Earlier full native/Python regression:** `41d4dc2`, 106 native groups and 3,919
-  Python passes with two expected skips. See the
-  [PORT-13 full-run record](../validation/output-capacity-full-m3-run.json).
-- **Accepted reader optimization:** `818e11f`, six native groups and 160 Python
-  passes, plus bitwise model/margin comparisons across six 100-round MPS runs.
-  See [reader evidence](../validation/ellpack-read-m3-run.json).
-- **This cleanup:** based on `6f3dcbd`, two native groups and 186 Python tests
-  passed after removing unused host split bridges. The selected linear test
-  rebuilt its stale reference automatically. The existing CPU configuration
-  built and its 305-field schema/API/cache checks passed. The operation-map
-  reference check passed; it does not establish behavior. Exact source hashes,
-  commands and limitations are in the [cleanup record](../validation/repo-cleanup-2026-11-05.json).
-- **Separate historical CPU/federated acceptance:** `68c800e`, CPU schema/API
-  checks and nine updater selections; 14 federated stage/world groups including
-  TLS. All workers used one M3. See [PORT-11](../validation/cuda-port11-m3.txt).
-- **Latest verified CUDA compile before this cleanup:** `818e11f`,
-  [run 42133058442](https://github.com/mmaaz-git/xgb-mps/actions/runs/42133058442),
-  all 197 production steps and eight comparison executable links. Input hashes
-  and host loader/registry/source/RNG checks were verified. This predates the
-  cleanup and does not validate its new CI checkout configuration.
-  [Compiler history](../validation/cuda-compile-ci-13.4.txt).
-- **Cleanup CUDA workflow at `383f19d`:** GitHub reports
-  [run 42138562183](https://github.com/mmaaz-git/xgb-mps/actions/runs/42138562183)
-  successful, including the new sparse checkout, CUDA compile/host checks and
-  artifact upload. This status inspection is not a repeat artifact-hash audit
-  and does not include NVIDIA execution.
+```sh
+cmake -S xgboost -B build-cuda-run -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=80 \
+  -DUSE_CUDA=ON -DUSE_METAL=OFF -DUSE_NCCL=OFF -DUSE_NVCOMP=OFF \
+  -DPLUGIN_FEDERATED=OFF -DPLUGIN_RMM=OFF \
+  -DHIDE_CXX_SYMBOLS=OFF -DBUILD_STATIC_LIB=OFF \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+python3 scripts/build_cuda_comparison.py --build-dir build-cuda-run \
+  --output-dir results/cuda-comparison-build
+results/cuda-comparison-build/cmake/cuda_numerical_contracts \
+  results/cuda-observations.jsonl
+python3 scripts/compare_numerical_contracts.py compare \
+  results/metal-observations.jsonl results/cuda-observations.jsonl \
+  --output results/numerical-comparison.json
+```
 
-The [local acceptance report](LOCAL_ACCEPTANCE.md) reconciles the original audit
-fixes and numerical contracts. No NVIDIA GPU execution is recorded. Other Apple
-hardware and actual multi-host operation remain unvalidated.
+Preserve `build.json`, runtime logs, reports and binary sidecars together. Reports
+retain input/output bits, subnormals and signed zeros. Comparators reject missing,
+truncated or mismatched fixtures. Exit 0 means the recorded checks match; exit 1
+means invalid evidence or a required-check failure; exit 2 requires review even
+when outputs match, because domain or scheduling limits may remain. Consult the
+[numerical contracts](CUDA_PARITY.md#numerical-contracts). An unavailable NVIDIA
+device fails rather than skipping or falling back to CPU.
+
+The other checked-in corpora use `unpack`, the indicated executable/mode, then
+`compare`; run each `scripts/compare_*.py --help` for argument details. The table
+uses executable suffixes after `cuda_`; all binaries are under the build output's
+`cmake/` directory. [Harness sources](../tests/cuda_comparison/) and the
+[build driver](../scripts/build_cuda_comparison.py) define compilation inputs.
+
+| Corpus | Executable / mode | Comparator in `scripts/` |
+| --- | --- | --- |
+| AFT | `aft_contracts` | `compare_aft_contracts.py` |
+| Primitive math | `math_contracts` | `compare_math_contracts.py` |
+| Ranking rounding | `ranking_contracts` | `compare_ranking_contracts.py` |
+| Ranking objectives / unbiased state | `ranking_contracts --objectives` | `compare_ranking_objectives.py` |
+| Ranking primitives | `ranking_contracts --primitives` | `compare_ranking_primitives.py` |
+| Ranking metrics | `ranking_contracts --metrics` | `compare_ranking_metrics.py` |
+| Statistics / linalg | `numerical_contracts --statistics` / `--linalg` | `compare_stats_contracts.py` / `compare_linalg_contracts.py` |
+| Stump weights / sampling | `numerical_contracts --stumps` / `--sampling` | `compare_stump_contracts.py` / `compare_sampling_contracts.py` |
+| Integer leaves / cache | `numerical_contracts --integer-leaves` / `--integer-cache` | `compare_integer_leaf_contracts.py` / `compare_integer_cache_contracts.py` |
+| Metric terms / linear updates | `metric_contracts` / `linear_contracts` | `compare_metric_contracts.py` / `compare_linear_contracts.py` |
+| AUC / grouped PR / grouped ROC | `auc_contracts --auc` / `--grouped-pr` / `--grouped-roc` | `compare_auc_contracts.py` / `compare_grouped_pr_contracts.py` / `compare_grouped_roc_contracts.py` |
+
+`cuda_rng_contracts REPORT.json` separately checks RNG streams, ranking pairs and
+column sampling. `compare_gpu_pipeline.py` exercises production cuts, training
+and prediction (`fixtures-v1` or the one-tree `higgs-v1` correctness workload).
+Its `run` command requires a build record matching the loaded library and
+production source tree on each machine. Generate both observations from the
+same source tree, then compare:
+
+```sh
+python3 scripts/compare_gpu_pipeline.py compare \
+  results/gpu-pipeline-fixtures-mps.json results/gpu-pipeline-fixtures-cuda.json \
+  --output results/gpu-pipeline-fixtures-comparison.json
+```
+
+The stored pipeline observations are from `68c800e` and cannot be compared with
+current-source CUDA results. These fixtures do not cover every external-memory, native-input,
+distributed or numerical path. Missing replay modes are verification gaps, not
+proof of missing MPS features. See [remaining work](CUDA_PARITY.md#remaining-work).
+
+## Evidence conventions
+
+Keep concise revision-specific records in [validation/](../validation/) and full
+local logs in ignored `results/`. Record hardware, dependencies, exact commands,
+hashes, passes, skips and failures. Counters show execution, not full residency;
+ownership tests also check copy/readback behavior. CPU inference of an MPS model
+tests that model's compatibility, not equality of independently trained models.
+Current [performance measurements](PUBLISHED_BENCHMARKS.md) are separate from
+correctness tests. Other Apple hardware and actual multi-host operation remain
+unvalidated. Required [audit reports](audits/) and binary corpora in `validation/`
+remain; superseded progress documents and logs are in Git history at `fc318c5`.

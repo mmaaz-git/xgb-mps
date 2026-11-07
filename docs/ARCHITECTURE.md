@@ -1,125 +1,125 @@
 # Implementation guide
 
-The port extends vendored XGBoost rather than replacing its learner/model APIs.
-The public device name is `mps`; computation uses custom Metal shaders. See the
-[review](REVIEW.md) and [plan](PLAN.md) for engineering limits and next work.
+The port extends vendored XGBoost's learner/model APIs. The public device name is
+`mps`; computation uses custom Metal shaders. See [coverage](CUDA_PARITY.md) for
+supported operations and numerical limits.
 
-## Entry points and ownership
+## Entry points
 
-| Layer | Main locations, relative to `xgboost/` | Responsibility |
+| Layer | Locations relative to `xgboost/` | Responsibility |
 | --- | --- | --- |
-| Python/native API | `python-package/xgboost/{core.py,_metal.py}`, `src/c_api/c_api.cc` | Validate descriptors, retain producers, expose models/outputs/diagnostics |
-| Learners | `src/tree`, `src/objective`, `src/metric`, `src/predictor` | Metal dispatch with source-defined CPU orchestration |
-| Family interfaces | `src/common/metal_*.h` | Operation contracts, buffer ownership and views |
-| Host runtime | `src/common/metal_histogram.mm` | Pipelines, buffer binding, dispatch/completion; many families currently share this file |
-| GPU arithmetic | `src/common/metal_histogram.metal` | Kernels, scans, sorts, tree operations and software binary64 |
-| Owned arrays | `src/common/host_device_vector_metal.cc`, `metal_vector.h` | GPU authority, lazy host views, fills/copies/growth |
-| Diagnostics | `metal_statistics.h`, `metal_histogram.mm`, `c_api.cc` | Plain counter schema, snapshots and shared Metal/CPU JSON mapping |
+| Python/native API | `python-package/xgboost/{core.py,_metal.py}`, `src/c_api/c_api.cc` | Descriptors, producers, models, outputs and diagnostics |
+| Learners | `src/{tree,objective,metric,predictor}` | Metal dispatch and source-defined CPU orchestration |
+| Family interfaces | `src/common/metal_*.h` | Operation contracts, ownership and views |
+| Host runtime | `src/common/metal_histogram.mm` | Pipelines, buffers, dispatch and completion |
+| GPU arithmetic | `src/common/metal_histogram.metal` | Kernels, scans, sorts, trees and software binary64 |
+| Owned arrays | `src/common/{host_device_vector_metal.cc,metal_vector.h}` | GPU authority and lazy host views |
+| Diagnostics | `src/common/metal_statistics.h`, runtime and C API | Counters and shared CPU/Metal JSON schema |
 
-`Context("mps")` still has a CPU default `DeviceOrd` for generic storage, so
-`IsMPS()` and `IsCPU()` can both be true. A kernel's existence does not guarantee
-every caller selects it or preserves GPU storage. Trace producer, consumer,
-lifetime and explicit host-access boundary; changing the context globally is a
-separate migration.
+## Ownership and execution
 
-Owned shared Metal buffers are CPU-addressable, but direct CPU access is still
-a placement decision. `HostDeviceVector` tracks authority; requesting a host view
-can create a mirror. Residency tests must call the next GPU consumer before host
-comparison. Shared memory does not prove absence of CPU copies or arithmetic.
+`Context("mps")` retains a CPU default `DeviceOrd` for generic storage, so
+`IsMPS()` and `IsCPU()` can both be true. Trace producers, consumers and explicit
+host-access boundaries when changing dispatch. CPU-addressable shared Metal
+buffers do not prove absence of CPU copies or arithmetic: `HostDeviceVector`
+tracks authority, and requesting a host view can create a mirror. Residency tests
+must invoke the next GPU consumer before inspecting host values.
 
-Native DLPack capsules are consumed once. Capture a shared capsule once within an
-API call and retain its export across iterator passes; separate calls need fresh
-exports. Current operations generally wait before returning. Asynchronous work
-requires an explicit ownership/readiness contract.
+Operations generally wait before returning. Borrowed inputs must survive to
+completion; asynchronous work requires a separate readiness/lifetime contract.
+Packed host input owns its copied payload and zero-fills only alignment padding.
+Resident feature splits complete once for allocation/error readback, then again
+after task construction, gathering, scoring and winner extraction. Nodes share
+encoders within each stage; integer and precise parent staging remain separate.
 
-Resident feature split evaluation has two command completions: one for the
-allocation length/error readback, then one after task construction, histogram
-gathering, scoring, finalization and winner extraction. Nodes share encoders
-within each stage. Integer and precise parent inputs have separate staging
-buffers; resident vector parents bind their owned buffer directly. Borrowed
-inputs remain alive until the synchronous call returns, and outputs are read
-only after completion.
+## Python interoperability
 
-Packed host input owns its copied payload. Only alignment padding is zero-filled;
-the payload is appended directly, preserving offsets and completion lifetime.
+PyTorch MPS and MLX tensors can enter ordinary/quantile matrices and native
+prediction through DLPack. `inplace_predict` with native Metal input returns an
+owned `xgb.MetalOutput`; `output_device="mps"` explicitly requests Metal output.
+Use `torch.from_dlpack(result)` or `mlx.core.from_dlpack(result)` to consume it on
+GPU, or `result.numpy()` for host readback. The sklearn interface returns NumPy.
 
-First-page histogram builds write directly into contiguous integer-cache output
-slots, then materialize their binary64 view with the existing conversion kernel.
-Only that output range is cleared. Later pages and discontiguous destinations
-retain the temporary histogram and store/add path; they must preserve existing
-cache entries. The quantization scale and integer sums remain authoritative.
+An imported capsule is consumed once. Aliased metadata shares one captured export
+within an API call, including iterator passes; independent calls need fresh
+exports. Output exports retain their allocation; `__dlpack__(copy=True)` makes
+an independent GPU copy. Only `stream=None` is supported. Loaded PyTorch/MLX
+runtimes are synchronized; arbitrary producers must finish writes before export.
 
-Moderately missing compressed pages can build shared histograms over ranges of
-2,048 global bins. Each row's sorted bins are searched for the range start;
-null padding lies beyond the last valid range. Integer accumulation and merging
-use the same exact two-word sums as the other histogram paths. The measured
-dispatch range is 128–256 features, 16,384–65,536 bins, at least 65,536 selected
-rows, and an ELLPACK stride at least three quarters of the feature count but
-strictly smaller than it. This stride condition is a performance heuristic,
-not a measurement of average density. The device must support 32 KiB of shared
-memory. Other geometries retain their existing kernels.
+## Histogram and sketch storage
 
-Eligible pages lazily cache each range's lower-bound position as one byte per
-row, with rows adjacent within a range. The stride bound makes byte positions
-sufficient. A 1M × 128 page with 256 bins per feature needs 16,000,000 bytes.
-Each page is capped at the smallest of 64 MiB, one 128th of Metal's recommended
-working-set size, and its maximum buffer length; pages above the cap retain
-the uncached search. This is a per-page limit, not a global budget. The page
-owns the cache, and `std::call_once` publishes it after GPU completion. Canonical
-compressed bins remain unchanged. Preparation is included in training time and
-recorded in `index_gpu_time_ns`. A cache for smaller histogram ranges was rejected
-because it slowed unordered rows relative to the uncached kernel and partial rows
-relative to the retained cache.
+First-page histograms write directly into contiguous integer-cache output slots,
+clear only that range, then materialize binary64 views. Later pages and
+discontiguous destinations retain staging/store-add paths so existing cache
+entries survive. Integer sums and quantization scales remain authoritative.
 
-Sketch sorting reuses record, rank and count buffers between its stable value
-and feature sorts within one input window. Feature keys can replace their own
-records in place. Unweighted sketches omit unused weight-scan inputs and compute
-raw ranks in place because each output depends only on its own value and
-position. Weighted ranks still use a separate destination: they read the
-previous entry's prefix. Window boundaries, sort stability, FP32 weighted scan
-association, pruning and cut selection are unchanged.
+Moderately missing compressed pages use shared histograms over **2,048 global
+bins**, with exact two-word integer accumulation. Eligibility requires 128–256
+features, 16,384–65,536 bins, at least 65,536 selected rows, 32 KiB threadgroup
+memory, and an ELLPACK stride in `[ceil(3*features/4), features)`. Maximum stride
+is a performance heuristic, not average density. Other geometries use existing
+kernels. Null padding lies beyond the final valid bin range.
 
-Large, narrow compressed pages can own a second, column-major byte index for row
-partitioning. This improves repeated feature gathers while histograms, prediction
-and exports retain the canonical compressed representation. Eligibility requires
-a dense eight-bit page with 256 symbols, 4–64 features, at least 2^20 rows, and
-contiguous full-head or full-tail storage. Each cache is bounded by the smaller
-of 512 MiB and one thirty-second of Metal's recommended working-set size; this
-is a per-page limit, not a global memory budget. Wide, small and split-storage
-pages keep the compressed classifier. `std::call_once` publishes the cache after
-the existing transpose kernel completes. The page owns its lifetime, and repeated
-partitions reuse it. Transposition time is recorded in `index_gpu_time_ns` and
-included in whole-training benchmarks.
+Two optional per-page caches improve repeated reads:
 
-## Numerical and refactoring boundaries
+| Cache | Eligibility and bound |
+| --- | --- |
+| Sparse range starts | One byte per row/range; 16,000,000 bytes for 1M × 128 with 256 bins. Cap: minimum of 64 MiB, recommended working set / 128 and maximum buffer length. Over-budget pages use uncached binary search. |
+| Partition columns | Dense eight-bit compressed pages with 256 symbols, 4–64 features, at least 2²⁰ rows, and contiguous full-head or full-tail storage. Cap: minimum of 512 MiB and recommended working set / 32. Other pages keep compressed classification. |
 
-Quantized histogram and split paths preserve integer state. Reconstructing exact
-integers from floating views loses that contract. CUDA-source checks, CPU
-comparisons and NVIDIA execution are distinct evidence; see [the ledger](CUDA_PARITY.md).
+Both preserve canonical compressed bins and publish with `std::call_once` after
+GPU completion. The page owns the cache; these are per-page caps, not a global
+budget. Preparation counts toward training time and `index_gpu_time_ns`.
 
-Scalar quantized splits reuse identical missing-direction gains when both integer
-missing sums are zero. Numeric features with at least 32 bins and zero missing
-sums can use conservative gain intervals when L1 regularization, delta-step limits,
-monotone constraints and leaf-weight bounds are absent. These reject candidates whose
-upper bound is strictly below another candidate's lower bound. Surviving
-candidates use the original binary64 calculation; ties are retained. Values
-outside the interval helper's supported range receive unbounded intervals and
-fall through. Screening forms widened FP32 intervals directly from integer sums;
-the Hessian lower bound must prove child eligibility before a gain lower bound
-can raise the cutoff. Category-weight scratch holds numeric upper bounds, with each
-lane reading only its own entries. No precision or selection tolerance changes.
+Sketch value/feature sorts reuse record, rank and count scratch within one input
+window. Feature keys replace their own records in place. Unweighted sketches
+omit unused scan inputs and rank their own entries in place; weighted ranks need
+a separate destination because they read the previous prefix. Sort stability,
+window boundaries, FP32 weighted scan association, pruning and cuts are unchanged.
 
-FP32 ordering in quantized splits uses exact integer bit comparisons. NaNs are
-unordered, signed zeros compare equal, and negative magnitudes sort in reverse.
-This preserves subnormals without converting each operand to software binary64;
-it changes no gain arithmetic or tie rule.
+## Split screening
 
-At the `6f3dcbd` review baseline the runtime/shader contained roughly 20,000 lines
-and 218 kernel entry points. If a concrete maintenance need justifies future
-extraction, existing family headers supply boundaries. Extract one family at a
-time, preserving arithmetic, APIs, lifetimes and shader dependencies; keep
-behavioral changes separate from extraction.
+Conservative intervals skip expensive binary64 gain evaluation only when a
+candidate cannot win. Survivors retain original float weights/squares, binary64
+intermediates, final float gain and tie order. Screening requires numerical
+features, zero L1 penalty and maximum leaf step, no monotonic constraint, and
+infinite weight bounds. IEEE-bit zero checks preserve subnormal restrictions.
 
+For gradient `g`, Hessian `h` and L2 penalty `λ`, let `Q = g²/(h + λ)`. A computed
+weight `w = -(g/(h + λ))(1 + δ)` gives unrounded quadratic gain `Q(1 - δ²)`.
+Float-square error contributes at most `(1 + δ)² ε`, with `ε = 2^-23`; including
+binary64 arithmetic and final rounding stays below `4ε` in the supported normal,
+finite range. The implementation widens by **32ε**.
+
+Adjacent floats bracket converted binary64 inputs. Outward square, denominator
+addition and opposite-endpoint division bound `Q`; outward child-gain addition
+and parent subtraction bound the precise evaluator's result. Nonzero gradient
+magnitudes and positive Hessians must lie in `[1e-8, 1e8]`, with `λ` in `[0, 1e8]`.
+Exact-zero gradients have zero gain. Other inputs get unbounded intervals and
+full evaluation; values near zero widen to normal endpoints to tolerate Metal's
+subnormal flushing. These bounds use basic-operation rounding with fast math
+disabled, as specified in Apple's
+[Metal language specification, §§8.1, 8.2, 8.4](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf).
+
+Quantized screening additionally requires at least 32 bins and zero integer
+missing sums. It widens integer-to-float conversions by two ULPs, limits scale
+exponents to `[-96, 96]`, and requires Hessian lower bounds to prove child
+eligibility before raising the cutoff. It compares raw child gains; its cutoff
+starts at `-MAXFLOAT`, preserving negative/zero candidates. The precise evaluator
+subtracts parent gain and starts at zero. Both reject only **upper < cutoff**,
+retaining all possible winners and ties. Quantized numeric tasks reuse
+category-weight scratch; the precise path uses spare suffix storage or recomputes
+missing-direction bounds. No precision or selection tolerance changes.
+
+FP32 split comparisons use IEEE bits: NaNs are unordered, signed zeros compare
+equal, and negative magnitudes reverse order. This preserves subnormals without
+software binary64 conversion. Tests cover independent interval containment,
+exact split choices, near ties and complete training comparisons.
+
+## Maintenance
+
+Family headers provide extraction boundaries if a concrete maintenance need
+justifies splitting the runtime/shader. Keep structural changes separate from
+arithmetic changes and preserve APIs, lifetimes and shader dependencies.
 `tests/` is executable validation, `validation/` is revision-qualified evidence,
-and ignored `results/` holds local logs/caches. `docs/archive/` preserves history;
-README, the current parity ledger and the plan describe current status.
+and ignored `results/` contains local logs and caches.

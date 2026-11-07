@@ -5,14 +5,13 @@
 An experimental Apple GPU backend for XGBoost 3.4.2, using custom Metal compute
 kernels through `device="mps"`. This is an independent fork, not an upstream release.
 
-**Python bindings only.** The shared C++ engine and its CPU/CUDA/Metal backends
-remain, along with Python's Dask integration. R, Java/Scala and Spark bindings,
-including `xgboost.spark`, have been removed and are outside the project scope.
+**Python bindings only.** The shared C++ engine and CPU/CUDA/Metal backends remain,
+along with Python's Dask integration. R, Java/Scala and Spark bindings, including
+`xgboost.spark`, have been removed.
 
 ## Build and try it
 
-Requires an Apple GPU on macOS, Xcode command-line tools, Python **3.11+**, CMake,
-Ninja and OpenMP. Local validation uses an **Apple M3, 10-core GPU, 16 GB RAM**.
+Requires an Apple GPU on macOS, Xcode command-line tools and Python **3.11+**.
 
 ```sh
 git clone https://github.com/mmaaz-git/xgb-mps.git
@@ -38,86 +37,59 @@ model.fit(X, y)
 print(model.predict(X[:3]))
 ```
 
-The installed package includes the built Metal library; no `PYTHONPATH` override
-is needed. Use `xgb.QuantileDMatrix(X, y, device="mps")` for Metal quantile
-construction. PyTorch and MLX interoperability is described in the
-[architecture guide](docs/ARCHITECTURE.md).
+The installed package includes the Metal library; no `PYTHONPATH` override is
+needed. Use `xgb.QuantileDMatrix(X, y, device="mps")` for Metal quantile construction.
+See [native PyTorch/MLX inputs and outputs](docs/ARCHITECTURE.md#python-interoperability).
 
-## Implemented scope and limits
+## Support
 
-| Area | Metal paths |
-| --- | --- |
-| Training | `hist`/`approx` trees, regression, classification, ranking, survival and linear coordinate descent |
-| Prediction | Batch/inplace prediction, leaf outputs and exact SHAP contributions/interactions |
-| Data | Ordinary/quantile matrices, missing/categorical data, native Metal inputs and external-memory caches |
-| Distributed training | Tree training through Python; optional federated gRPC support |
+Metal paths cover hist/approx tree training, regression/classification/ranking/
+survival objectives, coordinate-descent linear training, prediction, exact SHAP,
+missing/categorical data, external memory and distributed trees through Python.
 
-Only Metal device ordinal 0 is supported. `tree_method="exact"` is unsupported;
-linear GPU training requires `updater="coord_descent"`. Broader Apple hardware,
-actual multi-host deployment and NVIDIA runtime comparisons need validation.
-See [feature coverage and limits](docs/CUDA_PARITY.md) and the [current plan](docs/PLAN.md).
+Only device ordinal 0 is supported. `tree_method="exact"` is unsupported; linear
+GPU training requires `updater="coord_descent"`. NVIDIA runtime comparisons, other
+Apple GPUs and actual multi-host deployment remain unvalidated. See
+[coverage, numerical limits and remaining work](docs/CUDA_PARITY.md).
 
-## Testing
+## Tests
 
 ```sh
 brew install snappy  # Independent decoder used by native tests.
 bash scripts/test.sh --list
-bash scripts/test.sh --python tests/test_metal_objectives.py
 bash scripts/test.sh --python tests/test_metal_workflows.py
+bash scripts/test.sh --full
 ```
 
-The test runner builds first and supports focused checks or `--full`. The latest
-full run of the optimized backend (`61b2042`) passed **106 native groups and
-4,001 Python tests**, with two expected platform skips. Three workflows also
-passed against the newly installed wheel outside the checkout.
-Workflows include preprocessing, cross-validation, categorical classification, early stopping,
-ranking and model persistence. [Validation commands/results](docs/VALIDATION.md)
-record the revisions and scope. CUDA CI compiles the NVIDIA backend;
-it does not run CUDA kernels.
+The latest backend (`61b2042`) passed **106 native groups and 4,001 Python tests**,
+with two expected skips, plus three installed-wheel workflows outside the checkout.
+The runner builds first. [Validation](docs/VALIDATION.md) describes dependencies,
+focused checks and evidence. CUDA CI compiles; it does not execute NVIDIA kernels.
 
 ## Performance
 
-Benchmarks compare CPU and MPS on an **Apple M3, 10-core GPU, 16 GB RAM**, using
-all eight CPU cores. In the latest three-repeat comparison, HIGGS (10.5M × 28,
-100 rounds) takes **29.91 s on CPU versus 26.74 s on MPS**: MPS is **1.12× as fast**.
-For 1M × 128 data with 20% missing values, CPU takes **10.13 s** and MPS
-**12.15 s**; CPU remains faster. For 25K × 4,096 data, median peak physical memory
-is **6.04 GiB**, down 6.2% in separate 30-round diagnostics.
+Three-repeat medians on an **Apple M3, 10-core GPU, 16 GB RAM**, using eight CPU
+threads and 100 training rounds:
 
-The [latest five-workload comparison](docs/PUBLISHED_BENCHMARKS.md#missing-value-and-memory-optimization-m3)
-reports every CPU/MPS repeat, setup cost, held-out quality and memory measurement.
-An [earlier 48-run synthetic survey](docs/PUBLISHED_BENCHMARKS.md#synthetic-workload-survey-m3)
-covers 100K–4M rows, 32–1,024 columns and categorical data on the previous backend.
-[Real-data results and earlier measurements](docs/PUBLISHED_BENCHMARKS.md#current-m3-results)
-retain their original revision and scope.
+| Workload | CPU | MPS |
+| --- | ---: | ---: |
+| HIGGS, 10.5M × 28 | 29.91 s | 26.74 s |
+| Synthetic, 1M × 128, dense | 9.97 s | 8.57 s |
+| Synthetic, 1M × 128, 20% missing | 10.13 s | 12.15 s |
 
-Training timings include quantization and held-out evaluation, with warmed
-runtime; loading, matrix construction and final prediction are separate.
-CPU/MPS training can produce different models. Other applications and system
-paging were not controlled, so the results do not establish a general GPU advantage.
-
-Large-workload profiling stays separate from tests. Prepare the real-data caches
-with `scripts/prepare_published_data.py`; then, for example:
-
-```sh
-.venv/bin/python scripts/profile_training.py --case higgs --rounds 100 \
-  --threads 8 --repeats 3 --output results/profile-higgs-100
-.venv/bin/python scripts/profile_training.py --case wide --rows 250000 \
-  --features 512 --informative-features 16 --rounds 100 --threads 8 \
-  --repeats 3 --output results/profile-synthetic-250k-512
-```
-
-The profiler uses fresh processes, checks each MPS model's CPU predictions exactly,
-and records operation counters, held-out quality, memory and power observations.
-Use `--case categorical` or `--missing-fraction 0.2` for the additional synthetic
-workloads; the detailed results provide every command.
+MPS is faster on some workloads; CPU wins on others. Timings include quantization
+and held-out evaluation after runtime warmup. CPU/MPS training can produce
+different models, and other applications and system paging were not controlled.
+[Full results and reproduction commands](docs/PUBLISHED_BENCHMARKS.md) include all
+repeats, quality comparisons, wider datasets and physical-memory measurements.
 
 ## Repository guide
 
-`xgboost/` contains the vendored engine and Python package; `tests/` and `scripts/`
-contain checks and tools. `validation/` holds recorded evidence, and `docs/archive/`
-preserves historical plans. Start with the [plan](docs/PLAN.md),
-[review](docs/REVIEW.md), [architecture](docs/ARCHITECTURE.md) and [validation guide](docs/VALIDATION.md).
+`xgboost/` contains the engine and Python package; `tests/` and `scripts/` contain
+checks and profiling tools. `validation/` holds recorded evidence. Start with
+[coverage](docs/CUDA_PARITY.md), [architecture](docs/ARCHITECTURE.md),
+[validation](docs/VALIDATION.md) or [benchmarks](docs/PUBLISHED_BENCHMARKS.md).
+Earlier progress logs and reviews are available in Git history.
 
 ## License
 
