@@ -4,6 +4,115 @@ Current results are first; published CUDA references and earlier local milestone
 remain below as historical evidence. Do not combine ratios from different sessions
 or revisions. CUDA is not available on this Mac.
 
+## Synthetic workload survey (M3)
+
+This survey measures eight predeclared synthetic binary-classification workloads
+on the Apple M3 (10-core GPU, eight CPU cores, 16 GB RAM). All 48 workers use the
+same library as `c33c56c`; the checkout was `4ea2d0a`. No backend changes were made
+for this survey. [All timings, source hashes and checks](../validation/synthetic-workloads-m3.json)
+are recorded, including cases where CPU is faster.
+
+Each CPU/MPS cell is a **median of three fresh-process runs**, with alternating
+device order and warmed runtime. All cases use 100 rounds, depth 6, 256 bins,
+eight CPU threads and held-out log loss every round. Training includes
+quantization; generation, matrix construction and final prediction are separate.
+A ratio above 1 means MPS is faster; below 1 means CPU is faster.
+
+| Training data | CPU | MPS | Speedup (CPU / MPS) |
+| --- | ---: | ---: | ---: |
+| 100K × 32, dense | 0.485 s | 1.757 s | 0.28× |
+| 1M × 32, dense | 2.610 s | 4.236 s | 0.62× |
+| 4M × 32, dense | 11.438 s | 10.371 s | 1.10× |
+| 1M × 128, dense | 10.258 s | 9.235 s | 1.11× |
+| 250K × 512, dense | 19.125 s | 13.611 s | 1.41× |
+| 125K × 1,024, dense | 21.423 s | 15.693 s | 1.37× |
+| 1M × 128, 20% missing | 15.334 s | 22.760 s | 0.67× |
+| 1M × 32, categorical (64 values) | 7.000 s | 5.821 s | 1.20× |
+
+MPS is faster by median in **5 of these eight cases**; CPU/MPS ratios range
+from 0.28× to 1.41×. These are results for the stated workloads and parameters,
+not a general hardware ranking. Other applications,
+thermal state and system-wide paging were not controlled. No builds, correctness
+tests or other benchmarks from this task overlapped the timing runs.
+
+All cases have 16 informative columns spread across the feature matrix and a
+noisy logistic target. Dense features are FP32 normal values. The categorical
+case has 64 values per feature and random per-category effects. Missing values
+are introduced after generating labels. Test size is one tenth of training size,
+capped at 100K rows. Feature and label hashes match between devices and repeats.
+Different shapes are independently generated problems, not prefixes of one dataset.
+
+The 4M × 32, 1M × 128, 250K × 512 and 125K × 1,024 dense cases each contain
+**128 million training cells**. Equal cell counts do not imply equal working
+memory or training cost. The 100K/1M/4M × 32 series also tests increasing row
+counts. This survey complements the separate real-data HIGGS/Covertype results;
+the workloads and evaluation metrics differ, so do not combine their ratios.
+
+### Every repeat and setup cost
+
+| Workload | CPU training seconds | MPS training seconds | CPU / MPS matrix + training medians |
+| --- | --- | --- | ---: |
+| 100K × 32, dense | 0.501, 0.411, 0.485 | 1.739, 1.770, 1.757 | 0.492 / 1.766 s |
+| 1M × 32, dense | 2.610, 2.544, 2.622 | 4.341, 4.236, 4.164 | 2.675 / 4.302 s |
+| 4M × 32, dense | 10.986, 11.438, 11.531 | 12.146, 10.371, 9.451 | 11.700 / 10.629 s |
+| 1M × 128, dense | 10.001, 10.258, 12.376 | 9.133, 9.235, 9.748 | 10.534 / 9.521 s |
+| 250K × 512, dense | 17.504, 20.196, 19.125 | 13.611, 12.963, 13.625 | 19.392 / 13.892 s |
+| 125K × 1,024, dense | 22.162, 20.868, 21.423 | 16.672, 15.693, 15.503 | 21.707 / 15.958 s |
+| 1M × 128, 20% missing | 12.695, 15.334, 15.418 | 21.459, 23.071, 22.760 | 15.676 / 23.090 s |
+| 1M × 32, categorical (64 values) | 7.389, 7.000, 6.734 | 6.599, 5.821, 5.219 | 7.071 / 5.895 s |
+
+All workers passed power-source and wall/monotonic-clock checks. Peak RSS is
+process-wide; end-of-worker RSS follows prediction/model saving/CPU validation.
+System swap observations are system-wide. These are not measurements of total
+Metal physical memory. Per-worker observations and separate setup/prediction
+timings are retained in the record. GPU-family durations can overlap and must
+not be added together.
+
+### Held-out quality and repeatability
+
+All three runs of each device reproduce the same model, margins and per-round
+metric history exactly. Each MPS worker also checks that CPU prediction of its
+MPS-trained model is bitwise identical. These checks do not mean independently
+trained CPU/MPS models are identical. Their quality is reported below:
+
+| Training data | CPU accuracy | MPS accuracy | CPU log loss | MPS log loss |
+| --- | ---: | ---: | ---: | ---: |
+| 100K × 32, dense | 0.7585 | 0.7603 | 0.4936 | 0.4908 |
+| 1M × 32, dense | 0.7659 | 0.7680 | 0.4776 | 0.4774 |
+| 4M × 32, dense | 0.7714 | 0.7707 | 0.4699 | 0.4704 |
+| 1M × 128, dense | 0.7710 | 0.7706 | 0.4735 | 0.4738 |
+| 250K × 512, dense | 0.7610 | 0.7623 | 0.4863 | 0.4869 |
+| 125K × 1,024, dense | 0.7494 | 0.7554 | 0.4995 | 0.4928 |
+| 1M × 128, 20% missing | 0.7313 | 0.7321 | 0.5272 | 0.5275 |
+| 1M × 32, categorical (64 values) | 0.7635 | 0.7635 | 0.4860 | 0.4860 |
+
+The largest observed absolute CPU/MPS accuracy difference is 0.60 percentage
+points; the largest log-loss difference is 0.0067. These are held-out quality
+observations, not proof of numerical equivalence.
+
+The record includes prediction-disagreement and margin-difference measurements.
+This is benchmark validation of the existing library, not a fresh full regression
+run or NVIDIA comparison.
+
+### Reproduce the synthetic survey
+
+Use the existing profiler with `--case wide`, 16 informative features and the
+row/column dimensions in the table. Add `--missing-fraction 0.2` for the missing
+case; use `--case categorical --categories 64` for the categorical case. For example:
+
+```sh
+.venv/bin/python scripts/profile_training.py --case wide --rows 4000000 \
+  --features 32 --informative-features 16 --rounds 100 --threads 8 \
+  --repeats 3 --output results/profile-synthetic-4m-32
+.venv/bin/python scripts/profile_training.py --case wide --rows 125000 \
+  --features 1024 --informative-features 16 --rounds 100 --threads 8 \
+  --repeats 3 --output results/profile-synthetic-125k-1024
+```
+
+Choose a new output directory for each invocation. The public record includes
+all eight exact commands and the frozen package/library hashes used for this run.
+These examples use the built package in the current checkout.
+
 ## Current M3 results
 
 The 2026-11-06 memory/partition milestone starts from `048dc86`. It removes a

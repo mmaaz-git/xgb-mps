@@ -1,0 +1,3626 @@
+{
+  "revision": "4ea2d0ae1e49f171da39bbc510addcf7906b8d29",
+  "working_tree": "",
+  "hardware": {
+    "cpu": "Apple M3",
+    "cpu_threads": 8,
+    "gpu_cores": 10,
+    "memory_bytes": 17179869184
+  },
+  "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+  "source_sha256": {
+    "scripts/profile_training.py": "59e106fa6a92f688ec6168ee8db253a60fc457775f79331bad7829e6ece05466",
+    "scripts/benchmark.py": "742de10e7801de4480810e70bbe2e5b10af575faa2a4cb35a8cd03d86af80272",
+    "xgboost/src/common/metal_histogram.mm": "f21f26a3edfd089da16ea56912d8d8105f762dd460338909231725543e281dff",
+    "xgboost/src/common/metal_histogram.metal": "aed92cda5bd2ea85920009305468ccc6616f033eaa7d05bc746ede8b3e17eca9"
+  },
+  "package_python_sha256": {
+    "xgboost/__init__.py": "e22fc0bd6c7384f960d6dc77d3abfc93df8c4b645ccb2e1cc5d7ab542d8467a7",
+    "xgboost/_c_api.py": "8d96486fa3d9de4d1ee77d1edb9884dfc88b526c9190bed24f7fe60a10211611",
+    "xgboost/_data_utils.py": "2b09089716794db84398646275623c672a7ee683cb7d8064f2428f7714ab9b0a",
+    "xgboost/_metal.py": "98968d5e8301d4b7370fa9a10fd200945b16e293c1b88b0c3b17acb3ed6a2084",
+    "xgboost/_typing.py": "36547edb957e64f383688cbbe2623419fbe6ca487bc7e7d10a0990b5fb9b3028",
+    "xgboost/callback.py": "38b8398569f803ab706f6e199e8571acb1ec324a3119f399802631ac4284f900",
+    "xgboost/collective.py": "02e7984c7fb2a8312abc26815e56abcd28763d8e4d822608ed514c908b01e9a7",
+    "xgboost/compat.py": "ef625d9c7c25f96f4955f429bb65d5e81fd04650c655633cdfe683b16b7487b8",
+    "xgboost/config.py": "8b5d8f1d6ad6fbc2d2d90483e06d0cce7d0f86e9e1bfd53faa8179981f99048a",
+    "xgboost/core.py": "003f99d32a111783e5be97d07c6fec4b34937da90d0d1ab1fec5773d6e0d0daa",
+    "xgboost/dask/__init__.py": "4bd6d313fb1fb576f51fd0f01f537a5507acb13c09f5ddf72bf04d68fab9db08",
+    "xgboost/dask/data.py": "b4ad43e171b6d2abcb2ab6c8448f3912bd54463b8721e26803b9d2c85176e773",
+    "xgboost/dask/utils.py": "a0600d416e353b1c1bf0f01956f63b1e29eb25249bd49b51d0849e763f5f7194",
+    "xgboost/data.py": "77287209e9df08fba22b82771a187268e60385719e71b6e5fcf195178c185faf",
+    "xgboost/federated.py": "6aa42a336430612f7ea2db05caeef774e245bc30fd9bcb14a5e0b591dd4c6ff3",
+    "xgboost/interpret.py": "96b41a6c7d0e51953cf444ba7288ac26638fd0985b58156803620f878b86c4ba",
+    "xgboost/libpath.py": "8aa593af825003cfaa5a6c7a2d7b999c20f56d4477d50fcdcbfd3f1909a0ae1d",
+    "xgboost/objective.py": "c54136824e63c9dddf750344ca7bb5b7a05edec84e0c191546e56b6f1eb0bab7",
+    "xgboost/plotting.py": "72d78170c838b85bf6526fdb850918af194106df656444372f9abee7488bc86d",
+    "xgboost/sklearn.py": "d961a7b50ef0dd671abca34ac02a29e1a9dab9845c862ff6e4ce2a7c9cf1527b",
+    "xgboost/testing/__init__.py": "b19606b9259d1992b69480db6486928de1dab6881ae7dd3bc35b89c8dbe615bf",
+    "xgboost/testing/basic_models.py": "1fc490301311af5d9f87a03fc2ea01dc472040c4e311b5f0fd71dcce62eef9a9",
+    "xgboost/testing/callbacks.py": "ea6fa26bfb1eb0a70ea6b9d822c5057b4407c8d27e1bad6f063c480b36581c28",
+    "xgboost/testing/collective.py": "6a6828b4b1b26ae65a5060b07bee63e667a30b2b0b8ee7ae0fcb3aaf7bd9de9b",
+    "xgboost/testing/continuation.py": "03ca3973cd948b1272798baf8922bf6e736f080079421230a1353f7fb2164de7",
+    "xgboost/testing/dask.py": "80224957665acf3b589d5d7803a6fffc666b706e19883d69e73238bd66f97aa4",
+    "xgboost/testing/data.py": "ccb1830c2226d6056d8bb958a8842e669b4a15c8df0941dd0633c914b188888d",
+    "xgboost/testing/data_iter.py": "7276621bbbafa463bf256b2d4e5ca3d1fe74ead101cb38946cc08fd14a84fd7b",
+    "xgboost/testing/federated.py": "385d558b54687759449075681ffd233309dd1ef49efc4dcb3ab1c29ea2402d07",
+    "xgboost/testing/interaction_constraints.py": "05589fccb5d75bf29d47844612eb4bcb66357c078b71e0da811f31e9b8ab4739",
+    "xgboost/testing/intercept.py": "ae464bffc22df1283afa45fb63e31757608a9b992e59d73e21d7b5f4a7dae51c",
+    "xgboost/testing/metrics.py": "feeda1dc23ff422c653c628a5b39248b1199eaeafc1bf255d25f4743f3f5b5bc",
+    "xgboost/testing/monotone_constraints.py": "e567e8b555b5de5c95ff3a1b3d7a679c8457feeb972bc1c811e3c74daeb1b8c4",
+    "xgboost/testing/multi_target.py": "c0c9b4e842163c7cfb8fa0d90e15aecf578e63876e37186be5c6a9c68a82c512",
+    "xgboost/testing/ordinal.py": "c1e461c5041ac4b82cd6a47c8c53dddc256dbc38cbad5b9b5502b3bd1151464a",
+    "xgboost/testing/params.py": "afe8a7c4446a41f89379e2b376211536cddb168d13ea9c6e5335c31748954553",
+    "xgboost/testing/parse_tree.py": "54788f207dd3ff3f984bae770118496333a0a88a3babae1e5d6dd6f93c37f0ed",
+    "xgboost/testing/plotting.py": "865c36fc067f9a8b62f69e50130458b04e06a4d83000dcfaeda2f7d873af92d7",
+    "xgboost/testing/predict.py": "f4bc242ed8d7bc8c76ab9a198d83f64b218222488ef762c7ee22aa97662105e1",
+    "xgboost/testing/quantile_dmatrix.py": "e07489ed917da7ff8c94d78c0c21c468f167089c91bdb88778af19f5fcf74b1d",
+    "xgboost/testing/ranking.py": "1bd1c716e05843dd02ee6174870ddee85d5bf98ed3e06c0710613d54e50ceb88",
+    "xgboost/testing/shared.py": "f6a329e47a420acb3208c57548735315e779c3ba225be7735c0498f9f563312b",
+    "xgboost/testing/updater.py": "f9111d9597e0dca007733a4832b403bbd38f6769e15e7941a24d9f389095f885",
+    "xgboost/testing/utils.py": "d13976e2bb7ccf5bed0a896035bc19741d51c9939621882c3450ca6408a23c3f",
+    "xgboost/testing/with_skl.py": "261b6f6f3f18817f64be7b23fb6cec580da4ca41e4d37756282b5f5893d27fe5",
+    "xgboost/tracker.py": "5320439a198dedef5529e97fdde731b1f0c67c162ef8ada0058dd34f5343335b",
+    "xgboost/training.py": "158615f6a60c19ba794537dac94a09fd859e54ff19154ce0ffcd16a461ac967d"
+  },
+  "driver_sha256": "617606903dcf21bc203b765b79c6149680feb0d83d20adba697251481e9f226b",
+  "plan": [
+    {
+      "name": "dense-100k-32",
+      "rows": 100000,
+      "features": 32,
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "100000",
+        "--features",
+        "32",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "cpu",
+        "mps",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-100k-32"
+      ]
+    },
+    {
+      "name": "dense-1m-32",
+      "rows": 1000000,
+      "features": 32,
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "1000000",
+        "--features",
+        "32",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "mps",
+        "cpu",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-1m-32"
+      ]
+    },
+    {
+      "name": "dense-4m-32",
+      "rows": 4000000,
+      "features": 32,
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "4000000",
+        "--features",
+        "32",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "cpu",
+        "mps",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-4m-32"
+      ]
+    },
+    {
+      "name": "dense-1m-128",
+      "rows": 1000000,
+      "features": 128,
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "1000000",
+        "--features",
+        "128",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "mps",
+        "cpu",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-1m-128"
+      ]
+    },
+    {
+      "name": "dense-250k-512",
+      "rows": 250000,
+      "features": 512,
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "250000",
+        "--features",
+        "512",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "cpu",
+        "mps",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-250k-512"
+      ]
+    },
+    {
+      "name": "dense-125k-1024",
+      "rows": 125000,
+      "features": 1024,
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "125000",
+        "--features",
+        "1024",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "mps",
+        "cpu",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-125k-1024"
+      ]
+    },
+    {
+      "name": "missing-1m-128",
+      "rows": 1000000,
+      "features": 128,
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "1000000",
+        "--features",
+        "128",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "cpu",
+        "mps",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/missing-1m-128",
+        "--missing-fraction",
+        "0.2"
+      ]
+    },
+    {
+      "name": "categorical-1m-32",
+      "rows": 1000000,
+      "features": 32,
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "categorical",
+        "--rows",
+        "1000000",
+        "--features",
+        "32",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "mps",
+        "cpu",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/categorical-1m-32",
+        "--categories",
+        "64"
+      ]
+    }
+  ],
+  "status": "passed",
+  "scope": "Eight synthetic CPU/MPS comparisons; three runs per device, 100 rounds. No backend changes or new regression-suite run.",
+  "methodology": [
+    "Eight cases declared before any result; all 48 timings retained. No selection based on GPU speedup.",
+    "Each CPU/MPS run uses a fresh process and warmed runtime, depth6, max_bin256, eight CPU threads, seed0, eta0.3, no row or column subsampling, and held-out log loss evaluation every round.",
+    "CPU/MPS order alternates across repeats and starting order alternates across cases. All use the same frozen library and Python package. Cases execute sequentially; no competing builds, tests or benchmarks from this task.",
+    "All synthetic cases have 16 informative columns spread across the feature matrix and a noisy logistic target. Numeric features are FP32 normal values. Categories have64 possible values with random per-category effects; missing data replaces20% of numeric values after label generation.",
+    "Test rows are min(100000,max(1000,train_rows//10)). Full feature and label hashes agree across devices/repeats for each case. Different shapes are independently generated problems, not prefixes of one dataset.",
+    "Four dense shapes contain128M training cells:4M\u00d732,1M\u00d7128,250K\u00d7512,125K\u00d71024. Equal cells do not imply equal working memory or training cost.",
+    "Training includes quantization and held-out evaluation; generation, DMatrix creation and final prediction are recorded separately. Matrix-plus-training medians are also reported.",
+    "Every MPS model has bitwise-equal CPU predictions. Within each device, all three models, margins and per-round metric histories repeat exactly. Independently trained CPU/MPS models can differ; held-out quality and prediction differences are reported.",
+    "All workers passed AC-power and wall/monotonic-clock checks. Other applications, thermal state and system-wide paging were not controlled. RSS is process-wide and end-of-worker RSS follows prediction and validation; it is not a Metal physical-memory measurement.",
+    "GPU-family counters can overlap and must not be summed. No NVIDIA or other Apple hardware execution."
+  ],
+  "cases": {
+    "dense-100k-32": {
+      "train_shape": [
+        100000,
+        32
+      ],
+      "test_shape": [
+        10000,
+        32
+      ],
+      "rounds": 100,
+      "dataset": {
+        "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+        "numpy_version": "2.5.4",
+        "signal": {
+          "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+          "features": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14,
+            16,
+            18,
+            20,
+            22,
+            24,
+            26,
+            28,
+            31
+          ]
+        },
+        "features_sha256": "354c8d4e08939ee51d5d585a48042f8a0e84134e12a030993ec0adc4b1bc4a83",
+        "labels_sha256": "07505f6f288cb25a0d6e7ed9362b9004a4191797088020f39f2ca39309cf52f2"
+      },
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "100000",
+        "--features",
+        "32",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "cpu",
+        "mps",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-100k-32"
+      ],
+      "params": {
+        "cpu": {
+          "device": "cpu",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "mps": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        }
+      },
+      "repeats_per_device": 3,
+      "training_median_seconds": {
+        "cpu": 0.48459749994799495,
+        "mps": 1.7574067499954253
+      },
+      "cpu_over_mps": 0.27574578278435335,
+      "matrix_plus_training_median_seconds": {
+        "cpu": 0.492082207929343,
+        "mps": 1.7657190838363022
+      },
+      "exact_repeated_outputs": true,
+      "quality": {
+        "cpu": {
+          "test_accuracy": 0.7585,
+          "test_logloss": 0.4935924540256803
+        },
+        "mps": {
+          "test_accuracy": 0.7603,
+          "test_logloss": 0.4908376424138667
+        }
+      },
+      "independent_cpu_mps": {
+        "margin_max_abs_difference": 2.91591739654541,
+        "margin_rmse_difference": 0.673678891737136,
+        "class_disagreement_fraction": 0.1012
+      },
+      "runs": [
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:50:56.869846+00:00",
+          "training_seconds": 0.501366832992062,
+          "wall_seconds": 0.5013608932495117,
+          "dmatrix_seconds": 0.007683584000915289,
+          "loading_seconds": 0.02275454206392169,
+          "prediction_seconds": 0.0024049999192357063,
+          "model_sha256": "009e338e919b573d185856dea4126be0d5d61bda835b4f67329db175fb818339",
+          "margins_sha256": "ff3e6737646bcc756f32031a3d0b220990a6663fa8ead2ebda8337a0dadd49f0",
+          "test_accuracy": 0.7585,
+          "test_logloss": 0.4935924540256803,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 196362240,
+              "process_current_rss_bytes": 196411392,
+              "system_swap": "total = 14336.00M  used = 13130.06M  free = 1205.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 245334016,
+              "process_current_rss_bytes": 245334016,
+              "system_swap": "total = 14336.00M  used = 13130.06M  free = 1205.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-0.json",
+          "metric_history_sha256": "960de8eefac8106e2c7b446e8441cf6958b0d82999deae0dbf0579fbe73f265b"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:51:03.867892+00:00",
+          "training_seconds": 0.41054324992001057,
+          "wall_seconds": 0.410538911819458,
+          "dmatrix_seconds": 0.006771082989871502,
+          "loading_seconds": 0.020460583036765456,
+          "prediction_seconds": 0.002507916884496808,
+          "model_sha256": "009e338e919b573d185856dea4126be0d5d61bda835b4f67329db175fb818339",
+          "margins_sha256": "ff3e6737646bcc756f32031a3d0b220990a6663fa8ead2ebda8337a0dadd49f0",
+          "test_accuracy": 0.7585,
+          "test_logloss": 0.4935924540256803,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 204603392,
+              "process_current_rss_bytes": 204603392,
+              "system_swap": "total = 14336.00M  used = 13114.06M  free = 1221.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 261242880,
+              "process_current_rss_bytes": 261242880,
+              "system_swap": "total = 14336.00M  used = 13114.06M  free = 1221.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-1.json",
+          "metric_history_sha256": "960de8eefac8106e2c7b446e8441cf6958b0d82999deae0dbf0579fbe73f265b"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:51:05.184798+00:00",
+          "training_seconds": 0.48459749994799495,
+          "wall_seconds": 0.4845919609069824,
+          "dmatrix_seconds": 0.007484707981348038,
+          "loading_seconds": 0.021299750078469515,
+          "prediction_seconds": 0.002363750012591481,
+          "model_sha256": "009e338e919b573d185856dea4126be0d5d61bda835b4f67329db175fb818339",
+          "margins_sha256": "ff3e6737646bcc756f32031a3d0b220990a6663fa8ead2ebda8337a0dadd49f0",
+          "test_accuracy": 0.7585,
+          "test_logloss": 0.4935924540256803,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 204750848,
+              "process_current_rss_bytes": 204750848,
+              "system_swap": "total = 14336.00M  used = 13114.06M  free = 1221.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 261160960,
+              "process_current_rss_bytes": 261160960,
+              "system_swap": "total = 14336.00M  used = 13114.06M  free = 1221.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-2.json",
+          "metric_history_sha256": "960de8eefac8106e2c7b446e8441cf6958b0d82999deae0dbf0579fbe73f265b"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:50:58.388939+00:00",
+          "training_seconds": 1.7392742920201272,
+          "wall_seconds": 1.7392551898956299,
+          "dmatrix_seconds": 0.008226749952882528,
+          "loading_seconds": 0.021737582981586456,
+          "prediction_seconds": 0.04718654206953943,
+          "model_sha256": "14f68c0a027e4f4740b0ee774d21abb0972e5787866540ed541d9f64d6ec6da7",
+          "margins_sha256": "36705dc98dada47e7b16be4de6a19fd2623e327ae0585be4d54e48269a498c62",
+          "test_accuracy": 0.7603,
+          "test_logloss": 0.4908376424138667,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 223330304,
+              "process_current_rss_bytes": 223330304,
+              "system_swap": "total = 14336.00M  used = 13130.06M  free = 1205.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 249511936,
+              "process_current_rss_bytes": 244187136,
+              "system_swap": "total = 14336.00M  used = 13122.06M  free = 1213.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "split_gpu_time_ns": 0.148759191,
+            "gpu_time_ns": 0.102383742,
+            "partition_gpu_time_ns": 0.053741396,
+            "cuda_sketch_gpu_time_ns": 0.028798497,
+            "metric_gpu_time_ns": 0.013950867,
+            "objective_gpu_time_ns": 0.012388107,
+            "input_prepare_gpu_time_ns": 0.007286243,
+            "prediction_gpu_time_ns": 0.002914907,
+            "gradient_sum_gpu_time_ns": 0.00266001,
+            "vector_gpu_time_ns": 0.001994799,
+            "ellpack_gpu_time_ns": 0.00135304,
+            "column_sampling_gpu_time_ns": 0.000158441,
+            "base_score_gpu_time_ns": 6.4999e-05,
+            "label_validation_gpu_time_ns": 5.9916e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-0.json",
+          "metric_history_sha256": "873980660ec45949f678eb400aacee030f635e532931f15bffe543c9b80d0f6d"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:51:01.151077+00:00",
+          "training_seconds": 1.7702453329693526,
+          "wall_seconds": 1.7702250480651855,
+          "dmatrix_seconds": 0.007096958812326193,
+          "loading_seconds": 0.02093595894984901,
+          "prediction_seconds": 0.04948779195547104,
+          "model_sha256": "14f68c0a027e4f4740b0ee774d21abb0972e5787866540ed541d9f64d6ec6da7",
+          "margins_sha256": "36705dc98dada47e7b16be4de6a19fd2623e327ae0585be4d54e48269a498c62",
+          "test_accuracy": 0.7603,
+          "test_logloss": 0.4908376424138667,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 223363072,
+              "process_current_rss_bytes": 223363072,
+              "system_swap": "total = 14336.00M  used = 13122.06M  free = 1213.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 244072448,
+              "process_current_rss_bytes": 244072448,
+              "system_swap": "total = 14336.00M  used = 13114.06M  free = 1221.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "split_gpu_time_ns": 0.145681709,
+            "gpu_time_ns": 0.102768285,
+            "partition_gpu_time_ns": 0.053963606,
+            "cuda_sketch_gpu_time_ns": 0.029967162,
+            "metric_gpu_time_ns": 0.014030329,
+            "objective_gpu_time_ns": 0.012414868,
+            "input_prepare_gpu_time_ns": 0.00713737,
+            "prediction_gpu_time_ns": 0.00285519,
+            "gradient_sum_gpu_time_ns": 0.002606502,
+            "vector_gpu_time_ns": 0.002037875,
+            "ellpack_gpu_time_ns": 0.001345331,
+            "column_sampling_gpu_time_ns": 0.000157939,
+            "label_validation_gpu_time_ns": 7.1166e-05,
+            "base_score_gpu_time_ns": 1.7623e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-1.json",
+          "metric_history_sha256": "873980660ec45949f678eb400aacee030f635e532931f15bffe543c9b80d0f6d"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:51:06.619312+00:00",
+          "training_seconds": 1.7574067499954253,
+          "wall_seconds": 1.7573869228363037,
+          "dmatrix_seconds": 0.008312333840876818,
+          "loading_seconds": 0.02062133396975696,
+          "prediction_seconds": 0.05120000010356307,
+          "model_sha256": "14f68c0a027e4f4740b0ee774d21abb0972e5787866540ed541d9f64d6ec6da7",
+          "margins_sha256": "36705dc98dada47e7b16be4de6a19fd2623e327ae0585be4d54e48269a498c62",
+          "test_accuracy": 0.7603,
+          "test_logloss": 0.4908376424138667,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 223346688,
+              "process_current_rss_bytes": 223346688,
+              "system_swap": "total = 14336.00M  used = 13114.06M  free = 1221.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 243957760,
+              "process_current_rss_bytes": 243957760,
+              "system_swap": "total = 14336.00M  used = 13114.06M  free = 1221.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "split_gpu_time_ns": 0.145784638,
+            "gpu_time_ns": 0.102560965,
+            "partition_gpu_time_ns": 0.052840059,
+            "cuda_sketch_gpu_time_ns": 0.029806161,
+            "metric_gpu_time_ns": 0.013796865,
+            "objective_gpu_time_ns": 0.012537478,
+            "input_prepare_gpu_time_ns": 0.007191323,
+            "prediction_gpu_time_ns": 0.00285395,
+            "gradient_sum_gpu_time_ns": 0.00255275,
+            "vector_gpu_time_ns": 0.001951035,
+            "ellpack_gpu_time_ns": 0.001466665,
+            "column_sampling_gpu_time_ns": 0.000175193,
+            "base_score_gpu_time_ns": 1.7999e-05,
+            "label_validation_gpu_time_ns": 1.4749e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-2.json",
+          "metric_history_sha256": "873980660ec45949f678eb400aacee030f635e532931f15bffe543c9b80d0f6d"
+        }
+      ]
+    },
+    "dense-1m-32": {
+      "train_shape": [
+        1000000,
+        32
+      ],
+      "test_shape": [
+        100000,
+        32
+      ],
+      "rounds": 100,
+      "dataset": {
+        "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+        "numpy_version": "2.5.4",
+        "signal": {
+          "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+          "features": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14,
+            16,
+            18,
+            20,
+            22,
+            24,
+            26,
+            28,
+            31
+          ]
+        },
+        "features_sha256": "1949b6ab7705fe998d3438094f8a2337af25ae5b4be3bc46882994f30e030a56",
+        "labels_sha256": "fe227d6f96ecfba0f62ef1d2a7c68f0c7a451c3fbce8e83ec12795f618ec3eb9"
+      },
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "1000000",
+        "--features",
+        "32",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "mps",
+        "cpu",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-1m-32"
+      ],
+      "params": {
+        "cpu": {
+          "device": "cpu",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "mps": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        }
+      },
+      "repeats_per_device": 3,
+      "training_median_seconds": {
+        "mps": 4.236310874810442,
+        "cpu": 2.609653834020719
+      },
+      "cpu_over_mps": 0.6160203797927106,
+      "matrix_plus_training_median_seconds": {
+        "cpu": 2.675029749982059,
+        "mps": 4.301524041686207
+      },
+      "exact_repeated_outputs": true,
+      "quality": {
+        "cpu": {
+          "test_accuracy": 0.76592,
+          "test_logloss": 0.4775921136720821
+        },
+        "mps": {
+          "test_accuracy": 0.76804,
+          "test_logloss": 0.4773976826260744
+        }
+      },
+      "independent_cpu_mps": {
+        "margin_max_abs_difference": 2.60178279876709,
+        "margin_rmse_difference": 0.41797085423913083,
+        "class_disagreement_fraction": 0.06778
+      },
+      "runs": [
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:51:15.430199+00:00",
+          "training_seconds": 2.609653834020719,
+          "wall_seconds": 2.609623908996582,
+          "dmatrix_seconds": 0.06537591596134007,
+          "loading_seconds": 0.2466901249717921,
+          "prediction_seconds": 0.015920125180855393,
+          "model_sha256": "c874edfb32c85a828f9bd4347d878909b492c823034fba7d37c35994980a3a00",
+          "margins_sha256": "5066a8a15ef6281b34e6643df87c787f1f3a84ac1bd28cc929172c60dc85bc33",
+          "test_accuracy": 0.76592,
+          "test_logloss": 0.4775921136720821,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 613220352,
+              "process_current_rss_bytes": 613253120,
+              "system_swap": "total = 15360.00M  used = 14227.75M  free = 1132.25M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 764952576,
+              "process_current_rss_bytes": 764952576,
+              "system_swap": "total = 15360.00M  used = 14227.75M  free = 1132.25M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-0.json",
+          "metric_history_sha256": "2b37ce4d96da8153d3963e7b2650aae82570cc48ef37170782906bacc18b4d83"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:51:19.300853+00:00",
+          "training_seconds": 2.5443820420186967,
+          "wall_seconds": 2.5443530082702637,
+          "dmatrix_seconds": 0.06297554192133248,
+          "loading_seconds": 0.2457315418869257,
+          "prediction_seconds": 0.01640933402813971,
+          "model_sha256": "c874edfb32c85a828f9bd4347d878909b492c823034fba7d37c35994980a3a00",
+          "margins_sha256": "5066a8a15ef6281b34e6643df87c787f1f3a84ac1bd28cc929172c60dc85bc33",
+          "test_accuracy": 0.76592,
+          "test_logloss": 0.4775921136720821,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 613548032,
+              "process_current_rss_bytes": 613580800,
+              "system_swap": "total = 15360.00M  used = 14227.75M  free = 1132.25M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 764608512,
+              "process_current_rss_bytes": 764608512,
+              "system_swap": "total = 15360.00M  used = 14227.75M  free = 1132.25M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-1.json",
+          "metric_history_sha256": "2b37ce4d96da8153d3963e7b2650aae82570cc48ef37170782906bacc18b4d83"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:51:34.147296+00:00",
+          "training_seconds": 2.6221208749338984,
+          "wall_seconds": 2.622091054916382,
+          "dmatrix_seconds": 0.07238387502729893,
+          "loading_seconds": 0.24894604203291237,
+          "prediction_seconds": 0.017819958040490746,
+          "model_sha256": "c874edfb32c85a828f9bd4347d878909b492c823034fba7d37c35994980a3a00",
+          "margins_sha256": "5066a8a15ef6281b34e6643df87c787f1f3a84ac1bd28cc929172c60dc85bc33",
+          "test_accuracy": 0.76592,
+          "test_logloss": 0.4775921136720821,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 612417536,
+              "process_current_rss_bytes": 612417536,
+              "system_swap": "total = 15360.00M  used = 14552.25M  free = 807.75M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 765984768,
+              "process_current_rss_bytes": 765984768,
+              "system_swap": "total = 15360.00M  used = 14504.25M  free = 855.75M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-2.json",
+          "metric_history_sha256": "2b37ce4d96da8153d3963e7b2650aae82570cc48ef37170782906bacc18b4d83"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:51:09.807771+00:00",
+          "training_seconds": 4.340972207952291,
+          "wall_seconds": 4.340923070907593,
+          "dmatrix_seconds": 0.10830845800228417,
+          "loading_seconds": 0.24737200001254678,
+          "prediction_seconds": 0.05845324997790158,
+          "model_sha256": "337801fab75fb0dd134becc32916c897f553c976f0e7392376fb7e5be39e8b6e",
+          "margins_sha256": "2f8a04fb06c0253727f794ecc8e66bc06b3b2dea040243bc0087a554154b8847",
+          "test_accuracy": 0.76804,
+          "test_logloss": 0.4773976826260744,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 634421248,
+              "process_current_rss_bytes": 629260288,
+              "system_swap": "total = 14336.00M  used = 13114.06M  free = 1221.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 699875328,
+              "process_current_rss_bytes": 552353792,
+              "system_swap": "total = 15360.00M  used = 14227.75M  free = 1132.25M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "partition_gpu_time_ns": 0.681942656,
+            "gpu_time_ns": 0.514451164,
+            "cuda_sketch_gpu_time_ns": 0.354179204,
+            "split_gpu_time_ns": 0.149000067,
+            "objective_gpu_time_ns": 0.108050937,
+            "metric_gpu_time_ns": 0.107786371,
+            "input_prepare_gpu_time_ns": 0.074421059,
+            "prediction_gpu_time_ns": 0.033340298,
+            "gradient_sum_gpu_time_ns": 0.02075342,
+            "ellpack_gpu_time_ns": 0.01446829,
+            "vector_gpu_time_ns": 0.010884998,
+            "column_sampling_gpu_time_ns": 0.000163235,
+            "label_validation_gpu_time_ns": 0.000119041,
+            "base_score_gpu_time_ns": 1.6165e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-0.json",
+          "metric_history_sha256": "ec786e39c97c1535ea79235e3c3cb096b4b8f5fc729d44246ebf47a8eb615b0c"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:51:23.094116+00:00",
+          "training_seconds": 4.236310874810442,
+          "wall_seconds": 4.236262798309326,
+          "dmatrix_seconds": 0.06521316687576473,
+          "loading_seconds": 0.24677650001831353,
+          "prediction_seconds": 0.05891675013117492,
+          "model_sha256": "337801fab75fb0dd134becc32916c897f553c976f0e7392376fb7e5be39e8b6e",
+          "margins_sha256": "2f8a04fb06c0253727f794ecc8e66bc06b3b2dea040243bc0087a554154b8847",
+          "test_accuracy": 0.76804,
+          "test_logloss": 0.4773976826260744,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 634306560,
+              "process_current_rss_bytes": 634306560,
+              "system_swap": "total = 15360.00M  used = 14219.75M  free = 1140.25M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 898416640,
+              "process_current_rss_bytes": 248020992,
+              "system_swap": "total = 15360.00M  used = 14488.38M  free = 871.62M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "partition_gpu_time_ns": 0.672077061,
+            "gpu_time_ns": 0.51319558,
+            "cuda_sketch_gpu_time_ns": 0.411695578,
+            "split_gpu_time_ns": 0.149531141,
+            "objective_gpu_time_ns": 0.107711106,
+            "metric_gpu_time_ns": 0.10767712,
+            "input_prepare_gpu_time_ns": 0.073378819,
+            "prediction_gpu_time_ns": 0.032828805,
+            "gradient_sum_gpu_time_ns": 0.020456092,
+            "ellpack_gpu_time_ns": 0.013796539,
+            "vector_gpu_time_ns": 0.009684411,
+            "column_sampling_gpu_time_ns": 0.000184075,
+            "label_validation_gpu_time_ns": 0.000120874,
+            "base_score_gpu_time_ns": 1.7374e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-1.json",
+          "metric_history_sha256": "ec786e39c97c1535ea79235e3c3cb096b4b8f5fc729d44246ebf47a8eb615b0c"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:51:28.677396+00:00",
+          "training_seconds": 4.164439124986529,
+          "wall_seconds": 4.164391756057739,
+          "dmatrix_seconds": 0.06084783305414021,
+          "loading_seconds": 0.24633166706189513,
+          "prediction_seconds": 0.06134979194030166,
+          "model_sha256": "337801fab75fb0dd134becc32916c897f553c976f0e7392376fb7e5be39e8b6e",
+          "margins_sha256": "2f8a04fb06c0253727f794ecc8e66bc06b3b2dea040243bc0087a554154b8847",
+          "test_accuracy": 0.76804,
+          "test_logloss": 0.4773976826260744,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 634634240,
+              "process_current_rss_bytes": 634634240,
+              "system_swap": "total = 15360.00M  used = 14488.38M  free = 871.62M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 898744320,
+              "process_current_rss_bytes": 329957376,
+              "system_swap": "total = 15360.00M  used = 14552.25M  free = 807.75M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "partition_gpu_time_ns": 0.671757043,
+            "gpu_time_ns": 0.51484928,
+            "cuda_sketch_gpu_time_ns": 0.424242079,
+            "split_gpu_time_ns": 0.149738172,
+            "objective_gpu_time_ns": 0.109037728,
+            "metric_gpu_time_ns": 0.107598032,
+            "input_prepare_gpu_time_ns": 0.072471685,
+            "prediction_gpu_time_ns": 0.032367228,
+            "gradient_sum_gpu_time_ns": 0.021367213,
+            "ellpack_gpu_time_ns": 0.014133123,
+            "vector_gpu_time_ns": 0.009618835,
+            "column_sampling_gpu_time_ns": 0.000174235,
+            "label_validation_gpu_time_ns": 0.000122958,
+            "base_score_gpu_time_ns": 1.7375e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-2.json",
+          "metric_history_sha256": "ec786e39c97c1535ea79235e3c3cb096b4b8f5fc729d44246ebf47a8eb615b0c"
+        }
+      ]
+    },
+    "dense-4m-32": {
+      "train_shape": [
+        4000000,
+        32
+      ],
+      "test_shape": [
+        100000,
+        32
+      ],
+      "rounds": 100,
+      "dataset": {
+        "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+        "numpy_version": "2.5.4",
+        "signal": {
+          "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+          "features": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14,
+            16,
+            18,
+            20,
+            22,
+            24,
+            26,
+            28,
+            31
+          ]
+        },
+        "features_sha256": "39737ed4471590ea32e4f1a5bf63ab169930ce933a4f597a9e93068f5fabb0ef",
+        "labels_sha256": "e758d28d522377d957bb0d8cc49cb89290ca9644dadbb58760016d8c7cb072ac"
+      },
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "4000000",
+        "--features",
+        "32",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "cpu",
+        "mps",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-4m-32"
+      ],
+      "params": {
+        "cpu": {
+          "device": "cpu",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "mps": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        }
+      },
+      "repeats_per_device": 3,
+      "training_median_seconds": {
+        "cpu": 11.438314916798845,
+        "mps": 10.370844834018499
+      },
+      "cpu_over_mps": 1.1029299058914492,
+      "matrix_plus_training_median_seconds": {
+        "cpu": 11.700283666839823,
+        "mps": 10.628526501124725
+      },
+      "exact_repeated_outputs": true,
+      "quality": {
+        "cpu": {
+          "test_accuracy": 0.77136,
+          "test_logloss": 0.46985952815010984
+        },
+        "mps": {
+          "test_accuracy": 0.77067,
+          "test_logloss": 0.47036204645649704
+        }
+      },
+      "independent_cpu_mps": {
+        "margin_max_abs_difference": 2.1163737773895264,
+        "margin_rmse_difference": 0.3432653686319293,
+        "class_disagreement_fraction": 0.05649
+      },
+      "runs": [
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:51:39.011567+00:00",
+          "training_seconds": 10.985591124976054,
+          "wall_seconds": 10.98546576499939,
+          "dmatrix_seconds": 0.2630849580746144,
+          "loading_seconds": 0.9498454169370234,
+          "prediction_seconds": 0.02378254197537899,
+          "model_sha256": "4d244ec47bf2ef2ce3540b62e691909570f0548565924bd9358ef91d98582cbf",
+          "margins_sha256": "215dc1531eef51066a1740ea5be5b41c861d41a044b22555ca1c2b6a0fd4b4a3",
+          "test_accuracy": 0.77136,
+          "test_logloss": 0.46985952815010984,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1850605568,
+              "process_current_rss_bytes": 1850638336,
+              "system_swap": "total = 15360.00M  used = 14496.25M  free = 863.75M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2345353216,
+              "process_current_rss_bytes": 1174962176,
+              "system_swap": "total = 15360.00M  used = 14472.25M  free = 887.75M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-0.json",
+          "metric_history_sha256": "8422363d3d1d9c5d617161959cce5d4e5b7af6b7f525b41b25d619e8f343348d"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:52:20.793102+00:00",
+          "training_seconds": 11.438314916798845,
+          "wall_seconds": 11.438184976577759,
+          "dmatrix_seconds": 0.2619687500409782,
+          "loading_seconds": 0.9859408328775316,
+          "prediction_seconds": 0.020046915858983994,
+          "model_sha256": "4d244ec47bf2ef2ce3540b62e691909570f0548565924bd9358ef91d98582cbf",
+          "margins_sha256": "215dc1531eef51066a1740ea5be5b41c861d41a044b22555ca1c2b6a0fd4b4a3",
+          "test_accuracy": 0.77136,
+          "test_logloss": 0.46985952815010984,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1850490880,
+              "process_current_rss_bytes": 1850540032,
+              "system_swap": "total = 18432.00M  used = 17079.06M  free = 1352.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2351710208,
+              "process_current_rss_bytes": 2349252608,
+              "system_swap": "total = 18432.00M  used = 16879.06M  free = 1552.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-1.json",
+          "metric_history_sha256": "8422363d3d1d9c5d617161959cce5d4e5b7af6b7f525b41b25d619e8f343348d"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:52:34.542667+00:00",
+          "training_seconds": 11.53085866686888,
+          "wall_seconds": 11.530724287033081,
+          "dmatrix_seconds": 0.2604547501541674,
+          "loading_seconds": 1.0170556670054793,
+          "prediction_seconds": 0.019731375155970454,
+          "model_sha256": "4d244ec47bf2ef2ce3540b62e691909570f0548565924bd9358ef91d98582cbf",
+          "margins_sha256": "215dc1531eef51066a1740ea5be5b41c861d41a044b22555ca1c2b6a0fd4b4a3",
+          "test_accuracy": 0.77136,
+          "test_logloss": 0.46985952815010984,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1850785792,
+              "process_current_rss_bytes": 1850818560,
+              "system_swap": "total = 18432.00M  used = 16863.06M  free = 1568.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2352300032,
+              "process_current_rss_bytes": 2349875200,
+              "system_swap": "total = 18432.00M  used = 16743.00M  free = 1689.00M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-2.json",
+          "metric_history_sha256": "8422363d3d1d9c5d617161959cce5d4e5b7af6b7f525b41b25d619e8f343348d"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:51:52.519214+00:00",
+          "training_seconds": 12.14575754199177,
+          "wall_seconds": 12.145618915557861,
+          "dmatrix_seconds": 0.2695160419680178,
+          "loading_seconds": 0.9951993338763714,
+          "prediction_seconds": 0.06555462488904595,
+          "model_sha256": "3678cd8e44c37bacb1d1f7410e4755e6b3a1d93861a950d7bb999c2e51bdbe24",
+          "margins_sha256": "509f2b9e136ad0723c020c3f1f1b6f463ab114b751bc9a49540af1b6c188de1b",
+          "test_accuracy": 0.77067,
+          "test_logloss": 0.47036204645649704,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1871593472,
+              "process_current_rss_bytes": 1871593472,
+              "system_swap": "total = 15360.00M  used = 14464.25M  free = 895.75M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2344632320,
+              "process_current_rss_bytes": 150355968,
+              "system_swap": "total = 17408.00M  used = 15849.62M  free = 1558.38M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "cuda_sketch_gpu_time_ns": 2.825750033,
+            "gpu_time_ns": 2.020714626,
+            "partition_gpu_time_ns": 1.6559336,
+            "objective_gpu_time_ns": 0.40006528,
+            "split_gpu_time_ns": 0.15397576,
+            "metric_gpu_time_ns": 0.107915363,
+            "gradient_sum_gpu_time_ns": 0.080175017,
+            "prediction_gpu_time_ns": 0.077401359,
+            "input_prepare_gpu_time_ns": 0.073765352,
+            "ellpack_gpu_time_ns": 0.059984372,
+            "vector_gpu_time_ns": 0.038967798,
+            "index_gpu_time_ns": 0.00698425,
+            "label_validation_gpu_time_ns": 0.000446208,
+            "column_sampling_gpu_time_ns": 0.000339942,
+            "base_score_gpu_time_ns": 8.4998e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-0.json",
+          "metric_history_sha256": "d8c45de507bf96e2a88fe58dcaf156245d2a526f83abeb02a3469ea1dde58d80"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:52:07.564848+00:00",
+          "training_seconds": 10.370844834018499,
+          "wall_seconds": 10.370726823806763,
+          "dmatrix_seconds": 0.2576816671062261,
+          "loading_seconds": 0.9899844168685377,
+          "prediction_seconds": 0.06237683282233775,
+          "model_sha256": "3678cd8e44c37bacb1d1f7410e4755e6b3a1d93861a950d7bb999c2e51bdbe24",
+          "margins_sha256": "509f2b9e136ad0723c020c3f1f1b6f463ab114b751bc9a49540af1b6c188de1b",
+          "test_accuracy": 0.77067,
+          "test_logloss": 0.47036204645649704,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1871511552,
+              "process_current_rss_bytes": 1871511552,
+              "system_swap": "total = 17408.00M  used = 15833.62M  free = 1574.38M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2927525888,
+              "process_current_rss_bytes": 153747456,
+              "system_swap": "total = 18432.00M  used = 17111.06M  free = 1320.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.016051272,
+            "cuda_sketch_gpu_time_ns": 1.745379409,
+            "partition_gpu_time_ns": 1.641776271,
+            "objective_gpu_time_ns": 0.4009346,
+            "split_gpu_time_ns": 0.152624077,
+            "metric_gpu_time_ns": 0.107361861,
+            "gradient_sum_gpu_time_ns": 0.080537388,
+            "prediction_gpu_time_ns": 0.076413101,
+            "input_prepare_gpu_time_ns": 0.074066154,
+            "ellpack_gpu_time_ns": 0.055935957,
+            "vector_gpu_time_ns": 0.038153501,
+            "index_gpu_time_ns": 0.006968708,
+            "label_validation_gpu_time_ns": 0.000367708,
+            "column_sampling_gpu_time_ns": 0.000213185,
+            "base_score_gpu_time_ns": 7.7624e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-1.json",
+          "metric_history_sha256": "d8c45de507bf96e2a88fe58dcaf156245d2a526f83abeb02a3469ea1dde58d80"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:52:48.447677+00:00",
+          "training_seconds": 9.45056404103525,
+          "wall_seconds": 9.450457096099854,
+          "dmatrix_seconds": 0.2637869999743998,
+          "loading_seconds": 1.013583459192887,
+          "prediction_seconds": 0.06060045794583857,
+          "model_sha256": "3678cd8e44c37bacb1d1f7410e4755e6b3a1d93861a950d7bb999c2e51bdbe24",
+          "margins_sha256": "509f2b9e136ad0723c020c3f1f1b6f463ab114b751bc9a49540af1b6c188de1b",
+          "test_accuracy": 0.77067,
+          "test_logloss": 0.47036204645649704,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1871478784,
+              "process_current_rss_bytes": 1871495168,
+              "system_swap": "total = 18432.00M  used = 16743.00M  free = 1689.00M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2927558656,
+              "process_current_rss_bytes": 194969600,
+              "system_swap": "total = 19456.00M  used = 18265.00M  free = 1191.00M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.027001051,
+            "partition_gpu_time_ns": 1.637126075,
+            "cuda_sketch_gpu_time_ns": 1.608653407,
+            "objective_gpu_time_ns": 0.400243226,
+            "split_gpu_time_ns": 0.153470049,
+            "metric_gpu_time_ns": 0.107717784,
+            "gradient_sum_gpu_time_ns": 0.078469677,
+            "prediction_gpu_time_ns": 0.075836347,
+            "input_prepare_gpu_time_ns": 0.073211979,
+            "ellpack_gpu_time_ns": 0.05654454,
+            "vector_gpu_time_ns": 0.037259864,
+            "index_gpu_time_ns": 0.007265625,
+            "label_validation_gpu_time_ns": 0.000325708,
+            "column_sampling_gpu_time_ns": 0.0002561,
+            "base_score_gpu_time_ns": 8.1665e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-2.json",
+          "metric_history_sha256": "d8c45de507bf96e2a88fe58dcaf156245d2a526f83abeb02a3469ea1dde58d80"
+        }
+      ]
+    },
+    "dense-1m-128": {
+      "train_shape": [
+        1000000,
+        128
+      ],
+      "test_shape": [
+        100000,
+        128
+      ],
+      "rounds": 100,
+      "dataset": {
+        "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+        "numpy_version": "2.5.4",
+        "signal": {
+          "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+          "features": [
+            0,
+            8,
+            16,
+            25,
+            33,
+            42,
+            50,
+            59,
+            67,
+            76,
+            84,
+            93,
+            101,
+            110,
+            118,
+            127
+          ]
+        },
+        "features_sha256": "2c83e0730d80da007ed9812559f08ded6200ed1db44d3f866acdb3c17f92e087",
+        "labels_sha256": "d424e80ee8437d17be0879e9d38b1948a38f534f6f1a88c1ada55ebf87c5d01c"
+      },
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "1000000",
+        "--features",
+        "128",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "mps",
+        "cpu",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-1m-128"
+      ],
+      "params": {
+        "cpu": {
+          "device": "cpu",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "mps": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        }
+      },
+      "repeats_per_device": 3,
+      "training_median_seconds": {
+        "mps": 9.234693458070979,
+        "cpu": 10.258475291077048
+      },
+      "cpu_over_mps": 1.11086256816801,
+      "matrix_plus_training_median_seconds": {
+        "cpu": 10.534187457058579,
+        "mps": 9.520604750141501
+      },
+      "exact_repeated_outputs": true,
+      "quality": {
+        "cpu": {
+          "test_accuracy": 0.77099,
+          "test_logloss": 0.4735324818795726
+        },
+        "mps": {
+          "test_accuracy": 0.77061,
+          "test_logloss": 0.4738469157211187
+        }
+      },
+      "independent_cpu_mps": {
+        "margin_max_abs_difference": 2.9072046279907227,
+        "margin_rmse_difference": 0.4396233126719885,
+        "class_disagreement_fraction": 0.0703
+      },
+      "runs": [
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:53:12.115115+00:00",
+          "training_seconds": 10.001232916954905,
+          "wall_seconds": 10.00112009048462,
+          "dmatrix_seconds": 0.29031875007785857,
+          "loading_seconds": 0.8838501658756286,
+          "prediction_seconds": 0.02062333282083273,
+          "model_sha256": "5589115f772851127bb2554eaba2a120b1f18d3e8cd81753f03949efa2fd2568",
+          "margins_sha256": "ab8f06c03563fbb47a6ae534f22b797ea3e596bae671c754569d3530cd0c829c",
+          "test_accuracy": 0.77099,
+          "test_logloss": 0.4735324818795726,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1880473600,
+              "process_current_rss_bytes": 1880506368,
+              "system_swap": "total = 19456.00M  used = 18341.69M  free = 1114.31M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2369585152,
+              "process_current_rss_bytes": 2369585152,
+              "system_swap": "total = 19456.00M  used = 18269.69M  free = 1186.31M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-0.json",
+          "metric_history_sha256": "7ad5210f3340d20975fa32bcb7d06c8666fef884f792748c7004c6c07b5e22d2"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:53:24.372008+00:00",
+          "training_seconds": 10.258475291077048,
+          "wall_seconds": 10.25835919380188,
+          "dmatrix_seconds": 0.27571216598153114,
+          "loading_seconds": 0.905742249917239,
+          "prediction_seconds": 0.020849791122600436,
+          "model_sha256": "5589115f772851127bb2554eaba2a120b1f18d3e8cd81753f03949efa2fd2568",
+          "margins_sha256": "ab8f06c03563fbb47a6ae534f22b797ea3e596bae671c754569d3530cd0c829c",
+          "test_accuracy": 0.77099,
+          "test_logloss": 0.4735324818795726,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1880571904,
+              "process_current_rss_bytes": 1880604672,
+              "system_swap": "total = 19456.00M  used = 18261.69M  free = 1194.31M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2371502080,
+              "process_current_rss_bytes": 2371502080,
+              "system_swap": "total = 19456.00M  used = 18149.69M  free = 1306.31M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-1.json",
+          "metric_history_sha256": "7ad5210f3340d20975fa32bcb7d06c8666fef884f792748c7004c6c07b5e22d2"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:54:00.984187+00:00",
+          "training_seconds": 12.3758701661136,
+          "wall_seconds": 12.375730276107788,
+          "dmatrix_seconds": 0.2941762909758836,
+          "loading_seconds": 0.9357986249960959,
+          "prediction_seconds": 0.02381562488153577,
+          "model_sha256": "5589115f772851127bb2554eaba2a120b1f18d3e8cd81753f03949efa2fd2568",
+          "margins_sha256": "ab8f06c03563fbb47a6ae534f22b797ea3e596bae671c754569d3530cd0c829c",
+          "test_accuracy": 0.77099,
+          "test_logloss": 0.4735324818795726,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1880604672,
+              "process_current_rss_bytes": 1880637440,
+              "system_swap": "total = 19456.00M  used = 18472.25M  free = 983.75M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2368503808,
+              "process_current_rss_bytes": 2368503808,
+              "system_swap": "total = 19456.00M  used = 18384.25M  free = 1071.75M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-2.json",
+          "metric_history_sha256": "7ad5210f3340d20975fa32bcb7d06c8666fef884f792748c7004c6c07b5e22d2"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:53:00.570951+00:00",
+          "training_seconds": 9.132772082928568,
+          "wall_seconds": 9.13266921043396,
+          "dmatrix_seconds": 0.28473495901562274,
+          "loading_seconds": 0.9081359158735722,
+          "prediction_seconds": 0.08549366611987352,
+          "model_sha256": "c47b14689942ea6effb25fc5ad75ac82c26f4db5ba85a1be1f8f4dbe90a6a5cf",
+          "margins_sha256": "dad7cfe5e3482c81a241cee5c89eb6289afc525cac1aba016cc79d51efca5ca9",
+          "test_accuracy": 0.77061,
+          "test_logloss": 0.4738469157211187,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1901412352,
+              "process_current_rss_bytes": 1901428736,
+              "system_swap": "total = 19456.00M  used = 18233.00M  free = 1223.00M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2933735424,
+              "process_current_rss_bytes": 288735232,
+              "system_swap": "total = 19456.00M  used = 18389.69M  free = 1066.31M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.115696538,
+            "cuda_sketch_gpu_time_ns": 1.678971491,
+            "partition_gpu_time_ns": 0.796260819,
+            "split_gpu_time_ns": 0.38948165,
+            "input_prepare_gpu_time_ns": 0.32227077,
+            "metric_gpu_time_ns": 0.109084827,
+            "objective_gpu_time_ns": 0.107971689,
+            "ellpack_gpu_time_ns": 0.05663804,
+            "prediction_gpu_time_ns": 0.052303058,
+            "vector_gpu_time_ns": 0.02861628,
+            "gradient_sum_gpu_time_ns": 0.022059331,
+            "column_sampling_gpu_time_ns": 0.000164816,
+            "label_validation_gpu_time_ns": 0.000131041,
+            "base_score_gpu_time_ns": 7.5748e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-0.json",
+          "metric_history_sha256": "575f4c8f8ea5531408ed390b4cd7cfc2173269259d327374a74af24edeeed738"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:53:36.883819+00:00",
+          "training_seconds": 9.234693458070979,
+          "wall_seconds": 9.234587907791138,
+          "dmatrix_seconds": 0.2859112920705229,
+          "loading_seconds": 0.8952295000199229,
+          "prediction_seconds": 0.08567275013774633,
+          "model_sha256": "c47b14689942ea6effb25fc5ad75ac82c26f4db5ba85a1be1f8f4dbe90a6a5cf",
+          "margins_sha256": "dad7cfe5e3482c81a241cee5c89eb6289afc525cac1aba016cc79d51efca5ca9",
+          "test_accuracy": 0.77061,
+          "test_logloss": 0.4738469157211187,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1901559808,
+              "process_current_rss_bytes": 1901559808,
+              "system_swap": "total = 19456.00M  used = 18125.69M  free = 1330.31M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2933800960,
+              "process_current_rss_bytes": 271007744,
+              "system_swap": "total = 19456.00M  used = 18676.31M  free = 779.69M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.19207101,
+            "cuda_sketch_gpu_time_ns": 1.668586155,
+            "partition_gpu_time_ns": 0.799922468,
+            "split_gpu_time_ns": 0.406823274,
+            "input_prepare_gpu_time_ns": 0.322943019,
+            "metric_gpu_time_ns": 0.109108861,
+            "objective_gpu_time_ns": 0.107831061,
+            "ellpack_gpu_time_ns": 0.057443331,
+            "prediction_gpu_time_ns": 0.052029894,
+            "vector_gpu_time_ns": 0.027784568,
+            "gradient_sum_gpu_time_ns": 0.022228673,
+            "column_sampling_gpu_time_ns": 0.000171517,
+            "label_validation_gpu_time_ns": 0.000123624,
+            "base_score_gpu_time_ns": 7.6708e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-1.json",
+          "metric_history_sha256": "575f4c8f8ea5531408ed390b4cd7cfc2173269259d327374a74af24edeeed738"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:53:48.567822+00:00",
+          "training_seconds": 9.748377084033564,
+          "wall_seconds": 9.74826717376709,
+          "dmatrix_seconds": 0.27924633398652077,
+          "loading_seconds": 0.8996925419196486,
+          "prediction_seconds": 0.09358895802870393,
+          "model_sha256": "c47b14689942ea6effb25fc5ad75ac82c26f4db5ba85a1be1f8f4dbe90a6a5cf",
+          "margins_sha256": "dad7cfe5e3482c81a241cee5c89eb6289afc525cac1aba016cc79d51efca5ca9",
+          "test_accuracy": 0.77061,
+          "test_logloss": 0.4738469157211187,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1901379584,
+              "process_current_rss_bytes": 1901379584,
+              "system_swap": "total = 19456.00M  used = 18676.31M  free = 779.69M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2933669888,
+              "process_current_rss_bytes": 289931264,
+              "system_swap": "total = 19456.00M  used = 18488.25M  free = 967.75M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.238486745,
+            "cuda_sketch_gpu_time_ns": 1.438704491,
+            "partition_gpu_time_ns": 0.805551304,
+            "split_gpu_time_ns": 0.413521808,
+            "input_prepare_gpu_time_ns": 0.32586119,
+            "metric_gpu_time_ns": 0.111297734,
+            "objective_gpu_time_ns": 0.110365025,
+            "ellpack_gpu_time_ns": 0.056873748,
+            "prediction_gpu_time_ns": 0.052009188,
+            "vector_gpu_time_ns": 0.028265712,
+            "gradient_sum_gpu_time_ns": 0.022647052,
+            "column_sampling_gpu_time_ns": 0.000178522,
+            "label_validation_gpu_time_ns": 0.000152749,
+            "base_score_gpu_time_ns": 0.000123082
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-2.json",
+          "metric_history_sha256": "575f4c8f8ea5531408ed390b4cd7cfc2173269259d327374a74af24edeeed738"
+        }
+      ]
+    },
+    "dense-250k-512": {
+      "train_shape": [
+        250000,
+        512
+      ],
+      "test_shape": [
+        25000,
+        512
+      ],
+      "rounds": 100,
+      "dataset": {
+        "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+        "numpy_version": "2.5.4",
+        "signal": {
+          "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+          "features": [
+            0,
+            34,
+            68,
+            102,
+            136,
+            170,
+            204,
+            238,
+            272,
+            306,
+            340,
+            374,
+            408,
+            442,
+            476,
+            511
+          ]
+        },
+        "features_sha256": "2c83e0730d80da007ed9812559f08ded6200ed1db44d3f866acdb3c17f92e087",
+        "labels_sha256": "e58eb5e6e08823739d8dc7c3f4307a5ea658a0b8a1e9242645c24d3964851e6b"
+      },
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "250000",
+        "--features",
+        "512",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "cpu",
+        "mps",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-250k-512"
+      ],
+      "params": {
+        "cpu": {
+          "device": "cpu",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "mps": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        }
+      },
+      "repeats_per_device": 3,
+      "training_median_seconds": {
+        "cpu": 19.125180666102096,
+        "mps": 13.610975749790668
+      },
+      "cpu_over_mps": 1.4051292881332358,
+      "matrix_plus_training_median_seconds": {
+        "cpu": 19.39225374907255,
+        "mps": 13.891600583679974
+      },
+      "exact_repeated_outputs": true,
+      "quality": {
+        "cpu": {
+          "test_accuracy": 0.76104,
+          "test_logloss": 0.4863213164855987
+        },
+        "mps": {
+          "test_accuracy": 0.76228,
+          "test_logloss": 0.4869425545801634
+        }
+      },
+      "independent_cpu_mps": {
+        "margin_max_abs_difference": 3.3067426681518555,
+        "margin_rmse_difference": 0.6126035951697346,
+        "class_disagreement_fraction": 0.10044
+      },
+      "runs": [
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:54:15.611441+00:00",
+          "training_seconds": 17.504045458044857,
+          "wall_seconds": 17.503847122192383,
+          "dmatrix_seconds": 0.2579634578432888,
+          "loading_seconds": 0.7987297910731286,
+          "prediction_seconds": 0.010157999815419316,
+          "model_sha256": "72445e103791bad5bef6f2390bcd308c054a95f2243a35f55e2687498634da76",
+          "margins_sha256": "e7428afd61f59d8dd0d22666c64790abe47e509fc7ff7dc8e2d0c6acd5071b1d",
+          "test_accuracy": 0.76104,
+          "test_logloss": 0.4863213164855987,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1858256896,
+              "process_current_rss_bytes": 1858256896,
+              "system_swap": "total = 19456.00M  used = 18272.19M  free = 1183.81M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2770124800,
+              "process_current_rss_bytes": 2770124800,
+              "system_swap": "total = 19456.00M  used = 18136.06M  free = 1319.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-0.json",
+          "metric_history_sha256": "70fdd6fc7b4f1fe7b6c6adab8e7fb8b631e4ea8c756931cf722cc46b69f48d13"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:55:06.703703+00:00",
+          "training_seconds": 20.196359291905537,
+          "wall_seconds": 20.19613027572632,
+          "dmatrix_seconds": 0.28526566713117063,
+          "loading_seconds": 0.8451686250045896,
+          "prediction_seconds": 0.013381416909396648,
+          "model_sha256": "72445e103791bad5bef6f2390bcd308c054a95f2243a35f55e2687498634da76",
+          "margins_sha256": "e7428afd61f59d8dd0d22666c64790abe47e509fc7ff7dc8e2d0c6acd5071b1d",
+          "test_accuracy": 0.76104,
+          "test_logloss": 0.4863213164855987,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1858322432,
+              "process_current_rss_bytes": 1858322432,
+              "system_swap": "total = 19456.00M  used = 18439.50M  free = 1016.50M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2780561408,
+              "process_current_rss_bytes": 2780561408,
+              "system_swap": "total = 19456.00M  used = 18207.44M  free = 1248.56M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-1.json",
+          "metric_history_sha256": "70fdd6fc7b4f1fe7b6c6adab8e7fb8b631e4ea8c756931cf722cc46b69f48d13"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:55:29.179301+00:00",
+          "training_seconds": 19.125180666102096,
+          "wall_seconds": 19.124963998794556,
+          "dmatrix_seconds": 0.2670730829704553,
+          "loading_seconds": 0.8437032920774072,
+          "prediction_seconds": 0.010811416897922754,
+          "model_sha256": "72445e103791bad5bef6f2390bcd308c054a95f2243a35f55e2687498634da76",
+          "margins_sha256": "e7428afd61f59d8dd0d22666c64790abe47e509fc7ff7dc8e2d0c6acd5071b1d",
+          "test_accuracy": 0.76104,
+          "test_logloss": 0.4863213164855987,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1858289664,
+              "process_current_rss_bytes": 1858289664,
+              "system_swap": "total = 19456.00M  used = 18151.44M  free = 1304.56M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2759770112,
+              "process_current_rss_bytes": 1662271488,
+              "system_swap": "total = 17408.00M  used = 16102.94M  free = 1305.06M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-2.json",
+          "metric_history_sha256": "70fdd6fc7b4f1fe7b6c6adab8e7fb8b631e4ea8c756931cf722cc46b69f48d13"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:54:35.306028+00:00",
+          "training_seconds": 13.610975749790668,
+          "wall_seconds": 13.610821723937988,
+          "dmatrix_seconds": 0.2806248338893056,
+          "loading_seconds": 0.8018306249286979,
+          "prediction_seconds": 0.0935221251565963,
+          "model_sha256": "74fcb6259059512ba2bc1ba7782e9574e643af6f02f3dad597320e2f22073249",
+          "margins_sha256": "a3c116d549d5c90bef57b940fab4d0f41adce71143de43084e9db135b0b1f7a5",
+          "test_accuracy": 0.76228,
+          "test_logloss": 0.4869425545801634,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1877262336,
+              "process_current_rss_bytes": 1877262336,
+              "system_swap": "total = 19456.00M  used = 18136.06M  free = 1319.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2903523328,
+              "process_current_rss_bytes": 717504512,
+              "system_swap": "total = 19456.00M  used = 18724.56M  free = 731.44M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.703337529,
+            "cuda_sketch_gpu_time_ns": 1.889444407,
+            "split_gpu_time_ns": 1.469448742,
+            "input_prepare_gpu_time_ns": 0.33205178,
+            "partition_gpu_time_ns": 0.19197529,
+            "ellpack_gpu_time_ns": 0.094516247,
+            "metric_gpu_time_ns": 0.032119494,
+            "objective_gpu_time_ns": 0.030298518,
+            "vector_gpu_time_ns": 0.029025455,
+            "prediction_gpu_time_ns": 0.016569406,
+            "gradient_sum_gpu_time_ns": 0.008810758,
+            "column_sampling_gpu_time_ns": 0.000183724,
+            "label_validation_gpu_time_ns": 7.9458e-05,
+            "base_score_gpu_time_ns": 7.5707e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-0.json",
+          "metric_history_sha256": "fea2acf360905759cac933e488d2d3b229666a1e22de29702a6c978b875aefa1"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:54:51.338836+00:00",
+          "training_seconds": 12.962601458886638,
+          "wall_seconds": 12.962455034255981,
+          "dmatrix_seconds": 0.28141304198652506,
+          "loading_seconds": 0.8097715000621974,
+          "prediction_seconds": 0.0937757499050349,
+          "model_sha256": "74fcb6259059512ba2bc1ba7782e9574e643af6f02f3dad597320e2f22073249",
+          "margins_sha256": "a3c116d549d5c90bef57b940fab4d0f41adce71143de43084e9db135b0b1f7a5",
+          "test_accuracy": 0.76228,
+          "test_logloss": 0.4869425545801634,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1877147648,
+              "process_current_rss_bytes": 1877147648,
+              "system_swap": "total = 19456.00M  used = 18708.56M  free = 747.44M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2903425024,
+              "process_current_rss_bytes": 605569024,
+              "system_swap": "total = 19456.00M  used = 18567.50M  free = 888.50M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.662842659,
+            "cuda_sketch_gpu_time_ns": 1.583782905,
+            "split_gpu_time_ns": 1.456200167,
+            "input_prepare_gpu_time_ns": 0.330065281,
+            "partition_gpu_time_ns": 0.18759332,
+            "ellpack_gpu_time_ns": 0.073972082,
+            "metric_gpu_time_ns": 0.032761532,
+            "objective_gpu_time_ns": 0.03060357,
+            "vector_gpu_time_ns": 0.025423986,
+            "prediction_gpu_time_ns": 0.016255536,
+            "gradient_sum_gpu_time_ns": 0.008803564,
+            "column_sampling_gpu_time_ns": 0.000209483,
+            "base_score_gpu_time_ns": 7.4832e-05,
+            "label_validation_gpu_time_ns": 2.1416e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-1.json",
+          "metric_history_sha256": "fea2acf360905759cac933e488d2d3b229666a1e22de29702a6c978b875aefa1"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:55:50.841874+00:00",
+          "training_seconds": 13.624551333952695,
+          "wall_seconds": 13.624397039413452,
+          "dmatrix_seconds": 0.28094016714021564,
+          "loading_seconds": 0.7811022920068353,
+          "prediction_seconds": 0.09603245789185166,
+          "model_sha256": "74fcb6259059512ba2bc1ba7782e9574e643af6f02f3dad597320e2f22073249",
+          "margins_sha256": "a3c116d549d5c90bef57b940fab4d0f41adce71143de43084e9db135b0b1f7a5",
+          "test_accuracy": 0.76228,
+          "test_logloss": 0.4869425545801634,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1877082112,
+              "process_current_rss_bytes": 1877098496,
+              "system_swap": "total = 17408.00M  used = 15894.81M  free = 1513.19M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2903179264,
+              "process_current_rss_bytes": 302514176,
+              "system_swap": "total = 17408.00M  used = 16848.50M  free = 559.50M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.736539494,
+            "cuda_sketch_gpu_time_ns": 1.79416274,
+            "split_gpu_time_ns": 1.485149689,
+            "input_prepare_gpu_time_ns": 0.331386073,
+            "partition_gpu_time_ns": 0.190155345,
+            "ellpack_gpu_time_ns": 0.116327455,
+            "metric_gpu_time_ns": 0.033121828,
+            "objective_gpu_time_ns": 0.030749688,
+            "vector_gpu_time_ns": 0.026600457,
+            "prediction_gpu_time_ns": 0.015857474,
+            "gradient_sum_gpu_time_ns": 0.008921896,
+            "column_sampling_gpu_time_ns": 0.000185306,
+            "base_score_gpu_time_ns": 7.4582e-05,
+            "label_validation_gpu_time_ns": 2.1833e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-2.json",
+          "metric_history_sha256": "fea2acf360905759cac933e488d2d3b229666a1e22de29702a6c978b875aefa1"
+        }
+      ]
+    },
+    "dense-125k-1024": {
+      "train_shape": [
+        125000,
+        1024
+      ],
+      "test_shape": [
+        12500,
+        1024
+      ],
+      "rounds": 100,
+      "dataset": {
+        "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+        "numpy_version": "2.5.4",
+        "signal": {
+          "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+          "features": [
+            0,
+            68,
+            136,
+            204,
+            272,
+            341,
+            409,
+            477,
+            545,
+            613,
+            682,
+            750,
+            818,
+            886,
+            954,
+            1023
+          ]
+        },
+        "features_sha256": "2c83e0730d80da007ed9812559f08ded6200ed1db44d3f866acdb3c17f92e087",
+        "labels_sha256": "5bdf690d5e3276c84f05ba595b7aae51256de99d5a8c80c3f5d1017ac1bac878"
+      },
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "125000",
+        "--features",
+        "1024",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "mps",
+        "cpu",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/dense-125k-1024"
+      ],
+      "params": {
+        "cpu": {
+          "device": "cpu",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "mps": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        }
+      },
+      "repeats_per_device": 3,
+      "training_median_seconds": {
+        "mps": 15.692932415986434,
+        "cpu": 21.422980583040044
+      },
+      "cpu_over_mps": 1.3651355919443324,
+      "matrix_plus_training_median_seconds": {
+        "cpu": 21.706826374167576,
+        "mps": 15.957654373953119
+      },
+      "exact_repeated_outputs": true,
+      "quality": {
+        "cpu": {
+          "test_accuracy": 0.74944,
+          "test_logloss": 0.49947754934414335
+        },
+        "mps": {
+          "test_accuracy": 0.75544,
+          "test_logloss": 0.4927583234508011
+        }
+      },
+      "independent_cpu_mps": {
+        "margin_max_abs_difference": 3.961939811706543,
+        "margin_rmse_difference": 0.7762384971561846,
+        "class_disagreement_fraction": 0.12776
+      },
+      "runs": [
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:56:26.690542+00:00",
+          "training_seconds": 22.162042999872938,
+          "wall_seconds": 22.1617910861969,
+          "dmatrix_seconds": 0.26541329198516905,
+          "loading_seconds": 0.8087414579931647,
+          "prediction_seconds": 0.008088292088359594,
+          "model_sha256": "8830e56cfce0f916a40d562ea9798e14c9d469ed26a069827298705754040b7a",
+          "margins_sha256": "0b96b6815786344c16a9412b8b6296190f1dd940940f0d26641e5e48b02f62d5",
+          "test_accuracy": 0.74944,
+          "test_logloss": 0.49947754934414335,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1852653568,
+              "process_current_rss_bytes": 1852653568,
+              "system_swap": "total = 18432.00M  used = 17082.75M  free = 1349.25M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 3290775552,
+              "process_current_rss_bytes": 3273916416,
+              "system_swap": "total = 18432.00M  used = 16898.75M  free = 1533.25M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-0.json",
+          "metric_history_sha256": "450aad6867094635e0ccfa59d7c3d0e39fbfd628181539c54dad9228df4a0401"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:56:51.265850+00:00",
+          "training_seconds": 20.868015750078484,
+          "wall_seconds": 20.867779970169067,
+          "dmatrix_seconds": 0.27743970789015293,
+          "loading_seconds": 0.9045358749572188,
+          "prediction_seconds": 0.007863124832510948,
+          "model_sha256": "8830e56cfce0f916a40d562ea9798e14c9d469ed26a069827298705754040b7a",
+          "margins_sha256": "0b96b6815786344c16a9412b8b6296190f1dd940940f0d26641e5e48b02f62d5",
+          "test_accuracy": 0.74944,
+          "test_logloss": 0.49947754934414335,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1852440576,
+              "process_current_rss_bytes": 1852440576,
+              "system_swap": "total = 18432.00M  used = 16898.75M  free = 1533.25M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 3275325440,
+              "process_current_rss_bytes": 3275325440,
+              "system_swap": "total = 17408.00M  used = 16525.12M  free = 882.88M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-1.json",
+          "metric_history_sha256": "450aad6867094635e0ccfa59d7c3d0e39fbfd628181539c54dad9228df4a0401"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:57:50.337230+00:00",
+          "training_seconds": 21.422980583040044,
+          "wall_seconds": 21.422738075256348,
+          "dmatrix_seconds": 0.2838457911275327,
+          "loading_seconds": 0.7851865419652313,
+          "prediction_seconds": 0.0064169170800596476,
+          "model_sha256": "8830e56cfce0f916a40d562ea9798e14c9d469ed26a069827298705754040b7a",
+          "margins_sha256": "0b96b6815786344c16a9412b8b6296190f1dd940940f0d26641e5e48b02f62d5",
+          "test_accuracy": 0.74944,
+          "test_logloss": 0.49947754934414335,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1852489728,
+              "process_current_rss_bytes": 1852489728,
+              "system_swap": "total = 18432.00M  used = 17504.19M  free = 927.81M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 3271540736,
+              "process_current_rss_bytes": 3271540736,
+              "system_swap": "total = 18432.00M  used = 16952.06M  free = 1479.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-2.json",
+          "metric_history_sha256": "450aad6867094635e0ccfa59d7c3d0e39fbfd628181539c54dad9228df4a0401"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:56:07.433195+00:00",
+          "training_seconds": 16.67175483284518,
+          "wall_seconds": 16.671566009521484,
+          "dmatrix_seconds": 0.26831004209816456,
+          "loading_seconds": 0.7936664579901844,
+          "prediction_seconds": 0.09713029093109071,
+          "model_sha256": "5216e9365e018ae3609b2b445e6a62edba47b901990d237c37b3ff2d2ca02485",
+          "margins_sha256": "ec26caeb1b6bc597dcd1230a37d525665295defd6c9c4e8b205792b374809f85",
+          "test_accuracy": 0.75544,
+          "test_logloss": 0.4927583234508011,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1874640896,
+              "process_current_rss_bytes": 1874640896,
+              "system_swap": "total = 17408.00M  used = 16744.50M  free = 663.50M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2899935232,
+              "process_current_rss_bytes": 365166592,
+              "system_swap": "total = 18432.00M  used = 17138.75M  free = 1293.25M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.939491446,
+            "split_gpu_time_ns": 2.872661121,
+            "cuda_sketch_gpu_time_ns": 1.773513408,
+            "input_prepare_gpu_time_ns": 0.349296746,
+            "ellpack_gpu_time_ns": 0.114148831,
+            "partition_gpu_time_ns": 0.100060352,
+            "vector_gpu_time_ns": 0.025507636,
+            "metric_gpu_time_ns": 0.01797408,
+            "objective_gpu_time_ns": 0.016951769,
+            "prediction_gpu_time_ns": 0.00977336,
+            "gradient_sum_gpu_time_ns": 0.005261688,
+            "column_sampling_gpu_time_ns": 0.000374825,
+            "base_score_gpu_time_ns": 7.6041e-05,
+            "label_validation_gpu_time_ns": 1.5666e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-0.json",
+          "metric_history_sha256": "9a4f19e78adc412a6a371791762a1d346e390e1c916379edfee37a6e1508a9a1"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:57:14.307588+00:00",
+          "training_seconds": 15.692932415986434,
+          "wall_seconds": 15.692754983901978,
+          "dmatrix_seconds": 0.2647219579666853,
+          "loading_seconds": 0.7674442091956735,
+          "prediction_seconds": 0.08053137501701713,
+          "model_sha256": "5216e9365e018ae3609b2b445e6a62edba47b901990d237c37b3ff2d2ca02485",
+          "margins_sha256": "ec26caeb1b6bc597dcd1230a37d525665295defd6c9c4e8b205792b374809f85",
+          "test_accuracy": 0.75544,
+          "test_logloss": 0.4927583234508011,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1874591744,
+              "process_current_rss_bytes": 1874591744,
+              "system_swap": "total = 17408.00M  used = 16525.12M  free = 882.88M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2899836928,
+              "process_current_rss_bytes": 433356800,
+              "system_swap": "total = 18432.00M  used = 17447.25M  free = 984.75M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.813423565,
+            "split_gpu_time_ns": 2.774936017,
+            "cuda_sketch_gpu_time_ns": 1.882886449,
+            "input_prepare_gpu_time_ns": 0.346613159,
+            "partition_gpu_time_ns": 0.097291957,
+            "ellpack_gpu_time_ns": 0.074679206,
+            "vector_gpu_time_ns": 0.029566078,
+            "metric_gpu_time_ns": 0.01774795,
+            "objective_gpu_time_ns": 0.016413985,
+            "prediction_gpu_time_ns": 0.009394157,
+            "gradient_sum_gpu_time_ns": 0.005108394,
+            "column_sampling_gpu_time_ns": 0.000191153,
+            "base_score_gpu_time_ns": 1.679e-05,
+            "label_validation_gpu_time_ns": 1.5291e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-1.json",
+          "metric_history_sha256": "9a4f19e78adc412a6a371791762a1d346e390e1c916379edfee37a6e1508a9a1"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:57:32.506839+00:00",
+          "training_seconds": 15.502583167050034,
+          "wall_seconds": 15.502408027648926,
+          "dmatrix_seconds": 0.2826227911282331,
+          "loading_seconds": 0.8003568749409169,
+          "prediction_seconds": 0.08674612501636147,
+          "model_sha256": "5216e9365e018ae3609b2b445e6a62edba47b901990d237c37b3ff2d2ca02485",
+          "margins_sha256": "ec26caeb1b6bc597dcd1230a37d525665295defd6c9c4e8b205792b374809f85",
+          "test_accuracy": 0.75544,
+          "test_logloss": 0.4927583234508011,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 1874690048,
+              "process_current_rss_bytes": 1874690048,
+              "system_swap": "total = 18432.00M  used = 17231.25M  free = 1200.75M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2900000768,
+              "process_current_rss_bytes": 511868928,
+              "system_swap": "total = 18432.00M  used = 17504.19M  free = 927.81M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 2.87819833,
+            "split_gpu_time_ns": 2.83301233,
+            "cuda_sketch_gpu_time_ns": 1.660749614,
+            "input_prepare_gpu_time_ns": 0.349508416,
+            "partition_gpu_time_ns": 0.099223235,
+            "ellpack_gpu_time_ns": 0.079060289,
+            "vector_gpu_time_ns": 0.025792968,
+            "metric_gpu_time_ns": 0.018302827,
+            "objective_gpu_time_ns": 0.016486723,
+            "prediction_gpu_time_ns": 0.009803772,
+            "gradient_sum_gpu_time_ns": 0.005267646,
+            "column_sampling_gpu_time_ns": 0.000191278,
+            "base_score_gpu_time_ns": 7.4957e-05,
+            "label_validation_gpu_time_ns": 1.5583e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-2.json",
+          "metric_history_sha256": "9a4f19e78adc412a6a371791762a1d346e390e1c916379edfee37a6e1508a9a1"
+        }
+      ]
+    },
+    "missing-1m-128": {
+      "train_shape": [
+        1000000,
+        128
+      ],
+      "test_shape": [
+        100000,
+        128
+      ],
+      "rounds": 100,
+      "dataset": {
+        "generator": "numpy.default_rng(1701); FP32 normal features; noisy logistic target",
+        "numpy_version": "2.5.4",
+        "signal": {
+          "formula": "2/sqrt(k) * sum((-1)**i * t_i); t_i=(x[f_i]**2-1)/sqrt(2) for i%4==0, otherwise x[f_i]",
+          "features": [
+            0,
+            8,
+            16,
+            25,
+            33,
+            42,
+            50,
+            59,
+            67,
+            76,
+            84,
+            93,
+            101,
+            110,
+            118,
+            127
+          ]
+        },
+        "features_sha256": "e362096eba5ad8dc2b74bcb549f1ffe5b8a8d75f600ddd60959b456ad0573d7e",
+        "labels_sha256": "d424e80ee8437d17be0879e9d38b1948a38f534f6f1a88c1ada55ebf87c5d01c",
+        "missing_fraction": 0.2
+      },
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "wide",
+        "--rows",
+        "1000000",
+        "--features",
+        "128",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "cpu",
+        "mps",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/missing-1m-128",
+        "--missing-fraction",
+        "0.2"
+      ],
+      "params": {
+        "cpu": {
+          "device": "cpu",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "mps": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        }
+      },
+      "repeats_per_device": 3,
+      "training_median_seconds": {
+        "cpu": 15.334045875119045,
+        "mps": 22.76042570802383
+      },
+      "cpu_over_mps": 0.6737152490831165,
+      "matrix_plus_training_median_seconds": {
+        "cpu": 15.676013625226915,
+        "mps": 23.090459458064288
+      },
+      "exact_repeated_outputs": true,
+      "quality": {
+        "cpu": {
+          "test_accuracy": 0.73128,
+          "test_logloss": 0.5271864527073734
+        },
+        "mps": {
+          "test_accuracy": 0.73208,
+          "test_logloss": 0.5274914701058508
+        }
+      },
+      "independent_cpu_mps": {
+        "margin_max_abs_difference": 2.7820067405700684,
+        "margin_rmse_difference": 0.3921775757374406,
+        "class_disagreement_fraction": 0.07674
+      },
+      "runs": [
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:58:14.896498+00:00",
+          "training_seconds": 12.69473324995488,
+          "wall_seconds": 12.69458818435669,
+          "dmatrix_seconds": 0.3139850420411676,
+          "loading_seconds": 1.5289320419542491,
+          "prediction_seconds": 0.04869200009852648,
+          "model_sha256": "ba2ba88345f2d1c0d072ed683b03b9084f2ba320ea5aa74a0f2351fac9832699",
+          "margins_sha256": "a93145c3f61dc12dd81446e8512669eb53f8f9e35fc769bddcaff22ae4c7ca19",
+          "test_accuracy": 0.73128,
+          "test_logloss": 0.5271864527073734,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 2277294080,
+              "process_current_rss_bytes": 2277326848,
+              "system_swap": "total = 18432.00M  used = 16944.06M  free = 1487.94M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2639413248,
+              "process_current_rss_bytes": 2639413248,
+              "system_swap": "total = 18432.00M  used = 16912.06M  free = 1519.94M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-0.json",
+          "metric_history_sha256": "3dfd8d33fffc05ee0b24beda833a333587a2040927865ea93f943759e2ab3d62"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:59:22.601539+00:00",
+          "training_seconds": 15.334045875119045,
+          "wall_seconds": 15.333871841430664,
+          "dmatrix_seconds": 0.3419677501078695,
+          "loading_seconds": 1.834195208037272,
+          "prediction_seconds": 0.056163958040997386,
+          "model_sha256": "ba2ba88345f2d1c0d072ed683b03b9084f2ba320ea5aa74a0f2351fac9832699",
+          "margins_sha256": "a93145c3f61dc12dd81446e8512669eb53f8f9e35fc769bddcaff22ae4c7ca19",
+          "test_accuracy": 0.73128,
+          "test_logloss": 0.5271864527073734,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 2277507072,
+              "process_current_rss_bytes": 2277539840,
+              "system_swap": "total = 18432.00M  used = 16846.00M  free = 1586.00M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2637922304,
+              "process_current_rss_bytes": 2637922304,
+              "system_swap": "total = 18432.00M  used = 16742.00M  free = 1690.00M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-1.json",
+          "metric_history_sha256": "3dfd8d33fffc05ee0b24beda833a333587a2040927865ea93f943759e2ab3d62"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T02:59:41.182404+00:00",
+          "training_seconds": 15.41783900000155,
+          "wall_seconds": 15.417664051055908,
+          "dmatrix_seconds": 0.32405895786359906,
+          "loading_seconds": 1.6671356670558453,
+          "prediction_seconds": 0.06327829090878367,
+          "model_sha256": "ba2ba88345f2d1c0d072ed683b03b9084f2ba320ea5aa74a0f2351fac9832699",
+          "margins_sha256": "a93145c3f61dc12dd81446e8512669eb53f8f9e35fc769bddcaff22ae4c7ca19",
+          "test_accuracy": 0.73128,
+          "test_logloss": 0.5271864527073734,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 2277507072,
+              "process_current_rss_bytes": 2277539840,
+              "system_swap": "total = 18432.00M  used = 16734.00M  free = 1698.00M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 2638004224,
+              "process_current_rss_bytes": 2638004224,
+              "system_swap": "total = 17408.00M  used = 16547.25M  free = 860.75M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-2.json",
+          "metric_history_sha256": "3dfd8d33fffc05ee0b24beda833a333587a2040927865ea93f943759e2ab3d62"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:58:30.660311+00:00",
+          "training_seconds": 21.45869845803827,
+          "wall_seconds": 21.458455085754395,
+          "dmatrix_seconds": 0.31135487486608326,
+          "loading_seconds": 1.5547020840458572,
+          "prediction_seconds": 0.10625845892354846,
+          "model_sha256": "df65ce1dd0386e77938b62a60900a26915b189e087826ee0ba0e9d8d65aa2d04",
+          "margins_sha256": "f8a8e0c3ec67c9350106e87cfa8e72e13917ec9a8a91fd6a9b22bae1539891f9",
+          "test_accuracy": 0.73208,
+          "test_logloss": 0.5274914701058508,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 2298544128,
+              "process_current_rss_bytes": 2298544128,
+              "system_swap": "total = 18432.00M  used = 16864.00M  free = 1568.00M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 3126001664,
+              "process_current_rss_bytes": 409288704,
+              "system_swap": "total = 18432.00M  used = 17018.19M  free = 1413.81M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 11.042113666,
+            "split_gpu_time_ns": 2.24624537,
+            "cuda_sketch_gpu_time_ns": 1.632354407,
+            "partition_gpu_time_ns": 1.398501164,
+            "input_prepare_gpu_time_ns": 0.341162435,
+            "metric_gpu_time_ns": 0.122348288,
+            "objective_gpu_time_ns": 0.121534572,
+            "ellpack_gpu_time_ns": 0.107078538,
+            "prediction_gpu_time_ns": 0.055249807,
+            "gradient_sum_gpu_time_ns": 0.026091329,
+            "vector_gpu_time_ns": 0.025891545,
+            "column_sampling_gpu_time_ns": 0.000256692,
+            "label_validation_gpu_time_ns": 0.000119666,
+            "base_score_gpu_time_ns": 7.6916e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-0.json",
+          "metric_history_sha256": "3c42933238dc3f093b8515f3d81ff28dcd199878b7f4485b91fcb85369ab5a73"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:58:55.899911+00:00",
+          "training_seconds": 23.070653708884493,
+          "wall_seconds": 23.070390939712524,
+          "dmatrix_seconds": 0.35137087502516806,
+          "loading_seconds": 1.8018991248682141,
+          "prediction_seconds": 0.09754691715352237,
+          "model_sha256": "df65ce1dd0386e77938b62a60900a26915b189e087826ee0ba0e9d8d65aa2d04",
+          "margins_sha256": "f8a8e0c3ec67c9350106e87cfa8e72e13917ec9a8a91fd6a9b22bae1539891f9",
+          "test_accuracy": 0.73208,
+          "test_logloss": 0.5274914701058508,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 2298413056,
+              "process_current_rss_bytes": 2298413056,
+              "system_swap": "total = 18432.00M  used = 16858.19M  free = 1573.81M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 3125886976,
+              "process_current_rss_bytes": 255705088,
+              "system_swap": "total = 18432.00M  used = 16854.00M  free = 1578.00M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 11.326183738,
+            "split_gpu_time_ns": 2.305552711,
+            "cuda_sketch_gpu_time_ns": 1.589094157,
+            "partition_gpu_time_ns": 1.428757601,
+            "input_prepare_gpu_time_ns": 0.342899943,
+            "metric_gpu_time_ns": 0.124688418,
+            "objective_gpu_time_ns": 0.122400281,
+            "ellpack_gpu_time_ns": 0.120586663,
+            "prediction_gpu_time_ns": 0.055735191,
+            "gradient_sum_gpu_time_ns": 0.026842826,
+            "vector_gpu_time_ns": 0.025878721,
+            "column_sampling_gpu_time_ns": 0.000312279,
+            "label_validation_gpu_time_ns": 0.000232458,
+            "base_score_gpu_time_ns": 7.5957e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-1.json",
+          "metric_history_sha256": "3c42933238dc3f093b8515f3d81ff28dcd199878b7f4485b91fcb85369ab5a73"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T02:59:59.819958+00:00",
+          "training_seconds": 22.76042570802383,
+          "wall_seconds": 22.760168075561523,
+          "dmatrix_seconds": 0.33003375004045665,
+          "loading_seconds": 1.6011195410974324,
+          "prediction_seconds": 0.10354870813898742,
+          "model_sha256": "df65ce1dd0386e77938b62a60900a26915b189e087826ee0ba0e9d8d65aa2d04",
+          "margins_sha256": "f8a8e0c3ec67c9350106e87cfa8e72e13917ec9a8a91fd6a9b22bae1539891f9",
+          "test_accuracy": 0.73208,
+          "test_logloss": 0.5274914701058508,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 2298396672,
+              "process_current_rss_bytes": 2298396672,
+              "system_swap": "total = 17408.00M  used = 16539.25M  free = 868.75M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 3125673984,
+              "process_current_rss_bytes": 259440640,
+              "system_swap": "total = 18432.00M  used = 16983.69M  free = 1448.31M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 11.147826582,
+            "split_gpu_time_ns": 2.271924982,
+            "cuda_sketch_gpu_time_ns": 1.769844239,
+            "partition_gpu_time_ns": 1.409122324,
+            "input_prepare_gpu_time_ns": 0.341136603,
+            "ellpack_gpu_time_ns": 0.197379249,
+            "metric_gpu_time_ns": 0.12391728,
+            "objective_gpu_time_ns": 0.120774392,
+            "prediction_gpu_time_ns": 0.055635596,
+            "gradient_sum_gpu_time_ns": 0.027504987,
+            "vector_gpu_time_ns": 0.024616889,
+            "column_sampling_gpu_time_ns": 0.000192646,
+            "label_validation_gpu_time_ns": 0.000121833,
+            "base_score_gpu_time_ns": 0.00011704
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-2.json",
+          "metric_history_sha256": "3c42933238dc3f093b8515f3d81ff28dcd199878b7f4485b91fcb85369ab5a73"
+        }
+      ]
+    },
+    "categorical-1m-32": {
+      "train_shape": [
+        1000000,
+        32
+      ],
+      "test_shape": [
+        100000,
+        32
+      ],
+      "rounds": 100,
+      "dataset": {
+        "generator": "numpy.default_rng(1701); uniform category IDs; random per-category effects; noisy logistic target",
+        "numpy_version": "2.5.4",
+        "signal": {
+          "formula": "2/sqrt(k) * sum(normal_lookup[i, x[f_i]])",
+          "features": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14,
+            16,
+            18,
+            20,
+            22,
+            24,
+            26,
+            28,
+            31
+          ],
+          "categories": 64,
+          "weights_sha256": "187bb5fa2f99b60dab0981f4cece8d35ef1db4e9092da2b59805601cd91497a5"
+        },
+        "features_sha256": "5bf32930a0e6f4dfe2de5734ba254aa59ceeafc71126e465664d7a89fd8ec92d",
+        "labels_sha256": "bc77ad13f1ea0a2eb6264dec788fc0e722cb055707ccd4423258e7bb9bd98d25"
+      },
+      "command": [
+        "/Users/maaz/Documents/xgb-mps/.venv/bin/python",
+        "/Users/maaz/Documents/xgb-mps/scripts/profile_training.py",
+        "--case",
+        "categorical",
+        "--rows",
+        "1000000",
+        "--features",
+        "32",
+        "--informative-features",
+        "16",
+        "--rounds",
+        "100",
+        "--threads",
+        "8",
+        "--repeats",
+        "3",
+        "--profile-every",
+        "20",
+        "--devices",
+        "mps",
+        "cpu",
+        "--package-dir",
+        "/Users/maaz/Documents/xgb-mps/results/memory-partition-20261107T012759Z/candidate-package",
+        "--output",
+        "/Users/maaz/Documents/xgb-mps/results/synthetic-matrix-20261107T025016Z/categorical-1m-32",
+        "--categories",
+        "64"
+      ],
+      "params": {
+        "cpu": {
+          "device": "cpu",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        },
+        "mps": {
+          "device": "mps",
+          "tree_method": "hist",
+          "max_depth": 6,
+          "max_bin": 256,
+          "nthread": 8,
+          "seed": 0,
+          "base_score": 0.5,
+          "eta": 0.3,
+          "objective": "binary:logistic",
+          "eval_metric": "logloss",
+          "verbosity": 3
+        }
+      },
+      "repeats_per_device": 3,
+      "training_median_seconds": {
+        "mps": 5.820980791002512,
+        "cpu": 6.999770249938592
+      },
+      "cpu_over_mps": 1.2025070175043584,
+      "matrix_plus_training_median_seconds": {
+        "cpu": 7.0709942078683525,
+        "mps": 5.894908749964088
+      },
+      "exact_repeated_outputs": true,
+      "quality": {
+        "cpu": {
+          "test_accuracy": 0.76347,
+          "test_logloss": 0.4859652830024928
+        },
+        "mps": {
+          "test_accuracy": 0.76347,
+          "test_logloss": 0.4859652829082685
+        }
+      },
+      "independent_cpu_mps": {
+        "margin_max_abs_difference": 9.5367431640625e-07,
+        "margin_rmse_difference": 8.77919261785647e-08,
+        "class_disagreement_fraction": 0.0
+      },
+      "runs": [
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T03:00:33.528317+00:00",
+          "training_seconds": 7.389418791048229,
+          "wall_seconds": 7.389336109161377,
+          "dmatrix_seconds": 0.08396116713993251,
+          "loading_seconds": 0.26695604086853564,
+          "prediction_seconds": 0.05896891700103879,
+          "model_sha256": "694beddb9f5d0d0a99eacbc9dccfa562486fd2dc34da412dabf63fd7a44fa3ab",
+          "margins_sha256": "9067f9b62fc669ca03f58123c846f79cd7c8cf46b648dbedaa51efc258f996e6",
+          "test_accuracy": 0.76347,
+          "test_logloss": 0.4859652830024928,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 638697472,
+              "process_current_rss_bytes": 638730240,
+              "system_swap": "total = 17408.00M  used = 16647.50M  free = 760.50M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 775667712,
+              "process_current_rss_bytes": 775667712,
+              "system_swap": "total = 17408.00M  used = 16599.50M  free = 808.50M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-0.json",
+          "metric_history_sha256": "2758b66b56a0b1874168fd6cff92e700afd52bcb424adfde5ffad22cc9b2470d"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T03:00:42.607040+00:00",
+          "training_seconds": 6.999770249938592,
+          "wall_seconds": 6.99969220161438,
+          "dmatrix_seconds": 0.07122395792976022,
+          "loading_seconds": 0.26099575008265674,
+          "prediction_seconds": 0.05488916696049273,
+          "model_sha256": "694beddb9f5d0d0a99eacbc9dccfa562486fd2dc34da412dabf63fd7a44fa3ab",
+          "margins_sha256": "9067f9b62fc669ca03f58123c846f79cd7c8cf46b648dbedaa51efc258f996e6",
+          "test_accuracy": 0.76347,
+          "test_logloss": 0.4859652830024928,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 638713856,
+              "process_current_rss_bytes": 638746624,
+              "system_swap": "total = 17408.00M  used = 16575.50M  free = 832.50M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 775749632,
+              "process_current_rss_bytes": 775749632,
+              "system_swap": "total = 17408.00M  used = 16527.50M  free = 880.50M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-1.json",
+          "metric_history_sha256": "2758b66b56a0b1874168fd6cff92e700afd52bcb424adfde5ffad22cc9b2470d"
+        },
+        {
+          "device": "cpu",
+          "started_utc": "2026-11-07T03:01:05.290567+00:00",
+          "training_seconds": 6.734225874999538,
+          "wall_seconds": 6.734150171279907,
+          "dmatrix_seconds": 0.060683040879666805,
+          "loading_seconds": 0.25337591697461903,
+          "prediction_seconds": 0.07274150010198355,
+          "model_sha256": "694beddb9f5d0d0a99eacbc9dccfa562486fd2dc34da412dabf63fd7a44fa3ab",
+          "margins_sha256": "9067f9b62fc669ca03f58123c846f79cd7c8cf46b648dbedaa51efc258f996e6",
+          "test_accuracy": 0.76347,
+          "test_logloss": 0.4859652830024928,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 639123456,
+              "process_current_rss_bytes": 639156224,
+              "system_swap": "total = 17408.00M  used = 16447.50M  free = 960.50M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 776601600,
+              "process_current_rss_bytes": 776601600,
+              "system_swap": "total = 17408.00M  used = 16407.50M  free = 1000.50M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {},
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-2.json",
+          "metric_history_sha256": "2758b66b56a0b1874168fd6cff92e700afd52bcb424adfde5ffad22cc9b2470d"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T03:00:24.999144+00:00",
+          "training_seconds": 6.599301582900807,
+          "wall_seconds": 6.599228143692017,
+          "dmatrix_seconds": 0.0883596669882536,
+          "loading_seconds": 0.3342390831094235,
+          "prediction_seconds": 0.1417186250910163,
+          "model_sha256": "a73a268f8c21a8cfdcc51fb01f87cff059b7db32f575d1bbe058c1635d9a1cf0",
+          "margins_sha256": "2a99462a7b44066c4f85c513ca5ddd22ea7645ece2f8d57af5b20fea80ef3914",
+          "test_accuracy": 0.76347,
+          "test_logloss": 0.4859652829082685,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 659980288,
+              "process_current_rss_bytes": 659980288,
+              "system_swap": "total = 18432.00M  used = 16799.69M  free = 1632.31M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 924106752,
+              "process_current_rss_bytes": 704413696,
+              "system_swap": "total = 17408.00M  used = 16647.50M  free = 760.50M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 0.716476364,
+            "partition_gpu_time_ns": 0.666493449,
+            "split_gpu_time_ns": 0.479595544,
+            "cuda_sketch_gpu_time_ns": 0.284284163,
+            "objective_gpu_time_ns": 0.112712437,
+            "metric_gpu_time_ns": 0.112083118,
+            "input_prepare_gpu_time_ns": 0.074870158,
+            "prediction_gpu_time_ns": 0.034213727,
+            "gradient_sum_gpu_time_ns": 0.021561434,
+            "ellpack_gpu_time_ns": 0.013472122,
+            "vector_gpu_time_ns": 0.010079576,
+            "column_sampling_gpu_time_ns": 0.000189695,
+            "label_validation_gpu_time_ns": 0.00013675,
+            "base_score_gpu_time_ns": 9.1707e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 0,
+          "report": "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-0.json",
+          "metric_history_sha256": "445a70283d6ad4e6c5f7bf62182774329b3796a16893e8c6b3561163fb9f8de9"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T03:00:51.177904+00:00",
+          "training_seconds": 5.820980791002512,
+          "wall_seconds": 5.82091498374939,
+          "dmatrix_seconds": 0.07392795896157622,
+          "loading_seconds": 0.26207595807500184,
+          "prediction_seconds": 0.08623541705310345,
+          "model_sha256": "a73a268f8c21a8cfdcc51fb01f87cff059b7db32f575d1bbe058c1635d9a1cf0",
+          "margins_sha256": "2a99462a7b44066c4f85c513ca5ddd22ea7645ece2f8d57af5b20fea80ef3914",
+          "test_accuracy": 0.76347,
+          "test_logloss": 0.4859652829082685,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 659832832,
+              "process_current_rss_bytes": 659832832,
+              "system_swap": "total = 17408.00M  used = 16527.50M  free = 880.50M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 923910144,
+              "process_current_rss_bytes": 701333504,
+              "system_swap": "total = 17408.00M  used = 16455.50M  free = 952.50M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 0.72411479,
+            "partition_gpu_time_ns": 0.660391399,
+            "split_gpu_time_ns": 0.468113165,
+            "cuda_sketch_gpu_time_ns": 0.308281494,
+            "metric_gpu_time_ns": 0.114293952,
+            "objective_gpu_time_ns": 0.114256311,
+            "input_prepare_gpu_time_ns": 0.075367026,
+            "prediction_gpu_time_ns": 0.033051888,
+            "gradient_sum_gpu_time_ns": 0.021781056,
+            "ellpack_gpu_time_ns": 0.013294208,
+            "vector_gpu_time_ns": 0.009905671,
+            "column_sampling_gpu_time_ns": 0.000194282,
+            "label_validation_gpu_time_ns": 0.000121958,
+            "base_score_gpu_time_ns": 1.8125e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 1,
+          "report": "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-1.json",
+          "metric_history_sha256": "445a70283d6ad4e6c5f7bf62182774329b3796a16893e8c6b3561163fb9f8de9"
+        },
+        {
+          "device": "mps",
+          "started_utc": "2026-11-07T03:00:58.591804+00:00",
+          "training_seconds": 5.219053916167468,
+          "wall_seconds": 5.218996286392212,
+          "dmatrix_seconds": 0.06319850008003414,
+          "loading_seconds": 0.2557615418918431,
+          "prediction_seconds": 0.07741695805452764,
+          "model_sha256": "a73a268f8c21a8cfdcc51fb01f87cff059b7db32f575d1bbe058c1635d9a1cf0",
+          "margins_sha256": "2a99462a7b44066c4f85c513ca5ddd22ea7645ece2f8d57af5b20fea80ef3914",
+          "test_accuracy": 0.76347,
+          "test_logloss": 0.4859652829082685,
+          "memory": {
+            "before": {
+              "process_peak_rss_bytes": 659800064,
+              "process_current_rss_bytes": 659800064,
+              "system_swap": "total = 17408.00M  used = 16447.50M  free = 960.50M  (encrypted)"
+            },
+            "after": {
+              "process_peak_rss_bytes": 923910144,
+              "process_current_rss_bytes": 701464576,
+              "system_swap": "total = 17408.00M  used = 16447.50M  free = 960.50M  (encrypted)"
+            }
+          },
+          "power": {
+            "before": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true",
+            "after": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=27132003)\t100%; charged; 0:00 remaining present: true"
+          },
+          "power_source_unchanged": true,
+          "gpu_counter_seconds": {
+            "gpu_time_ns": 0.726037922,
+            "partition_gpu_time_ns": 0.660269112,
+            "split_gpu_time_ns": 0.469634362,
+            "cuda_sketch_gpu_time_ns": 0.280418331,
+            "metric_gpu_time_ns": 0.117141035,
+            "objective_gpu_time_ns": 0.116317858,
+            "input_prepare_gpu_time_ns": 0.07564119,
+            "prediction_gpu_time_ns": 0.032998188,
+            "gradient_sum_gpu_time_ns": 0.021091634,
+            "ellpack_gpu_time_ns": 0.013196291,
+            "vector_gpu_time_ns": 0.009997565,
+            "column_sampling_gpu_time_ns": 0.000200154,
+            "label_validation_gpu_time_ns": 0.000124,
+            "base_score_gpu_time_ns": 1.7874e-05
+          },
+          "library_sha256": "68a445db288a1a2bf38f4b40aad3fb9883c8846667d61831640ae7b86706780a",
+          "repeat": 2,
+          "report": "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-2.json",
+          "metric_history_sha256": "445a70283d6ad4e6c5f7bf62182774329b3796a16893e8c6b3561163fb9f8de9"
+        }
+      ]
+    }
+  },
+  "local_evidence_sha256": {
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-0.json": "ae38ada807188522ffab02f476ec3e53c59f792a93f7b7fb63ee51f8e73bae56",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-0.log": "abdee40eabd9badba9dfcdbcb5fc6b4291ddf28dd5e6b5deec79d4840b90e05e",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-0.margins.npy": "9067f9b62fc669ca03f58123c846f79cd7c8cf46b648dbedaa51efc258f996e6",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-0.progress.json": "c72d4bdb16c43553548477541b6904a10782721440c0d122b2aa913cdc22d2fa",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-0.ubj": "694beddb9f5d0d0a99eacbc9dccfa562486fd2dc34da412dabf63fd7a44fa3ab",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-1.json": "a1d0d4a55136dea532c4b4f1fbdc971be794aa8513ce3ce7cfc8e91916ea1428",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-1.log": "297703159fa8cce4db6b3b95b041be40f7a781a33ee604f074adf2a5b4134d73",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-1.margins.npy": "9067f9b62fc669ca03f58123c846f79cd7c8cf46b648dbedaa51efc258f996e6",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-1.progress.json": "ea77807e5cc184858b85f5ea4ca0aabebecac077ccd3eb47f018ec308d37879f",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-1.ubj": "694beddb9f5d0d0a99eacbc9dccfa562486fd2dc34da412dabf63fd7a44fa3ab",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-2.json": "679b919ca8a13e94a2b4c960b3629475294fce964c792dae0cd63708f60de3ad",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-2.log": "ecf0ea82fbc1ad0c3a24906f4c9d2772bb4761e6ddcf8be8942df89e1409d280",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-2.margins.npy": "9067f9b62fc669ca03f58123c846f79cd7c8cf46b648dbedaa51efc258f996e6",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-2.progress.json": "75d00df2ea5e89546ed5b76cff0df9a391257d111455abc078c4f8ff7d80c22a",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/cpu-2.ubj": "694beddb9f5d0d0a99eacbc9dccfa562486fd2dc34da412dabf63fd7a44fa3ab",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-0.json": "fe33e32d63fed0772a85dfeb5cabfa64ed92839aea084720f0ee35d2b601f07b",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-0.log": "37ca544c4c645f2261a4c90b215b82f5e777d184433b81b9d3bb6da5c0ed96ca",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-0.margins.npy": "2a99462a7b44066c4f85c513ca5ddd22ea7645ece2f8d57af5b20fea80ef3914",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-0.progress.json": "14ad71bc3bb94614d551727bfd1f511eab71911713613649737f4ae2cbcf7a70",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-0.ubj": "a73a268f8c21a8cfdcc51fb01f87cff059b7db32f575d1bbe058c1635d9a1cf0",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-1.json": "56ef34bdd048fb3dcbd22c152256ac0d7978276b96ace45dbcefc9cbfed7899e",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-1.log": "c589905f7f66d0382afccb046a4035a8c7a4587af98727327ebc0842221c1547",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-1.margins.npy": "2a99462a7b44066c4f85c513ca5ddd22ea7645ece2f8d57af5b20fea80ef3914",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-1.progress.json": "4de00729d06dbfef3d32c9599259c2a0325656074a3a02a81d27830fb15b85aa",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-1.ubj": "a73a268f8c21a8cfdcc51fb01f87cff059b7db32f575d1bbe058c1635d9a1cf0",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-2.json": "a5135292bf343888897a079067627fc7e0b454a4627efa8e7b11bee9b3a1ac1c",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-2.log": "193764030c5eeb7032c6129595b95aa65da392f3a83b6124aa31e55810f21f4a",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-2.margins.npy": "2a99462a7b44066c4f85c513ca5ddd22ea7645ece2f8d57af5b20fea80ef3914",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-2.progress.json": "a163759d82ba5d971791c2e04999d53ca24b52717cda98ccb73da1a778d45452",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/mps-2.ubj": "a73a268f8c21a8cfdcc51fb01f87cff059b7db32f575d1bbe058c1635d9a1cf0",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32/summary.json": "aad0cbbb0f6e1e733ec9e079d356406cba0b30efe3c39de7de8eb56ed77dfc8d",
+    "results/synthetic-matrix-20261107T025016Z/categorical-1m-32.log": "f7a64532259cd3f86dc5b895009c0a2abbd4f2a434939c27c9aa10eecb8d7b2c",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-0.json": "6d0969cf73b56e2ffdedfa488ce8489119ac801120ff6ad0a033f64488fb4b0f",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-0.log": "fd8125dde5249c06a6416e9364a480576e2a51a520546e87a8bbcc4e153a5561",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-0.margins.npy": "ff3e6737646bcc756f32031a3d0b220990a6663fa8ead2ebda8337a0dadd49f0",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-0.progress.json": "945833b08bbd67093270fc3369702083f09daa34ec8e035a720d4a23eb5c9ede",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-0.ubj": "009e338e919b573d185856dea4126be0d5d61bda835b4f67329db175fb818339",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-1.json": "0461251b4aa76832c4320e5ad80869b4dcf54cc785e76f6634e5356c7cacd35a",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-1.log": "38c983fc989b88ec8478f6d4cbb7b55feaec6e63c4573d583384f1b9c2fd777d",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-1.margins.npy": "ff3e6737646bcc756f32031a3d0b220990a6663fa8ead2ebda8337a0dadd49f0",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-1.progress.json": "16d2421028163096b024eb1ddc43282c474a6c2b3ee7e93438e5089a32045c1a",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-1.ubj": "009e338e919b573d185856dea4126be0d5d61bda835b4f67329db175fb818339",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-2.json": "fa62c9b4e95899d6b80096a440df6595156825757a52712b65c56208de9e4623",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-2.log": "fe46ac7ccb5cc917658afd6fba76757e4d74650c1c1036b123e36c7055a48014",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-2.margins.npy": "ff3e6737646bcc756f32031a3d0b220990a6663fa8ead2ebda8337a0dadd49f0",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-2.progress.json": "89751fb88c3d53080e975226321d7d6ceb660e750dfe064a98b12dea2325baba",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/cpu-2.ubj": "009e338e919b573d185856dea4126be0d5d61bda835b4f67329db175fb818339",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-0.json": "7e91f58e2c140a5b9d0b909df78895478541c011f977eb49f71b9a9c9da1c278",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-0.log": "d6ffd8c1ec4bae470799c1848bd4d060588bebabeee4d9bb3de98a8261e8aa91",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-0.margins.npy": "36705dc98dada47e7b16be4de6a19fd2623e327ae0585be4d54e48269a498c62",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-0.progress.json": "ff7669ebdcb6e99ab2e485335fcfc8aad276ef5ff4800bb3ffba0b821d2ee445",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-0.ubj": "14f68c0a027e4f4740b0ee774d21abb0972e5787866540ed541d9f64d6ec6da7",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-1.json": "bf66dc4ed27ccb5d098cab514b3623fcbf4d04c3531592b8595bb0b519fe056d",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-1.log": "18871d98a37a4eb01cb5d84c2286748f7e45edf5b550a9289c12135c204e9489",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-1.margins.npy": "36705dc98dada47e7b16be4de6a19fd2623e327ae0585be4d54e48269a498c62",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-1.progress.json": "b4800049c29a8dedf98f0c39452340a5e6e08e7787307a1dedd414770f42cae0",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-1.ubj": "14f68c0a027e4f4740b0ee774d21abb0972e5787866540ed541d9f64d6ec6da7",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-2.json": "da0b10344c0f7fc605821c46bdd3428092ab6cd405dc7ed14d566497a22a503f",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-2.log": "ecc3ddf1619fe5f7ee2fab12ca134b72ef33b73102cb0ec454b1a68b1ad31606",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-2.margins.npy": "36705dc98dada47e7b16be4de6a19fd2623e327ae0585be4d54e48269a498c62",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-2.progress.json": "8dffbb85aa460ca31b57af32c086101f3836d19ff00d30fb4b8569d1215957ea",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/mps-2.ubj": "14f68c0a027e4f4740b0ee774d21abb0972e5787866540ed541d9f64d6ec6da7",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32/summary.json": "1b1884b8bcac5ae1ee9c8f5f7412f4b4411bb47f8862c5e9dafc891545ebd967",
+    "results/synthetic-matrix-20261107T025016Z/dense-100k-32.log": "270052ceea63ba77cf3e0c0fc43dce90351daa85fe3e947340ff747da648c1c6",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-0.json": "f7bd390175e8296de5049b6e1eedfb83a93f53b7244554653db23ba628536b47",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-0.log": "f0e43c0fca189bf1df84ae00ff7cb811cbf040a07d75b49335250fd37b40c6e7",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-0.margins.npy": "0b96b6815786344c16a9412b8b6296190f1dd940940f0d26641e5e48b02f62d5",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-0.progress.json": "cdd32bc1bfd19d91a87cef6838b04e75216c84ba6efddc98697e39918d7a4dc6",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-0.ubj": "8830e56cfce0f916a40d562ea9798e14c9d469ed26a069827298705754040b7a",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-1.json": "baf1db6e0046627ea1e166081169fbb29a27d8e892178699e70b2015c49c1411",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-1.log": "237340f199d19315e7113d8d5b9eb8634640293f7c60a0440741e5bfe71f1ff1",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-1.margins.npy": "0b96b6815786344c16a9412b8b6296190f1dd940940f0d26641e5e48b02f62d5",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-1.progress.json": "dfef6ad9b4bb48d54f4e9ff601742ebebd47d320a6e3a51aedcc256b3505c06f",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-1.ubj": "8830e56cfce0f916a40d562ea9798e14c9d469ed26a069827298705754040b7a",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-2.json": "a650a9ac2911ba53dcdb7a25b64d8a203ac2eb61af7eca2d1d190109b656a4a5",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-2.log": "c992473519085bcecc388a95534b6bac1fcfab3f622777611090f92c966f56d4",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-2.margins.npy": "0b96b6815786344c16a9412b8b6296190f1dd940940f0d26641e5e48b02f62d5",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-2.progress.json": "2668ba10dc50ea896c013bda54f5d43dd1887ef9b9e00bb29e938778db797317",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/cpu-2.ubj": "8830e56cfce0f916a40d562ea9798e14c9d469ed26a069827298705754040b7a",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-0.json": "fe4bc9616a83d2c24d0ed542d7f5c45ac2c6fd55a08df4958b6040bf66e9aafe",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-0.log": "b09162fc5187ada110085cbd78582f785c63e095db5835cb7f49f1c2a967d563",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-0.margins.npy": "ec26caeb1b6bc597dcd1230a37d525665295defd6c9c4e8b205792b374809f85",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-0.progress.json": "ae20e0df6941305c8605148d2ad5eb13955513078c218249d398233462a8dcec",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-0.ubj": "5216e9365e018ae3609b2b445e6a62edba47b901990d237c37b3ff2d2ca02485",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-1.json": "98c22a207cce79d8e4bedc3958f41e48f37f2519a193b170b594a747d1f3169a",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-1.log": "1b83c3dd5b64335d688cbcd18396ab12afb30e9c40791eaf9c994cafee864fb6",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-1.margins.npy": "ec26caeb1b6bc597dcd1230a37d525665295defd6c9c4e8b205792b374809f85",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-1.progress.json": "c16a49960fbb4832e05b673973a2e4c00e61e19b5a0b09469cb90de930a85186",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-1.ubj": "5216e9365e018ae3609b2b445e6a62edba47b901990d237c37b3ff2d2ca02485",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-2.json": "c1dcb60a1e253b2268585d3234397d6be9910d5a42fdc2555512e2d36e23a7f5",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-2.log": "8076e5784581de798f0492689f14d2aa60ef1c4e0efdd7ea1df11264b5b049c0",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-2.margins.npy": "ec26caeb1b6bc597dcd1230a37d525665295defd6c9c4e8b205792b374809f85",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-2.progress.json": "92693374edb039bb74d3276f2bb6c618d0755f690e722d45456f8f033e8afbc3",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/mps-2.ubj": "5216e9365e018ae3609b2b445e6a62edba47b901990d237c37b3ff2d2ca02485",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024/summary.json": "1c269f86cd32a7b7fe13b06bfd0cb9aa90ad595409c02ba55dbb685911ae099f",
+    "results/synthetic-matrix-20261107T025016Z/dense-125k-1024.log": "f5bb557501e8a2ae7930153198fe2468012636e1ffb94a51d101272bc59aaf19",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-0.json": "60f64edb2b5ddf30429232f93a249889b4251ca7c8759b370e1c894bcbc5da4a",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-0.log": "40e9f14abbee830e5177521ebeb4ccf02fc0c5121bd797db27eb2ffc3c409a93",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-0.margins.npy": "ab8f06c03563fbb47a6ae534f22b797ea3e596bae671c754569d3530cd0c829c",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-0.progress.json": "1c5846059fdac24a057cd7dbb873924dca2d89f0b82f18fa14e12cbf2f59af95",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-0.ubj": "5589115f772851127bb2554eaba2a120b1f18d3e8cd81753f03949efa2fd2568",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-1.json": "e2332a4a87b8c96a5f9e764af00466a97a6d3411d16a3db7f12c6e0d5132427e",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-1.log": "d53c0ce9f33cd47049e37da285e41dd2720ee3557db9294e3632e6aba4523694",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-1.margins.npy": "ab8f06c03563fbb47a6ae534f22b797ea3e596bae671c754569d3530cd0c829c",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-1.progress.json": "94e16bcf4b49d55cc0af4ec56ce00fe144dea6942cf2064114d3e22c48a67534",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-1.ubj": "5589115f772851127bb2554eaba2a120b1f18d3e8cd81753f03949efa2fd2568",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-2.json": "78d00ce77bfc0c0bb3435dc2a4d68b3cb9d829266aa4470a69e58af10bda55ca",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-2.log": "fc86003f2471007f45c4b6673655f120a996b373410eb5ad7ae186d47d386f4b",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-2.margins.npy": "ab8f06c03563fbb47a6ae534f22b797ea3e596bae671c754569d3530cd0c829c",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-2.progress.json": "43c8cbe559e53c1e08db967a1282b75d7fc512eedffbb9aee72a76b7b1f1ddd2",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/cpu-2.ubj": "5589115f772851127bb2554eaba2a120b1f18d3e8cd81753f03949efa2fd2568",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-0.json": "28cd77002b3063bd6567935cdee71b846e0c8e3886445be8978b3f733e51c6ff",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-0.log": "8c9112e164030c352ea3e86151f4ec7e3127560da25196d56405967e164d40ef",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-0.margins.npy": "dad7cfe5e3482c81a241cee5c89eb6289afc525cac1aba016cc79d51efca5ca9",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-0.progress.json": "76403688dc6e8b2ca5db9386bf705c8ec2f02b66502f2dac06141521b0d08358",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-0.ubj": "c47b14689942ea6effb25fc5ad75ac82c26f4db5ba85a1be1f8f4dbe90a6a5cf",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-1.json": "66e0db492a7de2c22c41e48fbb2a8678319a95e56cefa6bfa300ae8791be4e7d",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-1.log": "309b46fcc9d1b1f2ca7fe63aaf08f4f83980286fa9204c45e4522b7da974004e",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-1.margins.npy": "dad7cfe5e3482c81a241cee5c89eb6289afc525cac1aba016cc79d51efca5ca9",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-1.progress.json": "36d2201c192be53332ce7abf61d0859ea8a2dde8d0b9f59215ff2409d03d49e9",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-1.ubj": "c47b14689942ea6effb25fc5ad75ac82c26f4db5ba85a1be1f8f4dbe90a6a5cf",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-2.json": "c9338163f747b1d5405a5cc52392136ecc8a3e65337a767fb65282adcce6421c",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-2.log": "5e0ec043c878daa4105c784c6f6b8dfa82c5a82d0aef7d49187439d1baab06ad",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-2.margins.npy": "dad7cfe5e3482c81a241cee5c89eb6289afc525cac1aba016cc79d51efca5ca9",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-2.progress.json": "3e52c7307d52e11cafaa925569c3b573ed2fbedb19575c3c3e6bca576a9e433e",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/mps-2.ubj": "c47b14689942ea6effb25fc5ad75ac82c26f4db5ba85a1be1f8f4dbe90a6a5cf",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128/summary.json": "ac6ecbbcfc6dc9491f42cd0bceae901cc9ddb38dc1b8525179cf88a75b4201ee",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-128.log": "344db8af913bf13c4aa1feaac023c5a40a98d38b4b0b6d9aa1d5a84e6ab1c198",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-0.json": "ea09397318491d8c220f722a3a558ad3c61bc5f84354a523c2e53655087b60f5",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-0.log": "a581105ea4158fd0ad7280ef0441f493bfa8cb7b874f05972a5bd104198029c3",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-0.margins.npy": "5066a8a15ef6281b34e6643df87c787f1f3a84ac1bd28cc929172c60dc85bc33",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-0.progress.json": "5d9533b2adefe2dd340cb47757b5e50a15544551619707162e9bcbb73aa6aa6f",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-0.ubj": "c874edfb32c85a828f9bd4347d878909b492c823034fba7d37c35994980a3a00",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-1.json": "c964d92e097c8a21272efdc39e28724996d72bf7e836da9187338ed6c6f8ebee",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-1.log": "c9e47280d3135b6516e6583a1cde2672ad8fabc63e5e7ef0ebb5665a0c1d4cd4",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-1.margins.npy": "5066a8a15ef6281b34e6643df87c787f1f3a84ac1bd28cc929172c60dc85bc33",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-1.progress.json": "8710e4b3f48cbc1e2f07bde90dac996ee1f87f3b039debf2755d2cb040274614",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-1.ubj": "c874edfb32c85a828f9bd4347d878909b492c823034fba7d37c35994980a3a00",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-2.json": "c04d7753f80d88e5f2f6ba64b3c02f7826389f123935e84dfa67c006ce37325c",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-2.log": "f69416d911abfa041e0ac02bc6c83aedf1d38a25a3a4be8128d4f418dc0079fe",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-2.margins.npy": "5066a8a15ef6281b34e6643df87c787f1f3a84ac1bd28cc929172c60dc85bc33",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-2.progress.json": "c1d1753f67d3d8e57a0b580a144e13abc563b5b826a45d629bf27c1eb081d125",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/cpu-2.ubj": "c874edfb32c85a828f9bd4347d878909b492c823034fba7d37c35994980a3a00",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-0.json": "387ded5174a2598368a7af3e183e407b1361631b2ee4f5d43f62d65b89ce1448",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-0.log": "6532fb353f0b7b5e822f3cfd9ab1a80b6e862ddd92cea2a2c50c5ad702d02ac7",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-0.margins.npy": "2f8a04fb06c0253727f794ecc8e66bc06b3b2dea040243bc0087a554154b8847",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-0.progress.json": "a94193bf6c7f797d8786f63a24928bd472f9d1256071782496df2511c41f99b5",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-0.ubj": "337801fab75fb0dd134becc32916c897f553c976f0e7392376fb7e5be39e8b6e",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-1.json": "05aaaca161180a5b08e65d501b9a7339643c5f75d8f60bc5d77fca79f606b8b3",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-1.log": "a8f05213fb93f8b5243537d5a650a5b4de9e23879a0dcea0b4ea1bd493d0ae5e",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-1.margins.npy": "2f8a04fb06c0253727f794ecc8e66bc06b3b2dea040243bc0087a554154b8847",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-1.progress.json": "bc28e816b98a1a8b09a8b541d882d8ce8787f56fe2afea8562fee0c433d959f3",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-1.ubj": "337801fab75fb0dd134becc32916c897f553c976f0e7392376fb7e5be39e8b6e",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-2.json": "657a1f265d48055f6807ff95faee8987b7f7af073bf7050b36b71df018828e4f",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-2.log": "46f68b4c8fbae011f657b6d2e5ac03101407326f4462b57be8fa1898556c76b5",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-2.margins.npy": "2f8a04fb06c0253727f794ecc8e66bc06b3b2dea040243bc0087a554154b8847",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-2.progress.json": "8207349e2bc31f78bec36381259b401a439df8f03c71b37d0d829b1536553c2d",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/mps-2.ubj": "337801fab75fb0dd134becc32916c897f553c976f0e7392376fb7e5be39e8b6e",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32/summary.json": "e56aed93e86bc4feccb2791cc5c7cf6df7b746739f7ab2e395b499215969108c",
+    "results/synthetic-matrix-20261107T025016Z/dense-1m-32.log": "a5757df04c2332d7aa58d72295468e5928c64d92c4a2fc386a6d9cd2ff3b4016",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-0.json": "0be29c755841f0921a895e26927d13d15b42c26ade62b448d96d5d7075942407",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-0.log": "ee53fecdceca8951bb39435e63cc3e0667cb31f0096ab814db589fda4d184a6c",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-0.margins.npy": "e7428afd61f59d8dd0d22666c64790abe47e509fc7ff7dc8e2d0c6acd5071b1d",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-0.progress.json": "fdea16ce92ae8cf0c4f00e040b50b8cafc2a27a6415522ec79619fcc09a2b88f",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-0.ubj": "72445e103791bad5bef6f2390bcd308c054a95f2243a35f55e2687498634da76",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-1.json": "e629e318496e5b755df92c8af4d58e57cd94248e7bb37701ee852396e324e5fd",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-1.log": "a5309246c117fcc00bcabec0205b0fe38d46a461faa141e96d91ab36b58f8d8e",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-1.margins.npy": "e7428afd61f59d8dd0d22666c64790abe47e509fc7ff7dc8e2d0c6acd5071b1d",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-1.progress.json": "bddf43f2dfbc4ca926d744f9aad39c2ef3be85bb413555e7f2c9c77e62c8dafd",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-1.ubj": "72445e103791bad5bef6f2390bcd308c054a95f2243a35f55e2687498634da76",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-2.json": "fa1f9a32fa700d0a88f83446c86bd2475247a294088b374d7539d337d92a07ba",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-2.log": "170b5983436e679f93eaa13dc450c9512b50646e7879f899b87d17707a7cbeca",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-2.margins.npy": "e7428afd61f59d8dd0d22666c64790abe47e509fc7ff7dc8e2d0c6acd5071b1d",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-2.progress.json": "047c14e3ff4b4d7005708b31d56489c68e84d72b0e0a2332a04c096b2c656b57",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/cpu-2.ubj": "72445e103791bad5bef6f2390bcd308c054a95f2243a35f55e2687498634da76",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-0.json": "d046dde978adb5e0040f7b38a76ffb88313d5a929a8f4a86ecd7709936fc59f8",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-0.log": "49b3e6182b7b002135d5c10fa7dc0815dd5adea6481ba831bf62f6069c3cbb65",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-0.margins.npy": "a3c116d549d5c90bef57b940fab4d0f41adce71143de43084e9db135b0b1f7a5",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-0.progress.json": "86283601bcf682c4afa8bd342e60d756301322850f7cf8f426619e64756202de",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-0.ubj": "74fcb6259059512ba2bc1ba7782e9574e643af6f02f3dad597320e2f22073249",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-1.json": "7a07ff2d140e01fd76f5ecc4d34beeb3bbaf99cdf39c77b9df61c7b700e12b7c",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-1.log": "677afd96ff6050b13ca77b0af1d2ddbfbd58b58647eb92cb133a9f5b84016e0b",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-1.margins.npy": "a3c116d549d5c90bef57b940fab4d0f41adce71143de43084e9db135b0b1f7a5",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-1.progress.json": "1c1670aeb59224aea9d5f53de64f340ddde5b5ad376a100406dc196f1ff5c8c7",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-1.ubj": "74fcb6259059512ba2bc1ba7782e9574e643af6f02f3dad597320e2f22073249",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-2.json": "8a93166c9f9ff891377a1e59c0767a71e0fe23633d7f5c6dd435a44c557b3f06",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-2.log": "92301028e675b0bed2c198050e728aafefac6bb46a268412059ae922a8121174",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-2.margins.npy": "a3c116d549d5c90bef57b940fab4d0f41adce71143de43084e9db135b0b1f7a5",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-2.progress.json": "e561318b250f815d6f44e43e144f7745ee23a84811986ea4c01fd35050afbffb",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/mps-2.ubj": "74fcb6259059512ba2bc1ba7782e9574e643af6f02f3dad597320e2f22073249",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512/summary.json": "7b85e802aa95e2361d579a3d6314645a004a55542f676bc8009bd18131ae0898",
+    "results/synthetic-matrix-20261107T025016Z/dense-250k-512.log": "7908c759d930967621f8b211f4c9dcbcceb406c4c93cc6b320a3d88a5fc98ca6",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-0.json": "5e18fa3e15a9d00bc5f99fb4b2ca29d17e91df0fee378097375e073c7cf95973",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-0.log": "a0fdd0395e9bcc629229e3ab2d7efa5a943aa29947a8ba7988a0d9e4c65c1f8f",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-0.margins.npy": "215dc1531eef51066a1740ea5be5b41c861d41a044b22555ca1c2b6a0fd4b4a3",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-0.progress.json": "cba6aa7dd8009f52792f28b5950df9138d69ba7d711a80b4ec22991ab75b9480",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-0.ubj": "4d244ec47bf2ef2ce3540b62e691909570f0548565924bd9358ef91d98582cbf",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-1.json": "db651c181e539800d29a2b03cf243ec8b7d54ea1e539ee798c92a52c8c0300f8",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-1.log": "622f25632b13efa7d4ff25f191c069eabbf5085a72c3be5403bb273ef1cab55b",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-1.margins.npy": "215dc1531eef51066a1740ea5be5b41c861d41a044b22555ca1c2b6a0fd4b4a3",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-1.progress.json": "b102440a9666d7668cc889aea6db2be5643aa320462e16a5440a1cf35ac69d3c",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-1.ubj": "4d244ec47bf2ef2ce3540b62e691909570f0548565924bd9358ef91d98582cbf",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-2.json": "25f9392d7390e28b0defbf04517c0b53f55b1d68f1cc3d72811937e4fee600eb",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-2.log": "707bdcc19405c84166936296bca10b7e96a213d1b1e1e973b2e7c2ffb1b68005",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-2.margins.npy": "215dc1531eef51066a1740ea5be5b41c861d41a044b22555ca1c2b6a0fd4b4a3",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-2.progress.json": "3d312dcda282f493807d57813f7feaedf88d5ee8aa2cb4534b6f343fdb63cbd9",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/cpu-2.ubj": "4d244ec47bf2ef2ce3540b62e691909570f0548565924bd9358ef91d98582cbf",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-0.json": "eebbb186cb7c76d1e487733ed0d8aeec2521b3351820be22f55c749e40f0cef2",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-0.log": "611bbbb5470495cd103f669c9a37989bfb24bb945afb0c98085ba3927229885b",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-0.margins.npy": "509f2b9e136ad0723c020c3f1f1b6f463ab114b751bc9a49540af1b6c188de1b",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-0.progress.json": "34273e813e65732dc47d5ea6f6e11546c64215aa665e56935b66a3f2cdbbff39",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-0.ubj": "3678cd8e44c37bacb1d1f7410e4755e6b3a1d93861a950d7bb999c2e51bdbe24",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-1.json": "497fa55250a3215431b15ce3a34da228eccf4338c3aaa4326ed2628f31182f67",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-1.log": "c8fff786483f455f9c39dfdfe6bdab80eac5ef04b03bdfe6dd4eea5fbe3c1d9b",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-1.margins.npy": "509f2b9e136ad0723c020c3f1f1b6f463ab114b751bc9a49540af1b6c188de1b",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-1.progress.json": "e61f28c0e8d7da5a8da74d8c290a26868090d20ccffc9495dcb2fe1a09d487f3",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-1.ubj": "3678cd8e44c37bacb1d1f7410e4755e6b3a1d93861a950d7bb999c2e51bdbe24",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-2.json": "46414f35b2779d3ed462db4449fe32a77df54de6aa8b4f7875f2b5787841ee09",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-2.log": "bb3e7a8cd451bd451087650c7cf07af9a6e9298141794a90cd11c4917bc66e88",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-2.margins.npy": "509f2b9e136ad0723c020c3f1f1b6f463ab114b751bc9a49540af1b6c188de1b",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-2.progress.json": "5f198b94b83c17ee41e78bd3a1996ed07657bb0db7059eda3daedeed89c10737",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/mps-2.ubj": "3678cd8e44c37bacb1d1f7410e4755e6b3a1d93861a950d7bb999c2e51bdbe24",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32/summary.json": "43c5ce0545dc6c141c00d97f65c6394ea39515631e3801278a6bfd01e4d57aeb",
+    "results/synthetic-matrix-20261107T025016Z/dense-4m-32.log": "c223ed3bf49dea65bbaecdb414fc23604b4586871002c3617a343c379583cc1b",
+    "results/synthetic-matrix-20261107T025016Z/docs.py": "4d4006eb483fa20b2a5f8ecbbe2015e3fb79014ceb304ca71c15f5429831d1e1",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-0.json": "a8409a87674ed8db49c71598bf26790730880f308e31bbfb55c40cee8275d42d",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-0.log": "65ff27bafa3282baa6462780e6548d43cdbea748bcb5e8be455eb41347404aa1",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-0.margins.npy": "a93145c3f61dc12dd81446e8512669eb53f8f9e35fc769bddcaff22ae4c7ca19",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-0.progress.json": "ab416ce2b6f525f84d72e0590c7b1ceaf420e7edba143b8fec771a8ee877be2f",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-0.ubj": "ba2ba88345f2d1c0d072ed683b03b9084f2ba320ea5aa74a0f2351fac9832699",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-1.json": "9e31224d75b6344dda78d29e27bb14025e8b89a0571b924452e12df500e4abd1",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-1.log": "5a4d326ba4d15347219f34d708edb04cd2711273c84ba7d9483c1b1f4a4ac8d1",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-1.margins.npy": "a93145c3f61dc12dd81446e8512669eb53f8f9e35fc769bddcaff22ae4c7ca19",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-1.progress.json": "e2e5a9e1a77e41a47a2c99a4a22a0be4a33e4b8aa700a6e7d7dbf033009f6a7b",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-1.ubj": "ba2ba88345f2d1c0d072ed683b03b9084f2ba320ea5aa74a0f2351fac9832699",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-2.json": "f9eba87617ce0e9882966891156ac511dfe1ee6253998866494c0f0510f62113",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-2.log": "eb62bb66ac9f8fd78c2f2d04c01690d3e56acb322f54efd8482951864739bcc1",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-2.margins.npy": "a93145c3f61dc12dd81446e8512669eb53f8f9e35fc769bddcaff22ae4c7ca19",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-2.progress.json": "a7a1f4b18639eb37e3cfa7bf6e6329154c608bb2df76f5b4108ce6b74f85076a",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/cpu-2.ubj": "ba2ba88345f2d1c0d072ed683b03b9084f2ba320ea5aa74a0f2351fac9832699",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-0.json": "09023892a6dbd91abed16a1373dd0bc989c40f478373ae56a0ae0483d04303ba",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-0.log": "f5895498964d4fc51cee199e0260669c455b7c3784242fe31f8a8b7565ba2c79",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-0.margins.npy": "f8a8e0c3ec67c9350106e87cfa8e72e13917ec9a8a91fd6a9b22bae1539891f9",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-0.progress.json": "e63218c903dd3ae94bdb73d14ddc1f7c90f10ac3809831d7b4823ee9d49ef6cc",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-0.ubj": "df65ce1dd0386e77938b62a60900a26915b189e087826ee0ba0e9d8d65aa2d04",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-1.json": "2a6fd1f5c94a197b480b55a5e94f382a70b612f372082fa3c56160c88f5e4455",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-1.log": "3e39cc659e929e025efc0997b1d696ba1a56da9a07b0e13fe0ef195bf6cb19ef",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-1.margins.npy": "f8a8e0c3ec67c9350106e87cfa8e72e13917ec9a8a91fd6a9b22bae1539891f9",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-1.progress.json": "96655b5c28e59e1d5fb127fbf237479f5e933f69025a5e8bc59f9f6cd40dda5a",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-1.ubj": "df65ce1dd0386e77938b62a60900a26915b189e087826ee0ba0e9d8d65aa2d04",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-2.json": "b6dfafa075df46e2a9298bf21dbc44b5b0843777642739f11045cbe1e4610377",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-2.log": "ae5b3510ad81eb106f1195509280c602bf74ac49d0d58c6b122d04485e8c74b1",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-2.margins.npy": "f8a8e0c3ec67c9350106e87cfa8e72e13917ec9a8a91fd6a9b22bae1539891f9",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-2.progress.json": "358329ff021afe88aac7d9470cfc327d88041b1fb4c34acb863c187ee4725d5e",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/mps-2.ubj": "df65ce1dd0386e77938b62a60900a26915b189e087826ee0ba0e9d8d65aa2d04",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128/summary.json": "ac78f109ac51bec1d287530ea8783b71be6562193b02baddd525ebb60ca0564e",
+    "results/synthetic-matrix-20261107T025016Z/missing-1m-128.log": "550c27e8cc072ce22ecc7518c5ef02c266ea1eaaed33ff32b827680413f59bb8",
+    "results/synthetic-matrix-20261107T025016Z/record.py": "66bde4467d7d9ec0397f06408d5eac987c2efa59cf60592e001ef44a8e522a9e",
+    "results/synthetic-matrix-20261107T025016Z/run.log": "7371b1e1b4075cf30a96a6d73dd497115b3fcc4745aeadbe21bf8ccd53c1d32a",
+    "results/synthetic-matrix-20261107T025016Z/run.py": "617606903dcf21bc203b765b79c6149680feb0d83d20adba697251481e9f226b",
+    "results/synthetic-matrix-20261107T025016Z/summary.json": "c5db8083f74f4ae7217ba3eff56faddd2b1f707d451ff7c9e99b43fc139332d2"
+  }
+}
