@@ -201,8 +201,10 @@ def worker(args):
     np.save(path.with_suffix(".margins.npy"), margins)
     model.save_model(path.with_suffix(".ubj"))
     if args.worker == "mps":
-        model.set_param({"device": "cpu"})
-        np.testing.assert_array_equal(model.predict(test, output_margin=True), margins)
+        # Reload to force CPU traversal with an empty prediction cache.
+        cpu_model = xgb.Booster(model_file=path.with_suffix(".ubj"))
+        cpu_model.set_param({"device": "cpu", "nthread": args.threads})
+        np.testing.assert_array_equal(cpu_model.predict(test, output_margin=True), margins)
     z = margins.astype(np.float64)
     if margins.ndim == 1:
         classes = margins > 0
@@ -221,6 +223,7 @@ def worker(args):
         "loading_seconds": loading_seconds, "dmatrix_seconds": setup_seconds,
         "training_seconds": training_seconds, "wall_seconds": wall_seconds,
         "prediction_seconds": prediction_seconds, "metric_history": history,
+        "same_model_cpu_inference_exact": True if args.worker == "mps" else None,
         "test_accuracy": float(np.mean(classes == test_y)),
         "test_logloss": float(np.mean(loss)),
         "memory": {"before": memory_before, "after": memory_snapshot()},

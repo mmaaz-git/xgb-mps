@@ -69,22 +69,23 @@ focused checks and evidence. CUDA CI compiles; it does not execute NVIDIA kernel
 ## Performance
 
 Three-repeat medians on an **Apple M3, 10-core GPU, 16 GB RAM**, using eight CPU
-threads and 100 training rounds:
+threads and 100 training rounds. Rerun on November 7, 2026, with backend `614f15a`:
 
-| Workload | CPU | MPS |
-| --- | ---: | ---: |
-| 125K × 1,024, dense | 23.57 s | 14.17 s |
-| 25K × 4,096, dense | 37.92 s | 27.01 s |
-| HIGGS, 10.5M × 28 | 39.66 s | 32.33 s |
-| 1M × 128, dense | 14.87 s | 12.55 s |
-| 25K × 1,024, 20% missing | 14.73 s | 24.60 s |
+| Training data | CPU median | MPS median | CPU / MPS |
+| --- | ---: | ---: | ---: |
+| 125K × 1,024, dense | 23.52 s | 15.23 s | 1.54× |
+| 25K × 4,096, dense | 39.65 s | 29.45 s | 1.35× |
+| HIGGS, 10.5M × 28 | 38.33 s | 34.25 s | 1.12× |
+| 1M × 128, dense | 9.61 s | 9.03 s | 1.06× |
+| 25K × 1,024, 20% missing | 15.88 s | 26.40 s | 0.60× |
 
-MPS is faster on some workloads; CPU wins on others. Timings include quantization
-and held-out evaluation after runtime warmup. CPU/MPS training can produce
-different models. This was a busy machine; other applications and system paging
-were not controlled.
-[Full results and reproduction commands](docs/PUBLISHED_BENCHMARKS.md) include all
-repeats, quality comparisons, wider datasets and physical-memory measurements.
+Ratios above 1 favor MPS. CPU wins on smaller cases, missing-value cases and
+Covertype in this survey. Timings include quantization and held-out evaluation
+after runtime warmup; matrix setup is reported separately. Independently trained
+CPU/MPS models can differ. Other applications and system paging were not controlled.
+[All 14 workloads and reproduction commands](docs/PUBLISHED_BENCHMARKS.md)
+include every repeat, quality comparisons, full-length HIGGS/Covertype runs and
+physical-memory measurements.
 
 ## Repository guide
 

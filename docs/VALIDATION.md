@@ -7,6 +7,13 @@ outside the checkout. All before/after MPS benchmark models, margins and metrics
 were exact. [Commands, source/library hashes and results](../validation/wide-quality-and-performance-m3.json)
 are revision-specific; later code changes require appropriate new checks.
 
+The [November 7 benchmark rerun](../validation/benchmark-refresh-m3.json) uses the
+same backend: 84 accepted training runs plus six physical-memory diagnostics,
+with exact same-device repeats and fresh CPU inference of each saved MPS model.
+Both benchmark drivers now reload models to prevent prediction-cache reuse.
+Six focused checks passed, including categorical and shared-cut inputs. The full
+regression result above remains the latest full-suite run.
+
 ## Run checks
 
 The canonical runner builds first and recompiles selected native tests. Its

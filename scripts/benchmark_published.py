@@ -157,6 +157,13 @@ def worker(args):
     np.save(args.output.with_suffix(".margins.npy"), margins)
     np.save(args.output.with_suffix(".classes.npy"), classes)
     model.save_model(args.output.with_suffix(".ubj"))
+    if device == "mps":
+        # Reload to force CPU traversal with an empty prediction cache.
+        cpu_model = xgb.Booster(model_file=args.output.with_suffix(".ubj"))
+        cpu_model.set_param({"device": "cpu", "nthread": args.threads})
+        np.testing.assert_array_equal(
+            cpu_model.predict(matrices["test"], output_margin=True), margins)
+        report["same_model_cpu_inference_exact"] = True
     report["status"] = "complete"
     write_json(args.output, report)
     print(f"{device}: train {elapsed:.3f}s; DMatrix {setup:.3f}s; accuracy {report['test_accuracy']:.6f}", flush=True)
