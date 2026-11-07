@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
+#include <memory>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -251,13 +253,18 @@ void Sketches(Context const& ctx, int rank, int world, unsigned mode, unsigned l
   }
 }
 
-void Disconnect(Context const& ctx, int rank, bool root) {
+std::unique_ptr<metal::VectorBuffer> PrepareDisconnect() {
+  auto data = metal::MakeVectorBuffer();
+  data->Resize(4097);
+  std::byte marker{0x37};
+  data->Fill({&marker, 1}, 0, data->SizeBytes());
+  return data;
+}
+void Disconnect(Context const& ctx, int rank, bool root,
+                std::unique_ptr<metal::VectorBuffer> prepared) {
   current = root ? "AllreduceV broadcast disconnect" : "AllreduceV receive disconnect";
   {
-    auto data = metal::MakeVectorBuffer();
-    data->Resize(4097);
-    std::byte marker{0x37};
-    data->Fill({&marker, 1}, 0, data->SizeBytes());
+    auto data = prepared ? std::move(prepared) : PrepareDisconnect();
     coll::metal_impl::AllreduceVScratch scratch;
     int ready = 1;
     auto cpu = ctx.MakeCPU();
@@ -284,14 +291,25 @@ void Disconnect(Context const& ctx, int rank, bool root) {
 int main(int argc, char** argv) {
   try {
     Check(argc == 2 || argc == 3, "Communicator JSON required");
-    Api(XGCommunicatorInit(argv[1]));
+    std::string config = argv[1];
+    std::unique_ptr<metal::VectorBuffer> prepared;
+    if (config == "-") {
+      Check(argc == 3, "Deferred configuration is only for disconnect checks");
+      // GPU initialization can exceed the short fault-injection deadline. The
+      // launcher starts the tracker only after every worker owns its payload.
+      prepared = PrepareDisconnect();
+      std::puts("READY sketch disconnect");
+      std::fflush(stdout);
+      Check(bool(std::getline(std::cin, config)), "Missing communicator configuration");
+    }
+    Api(XGCommunicatorInit(config.c_str()));
     int rank = XGCommunicatorGetRank(), world = XGCommunicatorGetWorldSize();
     Context ctx;
     ctx.UpdateAllowUnknown(Args{{"device", "mps"}, {"nthread", "2"}});
     federated = coll::GlobalCommGroup()->Ctx(&ctx, DeviceOrd::MPS()).IsFederated();
     if (argc == 3) {
       Check(world == 2, "Disconnect test needs 2 workers");
-      Disconnect(ctx, rank, std::string(argv[2]) == "--disconnect-root");
+      Disconnect(ctx, rank, std::string(argv[2]) == "--disconnect-root", std::move(prepared));
       return 0;
     }
     Variable(ctx, rank, world);
