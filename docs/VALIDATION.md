@@ -1,10 +1,10 @@
 # Testing and validation
 
-The latest backend run (`61b2042`) passed **106 native groups and 4,001 Python
+The latest backend run (`614f15a`) passed **106 native groups and 4,003 Python
 tests**, with two expected skips: no-GPU behavior on a machine with a GPU, and
 Linux-only loader behavior on macOS. Three installed-wheel workflows also passed
 outside the checkout. All before/after MPS benchmark models, margins and metrics
-were exact. [Commands, source/library hashes and results](../validation/missing-and-memory-m3.json)
+were exact. [Commands, source/library hashes and results](../validation/wide-quality-and-performance-m3.json)
 are revision-specific; later code changes require appropriate new checks.
 
 ## Run checks

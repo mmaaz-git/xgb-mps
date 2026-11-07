@@ -5,42 +5,75 @@ Measurements below use an Apple M3 with a 10-core GPU, eight CPU cores and
 not a general GPU advantage; unrelated applications, temperature and system-wide
 paging were not controlled. Do not combine ratios from different sessions.
 
-## Missing-value and memory optimization (M3)
+## Wide-data optimization (M3)
 
-Backend `61b2042`: **45 fresh-process runs**, three each of CPU, previous MPS
-(`c33c56c`) and current MPS per workload, with rotated execution order. All use
-100 rounds, depth 6, 256 bins and eight threads. Runtime is warmed. Training
-includes quantization and held-out evaluation; loading, matrix construction and
-final prediction are timed separately. No project builds or tests overlapped.
-[Complete timings, commands, hashes and checks](../validation/missing-and-memory-m3.json).
+Backend `614f15a`: **45 fresh-process runs**, three each of CPU, previous MPS
+(`61b2042`, also the backend at `f12489d`) and current MPS per workload, with
+rotated execution order. All use 100 rounds, depth 6, 256 bins and eight threads.
+Training includes quantization and held-out evaluation after runtime warmup;
+loading, matrix construction and final prediction are separate. No project builds
+or tests overlapped. The machine was busy with other applications and substantial
+paging, so these are local observations, not controlled hardware comparisons.
+[Every timing, command, source/library hash and check](../validation/wide-quality-and-performance-m3.json).
 
 | Training data | CPU median | MPS median | CPU / MPS |
 | --- | ---: | ---: | ---: |
-| 1M × 128, 20% missing | 10.135 s | 12.153 s | 0.83× |
-| 1M × 128, dense | 9.966 s | 8.575 s | 1.16× |
-| 25K × 4,096, dense | 33.684 s | 35.805 s | 0.94× |
-| 1M × 128, 80% missing | 5.073 s | 7.577 s | 0.67× |
-| HIGGS, 10.5M × 28 | 29.908 s | 26.735 s | 1.12× |
+| 25K × 4,096, dense | 37.92 s | 27.01 s | 1.40× |
+| 125K × 1,024, dense | 23.57 s | 14.17 s | 1.66× |
+| 25K × 1,024, 20% missing | 14.73 s | 24.60 s | 0.60× |
+| 1M × 128, dense | 14.87 s | 12.55 s | 1.19× |
+| HIGGS, 10.5M × 28 | 39.66 s | 32.33 s | 1.23× |
 
-Missing-data MPS time fell from **18.62 to 12.15 s (34.7%)** in the paired
-comparison; CPU remains faster. Synthetic cases use a fixed seed, noisy logistic
-targets and 16 informative columns spread across the matrix, or 64 for the wide
-case. Missing values are added after generating labels. HIGGS uses the first
-10.5M rows for training and the last 500K for testing, `binary:logitraw`,
-`eval_metric="error"`, learning rate 0.3 and base score 0.5.
+MPS uses conservative bounds to skip features that cannot win, and reads scalar
+histograms directly from their GPU cache. In this paired comparison, the
+4,096-column MPS median fell from **42.68 to 27.01 s (36.7%)**; the
+1,024-column dense case fell from **17.85 to 14.17 s (20.6%)**.
 
-All 30 MPS runs reproduce the baseline model bytes, margins and every-round
-metrics exactly; CPU inference of each MPS-trained model is also exact.
-Independently trained CPU/MPS models differ. Held-out quality is retained here
-so a timing improvement is not mistaken for numerical equivalence:
+The narrow controls did not improve: 128-column dense MPS medians were
+**12.48 → 12.55 s**; HIGGS was **29.96 → 32.33 s (7.9% slower by median)**.
+Two HIGGS pairs improved and one regressed; all repeats are retained, and no
+HIGGS speed improvement is claimed from this busy-machine session.
+
+All 30 MPS runs reproduce the previous model bytes, margins and every-round
+metrics exactly. CPU inference of each MPS model is also exact.
+
+Synthetic cases use a fixed seed, noisy logistic targets and 16 informative
+columns spread across the matrix, or 64 for the 4,096-column case. Missing values
+are added after generating labels. HIGGS uses the first 10.5M rows for training
+and the last 500K for testing, `binary:logitraw`, `eval_metric="error"`, learning
+rate 0.3 and base score 0.5. Independently trained CPU/MPS models differ:
 
 | Workload | CPU accuracy / log loss | MPS accuracy / log loss |
 | --- | ---: | ---: |
-| 1M × 128, 20% missing | 0.7313 / 0.5272 | 0.7321 / 0.5275 |
-| 1M × 128, dense | 0.7710 / 0.4735 | 0.7706 / 0.4738 |
 | 25K × 4,096, dense | 0.7036 / 0.5963 | 0.6848 / 0.5873 |
-| 1M × 128, 80% missing | 0.6014 / 0.6569 | 0.6011 / 0.6574 |
+| 125K × 1,024, dense | 0.7494 / 0.4995 | 0.7554 / 0.4928 |
+| 25K × 1,024, 20% missing | 0.6956 / 0.6023 | 0.6972 / 0.6024 |
+| 1M × 128, dense | 0.7710 / 0.4735 | 0.7706 / 0.4738 |
 | HIGGS, 10.5M × 28 | 0.7415 / 0.5113 | 0.7422 / 0.5110 |
+
+Earlier three-repeat measurements on `61b2042` remain relevant for narrower
+missing-data cases: **1M × 128, 20% missing: CPU 10.13 s / MPS 12.15 s**;
+**80% missing: CPU 5.07 s / MPS 7.58 s**. Those shapes were not retimed here.
+[Earlier missing-data evidence](../validation/missing-and-memory-m3.json).
+
+### Wide-data quality diagnosis
+
+For the 25K × 4,096 workload above, the first CPU/MPS difference is already at
+tree 0's root: feature 585, threshold −0.3399919 versus −0.33969516. Replaying
+100 rounds with identical cuts in both directions isolates the cause:
+
+| Cuts shared by CPU and MPS | CPU accuracy / log loss | MPS accuracy / log loss | Maximum margin difference |
+| --- | ---: | ---: | ---: |
+| CPU cuts | 0.7036 / 0.5963 | 0.7036 / 0.5963 | 4.77e-7 |
+| MPS cuts | 0.6848 / 0.5873 | 0.6848 / 0.5873 | 4.77e-7 |
+
+All split features, thresholds and missing directions match across all 100 trees
+with either shared cut set; only small leaf-weight rounding differences remain.
+Every one of the **1,052,672 MPS cuts** matches the independent CUDA-source sketch
+reference evaluated on CPU. This explains this workload's difference through
+quantization, without substituting CPU cuts in production. It is not an NVIDIA
+execution comparison. Accuracy and log loss favor different independently
+trained models here. [Diagnosis, cut-reference hashes and comparisons](../validation/wide-quality-and-performance-m3.json).
 
 ### Physical memory
 
@@ -51,14 +84,13 @@ short allocations; these are different measurements.
 
 | Median peak | Previous MPS | Current MPS |
 | --- | ---: | ---: |
-| Physical memory | 6,587.9 MiB | 6,182.7 MiB |
-| Sampled Metal allocation | 5,605.6 MiB | 4,553.5 MiB |
+| Physical memory | 6,318.5 MiB | 5,893.3 MiB |
+| Sampled Metal allocation | 4,553.5 MiB | 4,298.0 MiB |
 
-Physical peak fell **6.2%** and all six diagnostic outputs match exactly.
-Reusing sketch scratch reduced temporary allocation; tree construction now sets
-the peak. The 100-round wide-data training median was **6.1% slower**
-(35.80 versus 33.73 s), so this memory saving is not a speed improvement.
-Individual repeats, setup costs and phase samples are in the evidence record.
+Physical peak fell **6.7%** and all six diagnostic outputs match exactly.
+Direct scalar histogram reads remove a temporary gathered copy; they do not
+modify the cached histogram. Individual repeats and system-memory observations
+are retained in the evidence record.
 
 ## Synthetic workload survey (M3)
 
@@ -93,8 +125,8 @@ GPU timing counters may overlap and must not be added as wall time.
 .venv/bin/python scripts/prepare_published_data.py higgs covtype
 .venv/bin/python scripts/profile_training.py --case higgs --rounds 100 \
   --threads 8 --repeats 3 --output results/profile-higgs-100
-.venv/bin/python scripts/profile_training.py --case wide --rows 1000000 \
-  --features 128 --informative-features 16 --missing-fraction 0.2 \
+.venv/bin/python scripts/profile_training.py --case wide --rows 25000 \
+  --features 1024 --informative-features 16 --missing-fraction 0.2 \
   --rounds 100 --threads 8 --repeats 3 --output results/profile-missing
 .venv/bin/python scripts/profile_training.py --case wide --rows 25000 \
   --features 4096 --informative-features 64 --rounds 100 --threads 8 \
@@ -108,6 +140,12 @@ The isolated [sparse histogram profiler](../scripts/metal_sparse_histogram_bench
 includes build/run instructions and checks every timed output against exact
 CPU integer sums. Other `scripts/metal_*_benchmark.mm` tools isolate individual
 operations; their explicit kernel choices do not represent production dispatch.
+
+To isolate cut construction from numeric tree training, add `--cut-device cpu`
+or `--cut-device mps` to a profiler command. This exports the shared cuts and
+compares saved trees as well as predictions. It is a correctness diagnostic:
+quantization moves into setup, so its training times are not comparable with the
+ordinary benchmarks above.
 
 ## Published workloads and earlier evidence
 

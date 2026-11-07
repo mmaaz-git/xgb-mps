@@ -66,9 +66,11 @@ separate hardware evidence requirement.
    tree-construction storage remain substantial. Require paired whole-training
    controls, unchanged benchmark outputs and physical-memory measurements;
    [current benchmarks](PUBLISHED_BENCHMARKS.md) include CPU wins and regressions.
-2. **Broaden correctness evidence.** Investigate the existing wide CPU/MPS training
-   difference using common cuts; execute shared fixtures on NVIDIA and validate
-   other Apple hardware and real multi-host operation.
+2. **Broaden correctness evidence.** Execute shared fixtures on NVIDIA and validate
+   other Apple hardware and real multi-host operation. The measured wide CPU/MPS
+   difference is explained by quantile cuts: with common cuts, all 100 trees have
+   identical split structure and margins differ by at most 4.77e-7. See the
+   [wide-data diagnosis](PUBLISHED_BENCHMARKS.md#wide-data-quality-diagnosis).
 
 Preserve algorithms, precision, ownership and test tolerances. Large profiling
 workloads belong in scripts, separate from correctness tests. No broad rewrite

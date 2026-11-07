@@ -29,8 +29,9 @@ Operations generally wait before returning. Borrowed inputs must survive to
 completion; asynchronous work requires a separate readiness/lifetime contract.
 Packed host input owns its copied payload and zero-fills only alignment padding.
 Resident feature splits complete once for allocation/error readback, then again
-after task construction, gathering, scoring and winner extraction. Nodes share
-encoders within each stage; integer and precise parent staging remain separate.
+after task construction, scoring and winner extraction. Scalar splits read
+immutable histogram-cache segments directly; vector splits gather/interleave
+targets. Nodes share encoders; integer and precise parent staging remain separate.
 
 ## Python interoperability
 
@@ -52,6 +53,13 @@ First-page histograms write directly into contiguous integer-cache output slots,
 clear only that range, then materialize binary64 views. Later pages and
 discontiguous destinations retain staging/store-add paths so existing cache
 entries survive. Integer sums and quantization scales remain authoritative.
+
+Wide scalar split batches (at least 1,024 columns and 4,096 feature tasks) first
+compute conservative raw-gain intervals. A feature is skipped only if its upper
+bound is strictly below another feature's lower bound for that node. Missing,
+constrained and uncertain cases retain exhaustive evaluation; ties survive.
+This removes losing software-binary64 evaluations without changing cut values,
+gain arithmetic or adding a host readback.
 
 Moderately missing compressed pages use shared histograms over **2,048 global
 bins**, with exact two-word integer accumulation. Eligibility requires 128–256

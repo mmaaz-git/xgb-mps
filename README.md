@@ -61,7 +61,7 @@ bash scripts/test.sh --python tests/test_metal_workflows.py
 bash scripts/test.sh --full
 ```
 
-The latest backend (`61b2042`) passed **106 native groups and 4,001 Python tests**,
+The latest backend (`614f15a`) passed **106 native groups and 4,003 Python tests**,
 with two expected skips, plus three installed-wheel workflows outside the checkout.
 The runner builds first. [Validation](docs/VALIDATION.md) describes dependencies,
 focused checks and evidence. CUDA CI compiles; it does not execute NVIDIA kernels.
@@ -73,13 +73,16 @@ threads and 100 training rounds:
 
 | Workload | CPU | MPS |
 | --- | ---: | ---: |
-| HIGGS, 10.5M × 28 | 29.91 s | 26.74 s |
-| Synthetic, 1M × 128, dense | 9.97 s | 8.57 s |
-| Synthetic, 1M × 128, 20% missing | 10.13 s | 12.15 s |
+| 125K × 1,024, dense | 23.57 s | 14.17 s |
+| 25K × 4,096, dense | 37.92 s | 27.01 s |
+| HIGGS, 10.5M × 28 | 39.66 s | 32.33 s |
+| 1M × 128, dense | 14.87 s | 12.55 s |
+| 25K × 1,024, 20% missing | 14.73 s | 24.60 s |
 
 MPS is faster on some workloads; CPU wins on others. Timings include quantization
 and held-out evaluation after runtime warmup. CPU/MPS training can produce
-different models, and other applications and system paging were not controlled.
+different models. This was a busy machine; other applications and system paging
+were not controlled.
 [Full results and reproduction commands](docs/PUBLISHED_BENCHMARKS.md) include all
 repeats, quality comparisons, wider datasets and physical-memory measurements.
 
