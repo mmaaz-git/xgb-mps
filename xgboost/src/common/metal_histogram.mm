@@ -233,6 +233,7 @@ struct Params {
   std::uint32_t n_bins, n_features, bin_bytes, dense, n_nodes, padding, rows_per_lane;
 };
 static_assert(sizeof(Params) == 56);
+constexpr std::uint32_t kSparseHistogramBins = 2048;
 struct QuantizedPair {
   std::int64_t grad, hess;
 };
@@ -352,7 +353,7 @@ class Runtime {
   id<MTLComputePipelineState> snappy_compress_pipeline, snappy_decompress_pipeline;
   id<MTLComputePipelineState> ellpack_histogram_pipeline, ellpack_shared_histogram_pipeline,
       ellpack_tiled_histogram_pipeline, ellpack_sparse_histogram_pipeline,
-      ellpack_partition_pipeline, ellpack_input_pipeline;
+      ellpack_sparse_starts_pipeline, ellpack_partition_pipeline, ellpack_input_pipeline;
   id<MTLComputePipelineState> adapter_count_pipeline, adapter_scatter_pipeline,
       adapter_offsets_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
@@ -471,6 +472,7 @@ class Runtime {
       ellpack_shared_histogram_pipeline = make_pipeline(@"xgb_histogram_dense_shared_ellpack");
       ellpack_tiled_histogram_pipeline = make_pipeline(@"xgb_histogram_dense_tiled_ellpack");
       ellpack_sparse_histogram_pipeline = make_pipeline(@"xgb_histogram_sparse_shared_ellpack");
+      ellpack_sparse_starts_pipeline = make_pipeline(@"xgb_histogram_sparse_starts");
       ellpack_partition_pipeline = make_pipeline(@"xgb_partition_classify_ellpack");
       ellpack_input_pipeline = make_pipeline(@"xgb_prepare_ellpack_input");
       adapter_count_pipeline = make_pipeline(@"xgb_adapter_count");
@@ -842,6 +844,8 @@ static_assert(sizeof(CompressedParams) == 32);
 class Page final : public QuantizedPage {
   id<MTLBuffer> partition_index_;
   std::once_flag partition_index_once_;
+  id<MTLBuffer> sparse_starts_;
+  std::once_flag sparse_starts_once_;
 
  public:
   id<MTLBuffer> index, row_ptr, offsets, cuts;
@@ -849,6 +853,46 @@ class Page final : public QuantizedPage {
   CompressedParams compressed{};
   std::size_t compressed_bytes{0};
   bool IsCompressed() const { return compressed.bits != 0; }
+  id<MTLBuffer> SparseHistogramStarts(Runtime const& rt, std::size_t rows, std::size_t bins) {
+    CHECK(IsCompressed() && !compressed.dense && compressed.stride < compressed.features);
+    CHECK_LE(compressed.stride, std::numeric_limits<std::uint8_t>::max());
+    auto ranges = (bins + kSparseHistogramBins - 1) / kSparseHistogramBins;
+    auto budget = std::min<std::size_t>({std::size_t{64} << 20,
+                                       rt.device.recommendedMaxWorkingSetSize / 128,
+                                       rt.device.maxBufferLength});
+    if (!ranges || rows > std::numeric_limits<std::uint32_t>::max() ||
+        rows > budget / ranges) return nil;
+    // A byte per range and row replaces repeated searches without expanding
+    // the canonical bins. The page owns this bounded cache; concurrent first
+    // readers wait for GPU completion before observing it.
+    std::call_once(sparse_starts_once_, [&] {
+      auto output = Allocate(rt, rows * ranges);
+      Params p{rows, 0, rows, static_cast<std::uint32_t>(bins), compressed.features,
+               0, 0, 0, kSparseHistogramBins, 0};
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      auto encoder = [command computeCommandEncoder];
+      CHECK(encoder);
+      [encoder setComputePipelineState:rt.ellpack_sparse_starts_pipeline];
+      [encoder setBuffer:index offset:0 atIndex:0];
+      [encoder setBuffer:tail offset:0 atIndex:1];
+      [encoder setBytes:&compressed length:sizeof(compressed) atIndex:2];
+      [encoder setBytes:&p length:sizeof(p) atIndex:3];
+      [encoder setBuffer:output offset:0 atIndex:4];
+      [encoder dispatchThreads:MTLSizeMake(rows, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [encoder endEncoding];
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      auto elapsed = command.GPUEndTime - command.GPUStartTime;
+      if (elapsed > 0)
+        index_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                    std::memory_order_relaxed);
+      sparse_starts_ = output;
+    });
+    return sparse_starts_;
+  }
   id<MTLBuffer> PartitionIndex(Runtime const& rt, std::size_t rows) {
     // Large, narrow dense pages repeatedly gather one feature per row during
     // partitioning. A column cache improves locality without changing the
@@ -2031,25 +2075,27 @@ class MetalHistogram final : public Histogram {
       // atomics for large, moderately missing pages. Keep highly sparse, wide
       // and small populations on the existing path: repeated range searches
       // cost more there. These bounds cover the measured 128-column workload.
-      constexpr std::size_t kSparseBins = 2048;
       auto const& compressed = page->compressed;
       bool use_sparse = page->IsCompressed() && !compressed.dense &&
                         compressed.stride < params.n_features &&
                         params.n_features >= 128 && params.n_features <= 256 &&
                         compressed.stride >= (params.n_features * 3 + 3) / 4 &&
                         total_rows >= 65536 && bins >= 16384 && bins <= 65536 &&
-                        kSparseBins * sizeof(QuantizedPair) <= rt_.device.maxThreadgroupMemoryLength;
+                        kSparseHistogramBins * sizeof(QuantizedPair) <=
+                            rt_.device.maxThreadgroupMemoryLength;
       auto pipeline = page->IsCompressed() ? (use_shared ? rt_.ellpack_shared_histogram_pipeline
                                                          : rt_.ellpack_histogram_pipeline)
                                            : (use_shared ? rt_.shared_pipeline : rt_.pipeline);
       if (use_tiled) pipeline = rt_.ellpack_tiled_histogram_pipeline;
       auto groups = (params.n_features + features_per_group - 1) / features_per_group;
+      id<MTLBuffer> sparse_starts = nil;
       if (use_sparse) {
+        sparse_starts = page->SparseHistogramStarts(rt_, gidx.Size(), bins);
         use_shared = true;
-        shared_bytes = kSparseBins * sizeof(QuantizedPair);
-        params.padding = kSparseBins;
+        shared_bytes = kSparseHistogramBins * sizeof(QuantizedPair);
+        params.padding = kSparseHistogramBins;
         params.rows_per_lane = 32;
-        groups = (bins + kSparseBins - 1) / kSparseBins;
+        groups = (bins + kSparseHistogramBins - 1) / kSparseHistogramBins;
         pipeline = rt_.ellpack_sparse_histogram_pipeline;
       }
       [encoder setComputePipelineState:pipeline];
@@ -2067,6 +2113,11 @@ class MetalHistogram final : public Histogram {
         auto slot = use_shared ? 10u : 9u;
         [encoder setBuffer:page->tail offset:0 atIndex:slot];
         [encoder setBytes:&page->compressed length:sizeof(page->compressed) atIndex:slot + 1];
+      }
+      if (use_sparse) {
+        std::uint32_t cached = sparse_starts != nil;
+        [encoder setBuffer:(sparse_starts ? sparse_starts : page->index) offset:0 atIndex:12];
+        [encoder setBytes:&cached length:sizeof(cached) atIndex:13];
       }
       if (use_shared) {
         [encoder setThreadgroupMemoryLength:shared_bytes atIndex:0];

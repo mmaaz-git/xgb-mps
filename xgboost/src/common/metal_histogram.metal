@@ -341,6 +341,26 @@ kernel void xgb_histogram_dense_tiled_ellpack(
   }
 }
 
+// Cache sorted-row lower bounds in a byte per range and row. Host eligibility
+// requires stride <= 255. Column-major positions keep neighboring rows together.
+kernel void xgb_histogram_sparse_starts(
+    device const uchar* head [[buffer(0)]], device const uchar* tail [[buffer(1)]],
+    constant CompressedParams& c [[buffer(2)]], constant HistogramParams& p [[buffer(3)]],
+    device uchar* starts [[buffer(4)]], uint row [[thread_position_in_grid]]) {
+  if (ulong(row) >= p.page_rows) return;
+  for (uint tile = 0; tile < (p.n_bins + p.padding - 1) / p.padding; ++tile) {
+    uint first_bin = tile * p.padding, lo = 0, hi = c.stride;
+    while (lo < hi) {
+      uint mid = lo + (hi - lo) / 2;
+      if (xgb_ellpack_read(head, tail, c.split, ulong(row) * c.stride + mid, c.bits) < first_bin)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    starts[ulong(tile) * p.page_rows + row] = uchar(lo);
+  }
+}
+
 // Privatize a range of global ELLPACK bins for moderately missing pages.
 // Rows contain sorted global bins followed by null padding (n_bins). Binary
 // search locates the range; every valid entry belongs to exactly one group.
@@ -352,6 +372,7 @@ kernel void xgb_histogram_sparse_shared_ellpack(
     constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
     device const ulong* row_begin [[buffer(8)]], device const ulong* block_ptr [[buffer(9)]],
     device const uchar* tail [[buffer(10)]], constant CompressedParams& c [[buffer(11)]],
+    device const uchar* starts [[buffer(12)]], constant uint& cached [[buffer(13)]],
     threadgroup atomic_uint* local_hist [[threadgroup(0)]],
     uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
     uint3 threads [[threads_per_threadgroup]]) {
@@ -377,11 +398,16 @@ kernel void xgb_histogram_sparse_shared_ellpack(
     long2 g = gradients[row];
     if (g.x == 0 && g.y == 0) continue;
     ulong first = (row - p.base_rowid) * c.stride;
-    uint start = 0, stop = c.stride;
-    while (start < stop) {
-      uint mid = start + (stop - start) / 2;
-      if (xgb_ellpack_read(index, tail, c.split, first + mid, c.bits) < bin_begin) start = mid + 1;
-      else stop = mid;
+    uint start = 0;
+    if (cached) {
+      start = starts[ulong(group.y) * p.page_rows + row - p.base_rowid];
+    } else {
+      uint stop = c.stride;
+      while (start < stop) {
+        uint mid = start + (stop - start) / 2;
+        if (xgb_ellpack_read(index, tail, c.split, first + mid, c.bits) < bin_begin) start = mid + 1;
+        else stop = mid;
+      }
     }
     for (uint i = start; i < c.stride; ++i) {
       uint bin = xgb_ellpack_read(index, tail, c.split, first + i, c.bits);

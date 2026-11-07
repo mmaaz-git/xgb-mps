@@ -59,6 +59,18 @@ strictly smaller than it. This stride condition is a performance heuristic,
 not a measurement of average density. The device must support 32 KiB of shared
 memory. Other geometries retain their existing kernels.
 
+Eligible pages lazily cache each range's lower-bound position as one byte per
+row, with rows adjacent within a range. The stride bound makes byte positions
+sufficient. A 1M × 128 page with 256 bins per feature needs 16,000,000 bytes.
+Each page is capped at the smallest of 64 MiB, one 128th of Metal's recommended
+working-set size, and its maximum buffer length; pages above the cap retain
+the uncached search. This is a per-page limit, not a global budget. The page
+owns the cache, and `std::call_once` publishes it after GPU completion. Canonical
+compressed bins remain unchanged. Preparation is included in training time and
+recorded in `index_gpu_time_ns`. A cache for smaller histogram ranges was rejected
+because it slowed unordered rows relative to the uncached kernel and partial rows
+relative to the retained cache.
+
 Sketch sorting reuses record, rank and count buffers between its stable value
 and feature sorts within one input window. Feature keys can replace their own
 records in place. Unweighted sketches omit unused weight-scan inputs and compute

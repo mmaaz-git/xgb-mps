@@ -77,6 +77,7 @@ int main(int argc, char **argv) {
       };
       auto original = pipeline(library, @"xgb_histogram_ellpack");
       auto shared = pipeline(library, @"xgb_histogram_sparse_shared_ellpack");
+      auto prepare_starts = pipeline(library, @"xgb_histogram_sparse_starts");
       auto upload = [&](void const *data, size_t bytes) {
         auto b = [device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];
         Check(b != nil, "Buffer allocation failed");
@@ -137,6 +138,30 @@ int main(int argc, char **argv) {
       auto grad = upload(gradients.data(), gradients.size() * sizeof(Pair)),
            offset = upload(offsets.data(), offsets.size() * 4);
       Compressed c{split, stride, bits, bins + 1, 0, features, 0};
+      id<MTLBuffer> range_cache = nil;
+      auto cache_bytes = n * ((bins + 2047) / 2048);
+      if (stride <= 255 && cache_bytes <= (uint64_t{64} << 20)) {
+        range_cache = [device newBufferWithLength:cache_bytes options:MTLResourceStorageModeShared];
+        Check(range_cache != nil, "Cannot allocate range-start cache");
+        auto command = [queue commandBuffer];
+        auto e = [command computeCommandEncoder];
+        Params p{n, base, n, bins, features, 4, 0, 1, 2048, 32};
+        [e setComputePipelineState:prepare_starts];
+        [e setBuffer:head offset:0 atIndex:0];
+        [e setBuffer:tail offset:0 atIndex:1];
+        [e setBytes:&c length:sizeof(c) atIndex:2];
+        [e setBytes:&p length:sizeof(p) atIndex:3];
+        [e setBuffer:range_cache offset:0 atIndex:4];
+        [e dispatchThreads:MTLSizeMake(n, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [e endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        Check(command.status == MTLCommandBufferStatusCompleted, "Range cache preparation failed");
+        std::fprintf(stderr, "Range cache: bytes=%llu GPU_ms=%.3f\n",
+                     static_cast<unsigned long long>(cache_bytes),
+                     (command.GPUEndTime - command.GPUStartTime) * 1000);
+      }
       struct Choice {
         char const *name;
         int type;
@@ -147,6 +172,7 @@ int main(int argc, char **argv) {
                                      {"shared1024-r32", 4, 1024, 32},
                                      {"shared2048-r8", 4, 2048, 8},
                                      {"shared2048-r32", 4, 2048, 32}};
+      if (range_cache) choices.push_back({"cached2048-r32", 5, 2048, 32});
       for (uint32_t layout = 0; layout < 5; ++layout) {
         char const *names[] = {"root", "balanced8", "skew32", "partial32", "unordered8"};
         uint32_t nodes = layout == 0 ? 1 : layout == 1 || layout == 4 ? 8 : 32;
@@ -204,7 +230,7 @@ int main(int argc, char **argv) {
                      0,
                      nodes,
                      q.parameter,
-                     q.type == 4 ? q.rows : q.parameter};
+                     q.type >= 4 ? q.rows : q.parameter};
             [e setBuffer:head offset:0 atIndex:0];
             [e setBuffer:boundaries offset:0 atIndex:1];
             [e setBuffer:offset offset:0 atIndex:2];
@@ -214,7 +240,7 @@ int main(int argc, char **argv) {
             [e setBytes:&p length:sizeof(p) atIndex:6];
             [e setBuffer:boundaries offset:0 atIndex:7];
             [e setBuffer:begins offset:0 atIndex:8];
-            if (q.type == 4) {
+            if (q.type >= 4) {
               std::vector<uint64_t> blocks{0};
               for (auto &m : members)
                 blocks.push_back(blocks.back() + (m.size() + 256 * q.rows - 1) / (256 * q.rows));
@@ -222,6 +248,9 @@ int main(int argc, char **argv) {
               [e setBuffer:block offset:0 atIndex:9];
               [e setBuffer:tail offset:0 atIndex:10];
               [e setBytes:&c length:sizeof(c) atIndex:11];
+              std::uint32_t cached = q.type == 5;
+              [e setBuffer:(cached ? range_cache : head) offset:0 atIndex:12];
+              [e setBytes:&cached length:sizeof(cached) atIndex:13];
               Check(q.parameter * sizeof(Pair) <= device.maxThreadgroupMemoryLength,
                     "Shared tile exceeds device limit");
               [e setThreadgroupMemoryLength:q.parameter * sizeof(Pair) atIndex:0];

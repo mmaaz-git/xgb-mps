@@ -123,6 +123,8 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
     gradients[r] = mode >= 4 && r % 19 == 0
                        ? GradientPair{0.f, 0.f}
                        : GradientPair{float(int(r % 9) - 4) * .25f, 1.f};
+  auto initial_index_time = metal::GetStatistics().index_gpu_time_ns;
+  auto sparse_index_time = initial_index_time;
   for (unsigned selection = 0; selection < (mode >= 4 ? 3u : 2u); ++selection) {
     common::RowSetCollection rows;
     for (std::size_t r = n; r > 0; --r)
@@ -149,6 +151,27 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
         }
       }
     }
+    if (mode >= 4 && concurrent && selection == 0) {
+      auto run = [&] {
+        auto reader = metal::MakeHistogram();
+        auto destination = metal::MakeHistogramBuffer();
+        destination->Resize(cuts.TotalBins());
+        reader->Build(0, page, rows, {0}, gradients, {destination->Data()}, destination.get());
+        auto values = destination->Data();
+        return std::vector<GradientPairPrecise>(values.begin(), values.end());
+      };
+      auto first = std::async(std::launch::async, run);
+      auto second = std::async(std::launch::async, run);
+      for (auto* future : {&first, &second}) {
+        auto actual = future->get();
+        Check(actual.size() == expected.size(), "Concurrent histogram output size");
+        for (std::size_t j = 0; j < expected.size(); ++j)
+          Check(actual[j].GetGrad() == expected[j].GetGrad() &&
+                    actual[j].GetHess() == expected[j].GetHess(),
+                "Concurrent first-use sparse histogram cache");
+        ++histograms;
+      }
+    }
     auto stats = metal::GetStatistics();
     histogram->Build(0, page, rows, nodes, gradients, output, cache.get());
     for (std::size_t j = 0; j < expected.size(); ++j)
@@ -166,6 +189,17 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
                                      rows.Data()->size() >= 65536);
     Check((after.shared_histogram_dispatches > stats.shared_histogram_dispatches) == expect_shared,
           "Shared/global compressed histogram path");
+    if (mode >= 4) {
+      if (selection == 0) {
+        sparse_index_time = after.index_gpu_time_ns;
+        Check(expect_shared ? sparse_index_time > initial_index_time
+                            : sparse_index_time == initial_index_time,
+              "Sparse range cache eligibility");
+      } else {
+        Check(after.index_gpu_time_ns == sparse_index_time,
+              "Sparse range cache reused across selections and nodes");
+      }
+    }
     ++histograms;
     if (selection == 2) {
       // Later pages add through the staging path instead of replacing slots.
@@ -421,8 +455,12 @@ int main() {
       Case(maximum, 0, .5, false, 4099, true, -1.f, 1027, true);
     // Moderately missing global bins: shared ranges, a partial bin tile,
     // head/tail storage, private copies, and small-population fallbacks.
-    Case(257, 4, .5, false, 65539, true, -1.f, 131, true);
+    Case(257, 4, .5, false, 65539, true, -1.f, 131, true, true);
     Case(256, 4, 1., true, 131101, true, -1.f, 128, true);
+    // Fifteen/seventeen-bit global bins, and the small-population boundary.
+    Case(128, 4, .5, false, 65539, true, -1.f, 128, true);
+    Case(256, 4, .5, true, 65539, true, -1.f, 256, true);
+    Case(256, 4, .5, false, 65535, true, -1.f, 128, true);
     // Highly sparse and narrower pages retain the global histogram path.
     Case(256, 5, .5, false, 65539, true, -1.f, 128, true);
     Case(256, 4, 0., false, 65539, true, -1.f, 127, true);
