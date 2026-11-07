@@ -49,7 +49,9 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
   for (std::size_t r = 0; r < n; ++r) {
     for (unsigned f = 0; f < cols; ++f) {
       bool valid = mode == 0 || (mode == 1 && (r == 0 || (r + f) % 3)) ||
-                   (mode == 2 && f < 6 && (r + f) % 3 == 0);
+                   (mode == 2 && f < 6 && (r + f) % 3 == 0) ||
+                   (mode == 4 && (r + f) % 5 != 0) ||
+                   (mode == 5 && (r + f) % 5 == 0);
       if (valid) {
         auto bin = (r * 17 + f * 31) % maximum;
         raw.data.HostVector().push_back({f, f == 2 ? float(bin) : float(2 * bin)});
@@ -118,22 +120,37 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
   cache->Resize(cuts.TotalBins());
   std::vector<GradientPair> gradients(base + n);
   for (std::size_t r = 0; r < gradients.size(); ++r)
-    gradients[r] = GradientPair{float(int(r % 9) - 4) * .25f, 1.f};
-  for (unsigned selection = 0; selection < 2; ++selection) {
+    gradients[r] = mode >= 4 && r % 19 == 0
+                       ? GradientPair{0.f, 0.f}
+                       : GradientPair{float(int(r % 9) - 4) * .25f, 1.f};
+  for (unsigned selection = 0; selection < (mode >= 4 ? 3u : 2u); ++selection) {
     common::RowSetCollection rows;
     for (std::size_t r = n; r > 0; --r)
-      if (!selection || r % 3) rows.Data()->push_back(base + r - 1);
+      if (selection != 1 || r % 3) rows.Data()->push_back(base + r - 1);
     rows.Init();
-    std::vector<GradientPairPrecise> expected(cuts.TotalBins());
-    for (auto r : *rows.Data()) {
-      auto local = r - base;
-      for (auto j = oracle.row_ptr[local]; j < oracle.row_ptr[local + 1]; ++j) {
-        auto bin = oracle.index[j];
-        expected[bin] += GradientPairPrecise{gradients[r].GetGrad(), gradients[r].GetHess()};
+    std::vector<bst_node_t> nodes{0};
+    if (selection == 2) {
+      auto count = rows.Data()->size();
+      rows.AddSplit(0, 1, 2, 0, count);
+      rows.AddSplit(2, 3, 4, count / 5, count - count / 5);
+      nodes = {1, 4, 3};  // Empty node, unequal blocks, and reordered row ranges.
+    }
+    cache->Resize(nodes.size() * cuts.TotalBins());
+    std::vector<common::GHistRow> output;
+    std::vector<GradientPairPrecise> expected(cache->Data().size());
+    for (std::size_t k = 0; k < nodes.size(); ++k) {
+      output.push_back(cache->Data().subspan(k * cuts.TotalBins(), cuts.TotalBins()));
+      for (auto r : rows[nodes[k]]) {
+        auto local = r - base;
+        for (auto j = oracle.row_ptr[local]; j < oracle.row_ptr[local + 1]; ++j) {
+          auto bin = oracle.index[j];
+          expected[k * cuts.TotalBins() + bin] +=
+              GradientPairPrecise{gradients[r].GetGrad(), gradients[r].GetHess()};
+        }
       }
     }
     auto stats = metal::GetStatistics();
-    histogram->Build(0, page, rows, {0}, gradients, {cache->Data()}, cache.get());
+    histogram->Build(0, page, rows, nodes, gradients, output, cache.get());
     for (std::size_t j = 0; j < expected.size(); ++j)
       Check(cache->Data()[j].GetGrad() == expected[j].GetGrad() &&
                 cache->Data()[j].GetHess() == expected[j].GetHess(),
@@ -145,9 +162,20 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
     bool expect_shared = mode == 0 && maximum <= 257 &&
                          (rows.Data()->size() >= 16384 ||
                           (cols >= 1024 && rows.Data()->size() >= 4096));
+    expect_shared = expect_shared || (mode == 4 && cols >= 128 && cols <= 256 &&
+                                     rows.Data()->size() >= 65536);
     Check((after.shared_histogram_dispatches > stats.shared_histogram_dispatches) == expect_shared,
           "Shared/global compressed histogram path");
     ++histograms;
+    if (selection == 2) {
+      // Later pages add through the staging path instead of replacing slots.
+      histogram->Build(1, page, rows, nodes, gradients, output, cache.get());
+      for (std::size_t j = 0; j < expected.size(); ++j)
+        Check(cache->Data()[j].GetGrad() == 2 * expected[j].GetGrad() &&
+                  cache->Data()[j].GetHess() == 2 * expected[j].GetHess(),
+              "Exact sparse multi-node page accumulation");
+      ++histograms;
+    }
   }
 
   if (histogram_only) {
@@ -391,6 +419,13 @@ int main() {
     // fallback. Both must exactly match independently summed CPU histograms.
     for (unsigned maximum : {2u, 256u})
       Case(maximum, 0, .5, false, 4099, true, -1.f, 1027, true);
+    // Moderately missing global bins: shared ranges, a partial bin tile,
+    // head/tail storage, private copies, and small-population fallbacks.
+    Case(257, 4, .5, false, 65539, true, -1.f, 131, true);
+    Case(256, 4, 1., true, 131101, true, -1.f, 128, true);
+    // Highly sparse and narrower pages retain the global histogram path.
+    Case(256, 5, .5, false, 65539, true, -1.f, 128, true);
+    Case(256, 4, 0., false, 65539, true, -1.f, 127, true);
     // Large narrow pages cache columns once; full head and full tail storage
     // work after their owner is released. Split storage and the size boundary
     // retain the compressed path. These also test partial/unordered row ranges.

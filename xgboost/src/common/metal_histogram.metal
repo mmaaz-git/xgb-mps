@@ -341,6 +341,68 @@ kernel void xgb_histogram_dense_tiled_ellpack(
   }
 }
 
+// Privatize a range of global ELLPACK bins for moderately missing pages.
+// Rows contain sorted global bins followed by null padding (n_bins). Binary
+// search locates the range; every valid entry belongs to exactly one group.
+// This uses the same exact modular integer accumulation as the dense paths.
+kernel void xgb_histogram_sparse_shared_ellpack(
+    device const uchar* index [[buffer(0)]], device const ulong* row_ptr [[buffer(1)]],
+    device const uint* offsets [[buffer(2)]], device const long2* gradients [[buffer(3)]],
+    device const ulong* rows [[buffer(4)]], device atomic_uint* hist [[buffer(5)]],
+    constant HistogramParams& p [[buffer(6)]], device const ulong* node_ptr [[buffer(7)]],
+    device const ulong* row_begin [[buffer(8)]], device const ulong* block_ptr [[buffer(9)]],
+    device const uchar* tail [[buffer(10)]], constant CompressedParams& c [[buffer(11)]],
+    threadgroup atomic_uint* local_hist [[threadgroup(0)]],
+    uint3 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+    uint3 threads [[threads_per_threadgroup]]) {
+  uint tile = p.padding;
+  uint bin_begin = group.y * tile;
+  uint bin_end = bin_begin + min(tile, p.n_bins - bin_begin);
+  uint bins = bin_end - bin_begin;
+  uint lo = 0, hi = p.n_nodes;
+  while (lo < hi) {
+    uint mid = lo + (hi - lo) / 2;
+    if (block_ptr[mid + 1] <= group.x) lo = mid + 1;
+    else hi = mid;
+  }
+  uint node = lo;
+  ulong begin = node_ptr[node] + (ulong(group.x) - block_ptr[node]) * threads.x * p.rows_per_lane;
+  ulong end = min(node_ptr[node + 1], begin + threads.x * p.rows_per_lane);
+  if (begin >= end) return;
+  for (uint word = tid; word < bins * 4; word += threads.x)
+    atomic_store_explicit(local_hist + word, 0, memory_order_relaxed);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (ulong r = begin + tid; r < end; r += threads.x) {
+    ulong row = rows[row_begin[node] + r - node_ptr[node]];
+    long2 g = gradients[row];
+    if (g.x == 0 && g.y == 0) continue;
+    ulong first = (row - p.base_rowid) * c.stride;
+    uint start = 0, stop = c.stride;
+    while (start < stop) {
+      uint mid = start + (stop - start) / 2;
+      if (xgb_ellpack_read(index, tail, c.split, first + mid, c.bits) < bin_begin) start = mid + 1;
+      else stop = mid;
+    }
+    for (uint i = start; i < c.stride; ++i) {
+      uint bin = xgb_ellpack_read(index, tail, c.split, first + i, c.bits);
+      if (bin >= bin_end) break;
+      bin -= bin_begin;
+      add_i64(local_hist + bin * 4, g.x);
+      add_i64(local_hist + bin * 4 + 2, g.y);
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint bin = tid; bin < bins; bin += threads.x) {
+    ulong dst = (ulong(node) * p.n_bins + bin_begin + bin) * 4;
+    for (uint component = 0; component < 2; ++component) {
+      uint word = bin * 4 + component * 2;
+      ulong low = atomic_load_explicit(local_hist + word, memory_order_relaxed);
+      ulong high = atomic_load_explicit(local_hist + word + 1, memory_order_relaxed);
+      add_i64(hist + dst + component * 2, as_type<long>(low | (high << 32)));
+    }
+  }
+}
+
 // CUDA GradientQuantiser::ToFixedPointImpl truncates float * 2^exponent.
 // Bit decoding is exact (the equivalent FP64 multiplication is a power-of-two
 // scaling), preserves FP32 subnormals, and avoids unsupported native FP64.
@@ -7406,9 +7468,11 @@ kernel void xgb_cs_gather(
     constant CudaSketchParams& p [[buffer(7)]], uint i [[thread_position_in_grid]]) {
   uint index = records[i].y;
   out[i] = float4(0, 0, 0, as_type<float>(entries[index].y));
-  ids[i] = records[i].x;
-  // budget carries the number of CSR rows during this stage.
-  w[i] = p.weighted ? weights[xgb_cs_column(rows, p.budget, p.begin + index) + p.base_row] : 0.f;
+  if (p.weighted) {
+    ids[i] = records[i].x;
+    // budget carries the number of CSR rows during this stage.
+    w[i] = weights[xgb_cs_column(rows, p.budget, p.begin + index) + p.base_row];
+  }
 }
 // Hierarchical segmented inclusive FP32 scan. Different legal parallel scan
 // associations can round differently from CUB; do not substitute binary64 sums.

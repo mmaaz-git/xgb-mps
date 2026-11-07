@@ -49,6 +49,24 @@ Only that output range is cleared. Later pages and discontiguous destinations
 retain the temporary histogram and store/add path; they must preserve existing
 cache entries. The quantization scale and integer sums remain authoritative.
 
+Moderately missing compressed pages can build shared histograms over ranges of
+2,048 global bins. Each row's sorted bins are searched for the range start;
+null padding lies beyond the last valid range. Integer accumulation and merging
+use the same exact two-word sums as the other histogram paths. The measured
+dispatch range is 128–256 features, 16,384–65,536 bins, at least 65,536 selected
+rows, and an ELLPACK stride at least three quarters of the feature count but
+strictly smaller than it. This stride condition is a performance heuristic,
+not a measurement of average density. The device must support 32 KiB of shared
+memory. Other geometries retain their existing kernels.
+
+Sketch sorting reuses record, rank and count buffers between its stable value
+and feature sorts within one input window. Feature keys can replace their own
+records in place. Unweighted sketches omit unused weight-scan inputs and compute
+raw ranks in place because each output depends only on its own value and
+position. Weighted ranks still use a separate destination: they read the
+previous entry's prefix. Window boundaries, sort stability, FP32 weighted scan
+association, pruning and cut selection are unchanged.
+
 Large, narrow compressed pages can own a second, column-major byte index for row
 partitioning. This improves repeated feature gathers while histograms, prediction
 and exports retain the canonical compressed representation. Eligibility requires

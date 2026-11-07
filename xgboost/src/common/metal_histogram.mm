@@ -351,7 +351,8 @@ class Runtime {
   id<MTLComputePipelineState> ellpack_adapter_pipeline, ellpack_null_pipeline, ellpack_csr_pipeline;
   id<MTLComputePipelineState> snappy_compress_pipeline, snappy_decompress_pipeline;
   id<MTLComputePipelineState> ellpack_histogram_pipeline, ellpack_shared_histogram_pipeline,
-      ellpack_tiled_histogram_pipeline, ellpack_partition_pipeline, ellpack_input_pipeline;
+      ellpack_tiled_histogram_pipeline, ellpack_sparse_histogram_pipeline,
+      ellpack_partition_pipeline, ellpack_input_pipeline;
   id<MTLComputePipelineState> adapter_count_pipeline, adapter_scatter_pipeline,
       adapter_offsets_pipeline;
   id<MTLComputePipelineState> multiclass_objective_pipeline, multiclass_transform_pipeline;
@@ -469,6 +470,7 @@ class Runtime {
       ellpack_histogram_pipeline = make_pipeline(@"xgb_histogram_ellpack");
       ellpack_shared_histogram_pipeline = make_pipeline(@"xgb_histogram_dense_shared_ellpack");
       ellpack_tiled_histogram_pipeline = make_pipeline(@"xgb_histogram_dense_tiled_ellpack");
+      ellpack_sparse_histogram_pipeline = make_pipeline(@"xgb_histogram_sparse_shared_ellpack");
       ellpack_partition_pipeline = make_pipeline(@"xgb_partition_classify_ellpack");
       ellpack_input_pipeline = make_pipeline(@"xgb_prepare_ellpack_input");
       adapter_count_pipeline = make_pipeline(@"xgb_adapter_count");
@@ -2025,10 +2027,31 @@ class MetalHistogram final : public Histogram {
                        shared_bytes <= rt_.device.maxThreadgroupMemoryLength / 4;
       auto features_per_group = use_tiled ? 4u : 1u;
       shared_bytes *= features_per_group;
+      // Global-bin ELLPACK rows are sorted. A shared bin range amortizes global
+      // atomics for large, moderately missing pages. Keep highly sparse, wide
+      // and small populations on the existing path: repeated range searches
+      // cost more there. These bounds cover the measured 128-column workload.
+      constexpr std::size_t kSparseBins = 2048;
+      auto const& compressed = page->compressed;
+      bool use_sparse = page->IsCompressed() && !compressed.dense &&
+                        compressed.stride < params.n_features &&
+                        params.n_features >= 128 && params.n_features <= 256 &&
+                        compressed.stride >= (params.n_features * 3 + 3) / 4 &&
+                        total_rows >= 65536 && bins >= 16384 && bins <= 65536 &&
+                        kSparseBins * sizeof(QuantizedPair) <= rt_.device.maxThreadgroupMemoryLength;
       auto pipeline = page->IsCompressed() ? (use_shared ? rt_.ellpack_shared_histogram_pipeline
                                                          : rt_.ellpack_histogram_pipeline)
                                            : (use_shared ? rt_.shared_pipeline : rt_.pipeline);
       if (use_tiled) pipeline = rt_.ellpack_tiled_histogram_pipeline;
+      auto groups = (params.n_features + features_per_group - 1) / features_per_group;
+      if (use_sparse) {
+        use_shared = true;
+        shared_bytes = kSparseBins * sizeof(QuantizedPair);
+        params.padding = kSparseBins;
+        params.rows_per_lane = 32;
+        groups = (bins + kSparseBins - 1) / kSparseBins;
+        pipeline = rt_.ellpack_sparse_histogram_pipeline;
+      }
       [encoder setComputePipelineState:pipeline];
       [encoder setBuffer:page->index offset:0 atIndex:0];
       [encoder setBuffer:page->row_ptr offset:0 atIndex:1];
@@ -2057,10 +2080,7 @@ class MetalHistogram final : public Histogram {
         EnsureBuffer(rt_, &block_buffer_, block_bytes);
         std::memcpy(block_buffer_.contents, block_ptr.data(), block_bytes);
         [encoder setBuffer:block_buffer_ offset:0 atIndex:9];
-        [encoder dispatchThreadgroups:MTLSizeMake(
-                                         block_ptr.back(),
-                                         (params.n_features + features_per_group - 1) /
-                                             features_per_group, 1)
+        [encoder dispatchThreadgroups:MTLSizeMake(block_ptr.back(), groups, 1)
                 threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
       } else if (total_rows) {
         [encoder dispatchThreads:MTLSizeMake(total_rows, 1, 1)
@@ -4665,16 +4685,24 @@ struct SortShape {
   std::uint32_t targets, blocks;
 };
 static_assert(sizeof(SortShape) == 32);
+struct RadixWorkspace {
+  id<MTLBuffer> alternate{nil}, ranks{nil}, counts{nil};
+};
 id<MTLBuffer> EncodeRadixRecords(Runtime& rt, id<MTLCommandBuffer> command,
                                   id<MTLBuffer> source, SortShape shape,
-                                  std::uint32_t key_bits = 32) {
+                                  std::uint32_t key_bits = 32,
+                                  RadixWorkspace* workspace = nullptr) {
   auto size = shape.rows * shape.targets;
   CHECK_LE(size, std::numeric_limits<std::uint32_t>::max());
-  auto target = Allocate(rt, source.length);
-  auto ranks = Allocate(rt, size * sizeof(std::uint32_t));
+  RadixWorkspace local;
+  auto& scratch = workspace ? *workspace : local;
+  EnsureBuffer(rt, &scratch.alternate, source.length);
+  CHECK(scratch.alternate != source);
+  EnsureBuffer(rt, &scratch.ranks, size * sizeof(std::uint32_t));
   auto count_size = std::uint64_t{shape.targets} * 16 * shape.blocks;
   CHECK_LE(count_size, std::numeric_limits<std::uint32_t>::max());
-  auto counts = Allocate(rt, count_size * sizeof(std::uint32_t));
+  EnsureBuffer(rt, &scratch.counts, count_size * sizeof(std::uint32_t));
+  auto target = scratch.alternate, ranks = scratch.ranks, counts = scratch.counts;
   for (std::uint32_t shift = 0; shift < key_bits; shift += 4) {
     struct {
       std::uint32_t rows, targets, blocks, shift;
@@ -4703,6 +4731,7 @@ id<MTLBuffer> EncodeRadixRecords(Runtime& rt, id<MTLCommandBuffer> command,
     [e endEncoding];
     std::swap(source, target);
   }
+  scratch.alternate = target;
   return source;
 }
 id<MTLBuffer> EncodeColumnSort(Runtime& rt, id<MTLCommandBuffer> command, id<MTLBuffer> input,
@@ -11410,22 +11439,29 @@ class MetalCudaSketch final : public CudaSketch {
       CSDispatch(command, rt_.cs_sort_keys_pipeline, count, {source, source, records}, &p,
                    {source_offset, source_offset, 0});
       SortShape shape{count, 0, 0, 1, static_cast<std::uint32_t>((count + 255) / 256)};
-      records = EncodeRadixRecords(rt_, command, records, shape);
-      auto by_feature = Allocate(rt_, count * 2 * sizeof(std::uint32_t));
+      // Value and feature sorts execute serially in one command. Reuse their
+      // ping-pong records and rank/count scratch within this input window.
+      RadixWorkspace sort;
+      records = EncodeRadixRecords(rt_, command, records, shape, 32, &sort);
       p.mode = 1;
-      CSDispatch(command, rt_.cs_sort_keys_pipeline, count, {source, records, by_feature}, &p,
+      // Each key depends only on its own previous record, allowing in-place
+      // key replacement without changing the stable value/tie order.
+      CSDispatch(command, rt_.cs_sort_keys_pipeline, count, {source, records, records}, &p,
                    {source_offset, 0, 0});
       // Feature IDs lie in [0, columns_). Higher zero-key radix passes are
       // stable identity operations, so omit them without changing value/tie order.
       std::uint32_t feature_bits = 0;
       for (auto key = columns_ - 1; key; key >>= 1) ++feature_bits;
-      records = feature_bits ? EncodeRadixRecords(rt_, command, by_feature, shape, feature_bits)
-                             : by_feature;
+      if (feature_bits)
+        records = EncodeRadixRecords(rt_, command, records, shape, feature_bits, &sort);
       CSDeviceSummary raw{Allocate(rt_, count * sizeof(WQSummary<>::Entry)),
                           Allocate(rt_, (std::size_t{columns_} + 1) * sizeof(std::uint64_t)),
                           count};
-      auto weights = Allocate(rt_, count * sizeof(float));
-      auto ids = Allocate(rt_, count * sizeof(std::uint32_t));
+      // Only weighted sketches consume the segmented-scan inputs. Keep valid
+      // placeholder bindings for unweighted gathers without allocating or
+      // writing two arrays as large as the input window.
+      auto weights = Allocate(rt_, weight_count_ ? count * sizeof(float) : 0);
+      auto ids = Allocate(rt_, weight_count_ ? count * sizeof(std::uint32_t) : 0);
       CSDispatch(command, rt_.cs_bounds_pipeline, std::size_t{columns_} + 1, {records, raw.ptr},
                  &p);
       CSDispatch(command, rt_.cs_gather_pipeline, count,
@@ -11437,7 +11473,11 @@ class MetalCudaSketch final : public CudaSketch {
       }
       CSComplete(command);
       if (has_cat_) raw = Unique(raw, true);
-      auto ranked = Allocate(rt_, raw.size * sizeof(WQSummary<>::Entry));
+      // Unweighted ranks depend only on the entry's own value and position.
+      // Weighted ranks read the previous entry's prefix sum, so those must
+      // continue to use a separate destination.
+      auto ranked = weight_count_ ? Allocate(rt_, raw.size * sizeof(WQSummary<>::Entry))
+                                  : raw.entries;
       command = [rt_.queue commandBuffer];
       CHECK(command);
       CSDispatch(command, rt_.cs_raw_ranks_pipeline, raw.size, {raw.entries, raw.ptr, ranked}, &p);
