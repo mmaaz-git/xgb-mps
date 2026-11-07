@@ -106,6 +106,18 @@ turn a historical full run into a current full run.
 
 ## Recorded results
 
+- **Direct histogram-cache accumulation and bounded partition columns:** the
+  final candidate passed five native groups and 148 Python tests with no skips,
+  followed by three installed-package workflows outside the checkout. The
+  histogram-only stage had passed five native groups and 247 Python tests.
+  New coverage includes 108 histogram layout/page cases, large compressed-page
+  cache ownership, concurrent initialization, reuse and fallback layouts.
+  All 20 MPS workers across 30 training runs reproduce baseline models, margins
+  and per-round metrics exactly. Three repeats per variant cover wide,
+  categorical and 100-round full-row HIGGS; 1,000-round HIGGS has one run per
+  variant. Physical-memory diagnostics and rejected kernel variants are recorded.
+  This is focused acceptance; the full suite below predates these changes.
+  [Exact sources, timings and checks](../validation/memory-and-partition-m3.json).
 - **Fresh full regression, exact FP32 ordering and input staging:** clean
   `28908e1` passed all 106 native groups and 4,001 Python tests, with two expected
   platform skips. The subsequent candidate passed seven native groups and 427

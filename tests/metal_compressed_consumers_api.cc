@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <future>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -27,7 +28,7 @@ void Same(float actual, float expected) {
 }
 void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
           std::size_t n = 37, bool lazy = false, float snappy = -1.0f,
-          unsigned cols = 7, bool histogram_only = false) {
+          unsigned cols = 7, bool histogram_only = false, bool concurrent = false) {
   constexpr std::size_t base = 73;
   Context ctx;
   ctx.Init({{"device", "cpu"}, {"nthread", "1"}});
@@ -165,6 +166,39 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
   // Nonzero input offset exercises binding directly from persistent GPU storage.
   HostDeviceVector<std::uint32_t> resident_categories({0xdeadbeef, categories[0], 0xabababab},
                                                     DeviceOrd::MPS());
+  bool expect_columns = maximum == 256 && mode == 0 && n >= (std::size_t{1} << 20) &&
+                        cols >= 4 && cols <= 64 && (ratio == 0 || ratio == 1);
+  auto index_time_before = metal::GetStatistics().index_gpu_time_ns;
+  if (concurrent) {
+    // Two readers can initialize the same retained page concurrently.
+    auto run = [&] {
+      auto reader = metal::MakeDeviceRows();
+      reader->Reset(n, base);
+      metal::PartitionSplit split{};
+      split.end = n;
+      split.feature = 0;
+      split.split_bin = int(maximum / 2) - 1;
+      auto count = reader->Partition(page, {split}, {});
+      std::vector<bst_idx_t> actual(n);
+      reader->CopyToHost(actual);
+      return std::make_pair(std::move(count), std::move(actual));
+    };
+    auto first = std::async(std::launch::async, run);
+    auto second = std::async(std::launch::async, run);
+    std::vector<bst_idx_t> expected(n);
+    std::iota(expected.begin(), expected.end(), base);
+    auto middle = std::stable_partition(expected.begin(), expected.end(), [&](bst_idx_t row) {
+      return oracle.GetGindex(row, 0) < int(maximum / 2);
+    });
+    for (auto* future : {&first, &second}) {
+      auto result = future->get();
+      Check(result.first == std::vector<std::uint64_t>{std::uint64_t(middle - expected.begin())} &&
+                result.second == expected,
+            "Concurrent first-use column cache preserves exact stable partition");
+      ++partitions;
+    }
+  }
+  std::uint64_t first_index_time = 0;
   for (unsigned f = 0; f < cols; ++f) {
     for (bool missing_left : {false, true}) {
       rows->Reset(n, base);
@@ -192,6 +226,14 @@ void Case(unsigned maximum, unsigned mode, double ratio, bool copy,
       auto input = missing_left ? resident_categories.ConstDeviceSpan().subspan(1, 1)
                                 : common::Span<std::uint32_t const>{categories};
       auto counts = rows->Partition(page, {split}, input);
+      auto index_time = metal::GetStatistics().index_gpu_time_ns;
+      if (f == 0 && !missing_left) {
+        first_index_time = index_time;
+        Check(expect_columns ? index_time > index_time_before : index_time == index_time_before,
+              "Column cache eligibility and compressed fallback");
+      } else {
+        Check(index_time == first_index_time, "Column cache is reused across row resets and features");
+      }
       if (missing_left) {
         auto after = metal::GetStatistics();
         Check(after.partition_category_shared_input_bytes -
@@ -349,6 +391,14 @@ int main() {
     // fallback. Both must exactly match independently summed CPU histograms.
     for (unsigned maximum : {2u, 256u})
       Case(maximum, 0, .5, false, 4099, true, -1.f, 1027, true);
+    // Large narrow pages cache columns once; full head and full tail storage
+    // work after their owner is released. Split storage and the size boundary
+    // retain the compressed path. These also test partial/unordered row ranges.
+    constexpr std::size_t large = std::size_t{1} << 20;
+    Case(256, 0, 1., false, large, true, -1.f, 7, false, true);
+    Case(256, 0, 0., false, large, true);
+    Case(256, 0, .5, false, large, true);
+    Case(256, 0, 1., false, large - 1, true);
     std::printf(
         "PASS %zu cases / %zu exact fields / %zu histograms / %zu partitions / %zu input chunks\n",
         cases, fields, histograms, partitions, inputs);

@@ -68,42 +68,41 @@ bash scripts/test.sh --python tests/test_metal_workflows.py
 
 The test runner builds first and supports focused checks or `--full`. The latest
 full run passed **106 native groups and 4,001 Python tests**, with two expected
-platform skips, on `28908e1`. The subsequent optimization passed seven native
-groups, 427 Python tests and three installed-package workflows. Workflows include
-preprocessing, cross-validation, categorical classification, early stopping,
+platform skips, on `28908e1`. The latest memory/partition optimization passed
+five native groups, 148 Python tests and three installed-package workflows.
+Workflows include preprocessing, cross-validation, categorical classification, early stopping,
 ranking and model persistence. [Validation commands/results](docs/VALIDATION.md)
 record the revisions and scope. CUDA CI compiles the NVIDIA backend;
 it does not run CUDA kernels.
 
 ## Performance
 
-Fresh median training times across three CPU/MPS repeats on the **10-core M3,
-16 GB RAM**, using all eight CPU cores, depth 6 and 256 bins:
+Median training times across three CPU/previous-MPS/new-MPS repeats on the
+**10-core M3, 16 GB RAM**, using all eight CPU cores, 100 rounds, depth 6 and
+256 bins:
 
-| Training data | Rounds | CPU | MPS |
+| Training data | CPU | Previous MPS | New MPS |
 | --- | ---: | ---: | ---: |
-| 100K × 32 categorical, synthetic | 100 | 1.48 s | 5.12 s |
-| 100K × 128, 20% missing, synthetic | 100 | 1.78 s | 5.20 s |
-| 25K × 4,096 dense, synthetic | 100 | 44.82 s | 62.44 s |
-| Covertype: 464,809 × 54 | 500 | 72.54 s | 142.96 s |
-| HIGGS: 10.5M × 28 | 1,000 | 389.05 s | 308.96 s |
+| 25K × 4,096 dense, synthetic | 39.00 s | 44.29 s | 44.48 s |
+| HIGGS: 10.5M × 28 | 37.78 s | 37.13 s | 30.50 s |
+| 100K × 32 categorical, synthetic | 2.09 s | 5.24 s | 5.09 s |
 
-Training includes quantization and held-out evaluation every round. Data loading,
-matrix construction and final prediction are separate. Categorical data has 256
-values per feature and 16 informative columns; the other synthetic cases have
-64 informative columns. Covertype uses seven classes and a stratified 80/20 split.
+HIGGS improves **1.22×** over `048dc86`. A separate **single 1,000-round run per
+variant** took 271.79 s before, 250.14 s after and 296.40 s on CPU
+(1.18× CPU/new-MPS); it is not a three-repeat median.
 
-The latest optimization replaces software-double conversions used for FP32
-ordering with exact bit comparisons and removes redundant input-staging writes.
-Categorical MPS training improves **9.19 → 5.12 s (1.80×)** against `28908e1`.
-The missing-value case is effectively flat; the wide median is slower
-(**58.73 → 62.44 s**) amid substantial paging variation. CPU remains faster on
-these three synthetic cases. All before/after MPS models, predictions and metric
-histories match exactly; independently trained CPU/MPS models can differ.
+Wide training is effectively unchanged, but measured Metal buffer allocation
+falls by **256 MiB**. That does not establish a lower physical-memory peak.
+HIGGS's faster partition cache adds about **279 MiB** net Metal allocation;
+its eligibility and per-page size are bounded. CPU still wins the synthetic
+controls. Other applications and system paging were not controlled.
 
-[All repeats, quality checks, setup times and limitations](docs/PUBLISHED_BENCHMARKS.md#current-m3-results)
-are recorded. Other applications were not controlled; system-wide paging affected
-the wide runs. These measurements do not establish a general GPU advantage.
+Training includes quantization, cache construction and held-out evaluation each
+round; loading, matrix creation and final prediction are separate. All before/after
+MPS models, margins and metric histories match exactly. Independently trained
+CPU/MPS models can differ, including a pre-existing wide-data accuracy difference.
+[All repeats, memory measurements, quality and historical benchmarks](docs/PUBLISHED_BENCHMARKS.md#current-m3-results)
+are recorded. These results do not establish a general GPU advantage.
 
 Large-workload profiling stays separate from tests. Prepare the real-data caches
 with `scripts/prepare_published_data.py`; then, for example:

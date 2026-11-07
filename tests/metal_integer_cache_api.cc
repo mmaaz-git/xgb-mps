@@ -131,6 +131,53 @@ void Run(bool dense, int max_bin, int exponent, unsigned bins) {
         "Integer root reduction not dispatched");
   if(report)report->Add(input,observed);
 }
+void CheckOutputLayouts(bool dense, int max_bin, bool empty) {
+  Context ctx;
+  ctx.Init(Args{{"device", "mps"}, {"nthread", "1"}});
+  SparsePage page;
+  page.offset.HostVector() = {0, 1, 2, 3, 4};
+  page.data.HostVector() = {{0, 0.f}, {0, 1.f}, {0, 0.f}, {0, 1.f}};
+  common::HistogramCuts cuts{1};
+  cuts.cut_ptrs_.HostVector() = {0, 2};
+  cuts.cut_values_.HostVector() = {.5f, 2.f};
+  GHistIndexMatrix gidx{&ctx, page, {}, std::move(cuts), max_bin, dense, .2};
+  std::vector<GradientPair> gradients{{1.5f, 1}, {-2.25f, 2}, {3.f, 3}, {-4.5f, 4}};
+  common::RowSetCollection rows;
+  *rows.Data() = {0, 1, 2, 3};
+  rows.Init();
+  rows.AddSplit(0, 1, 2, 3, 1);
+  rows.AddSplit(1, 3, 4, empty ? 0 : 1, empty ? 3 : 2);
+  std::vector<bst_node_t> nodes{3, 4, 2};
+  for (std::vector<std::size_t> offsets :
+       {std::vector<std::size_t>{3, 5, 7}, {3, 8, 13}, {13, 8, 3}}) {
+    auto cache = metal::MakeHistogramBuffer();
+    cache->Resize(20);
+    for (auto& value : cache->Data()) value = GradientPairPrecise{17.5, -23.25};
+    auto hist = metal::MakeHistogram();
+    std::vector<common::GHistRow> outputs;
+    for (auto offset : offsets) outputs.push_back(cache->Data().subspan(offset, 2));
+    // First-page replacement, later-page accumulation, then replacement again.
+    for (unsigned pass = 0; pass < 3; ++pass) {
+      hist->Build(pass == 1 ? 1 : 0, gidx, rows, nodes, gradients, outputs, cache.get());
+      std::vector<GradientPairPrecise> expected(20, GradientPairPrecise{17.5, -23.25});
+      for (std::size_t i = 0; i < nodes.size(); ++i) {
+        expected[offsets[i]] = expected[offsets[i] + 1] = GradientPairPrecise{};
+        for (auto row = rows[nodes[i]].begin(); row != rows[nodes[i]].end(); ++row) {
+          auto bin = *row % 2;
+          auto const& value = gradients[*row];
+          double factor = pass == 1 ? 2. : 1.;
+          expected[offsets[i] + bin] += GradientPairPrecise{
+              factor * value.GetGrad(), factor * value.GetHess()};
+        }
+        auto sum = metal::SumHistogram(cache.get(), offsets[i], 2);
+        auto total = expected[offsets[i]] + expected[offsets[i] + 1];
+        Same(sum, total.GetGrad(), total.GetHess());
+      }
+      Check(!std::memcmp(cache->Data().data(), expected.data(), expected.size() * sizeof(expected[0])),
+            "Histogram output layout changed a value or guard");
+    }
+  }
+}
 int main(int argc,char** argv) {
   try {
     report=hc::ReportOption(argc,argv);
@@ -142,6 +189,11 @@ int main(int argc,char** argv) {
             Run(dense, max_bin, exponent, bins);
             ++cases;
           }
+    for (bool dense : {false, true})
+      for (int max_bin : {16, 512, 65537})
+        for (bool empty : {false, true}) CheckOutputLayouts(dense, max_bin, empty);
+    std::puts("PASS 108 histogram layout/page cases: contiguous, gapped, reversed, "
+              "empty nodes, integer sums and untouched guards");
     if(report)report->Finish();
     std::printf(
         "PASS %zu production integer-cache cases: widths/layouts, growth, cancellation, "

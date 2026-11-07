@@ -6,6 +6,156 @@ or revisions. CUDA is not available on this Mac.
 
 ## Current M3 results
 
+The 2026-11-06 memory/partition milestone starts from `048dc86`. It removes a
+redundant histogram allocation and adds a bounded column cache for partitioning
+large, narrow dense pages. Existing shaders, integer arithmetic, split tie rules
+and test tolerances are unchanged. [Acceptance evidence](../validation/memory-and-partition-m3.json)
+records exact source/library hashes, all 30 training workers and commands.
+
+The final build passed five native groups and 148 Python tests, followed by
+three installed-package workflows outside the checkout. These are focused
+checks; the full 106-native/4,001-Python run on `28908e1` predates both this and
+the previous optimization. There was no NVIDIA execution.
+
+### Repeated whole-training measurements
+
+Each cell is a median of three fresh-process runs on the M3 (10-core GPU,
+eight CPU cores, 16 GB RAM), rotating CPU/previous-MPS/new-MPS order. Runtime
+initialization is warmed. All use 100 rounds, depth 6 and 256 bins. Training
+includes quantization, column-cache construction when eligible, and held-out
+evaluation each round. Loading, matrix creation and final prediction are separate.
+
+| Training data | CPU | Previous MPS | New MPS | Previous / new MPS |
+| --- | ---: | ---: | ---: | ---: |
+| 25K × 4,096 dense, synthetic | 39.00 s | 44.29 s | 44.48 s | 1.00× |
+| HIGGS: 10.5M × 28 | 37.78 s | 37.13 s | 30.50 s | 1.22× |
+| 100K × 32 categorical, synthetic | 2.09 s | 5.24 s | 5.09 s | 1.03× |
+
+HIGGS improves **1.22×** by median. The wide case is essentially flat
+(44.29 → 44.48 s); its allocation saving is not a demonstrated training-speed
+gain. CPU remains faster on both synthetic controls. Other applications and system paging were
+not controlled. No builds, tests or other benchmarks from this task overlapped
+these timings. All repeats, including regressions, are retained below.
+
+| Workload / variant | Training seconds, in repeat order |
+| --- | --- |
+| 25K × 4,096 dense, synthetic / CPU | 28.939, 39.004, 39.085 |
+| 25K × 4,096 dense, synthetic / previous MPS | 40.356, 44.289, 45.458 |
+| 25K × 4,096 dense, synthetic / new MPS | 46.615, 44.478, 43.822 |
+| HIGGS: 10.5M × 28 / CPU | 37.784, 39.896, 36.317 |
+| HIGGS: 10.5M × 28 / previous MPS | 38.128, 35.443, 37.126 |
+| HIGGS: 10.5M × 28 / new MPS | 31.089, 30.496, 30.469 |
+| 100K × 32 categorical, synthetic / CPU | 2.090, 1.860, 2.141 |
+| 100K × 32 categorical, synthetic / previous MPS | 5.241, 5.251, 5.096 |
+| 100K × 32 categorical, synthetic / new MPS | 5.094, 5.093, 5.214 |
+
+Including matrix construction, CPU/new-MPS median seconds are:
+
+- 25K × 4,096 dense, synthetic: 39.206 / 44.693.
+- HIGGS: 10.5M × 28: 39.098 / 31.834.
+- 100K × 32 categorical, synthetic: 2.097 / 5.099.
+
+### Full-length HIGGS confirmation
+
+A separate **single run per variant**, in previous-MPS/CPU/new-MPS order,
+uses all 10.5M training rows, 500K held-out rows and 1,000 rounds:
+
+| CPU | Previous MPS | New MPS | Previous / new MPS | CPU / new MPS |
+| ---: | ---: | ---: | ---: | ---: |
+| 296.40 s | 271.79 s | 250.14 s | 1.09× | 1.18× |
+
+This confirms the full-length workload and exact before/after output. One run
+per variant does not establish the repeatability of the long-run speedup.
+Do not substitute these values for the previous milestone's three-run medians.
+
+### Memory and partition costs
+
+Separate 30-round diagnostic runs sample Metal `currentAllocatedSize` and
+`task_vm_info` after each iteration. Physical peak is process-lifetime peak,
+which can precede training. Values below are MiB; these instrumented single-run
+timings are not used in the training medians above.
+
+| Workload | Previous / new maximum sampled Metal allocation | Previous / new process peak physical footprint |
+| --- | ---: | ---: |
+| 25K × 4,096 dense | 4468.8 / 4212.8 | 6543.1 / 6545.2 |
+| 10.5M × 28 HIGGS | 3078.5 / 3357.4 | 9733.6 / 9760.4 |
+
+The wide case saves **256 MiB of Metal buffer allocation** by accumulating first-page
+histograms directly in contiguous integer-cache destinations. Later pages and
+noncontiguous output retain the original staging/addition path. This does not
+establish a lower physical-memory peak or eliminate system paging.
+
+HIGGS gains a 294 MB (280.4 MiB) column cache; net measured Metal allocation rises
+about **279 MiB** after the histogram saving. It is limited to dense eight-bit
+compressed pages with 256 symbols, 4–64 features, at least 2^20 rows and contiguous
+full-head/full-tail storage. Each page's cache is capped at the smaller of
+512 MiB and one thirty-second of Metal's recommended working-set size. This is
+not a global budget. Wide, small and split-storage pages use the original path.
+The page owns the cache and initializes it once, including concurrent first use.
+
+Seven paired isolated repeats on five stable within-node row layouts gave
+**1.6–2.25× partition speedups** with exact CPU stable-partition output. The
+294 MB transpose took 17.228 ms in that diagnostic. Whole-training measurements
+include cache creation; initial transpose time is in `index_gpu_time_ns`, separate
+from partition commands. Neither isolated timings nor counter sums are training
+time. GPU counter families may overlap.
+
+Median HIGGS GPU-family durations in the repeated 100-round runs:
+
+| Variant | Partition | Histogram |
+| --- | ---: | ---: |
+| Previous MPS | 7.052 s | 6.853 s |
+| New MPS | 4.319 s | 6.773 s |
+
+The remaining histogram kernel was also profiled: two- and eight-feature tiles
+were slower than the existing four-feature tile and were rejected. Dense-byte
+classifier specialization and a SIMD rank scan gave small inconsistent gains
+and were also rejected. An allocation-lifetime probe disproved the suspected
+autorelease retention; no pool change or persistent split-scratch policy was added.
+
+### Correctness and held-out quality
+
+All 20 MPS training workers reproduce their baseline models, margin arrays and
+per-round metric histories exactly. Every worker also checks same-model CPU
+prediction exactly. New native checks cover output offsets, guards, empty nodes,
+page replacement/addition, cache lifetime, concurrent first use, reuse and fallback
+layouts. Independently trained CPU/MPS models can still differ:
+
+| Workload | CPU accuracy | MPS accuracy | CPU log loss | MPS log loss |
+| --- | ---: | ---: | ---: | ---: |
+| 25K × 4,096 dense, synthetic | 0.7036 | 0.6848 | 0.5963 | 0.5873 |
+| HIGGS: 10.5M × 28 | 0.7415 | 0.7422 | 0.5113 | 0.5110 |
+| 100K × 32 categorical, synthetic | 0.7178 | 0.7178 | 0.6190 | 0.6190 |
+| HIGGS: 10.5M × 28, 1,000 rounds | 0.7612 | 0.7617 | 0.4828 | 0.4827 |
+
+The wide CPU/MPS accuracy difference already existed in the baseline. Exact
+before/after MPS agreement does not resolve its cause. Power-source and
+wall/monotonic-clock checks pass for every accepted worker. System swap is
+system-wide, and neither RSS nor Metal allocation measures total system GPU
+physical memory.
+
+### Reproduce the workloads
+
+Use a fresh output directory for each run. Prepare HIGGS once if it is not cached:
+
+```sh
+.venv/bin/python scripts/prepare_published_data.py higgs
+.venv/bin/python scripts/profile_training.py --case wide --rows 25000 \
+  --features 4096 --informative-features 64 --rounds 100 --threads 8 \
+  --repeats 3 --output results/profile-wide-4096
+.venv/bin/python scripts/profile_training.py --case higgs --rounds 100 \
+  --threads 8 --repeats 3 --output results/profile-higgs-100
+.venv/bin/python scripts/profile_training.py --case categorical --rows 100000 \
+  --features 32 --categories 256 --informative-features 16 --rounds 100 \
+  --threads 8 --repeats 3 --output results/profile-categorical
+```
+
+Use `--rounds 1000` for full-length HIGGS. The public record includes every
+before/after worker command and frozen `--package-dir` library hash; the commands
+above measure the built package in the current checkout. Historical milestones follow.
+
+## Regression and broader benchmark milestone (048dc86)
+
 The 2026-11-06 milestone starts from `28908e1`. Its full standard regression
 passed 106 native groups and 4,001 Python tests, with two expected platform
 skips. The final optimization then passed seven native groups, 427 Python tests

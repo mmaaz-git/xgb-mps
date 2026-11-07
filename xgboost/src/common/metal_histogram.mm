@@ -12,6 +12,7 @@
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <random>
@@ -837,12 +838,58 @@ struct CompressedParams {
 };
 static_assert(sizeof(CompressedParams) == 32);
 class Page final : public QuantizedPage {
+  id<MTLBuffer> partition_index_;
+  std::once_flag partition_index_once_;
+
  public:
   id<MTLBuffer> index, row_ptr, offsets, cuts;
   id<MTLBuffer> tail;
   CompressedParams compressed{};
   std::size_t compressed_bytes{0};
   bool IsCompressed() const { return compressed.bits != 0; }
+  id<MTLBuffer> PartitionIndex(Runtime const& rt, std::size_t rows) {
+    // Large, narrow dense pages repeatedly gather one feature per row during
+    // partitioning. A column cache improves locality without changing the
+    // canonical compressed page used by histograms, prediction and exports.
+    // Bound the extra allocation; wide/small/split-storage pages stay compressed.
+    if (!IsCompressed() || !compressed.dense || compressed.bits != 8 || compressed.symbols != 256 ||
+        compressed.stride != compressed.features || compressed.features < 4 ||
+        compressed.features > 64 || rows < (std::size_t{1} << 20) ||
+        (compressed.split != 0 && compressed.split < compressed_bytes)) return nil;
+    auto budget = std::min<std::size_t>(std::size_t{512} << 20,
+                                       rt.device.recommendedMaxWorkingSetSize / 32);
+    if (rows > budget / compressed.features) return nil;
+    std::call_once(partition_index_once_, [&] {
+      auto bytes = rows * compressed.features;
+      auto source = compressed.split == 0 ? tail : index;
+      CHECK_LE(bytes + 8, source.length);
+      auto output = Allocate(rt, bytes);
+      struct {
+        std::uint64_t rows;
+        std::uint32_t features, width;
+      } p{rows, compressed.features, 1};
+      auto command = [rt.queue commandBuffer];
+      CHECK(command);
+      auto encoder = [command computeCommandEncoder];
+      CHECK(encoder);
+      [encoder setComputePipelineState:rt.transpose_index_pipeline];
+      [encoder setBuffer:source offset:8 atIndex:0];
+      [encoder setBuffer:output offset:0 atIndex:1];
+      [encoder setBytes:&p length:sizeof(p) atIndex:2];
+      [encoder dispatchThreadgroups:MTLSizeMake((p.features + 31) / 32, (p.rows + 31) / 32, 1)
+              threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
+      [encoder endEncoding];
+      [command commit];
+      [command waitUntilCompleted];
+      CHECK(command.status == MTLCommandBufferStatusCompleted) << ErrorText(command.error);
+      auto elapsed = command.GPUEndTime - command.GPUStartTime;
+      if (elapsed > 0)
+        index_gpu_time_ns.fetch_add(static_cast<std::uint64_t>(elapsed * 1e9),
+                                    std::memory_order_relaxed);
+      partition_index_ = output;
+    });
+    return partition_index_;
+  }
   Page(Runtime const& rt, HistogramCuts const& values, EllpackInfo info, id<MTLBuffer> head,
        id<MTLBuffer> tail, std::uint64_t split, std::size_t bytes)
       : index{head}, tail{tail}, compressed{split,
@@ -1082,6 +1129,8 @@ class MetalRows final : public DeviceRows {
     if (blocks.empty()) return result;
     @autoreleasepool {
       auto page = GetPage(rt_, gidx);
+      auto column_index = page->PartitionIndex(rt_, size_);
+      bool compressed = page->IsCompressed() && !column_index;
       auto command = [rt_.queue commandBuffer];
       CHECK(command);
       this->EnsureReady(command);
@@ -1104,15 +1153,15 @@ class MetalRows final : public DeviceRows {
       auto left = Workspace(&left_, splits.size() * sizeof(std::uint64_t));
       Params p{size_,
                base_,
-               static_cast<std::uint32_t>(gidx.index.GetBinTypeSize()),
-               static_cast<std::uint32_t>(gidx.IsDense()),
+               column_index ? 1u : static_cast<std::uint32_t>(gidx.index.GetBinTypeSize()),
+               static_cast<std::uint32_t>(column_index || gidx.IsDense()),
                static_cast<std::uint32_t>(splits.size()),
                static_cast<std::uint32_t>(blocks.size())};
       auto encoder = [command computeCommandEncoder];
       CHECK(encoder);
-      [encoder setComputePipelineState:page->IsCompressed() ? rt_.ellpack_partition_pipeline
-                                                            : rt_.partition_classify_pipeline];
-      [encoder setBuffer:page->index offset:0 atIndex:0];
+      [encoder setComputePipelineState:compressed ? rt_.ellpack_partition_pipeline
+                                                 : rt_.partition_classify_pipeline];
+      [encoder setBuffer:column_index ? column_index : page->index offset:0 atIndex:0];
       [encoder setBuffer:page->row_ptr offset:0 atIndex:1];
       [encoder setBuffer:page->offsets offset:0 atIndex:2];
       [encoder setBuffer:page->cuts offset:0 atIndex:3];
@@ -1127,7 +1176,7 @@ class MetalRows final : public DeviceRows {
       // so rows outside the selected ranges are preserved.
       [encoder setBuffer:(full_coverage ? rows_ : saved_rows_) offset:0 atIndex:10];
       [encoder setBytes:&p length:sizeof(p) atIndex:11];
-      if (page->IsCompressed()) {
+      if (compressed) {
         [encoder setBuffer:page->tail offset:0 atIndex:12];
         [encoder setBytes:&page->compressed length:sizeof(page->compressed) atIndex:13];
       }
@@ -1894,9 +1943,23 @@ class MetalHistogram final : public Histogram {
       if (nodes.empty() || bins == 0) return;
       CHECK_LE(nodes.size(), std::numeric_limits<std::size_t>::max() / bins / 16);
       auto bytes = nodes.size() * bins * sizeof(QuantizedPair);
-      if (!histogram_buffer_ || histogram_buffer_.length < bytes)
-        histogram_buffer_ = Allocate(rt_, bytes);
-      auto histogram = histogram_buffer_;
+      CHECK(storage);
+      auto shared = static_cast<MetalHistogramBuffer*>(storage);
+      shared->UseQuantization(quantized.gradient_scale_);
+      std::vector<std::uint64_t> output_offsets;
+      bool direct = page_idx == 0;
+      for (auto out : output) {
+        auto offset = out.data() - storage->Data().data();
+        if (!output_offsets.empty())
+          direct = direct && offset == output_offsets.back() + bins;
+        output_offsets.push_back(offset);
+      }
+      // Page zero replaces these slots. Contiguous destinations can receive
+      // integer accumulation directly, without a second histogram allocation.
+      // Later pages and discontiguous destinations retain the staging path.
+      std::size_t histogram_offset = direct ? output_offsets.front() * sizeof(QuantizedPair) : 0;
+      if (!direct) EnsureBuffer(rt_, &histogram_buffer_, bytes);
+      auto histogram = direct ? shared->integers : histogram_buffer_;
       id<MTLCommandBuffer> command = [queue_ commandBuffer];
       CHECK(command);
       auto device_rows = static_cast<MetalRows*>(rows.metal_rows.get());
@@ -1936,7 +1999,7 @@ class MetalHistogram final : public Histogram {
 
       id<MTLBlitCommandEncoder> clear = [command blitCommandEncoder];
       CHECK(clear) << "Metal blit encoder allocation failed.";
-      [clear fillBuffer:histogram range:NSMakeRange(0, bytes) value:0];
+      [clear fillBuffer:histogram range:NSMakeRange(histogram_offset, bytes) value:0];
       [clear endEncoding];
       id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
       CHECK(encoder) << "Metal compute encoder allocation failed.";
@@ -1972,7 +2035,7 @@ class MetalHistogram final : public Histogram {
       [encoder setBuffer:page->offsets offset:0 atIndex:2];
       [encoder setBuffer:quantized.gradients_ offset:0 atIndex:3];
       [encoder setBuffer:row_buffer offset:0 atIndex:4];
-      [encoder setBuffer:histogram offset:0 atIndex:5];
+      [encoder setBuffer:histogram offset:histogram_offset atIndex:5];
       [encoder setBytes:&params length:sizeof(params) atIndex:6];
       auto threads = std::min<NSUInteger>(256, pipeline.maxTotalThreadsPerThreadgroup);
       [encoder setBuffer:node_buffer offset:0 atIndex:7];
@@ -2004,30 +2067,31 @@ class MetalHistogram final : public Histogram {
             threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
       }
       [encoder endEncoding];
-      CHECK(storage);
-      auto shared = static_cast<MetalHistogramBuffer*>(storage);
-      shared->UseQuantization(quantized.gradient_scale_);
-      std::vector<std::uint64_t> output_offsets;
-      for (auto out : output) output_offsets.push_back(out.data() - storage->Data().data());
-      auto offset_buffer =
-          Upload(rt_, output_offsets.data(), output_offsets.size() * sizeof(std::uint64_t));
-      struct {
-        std::uint64_t count;
-        std::uint32_t bins, add;
-      } dequantize{nodes.size() * bins, static_cast<std::uint32_t>(bins), page_idx != 0};
-      CHECK_LE(dequantize.count, std::numeric_limits<std::uint32_t>::max());
-      encoder = [command computeCommandEncoder];
-      CHECK(encoder);
-      [encoder setComputePipelineState:rt_.store_integer_hist_pipeline];
-      [encoder setBuffer:histogram offset:0 atIndex:0];
-      [encoder setBuffer:shared->buffer offset:0 atIndex:1];
-      [encoder setBuffer:offset_buffer offset:0 atIndex:2];
-      [encoder setBytes:&dequantize length:sizeof(dequantize) atIndex:3];
-      [encoder setBuffer:quantized.gradient_scale_ offset:0 atIndex:4];
-      [encoder setBuffer:shared->integers offset:0 atIndex:5];
-      [encoder dispatchThreads:MTLSizeMake(dequantize.count, 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
-      [encoder endEncoding];
+      if (direct) {
+        EncodeIntegerStatistics(rt_, command, shared->integers, shared->buffer,
+                                quantized.gradient_scale_, nodes.size() * bins, 1,
+                                histogram_offset, histogram_offset);
+      } else {
+        auto offset_buffer =
+            Upload(rt_, output_offsets.data(), output_offsets.size() * sizeof(std::uint64_t));
+        struct {
+          std::uint64_t count;
+          std::uint32_t bins, add;
+        } dequantize{nodes.size() * bins, static_cast<std::uint32_t>(bins), page_idx != 0};
+        CHECK_LE(dequantize.count, std::numeric_limits<std::uint32_t>::max());
+        encoder = [command computeCommandEncoder];
+        CHECK(encoder);
+        [encoder setComputePipelineState:rt_.store_integer_hist_pipeline];
+        [encoder setBuffer:histogram offset:0 atIndex:0];
+        [encoder setBuffer:shared->buffer offset:0 atIndex:1];
+        [encoder setBuffer:offset_buffer offset:0 atIndex:2];
+        [encoder setBytes:&dequantize length:sizeof(dequantize) atIndex:3];
+        [encoder setBuffer:quantized.gradient_scale_ offset:0 atIndex:4];
+        [encoder setBuffer:shared->integers offset:0 atIndex:5];
+        [encoder dispatchThreads:MTLSizeMake(dequantize.count, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+      }
       staging_time_ns.fetch_add(Elapsed(staging_start), std::memory_order_relaxed);
       auto wait_start = Clock::now();
       [command commit];

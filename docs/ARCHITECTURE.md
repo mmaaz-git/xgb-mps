@@ -43,6 +43,24 @@ only after completion.
 Packed host input owns its copied payload. Only alignment padding is zero-filled;
 the payload is appended directly, preserving offsets and completion lifetime.
 
+First-page histogram builds write directly into contiguous integer-cache output
+slots, then materialize their binary64 view with the existing conversion kernel.
+Only that output range is cleared. Later pages and discontiguous destinations
+retain the temporary histogram and store/add path; they must preserve existing
+cache entries. The quantization scale and integer sums remain authoritative.
+
+Large, narrow compressed pages can own a second, column-major byte index for row
+partitioning. This improves repeated feature gathers while histograms, prediction
+and exports retain the canonical compressed representation. Eligibility requires
+a dense eight-bit page with 256 symbols, 4–64 features, at least 2^20 rows, and
+contiguous full-head or full-tail storage. Each cache is bounded by the smaller
+of 512 MiB and one thirty-second of Metal's recommended working-set size; this
+is a per-page limit, not a global memory budget. Wide, small and split-storage
+pages keep the compressed classifier. `std::call_once` publishes the cache after
+the existing transpose kernel completes. The page owns its lifetime, and repeated
+partitions reuse it. Transposition time is recorded in `index_gpu_time_ns` and
+included in whole-training benchmarks.
+
 ## Numerical and refactoring boundaries
 
 Quantized histogram and split paths preserve integer state. Reconstructing exact
