@@ -106,6 +106,19 @@ turn a historical full run into a current full run.
 
 ## Recorded results
 
+- **Missing-value and physical-memory optimization (`61b2042`):** a fresh standard
+  run of the final backend passed all 106 native groups and 4,001 Python tests,
+  with two expected platform skips. Three installed-wheel workflows passed
+  outside the checkout. All 30 MPS timing runs and six memory diagnostics match
+  their baseline models, margins and per-round metrics exactly. New native
+  coverage exercises sparse histogram ranges, empty/reordered nodes, split and
+  private storage, concurrent first-use cache publication, reuse, and first/later-page
+  accumulation. The preliminary full run exposed a disconnect-test startup
+  race; `10078de` prepares GPU payloads before starting the unchanged five-second
+  fault deadline. A six-second worker startup
+  delay passed both failure checks. Original failure evidence is retained.
+  [Full results, hashes, timings and limits](../validation/missing-and-memory-m3.json).
+
 - **Direct histogram-cache accumulation and bounded partition columns:** the
   final candidate passed five native groups and 148 Python tests with no skips,
   followed by three installed-package workflows outside the checkout. The

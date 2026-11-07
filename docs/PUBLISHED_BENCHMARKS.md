@@ -4,6 +4,107 @@ Current results are first; published CUDA references and earlier local milestone
 remain below as historical evidence. Do not combine ratios from different sessions
 or revisions. CUDA is not available on this Mac.
 
+## Missing-value and memory optimization (M3)
+
+This comparison measures the backend at `61b2042` against the previous Metal library
+(`c33c56c`, also used by `5975096`) and fresh CPU runs. The Apple M3 has a
+10-core GPU, eight CPU cores and 16 GB RAM. There are **45 fresh-process runs**:
+three each of CPU, previous MPS and current MPS for every workload, with rotated
+execution order. [All timings, source hashes, exact-output checks and memory
+measurements](../validation/missing-and-memory-m3.json) are recorded.
+
+All training runs use 100 rounds, depth 6, 256 bins and eight threads. Runtime
+is warmed; training includes quantization and held-out evaluation. Data loading,
+matrix construction and final prediction are separate. Synthetic data uses
+16 informative features, except the very wide case, which uses 64. HIGGS retains
+the published split and parameters described below.
+
+| Training data | CPU median | MPS median | CPU / MPS |
+| --- | ---: | ---: | ---: |
+| 1M × 128, 20% missing | 10.135 s | 12.153 s | 0.83× |
+| 1M × 128, dense | 9.966 s | 8.575 s | 1.16× |
+| 25K × 4,096, dense | 33.684 s | 35.805 s | 0.94× |
+| 1M × 128, 80% missing | 5.073 s | 7.577 s | 0.67× |
+| HIGGS, 10.5M × 28 | 29.908 s | 26.735 s | 1.12× |
+
+The missing-value change reduces MPS time from **18.62 s to 12.15 s**
+(**34.7% less time**) in this paired comparison.
+CPU remains faster on this workload. Other applications, thermal state and
+system-wide paging were not controlled; no builds, correctness tests or other
+benchmarks from this task overlapped these timing runs.
+
+### Every repeat and quality
+
+| Workload | CPU seconds | Previous MPS seconds | Current MPS seconds |
+| --- | --- | --- | --- |
+| 1M × 128, 20% missing | 10.284 / 10.135 / 10.097 | 18.582 / 18.620 / 18.625 | 12.153 / 12.251 / 12.087 |
+| 1M × 128, dense | 9.852 / 9.966 / 11.943 | 9.085 / 9.440 / 10.146 | 8.568 / 8.575 / 9.994 |
+| 25K × 4,096, dense | 32.862 / 33.684 / 33.798 | 33.186 / 36.250 / 33.735 | 34.596 / 36.432 / 35.805 |
+| 1M × 128, 80% missing | 5.073 / 5.058 / 5.223 | 7.612 / 7.843 / 7.844 | 7.560 / 7.577 / 7.643 |
+| HIGGS, 10.5M × 28 | 29.908 / 30.071 / 28.500 | 27.081 / 27.571 / 26.633 | 28.424 / 26.735 / 26.531 |
+
+| Workload | CPU matrix + train | MPS matrix + train | CPU accuracy / log loss | MPS accuracy / log loss |
+| --- | ---: | ---: | ---: | ---: |
+| 1M × 128, 20% missing | 10.427 s | 12.439 s | 0.7313 / 0.5272 | 0.7321 / 0.5275 |
+| 1M × 128, dense | 10.247 s | 8.844 s | 0.7710 / 0.4735 | 0.7706 / 0.4738 |
+| 25K × 4,096, dense | 33.898 s | 36.017 s | 0.7036 / 0.5963 | 0.6848 / 0.5873 |
+| 1M × 128, 80% missing | 5.267 s | 7.777 s | 0.6014 / 0.6569 | 0.6011 / 0.6574 |
+| HIGGS, 10.5M × 28 | 31.253 s | 27.944 s | 0.7415 / 0.5113 | 0.7422 / 0.5110 |
+
+All **30 MPS runs** exactly reproduce their workload’s previous model bytes,
+margin arrays and every-round metrics. Same-device repeats are exact, and every
+MPS worker checks CPU inference of its MPS-trained model exactly. Independently
+trained CPU/MPS models still differ; the pre-existing wide-data quality gap
+remains. This is not NVIDIA execution or proof of universal equivalence.
+
+### Physical memory on very wide data
+
+Separate diagnostics use 25K × 4,096 data, 64 informative features and **30 rounds**.
+There are three fresh processes per variant, in alternating order. The physical
+peak is the Mach task lifetime high-water mark; Metal allocated bytes are sampled
+every 20 ms and may miss short-lived allocations. Diagnostic timings are not
+mixed into the training table.
+
+| Measurement | Previous MPS | Current MPS |
+| --- | ---: | ---: |
+| Median physical peak | 6,587.9 MiB | 6,182.7 MiB |
+| Median sampled Metal allocation peak | 5,605.6 MiB | 4,553.5 MiB |
+
+Previous physical peaks: 6,587.9, 6,573.8, 6,635.7 MiB.
+
+Current physical peaks: 6,182.7, 6,434.1, 6,160.3 MiB.
+
+The physical peak falls **6.2%**. Reusing sketch sorting scratch and omitting
+unused unweighted intermediates reduces temporary allocations; the remaining
+peak is during tree construction. The bounded range-start cache applies only
+to moderately missing medium-width pages, so this wide case does not allocate it.
+Buffer savings are larger than physical-peak savings and are reported separately.
+All six diagnostic outputs match exactly.
+
+The 100-round wide-data timing median is **35.80 s**,
+versus **33.73 s** before the change
+(**6.1% slower** in this comparison).
+The memory reduction does not establish a training-speed improvement.
+
+### Reproduce
+
+```sh
+.venv/bin/python scripts/profile_training.py --case wide --rows 1000000 \
+  --features 128 --informative-features 16 --missing-fraction 0.2 \
+  --rounds 100 --threads 8 --repeats 3 --output results/missing-comparison
+clang++ -O2 -std=c++17 -fobjc-arc scripts/metal_sparse_histogram_benchmark.mm \
+  -framework Metal -framework Foundation -o results/sparse_histogram_benchmark
+results/sparse_histogram_benchmark xgboost/src/common/metal_histogram.metal \
+  1000000 128 256 .2 5 > results/sparse-histogram.jsonl
+```
+
+The isolated kernel profiler checks each result against exact CPU integer sums.
+It profiles explicit kernel choices; production dispatch keeps other geometries
+on their existing paths. Complete before/after commands, memory-probe source
+hashes and rejected 16-bit/coalesced/tile experiments are in the evidence record.
+The retained range cache uses 2,048-bin ranges and one byte per row/range.
+The larger 1,024-bin cache was rejected after regressions on unordered rows.
+
 ## Synthetic workload survey (M3)
 
 This survey measures eight predeclared synthetic binary-classification workloads

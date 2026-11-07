@@ -67,9 +67,9 @@ bash scripts/test.sh --python tests/test_metal_workflows.py
 ```
 
 The test runner builds first and supports focused checks or `--full`. The latest
-full run passed **106 native groups and 4,001 Python tests**, with two expected
-platform skips, on `28908e1`. The latest memory/partition optimization passed
-five native groups, 148 Python tests and three installed-package workflows.
+full run of the optimized backend (`61b2042`) passed **106 native groups and
+4,001 Python tests**, with two expected platform skips. Three workflows also
+passed against the newly installed wheel outside the checkout.
 Workflows include preprocessing, cross-validation, categorical classification, early stopping,
 ranking and model persistence. [Validation commands/results](docs/VALIDATION.md)
 record the revisions and scope. CUDA CI compiles the NVIDIA backend;
@@ -78,15 +78,18 @@ it does not run CUDA kernels.
 ## Performance
 
 Benchmarks compare CPU and MPS on an **Apple M3, 10-core GPU, 16 GB RAM**, using
-all eight CPU cores. On HIGGS (10.5M × 28, 100 rounds), median training time is
-**37.78 s on CPU versus 30.50 s on MPS** across three repeats: MPS is **1.24× as fast**.
+all eight CPU cores. In the latest three-repeat comparison, HIGGS (10.5M × 28,
+100 rounds) takes **29.91 s on CPU versus 26.74 s on MPS**: MPS is **1.12× as fast**.
+For 1M × 128 data with 20% missing values, CPU takes **10.13 s** and MPS
+**12.15 s**; CPU remains faster. For 25K × 4,096 data, median peak physical memory
+is **6.04 GiB**, down 6.2% in separate 30-round diagnostics.
 
-A further **48-run synthetic survey** covers 100K–4M rows, 32–1,024 columns,
-missing values and categorical data. CPU/MPS speed ratios range from
-**0.28× to 1.41×**, with ratios above 1 favoring MPS.
-See the [full synthetic results](docs/PUBLISHED_BENCHMARKS.md#synthetic-workload-survey-m3)
-and [real-data results and earlier measurements](docs/PUBLISHED_BENCHMARKS.md#current-m3-results)
-for every workload, repeat, setup cost and held-out quality comparison.
+The [latest five-workload comparison](docs/PUBLISHED_BENCHMARKS.md#missing-value-and-memory-optimization-m3)
+reports every CPU/MPS repeat, setup cost, held-out quality and memory measurement.
+An [earlier 48-run synthetic survey](docs/PUBLISHED_BENCHMARKS.md#synthetic-workload-survey-m3)
+covers 100K–4M rows, 32–1,024 columns and categorical data on the previous backend.
+[Real-data results and earlier measurements](docs/PUBLISHED_BENCHMARKS.md#current-m3-results)
+retain their original revision and scope.
 
 Training timings include quantization and held-out evaluation, with warmed
 runtime; loading, matrix construction and final prediction are separate.
