@@ -3,6 +3,9 @@
 Each CPU/MPS repeat runs in a fresh process. HIGGS and Covertype use the prepared
 cache from prepare_published_data.py; wide and categorical generate deterministic data. GPU diagnostic
 durations can overlap and must not be added to estimate CPU or total wall time.
+--cut-device is a correctness diagnostic: it shares quantile cuts across devices
+and moves their construction into setup, so its training timings are not
+comparable with ordinary DMatrix runs.
 """
 
 import argparse
@@ -139,7 +142,23 @@ def worker(args):
     setup = time.perf_counter()
     matrix_options = ({"enable_categorical": True, "feature_types": ["c"] * args.features}
                       if args.case == "categorical" else {})
-    train = xgb.DMatrix(train_x, label=train_y, nthread=args.threads, **matrix_options)
+    cut_record = None
+    if args.cut_device:
+        options = dict(label=train_y, nthread=args.threads, max_bin=params["max_bin"], **matrix_options)
+        reference = xgb.QuantileDMatrix(train_x, **options,
+            **({"device": "mps"} if args.cut_device == "mps" else {}))
+        train = xgb.QuantileDMatrix(train_x, ref=reference, **options,
+            **({"device": "mps"} if args.worker == "mps" else {}))
+        ptr, cuts = train.get_quantile_cut()
+        for actual, expected in zip((ptr, cuts), reference.get_quantile_cut()):
+            np.testing.assert_array_equal(actual, expected)
+        np.savez(path.with_suffix(".cuts.npz"), ptr=ptr, cuts=cuts)
+        cut_record = {"device": args.cut_device, "count": len(cuts),
+                      "ptr_sha256": hashlib.sha256(ptr.tobytes()).hexdigest(),
+                      "cuts_sha256": hashlib.sha256(cuts.tobytes()).hexdigest()}
+        del reference
+    else:
+        train = xgb.DMatrix(train_x, label=train_y, nthread=args.threads, **matrix_options)
     test = xgb.DMatrix(test_x, label=test_y, nthread=args.threads, **matrix_options)
     setup_seconds = time.perf_counter() - setup
     segments = []
@@ -196,6 +215,7 @@ def worker(args):
         "status": "complete" if clock_valid else "invalid_clock_discontinuity",
         "started_utc": datetime.fromtimestamp(wall_start, timezone.utc).isoformat(),
         "case": args.case, "device": args.worker, "params": params, "rounds": args.rounds,
+        "common_cut_diagnostic": cut_record,
         "train_shape": list(train_x.shape), "test_shape": list(test_x.shape), "dataset": dataset,
         "package": str(package), "library": str(library), "library_sha256": digest(library),
         "loading_seconds": loading_seconds, "dmatrix_seconds": setup_seconds,
@@ -231,7 +251,8 @@ def main(args):
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "working_tree": subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True).strip(),
         "script_sha256": digest(Path(__file__)),
-        "timing": "Fresh worker per run; warm runtime; train includes quantization/evaluation; setup and prediction separate. verbosity=3 host monitors are in worker logs.",
+        "timing": ("Common-cut diagnostic: quantization is in setup; do not compare training times with ordinary runs."
+                   if args.cut_device else "Fresh worker per run; warm runtime; train includes quantization/evaluation; setup and prediction separate. verbosity=3 host monitors are in worker logs."),
         "counter_note": "gpu_time_ns is histogram GPU time; family counters can overlap. Do not sum them or add host wait_time_ns to GPU time.",
         "comparison_note": "Independent CPU/MPS training may choose different cuts. Report margins and held-out quality; MPS-model CPU prediction is checked exactly in each MPS worker.",
     }
@@ -265,6 +286,11 @@ def main(args):
                     "accuracy_difference": pair["mps"]["test_accuracy"] - pair["cpu"]["test_accuracy"],
                     "logloss_difference": pair["mps"]["test_logloss"] - pair["cpu"]["test_logloss"],
                 })
+                if args.cut_device:
+                    assert pair["cpu"]["common_cut_diagnostic"] == pair["mps"]["common_cut_diagnostic"]
+                    from diagnose_higgs import model_difference, trees, xgb
+                    models = [xgb.Booster(model_file=args.output / f"{d}-{repeat}.ubj") for d in ("cpu", "mps")]
+                    report["comparisons"][-1]["model_difference"] = model_difference(*(trees(m) for m in models))
         report["training_median_seconds"] = {
             d: statistics.median(r["training_seconds"] for r in report["runs"] if r["device"] == d)
             for d in args.devices}
@@ -290,6 +316,8 @@ if __name__ == "__main__":
                         help="Distinct values per feature for the categorical case")
     parser.add_argument("--missing-fraction", type=float, default=0,
                         help="Synthetic cases: independently replace this fraction of features with NaN after generating labels")
+    parser.add_argument("--cut-device", choices=["cpu", "mps"],
+                        help="Correctness diagnostic with fixed reference cuts; changes setup/training timing boundaries")
     parser.add_argument("--rounds", type=int, default=100)
     parser.add_argument("--threads", type=int, default=os.cpu_count())
     parser.add_argument("--repeats", type=int, default=3)
@@ -306,6 +334,8 @@ if __name__ == "__main__":
         args.case not in {"wide", "categorical"} or not 1 <= args.informative_features <= args.features
     ):
         parser.error("informative-features requires wide/categorical and a count in [1, features]")
+    if args.cut_device and args.case == "categorical":
+        parser.error("The common-cut tree comparison currently requires numeric features")
     if args.case == "categorical" and not 2 <= args.categories <= 65536:
         parser.error("categories must be in [2, 65536]")
     if not 0 <= args.missing_fraction < 1 or (

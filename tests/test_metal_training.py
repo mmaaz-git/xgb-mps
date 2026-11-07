@@ -147,3 +147,35 @@ def test_leaf_cache_with_subnormal_hessians(metal, targets):
         xgb.train(params | {"device": device}, d, 4, obj=objective)
         margins[device] = seen
     np.testing.assert_array_equal(margins["mps"], margins["cpu"])
+
+
+@pytest.mark.parametrize("cut_device", ["cpu", "mps"])
+def test_wide_common_cut_training(metal, cut_device):
+    """Hold cuts fixed to isolate wide split screening from sketch differences."""
+    rng = np.random.default_rng(1701)
+    x = rng.standard_normal((2048, 1024), dtype=np.float32)
+    y = (x[:, 0] + x[:, 137] - x[:, 775] + .2 * rng.standard_normal(len(x)) > 0).astype(np.float32)
+    p = dict(tree_method="hist", max_depth=4, max_bin=64, nthread=2,
+             objective="binary:logistic", base_score=.5, seed=3)
+    reference = xgb.QuantileDMatrix(x, label=y, max_bin=64, nthread=2,
+                                  **({"device": "mps"} if cut_device == "mps" else {}))
+    models = {}
+    for device in ["cpu", "mps"]:
+        matrix = xgb.QuantileDMatrix(x, label=y, max_bin=64, nthread=2, ref=reference,
+                                   **({"device": "mps"} if device == "mps" else {}))
+        for actual, expected in zip(matrix.get_quantile_cut(), reference.get_quantile_cut()):
+            np.testing.assert_array_equal(actual, expected)
+        before = xgb.metal_info()
+        models[device] = xgb.train(p | {"device": device}, matrix, 12)
+        assert (xgb.metal_info()["histogram_dispatches"] > before["histogram_dispatches"]) == (device == "mps")
+    # Node IDs may differ between schedulers. Compare recursively by tree path.
+    def splits(tree, node=0):
+        if tree["left_children"][node] == -1:
+            return None
+        return (tree["split_indices"][node], tree["split_conditions"][node],
+                tree["default_left"][node], splits(tree, tree["left_children"][node]),
+                splits(tree, tree["right_children"][node]))
+    assert [splits(t) for t in trees(models["mps"])] == [splits(t) for t in trees(models["cpu"])]
+    test = xgb.DMatrix(x, nthread=2)
+    np.testing.assert_allclose(models["mps"].predict(test, output_margin=True),
+                               models["cpu"].predict(test, output_margin=True), rtol=2e-5, atol=2e-5)

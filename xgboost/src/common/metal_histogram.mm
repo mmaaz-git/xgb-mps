@@ -254,7 +254,8 @@ class Runtime {
   id<MTLDevice> device;
   id<MTLCommandQueue> queue;
   id<MTLComputePipelineState> pipeline;
-  id<MTLComputePipelineState> quantized_split_pipeline;
+  id<MTLComputePipelineState> quantized_split_pipeline, resident_quantized_split_pipeline;
+  id<MTLComputePipelineState> feature_gain_bounds_pipeline, feature_gain_prune_pipeline;
   id<MTLComputePipelineState> quantized_multi_split_pipeline;
   id<MTLComputePipelineState> feature_lengths_pipeline, feature_tasks_pipeline,
       feature_winners_pipeline;
@@ -413,9 +414,12 @@ class Runtime {
       leaf_positions_pipeline = make_pipeline(@"xgb_leaf_positions");
       transpose_index_pipeline = make_pipeline(@"xgb_transpose_index");
       quantized_split_pipeline = make_pipeline(@"xgb_evaluate_quantized_splits");
+      resident_quantized_split_pipeline = make_pipeline(@"xgb_evaluate_resident_quantized_splits");
       quantized_multi_split_pipeline = make_pipeline(@"xgb_evaluate_quantized_multi_splits");
       feature_lengths_pipeline = make_pipeline(@"xgb_feature_split_lengths");
       feature_tasks_pipeline = make_pipeline(@"xgb_feature_split_tasks");
+      feature_gain_bounds_pipeline = make_pipeline(@"xgb_feature_gain_bounds");
+      feature_gain_prune_pipeline = make_pipeline(@"xgb_feature_gain_prune");
       feature_winners_pipeline = make_pipeline(@"xgb_feature_split_winners");
       split_finalize_pipeline = make_pipeline(@"xgb_finalize_split_nodes");
       split_weight_store_pipeline = make_pipeline(@"xgb_store_split_weights");
@@ -753,7 +757,7 @@ class MetalSplitWorkspace final : public SplitWorkspace {
   id<MTLBuffer> gathered_bounds;
   id<MTLBuffer> category_input, category_output, category_error;
   id<MTLBuffer> feature_ids, feature_lengths, feature_segments, feature_offsets,
-      feature_error, feature_selected;
+      feature_error, feature_selected, feature_gain_bounds;
   std::size_t candidate_count{0};
   std::size_t candidate_child_count{0};
   struct SumShape { std::uint32_t parent_begin, targets; };
@@ -10183,6 +10187,7 @@ static void EvaluateQuantizedSplitsImpl(
       CHECK_GE(task.end, task.begin);
       CHECK_LE(task.end - task.begin, std::numeric_limits<std::int32_t>::max());
       CHECK_LE(task.kind, 2);
+      CHECK_EQ(task.padding, 0);  // Reserved for resident feature screening.
       previous = task.end;
     }
   }
@@ -10191,7 +10196,7 @@ static void EvaluateQuantizedSplitsImpl(
     auto scratch = static_cast<MetalSplitWorkspace*>(workspace);
     auto command = pending ? pending : [rt.queue commandBuffer];
     CHECK(command);
-    auto hist = resident_bins ? scratch->hist
+    auto hist = resident_bins ? storage->integers
                               : GatherHistograms(rt, histograms, bins, command, scratch, true);
     auto input = Scratch(rt, &scratch->input, tasks.size_bytes(), resident_bins ? nullptr : tasks.data());
     auto output = Scratch(rt, &scratch->output, tasks.size() * sizeof(QuantizedSplitResult));
@@ -10201,7 +10206,8 @@ static void EvaluateQuantizedSplitsImpl(
     auto scans = Scratch(rt, &scratch->scans, bins * sizeof(GradientPairInt64));
     auto encoder = [command computeCommandEncoder];
     CHECK(encoder);
-    [encoder setComputePipelineState:rt.quantized_split_pipeline];
+    auto pipeline = resident_bins ? rt.resident_quantized_split_pipeline : rt.quantized_split_pipeline;
+    [encoder setComputePipelineState:pipeline];
     [encoder setBuffer:hist offset:0 atIndex:0];
     [encoder setBuffer:input offset:0 atIndex:1];
     [encoder setBytes:&parameters length:sizeof(parameters) atIndex:2];
@@ -10210,8 +10216,9 @@ static void EvaluateQuantizedSplitsImpl(
     [encoder setBuffer:weights offset:0 atIndex:5];
     [encoder setBuffer:scans offset:0 atIndex:6];
     [encoder setBuffer:storage->scale offset:0 atIndex:7];
-    CHECK_EQ(rt.quantized_split_pipeline.threadExecutionWidth, 32);
-    CHECK_GE(rt.quantized_split_pipeline.maxTotalThreadsPerThreadgroup, 32);
+    if (resident_bins) [encoder setBuffer:scratch->feature_segments offset:0 atIndex:8];
+    CHECK_EQ(pipeline.threadExecutionWidth, 32);
+    CHECK_GE(pipeline.maxTotalThreadsPerThreadgroup, 32);
     [encoder dispatchThreadgroups:MTLSizeMake(tasks.size(), 1, 1)
             threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
     [encoder endEncoding];
@@ -11162,7 +11169,9 @@ void EvaluateFeatureSplits(
     auto tasks = Scratch(rt, &scratch->input, count * task_bytes);
     auto final_features = Scratch(rt, &scratch->feature_input, count * sizeof(SplitFinalizeFeature));
     auto segments = Scratch(rt, &scratch->feature_segments, count * targets * sizeof(HistogramGather));
-    auto hist = Scratch(rt, &scratch->hist, bins * sizeof(GradientPairInt64));
+    // Scalar kernels read immutable cache segments directly. Vector kernels
+    // still gather/interleave targets into their existing workspace.
+    auto hist = Scratch(rt, &scratch->hist, vector_leaf ? bins * sizeof(GradientPairInt64) : 0);
     auto source_offsets = Scratch(rt, &scratch->feature_offsets, offsets.size() * sizeof(std::uint64_t),
                                    offsets.data());
     // Gathered node bounds and exact sums remain resident while the GPU repeats
@@ -11200,7 +11209,7 @@ void EvaluateFeatureSplits(
                threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     }
     [tasks_encoder endEncoding];
-    for (std::size_t t = 0; count && t < targets; ++t) {
+    for (std::size_t t = 0; vector_leaf && count && t < targets; ++t) {
       auto storage = static_cast<MetalHistogramBuffer const*>(histograms[t].source);
       auto e = [command computeCommandEncoder];
       CHECK(e);
@@ -11209,6 +11218,37 @@ void EvaluateFeatureSplits(
       [e setBuffer:hist offset:0 atIndex:1];
       [e setBuffer:segments offset:t * count * sizeof(HistogramGather) atIndex:2];
       [e dispatchThreadgroups:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [e endEncoding];
+    }
+    // Wide scalar workloads spend most of split time evaluating losing
+    // features. Enclose their raw gains first; strict cross-feature rejection
+    // preserves ties. Missing/constraint/uncertain cases remain unfiltered.
+    // Keep all three dispatches in the existing command, without a readback.
+    if (!vector_leaf && columns >= 1024 && count >= 4096 &&
+        parameters.reg_alpha == 0 && parameters.max_delta_step == 0) {
+      auto ranges = Scratch(rt, &scratch->feature_gain_bounds, count * 2 * sizeof(float));
+      auto node_input = Scratch(rt, &scratch->node_input,
+                                 nodes.size() * sizeof(SplitFinalizeNode), nodes.data());
+      auto storage = static_cast<MetalHistogramBuffer const*>(histograms[0].source);
+      auto e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.feature_gain_bounds_pipeline];
+      [e setBuffer:storage->integers offset:0 atIndex:0];
+      [e setBuffer:tasks offset:0 atIndex:1];
+      [e setBytes:&parameters length:sizeof(parameters) atIndex:2];
+      [e setBuffer:ranges offset:0 atIndex:3];
+      [e setBuffer:storage->scale offset:0 atIndex:4];
+      [e setBuffer:segments offset:0 atIndex:5];
+      [e dispatchThreadgroups:MTLSizeMake(count, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+      [e endEncoding];
+      e = [command computeCommandEncoder];
+      CHECK(e);
+      [e setComputePipelineState:rt.feature_gain_prune_pipeline];
+      [e setBuffer:ranges offset:0 atIndex:0];
+      [e setBuffer:tasks offset:0 atIndex:1];
+      [e setBuffer:node_input offset:0 atIndex:2];
+      [e dispatchThreadgroups:MTLSizeMake(nodes.size(), 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
       [e endEncoding];
     }
     if (vector_leaf) {

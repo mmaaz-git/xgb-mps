@@ -6675,19 +6675,91 @@ inline void xgb_quantized_split_update(float gain, ulong2 left, ulong2 right, ui
   if (xgb_cuda_float_lt(best.gain, gain))
     best = {left.x, left.y, right.x, right.y, gain, int(bin), missing, partition, 0, 0, 0, 0};
 }
-kernel void xgb_evaluate_quantized_splits(
+// Conservative raw-gain ranges for one numeric feature. This is a prepass;
+// unresolved ranges and missing/constraint cases retain the full evaluator.
+kernel void xgb_feature_gain_bounds(
     device const ulong2* hist [[buffer(0)]], device const QuantizedSplitTask* tasks [[buffer(1)]],
-    constant SplitParameters& p [[buffer(2)]], device QuantizedSplitResult* results [[buffer(3)]],
-    device uint* order [[buffer(4)]], device float* weights [[buffer(5)]],
-    device ulong2* scans [[buffer(6)]], device const GradientScale& scale [[buffer(7)]],
+    constant SplitParameters& p [[buffer(2)]], device float2* bounds [[buffer(3)]],
+    device const GradientScale& scale [[buffer(4)]],
+    device const HistogramGather* segments [[buffer(5)]],
     uint task_id [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]) {
   QuantizedSplitTask task = tasks[task_id];
+  uint n = task.end - task.begin;
+  bool eligible = XGB_METAL_SPLIT_FILTER && task.kind == 0 && n >= 32 && task.monotone == 0 &&
+      task.lower == -INFINITY && task.upper == INFINITY &&
+      (as_type<uint>(p.reg_alpha) & 0x7fffffffu) == 0 &&
+      (as_type<uint>(p.max_delta_step) & 0x7fffffffu) == 0 &&
+      scale.grad_exponent >= -96 && scale.grad_exponent <= 96 &&
+      scale.hess_exponent >= -96 && scale.hess_exponent <= 96;
+  if (!eligible) {
+    if (!lane) bounds[task_id] = float2(-INFINITY, INFINITY);
+    return;
+  }
+  ulong2 parent(task.pg, task.ph), carry(0);
+  float lower = -INFINITY, upper = -INFINITY;
+  for (uint base = 0; base < n; base += 32) {
+    uint i = base + lane;
+    ulong2 value = i < n ? hist[segments[task_id].source + i] : ulong2(0);
+    ulong2 prefix(xgb_simd_prefix64(value.x), xgb_simd_prefix64(value.y));
+    prefix += carry;
+    if (i < n) {
+      ulong2 left = prefix - value, right = parent - left;
+      // Zero/negative integer Hessians are certainly invalid. Two outward
+      // FP32 ULPs enclose integer->binary64->FP32 conversion for positive ones.
+      bool invalid = as_type<long>(left.y) <= 0 || as_type<long>(right.y) <= 0;
+      if (!invalid) {
+        float2 h = ldexp(float2(as_type<long>(left.y), as_type<long>(right.y)),
+                          int2(-scale.hess_exponent));
+        float2 hi(xgb_round_up(xgb_round_up(h.x)), xgb_round_up(xgb_round_up(h.y)));
+        invalid = any(hi < p.min_child_weight);
+      }
+      if (!invalid) {
+        float2 bound = xgb_quantized_split_gain_bound(left, right, scale, p);
+        lower = max(lower, bound.x);
+        upper = max(upper, bound.y);
+      }
+    }
+    uint2 lo = simd_broadcast(uint2(prefix), 31), hi = simd_broadcast(uint2(prefix >> 32), 31);
+    carry = ulong2(lo) | (ulong2(hi) << 32);
+  }
+  lower = simd_max(lower);
+  upper = simd_max(upper);
+  if (!lane) bounds[task_id] = all(parent == carry) ? float2(lower, upper)
+                                                  : float2(-INFINITY, INFINITY);
+}
+
+kernel void xgb_feature_gain_prune(
+    device const float2* bounds [[buffer(0)]], device QuantizedSplitTask* tasks [[buffer(1)]],
+    device const uint4* nodes [[buffer(2)]], uint node [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]]) {
+  uint begin = nodes[node].x, end = nodes[node].y;
+  float cutoff = -INFINITY;
+  for (uint i = begin + lane; i < end; i += 32) cutoff = max(cutoff, bounds[i].x);
+  cutoff = simd_max(cutoff);
+  for (uint i = begin + lane; i < end; i += 32)
+    tasks[i].padding = xgb_cuda_float_lt(bounds[i].y, cutoff);
+}
+
+// Histogram input is a read-only feature view; scan/order scratch uses task offsets.
+inline void xgb_evaluate_quantized_splits_impl(
+    device const ulong2* hist, device const QuantizedSplitTask* tasks,
+    constant SplitParameters& p, device QuantizedSplitResult* results,
+    device uint* order, device float* weights,
+    device ulong2* scans, device const GradientScale& scale,
+    uint task_id, uint lane) {
+  QuantizedSplitTask task = tasks[task_id];
+  // The resident feature prepass sets this reserved field only when the
+  // feature cannot win. Ordinary standalone tasks always leave it zero.
+  if (task.padding) {
+    if (!lane) results[task_id] = {0, 0, 0, 0, -MAXFLOAT, -1, 0, 0, 0, 0, 0, 0};
+    return;
+  }
   uint n = task.end - task.begin;
   ulong2 parent(task.pg, task.ph);
   if (task.kind == 2) {
     for (uint i = lane; i < n; i += 32) {
       order[task.begin + i] = i;
-      weights[task.begin + i] = xgb_split_weight(xgb_split_dequantize(hist[task.begin + i], scale),
+      weights[task.begin + i] = xgb_split_weight(xgb_split_dequantize(hist[i], scale),
                                                  p, -INFINITY, INFINITY);
     }
   }
@@ -6711,7 +6783,7 @@ kernel void xgb_evaluate_quantized_splits(
     ulong2 value(0);
     if (i < n) {
       uint bin = task.kind == 2 ? order[task.begin + i] : i;
-      value = hist[task.begin + bin];
+      value = hist[bin];
     }
     ulong2 prefix(xgb_simd_prefix64(value.x), xgb_simd_prefix64(value.y));
     prefix += carry;
@@ -6744,7 +6816,7 @@ kernel void xgb_evaluate_quantized_splits(
     for (uint i = lane; i < n; i += 32) {
       // Numeric: EXCLUSIVE prefix. One-hot: all nonmissing bins except i.
       ulong2 scan = task.kind == 0 ? (i ? scans[task.begin + i - 1] : ulong2(0))
-                                   : carry - hist[task.begin + i];
+                                   : carry - hist[i];
       // Strict rejection keeps all possible winners and equal-gain ties. An
       // unbounded interval falls through to the original full-precision gain.
       if (screen && weights[task.begin + i] < cutoff) continue;
@@ -6786,6 +6858,27 @@ kernel void xgb_evaluate_quantized_splits(
     best.frh = right.h.bits;
     results[task_id] = best;
   }
+}
+
+kernel void xgb_evaluate_quantized_splits(
+    device const ulong2* hist [[buffer(0)]], device const QuantizedSplitTask* tasks [[buffer(1)]],
+    constant SplitParameters& p [[buffer(2)]], device QuantizedSplitResult* results [[buffer(3)]],
+    device uint* order [[buffer(4)]], device float* weights [[buffer(5)]],
+    device ulong2* scans [[buffer(6)]], device const GradientScale& scale [[buffer(7)]],
+    uint task_id [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]) {
+  xgb_evaluate_quantized_splits_impl(
+      hist + tasks[task_id].begin, tasks, p, results, order, weights, scans, scale, task_id, lane);
+}
+
+kernel void xgb_evaluate_resident_quantized_splits(
+    device const ulong2* hist [[buffer(0)]], device const QuantizedSplitTask* tasks [[buffer(1)]],
+    constant SplitParameters& p [[buffer(2)]], device QuantizedSplitResult* results [[buffer(3)]],
+    device uint* order [[buffer(4)]], device float* weights [[buffer(5)]],
+    device ulong2* scans [[buffer(6)]], device const GradientScale& scale [[buffer(7)]],
+    device const HistogramGather* segments [[buffer(8)]],
+    uint task_id [[threadgroup_position_in_grid]], uint lane [[thread_index_in_threadgroup]]) {
+  xgb_evaluate_quantized_splits_impl(
+      hist + segments[task_id].source, tasks, p, results, order, weights, scans, scale, task_id, lane);
 }
 
 // CUDA multi_evaluate_splits.cu: inclusive integer scans in both directions,

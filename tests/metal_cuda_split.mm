@@ -12,7 +12,7 @@ namespace ref = cuda_split_reference;
 void Check(bool ok, char const* message) {
   if (!ok) throw std::runtime_error(message);
 }
-std::size_t cases = 0, bins_checked = 0, cancellation_cases = 0;
+std::size_t cases = 0, bins_checked = 0, cancellation_cases = 0, screened_features = 0;
 struct BoundInput {
   ref::Pair left, right;
   ref::Scale scale;
@@ -236,6 +236,14 @@ kernel void test_float_comparison(device const uint2* input [[buffer(0)]],
                                   [library newFunctionWithName:@"xgb_evaluate_quantized_splits"]
                                                             error:&error];
       Check(pipeline != nil, "Missing integer split pipeline");
+      auto resident_pipeline = [device newComputePipelineStateWithFunction:
+          [library newFunctionWithName:@"xgb_evaluate_resident_quantized_splits"] error:&error];
+      Check(resident_pipeline != nil, "Missing resident integer split pipeline");
+      auto bounds_pipeline = [device newComputePipelineStateWithFunction:
+          [library newFunctionWithName:@"xgb_feature_gain_bounds"] error:&error];
+      auto prune_pipeline = [device newComputePipelineStateWithFunction:
+          [library newFunctionWithName:@"xgb_feature_gain_prune"] error:&error];
+      Check(bounds_pipeline && prune_pipeline, "Missing cross-feature screening pipelines");
       auto queue = [device newCommandQueue];
       auto upload = [&](void const* data, std::size_t bytes) {
         auto b = [device newBufferWithLength:std::max<std::size_t>(bytes, 16)
@@ -258,71 +266,131 @@ kernel void test_float_comparison(device const uint2* input [[buffer(0)]],
         std::memset(order.contents, 0xa5, order.length);
         auto weights = upload(nullptr, hist.size() * sizeof(float));
         auto scans = upload(nullptr, hist.size() * sizeof(ref::Pair));
-        auto command = [queue commandBuffer];
-        auto e = [command computeCommandEncoder];
-        [e setComputePipelineState:pipeline];
-        [e setBuffer:h offset:0 atIndex:0];
-        [e setBuffer:t offset:0 atIndex:1];
-        [e setBytes:&params length:sizeof(params) atIndex:2];
-        [e setBuffer:o offset:sizeof(ref::Result) atIndex:3];
-        [e setBuffer:order offset:sizeof(std::uint32_t) atIndex:4];
-        [e setBuffer:weights offset:0 atIndex:5];
-        [e setBuffer:scans offset:0 atIndex:6];
-        [e setBytes:&scale length:sizeof(scale) atIndex:7];
-        [e dispatchThreadgroups:MTLSizeMake(tasks.size(), 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
-        [e endEncoding];
-        [command commit];
-        [command waitUntilCompleted];
-        if (command.status != MTLCommandBufferStatusCompleted)
-          throw std::runtime_error(command.error.localizedDescription.UTF8String);
-        auto actual = static_cast<ref::Result const*>(o.contents) + 1;
-        auto sorted = static_cast<std::uint32_t const*>(order.contents) + 1;
-        for (std::size_t i = 0; i < tasks.size(); ++i) {
-          if (std::memcmp(&actual[i], &expected[i], sizeof(ref::Result))) {
-            auto const& a = actual[i];
-            auto const& b = expected[i];
-            std::fprintf(stderr,
-                         "case=%zu n=%u kind=%u scale=%d/%d constraints=%d bounds=%g/%g "
-                         "p=%g/%g/%g/%g\nactual bin=%d dir=%u partition=%u gain=%.9g (%a) "
-                         "sums=%lld/%lld,%lld/%lld float=%a/%a,%a/%a\n"
-                         "expect bin=%d dir=%u partition=%u gain=%.9g (%a) "
-                         "sums=%lld/%lld,%lld/%lld float=%a/%a,%a/%a\n",
-                         cases + i, tasks[i].end - tasks[i].begin, tasks[i].kind, scale.ge,
-                         scale.he, tasks[i].monotone, tasks[i].lower, tasks[i].upper, params.lambda,
-                         params.alpha, params.delta, params.minimum, a.bin, a.missing, a.partition,
-                         a.gain, a.gain, a.left.g, a.left.h, a.right.g, a.right.h, a.lf.g, a.lf.h,
-                         a.rf.g, a.rf.h, b.bin, b.missing, b.partition, b.gain, b.gain, b.left.g,
-                         b.left.h, b.right.g, b.right.h, b.lf.g, b.lf.h, b.rf.g, b.rf.h);
-            throw std::runtime_error("CUDA-formula split result differs (exact comparison)");
+        auto ranges = upload(nullptr, tasks.size() * 2 * sizeof(float));
+        // Two independent nodes and an empty node exercise range isolation.
+        std::uint32_t half = tasks.size() / 2, count = tasks.size();
+        std::uint32_t nodes[]{0, half, 0, 1, half, count, 1, 1, count, count, 2, 1};
+        auto node_input = upload(nodes, sizeof(nodes));
+        struct Segment { std::uint64_t source; std::uint32_t output, bins, stride, padding; };
+        static_assert(sizeof(Segment) == 24);
+        std::vector<Segment> segments(tasks.size());
+        std::vector<ref::Pair> cache;
+        // Reverse feature storage independently of task order. Every evaluation
+        // must leave the cache unchanged for subsequent nodes/dispatches.
+        for (std::size_t i = tasks.size(); i-- > 0;) {
+          auto task = tasks[i];
+          segments[i] = {cache.size(), task.begin, task.end - task.begin, 1, 0};
+          cache.insert(cache.end(), hist.begin() + task.begin, hist.begin() + task.end);
+        }
+        auto resident_hist = upload(cache.data(), cache.size() * sizeof(ref::Pair));
+        auto gather = upload(segments.data(), segments.size() * sizeof(Segment));
+        for (bool resident : {false, true}) for (bool screened : {false, true}) {
+          std::memcpy(t.contents, tasks.data(), tasks.size() * sizeof(ref::Task));
+          auto command = [queue commandBuffer];
+          if (screened) {
+            auto e = [command computeCommandEncoder];
+            [e setComputePipelineState:bounds_pipeline];
+            [e setBuffer:resident_hist offset:0 atIndex:0];
+            [e setBuffer:t offset:0 atIndex:1];
+            [e setBytes:&params length:sizeof(params) atIndex:2];
+            [e setBuffer:ranges offset:0 atIndex:3];
+            [e setBytes:&scale length:sizeof(scale) atIndex:4];
+            [e setBuffer:gather offset:0 atIndex:5];
+            [e dispatchThreadgroups:MTLSizeMake(tasks.size(), 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+            [e endEncoding];
+            e = [command computeCommandEncoder];
+            [e setComputePipelineState:prune_pipeline];
+            [e setBuffer:ranges offset:0 atIndex:0];
+            [e setBuffer:t offset:0 atIndex:1];
+            [e setBuffer:node_input offset:0 atIndex:2];
+            [e dispatchThreadgroups:MTLSizeMake(3, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+            [e endEncoding];
           }
-          if (tasks[i].kind == 2)
-            for (std::size_t j = 0; j < orders[i].size(); ++j) {
-              if (orders[i][j] != sorted[tasks[i].begin + j]) {
-                auto a = sorted[tasks[i].begin + j], b = orders[i][j];
-                auto wa = ref::Weight(ref::Dequantize(hist[tasks[i].begin + a], scale), params);
-                auto wb = ref::Weight(ref::Dequantize(hist[tasks[i].begin + b], scale), params);
-                auto gpu_weights = static_cast<float const*>(weights.contents);
-                std::fprintf(stderr,
-                             "category case=%zu n=%zu j=%zu actual=%u expected=%u "
-                             "cpu_weights=%a/%a gpu_weights=%a/%a scale=%d/%d\n",
-                             cases + i, orders[i].size(), j, a, b, wa, wb,
-                             gpu_weights[tasks[i].begin + a], gpu_weights[tasks[i].begin + b],
-                             scale.ge, scale.he);
-                throw std::runtime_error("Stable category order differs");
-              }
+          auto e = [command computeCommandEncoder];
+          [e setComputePipelineState:resident ? resident_pipeline : pipeline];
+          [e setBuffer:resident ? resident_hist : h offset:0 atIndex:0];
+          [e setBuffer:t offset:0 atIndex:1];
+          [e setBytes:&params length:sizeof(params) atIndex:2];
+          [e setBuffer:o offset:sizeof(ref::Result) atIndex:3];
+          [e setBuffer:order offset:sizeof(std::uint32_t) atIndex:4];
+          [e setBuffer:weights offset:0 atIndex:5];
+          [e setBuffer:scans offset:0 atIndex:6];
+          [e setBytes:&scale length:sizeof(scale) atIndex:7];
+          if (resident) [e setBuffer:gather offset:0 atIndex:8];
+          [e dispatchThreadgroups:MTLSizeMake(tasks.size(), 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+          [e endEncoding];
+          [command commit];
+          [command waitUntilCompleted];
+          if (command.status != MTLCommandBufferStatusCompleted)
+            throw std::runtime_error(command.error.localizedDescription.UTF8String);
+          auto actual = static_cast<ref::Result const*>(o.contents) + 1;
+          auto sorted = static_cast<std::uint32_t const*>(order.contents) + 1;
+          auto flags = static_cast<ref::Task const*>(t.contents);
+          auto intervals = static_cast<float const*>(ranges.contents);
+          for (std::size_t i = 0; i < tasks.size(); ++i) {
+            if (screened && expected[i].bin >= 0) {
+              Check(intervals[2*i] <= expected[i].gain && expected[i].gain <= intervals[2*i+1],
+                    "Feature gain interval excludes exhaustive oracle maximum");
             }
+            if (flags[i].padding) {
+              auto begin = i < half ? 0u : half, end = i < half ? half : count;
+              float maximum = -std::numeric_limits<float>::max();
+              for (auto j = begin; j < end; ++j) maximum = std::max(maximum, expected[j].gain);
+              Check(expected[i].gain < maximum, "Screening discarded a winning feature or tie");
+              Check(actual[i].bin == -1, "Screened feature remained a valid candidate");
+              ++screened_features;
+              continue;
+            }
+            if (std::memcmp(&actual[i], &expected[i], sizeof(ref::Result))) {
+              auto const& a = actual[i];
+              auto const& b = expected[i];
+              std::fprintf(stderr,
+                           "case=%zu n=%u kind=%u scale=%d/%d constraints=%d bounds=%g/%g "
+                           "p=%g/%g/%g/%g\nactual bin=%d dir=%u partition=%u gain=%.9g (%a) "
+                           "sums=%lld/%lld,%lld/%lld float=%a/%a,%a/%a\n"
+                           "expect bin=%d dir=%u partition=%u gain=%.9g (%a) "
+                           "sums=%lld/%lld,%lld/%lld float=%a/%a,%a/%a\n",
+                           cases + i, tasks[i].end - tasks[i].begin, tasks[i].kind, scale.ge,
+                           scale.he, tasks[i].monotone, tasks[i].lower, tasks[i].upper, params.lambda,
+                           params.alpha, params.delta, params.minimum, a.bin, a.missing, a.partition,
+                           a.gain, a.gain, a.left.g, a.left.h, a.right.g, a.right.h, a.lf.g, a.lf.h,
+                           a.rf.g, a.rf.h, b.bin, b.missing, b.partition, b.gain, b.gain, b.left.g,
+                           b.left.h, b.right.g, b.right.h, b.lf.g, b.lf.h, b.rf.g, b.rf.h);
+              throw std::runtime_error("CUDA-formula split result differs (exact comparison)");
+            }
+            if (tasks[i].kind == 2)
+              for (std::size_t j = 0; j < orders[i].size(); ++j) {
+                if (orders[i][j] != sorted[tasks[i].begin + j]) {
+                  auto a = sorted[tasks[i].begin + j], b = orders[i][j];
+                  auto wa = ref::Weight(ref::Dequantize(hist[tasks[i].begin + a], scale), params);
+                  auto wb = ref::Weight(ref::Dequantize(hist[tasks[i].begin + b], scale), params);
+                  auto gpu_weights = static_cast<float const*>(weights.contents);
+                  std::fprintf(stderr,
+                               "category case=%zu n=%zu j=%zu actual=%u expected=%u "
+                               "cpu_weights=%a/%a gpu_weights=%a/%a scale=%d/%d\n",
+                               cases + i, orders[i].size(), j, a, b, wa, wb,
+                               gpu_weights[tasks[i].begin + a], gpu_weights[tasks[i].begin + b],
+                               scale.ge, scale.he);
+                  throw std::runtime_error("Stable category order differs");
+                }
+              }
+          }
+          auto guard = static_cast<unsigned char const*>(o.contents);
+          for (std::size_t i = 0; i < sizeof(ref::Result); ++i) {
+            Check(guard[i] == 0xa5, "Leading result guard changed");
+            Check(guard[(tasks.size() + 1) * sizeof(ref::Result) + i] == 0xa5,
+                  "Trailing result guard changed");
+          }
+          Check(sorted[-1] == 0xa5a5a5a5u && sorted[hist.size()] == 0xa5a5a5a5u,
+                "Category guard changed");
+          Check(std::memcmp(resident_hist.contents, cache.data(), cache.size()*sizeof(ref::Pair)) == 0,
+                "Resident evaluator mutated the histogram cache");
+          cases += tasks.size();
+          bins_checked += hist.size();
         }
-        auto guard = static_cast<unsigned char const*>(o.contents);
-        for (std::size_t i = 0; i < sizeof(ref::Result); ++i) {
-          Check(guard[i] == 0xa5, "Leading result guard changed");
-          Check(guard[(tasks.size() + 1) * sizeof(ref::Result) + i] == 0xa5,
-                "Trailing result guard changed");
-        }
-        Check(sorted[-1] == 0xa5a5a5a5u && sorted[hist.size()] == 0xa5a5a5a5u,
-              "Category guard changed");
-        cases += tasks.size();
-        bins_checked += hist.size();
       };
       // Multiple features/tasks per dispatch; empty/singleton features, partial
       // warps and multiple chunks. Exact residual bits sit below FP64 precision.
@@ -388,6 +456,27 @@ kernel void test_float_comparison(device const uint2* input [[buffer(0)]],
           run(hist, tasks, scale, {lambda, 0, 0, 0});
         }
       }
+      // Curvature exactly at, just below and just above min_child_weight.
+      // An empty leading bin matches numeric quantile histograms; duplicate
+      // features ensure tied maxima are never discarded across scan chunks.
+      for (float minimum : {0.f, 1.f, std::nextafter(1.f, 0.f), std::nextafter(1.f, INFINITY)}) {
+        std::vector<ref::Pair> hist;
+        std::vector<ref::Task> tasks;
+        for (unsigned f = 0; f < 64; ++f) {
+          auto begin = std::uint32_t(hist.size());
+          ref::Pair total{};
+          for (unsigned i = 0; i < 257; ++i) {
+            ref::Pair value{i < 128 ? (1LL << 32) : -(1LL << 32), 1LL << 32};
+            if (i == 0) value = {0, 0};
+            if (f % 3 == 0) value.g /= 2;
+            hist.push_back(value); total = ref::Add(total, value);
+          }
+          tasks.push_back({begin, std::uint32_t(hist.size()), 0, 257, total, -INFINITY, INFINITY, 0});
+        }
+        run(hist, tasks, {32, 32}, {1, 0, 0, minimum});
+      }
+      Check(screened_features > 0, "Cross-feature checks never exercised rejection");
+      std::printf("PASS %zu conservatively screened features; exhaustive winners/ties retained\n", screened_features);
       // Integer cancellation must survive an FP64-rounded prefix: +/-2^60
       // around a one-unit contribution. Cover both numeric and categorical.
       for (int e : {-80, 0, 54, 100}) {
