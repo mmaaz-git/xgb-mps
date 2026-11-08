@@ -293,3 +293,22 @@ def test_tensor_errors(metal, name):
     complex_data = producer(name, np.ones((11, 3), dtype=np.complex64))
     with pytest.raises(xgb.core.XGBoostError, match="dtype"):
         xgb.QuantileDMatrix(complex_data)
+
+
+@pytest.mark.parametrize("name", ["torch", "mlx"])
+@pytest.mark.parametrize("n_classes", [2, 3])
+def test_sklearn_classifier_native_labels(metal, name, n_classes):
+    """Metal label tensors drive class discovery and match a host-label model."""
+    rng = np.random.default_rng(17)
+    x = rng.normal(size=(600, 6)).astype(np.float32)
+    y = np.digitize(x[:, 0], np.linspace(-1, 1, n_classes - 1)).astype(np.float32)
+    # Native features keep both models on the same Metal sketch; only the labels differ.
+    expected = xgb.XGBClassifier(device="mps", n_estimators=4).fit(producer(name, x), y)
+    model = xgb.XGBClassifier(device="mps", n_estimators=4)
+    model.fit(producer(name, x), producer(name, y))
+    assert model.n_classes_ == n_classes
+    np.testing.assert_array_equal(model.predict_proba(x), expected.predict_proba(x))
+    with pytest.raises(ValueError, match="Invalid classes"):
+        xgb.XGBClassifier(device="mps", n_estimators=1).fit(
+            producer(name, x), producer(name, y + 1))
+

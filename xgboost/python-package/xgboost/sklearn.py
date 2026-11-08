@@ -30,7 +30,8 @@ from scipy.special import softmax
 
 from ._c_api import _parse_version, _py_version
 from ._data_utils import Categories
-from ._metal import MetalOutput
+from ._metal import MetalOutput, is_metal
+from ._metal import to_host as metal_to_host
 from ._typing import (
     ArrayLike,
     EvalsLog,
@@ -1804,6 +1805,11 @@ class XGBClassifier(XGBClassifierMixIn, XGBModel):
                 classes = cp.unique(y)
                 self.n_classes_ = len(classes)
                 expected_classes = cp.array(self.classes_)
+            elif is_metal(y):
+                # Class discovery is a host-side check; training still reads `y` on Metal.
+                classes = np.unique(metal_to_host(y))
+                self.n_classes_ = len(classes)
+                expected_classes = self.classes_
             else:
                 classes = np.unique(np.asarray(y))
                 self.n_classes_ = len(classes)

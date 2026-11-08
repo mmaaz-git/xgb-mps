@@ -361,6 +361,16 @@ def transform(data: Any, *, allow_tensor_shape: bool = False) -> Any:
     )
 
 
+def to_host(data: Any) -> np.ndarray:
+    """Copy a Metal tensor to NumPy for small host-side checks such as class labels."""
+    if isinstance(data, MetalOutput):
+        return data.numpy()
+    cpu = getattr(data, "cpu", None)  # PyTorch tensors cannot be viewed by NumPy on MPS.
+    if callable(cpu):
+        return np.asarray(cpu().detach())
+    return np.asarray(data)  # MLX arrays expose a host view of unified memory.
+
+
 def capture_tensors(*arrays: Any) -> tuple:
     """Retain managed exports through a C call, consuming aliased capsules once."""
     captured = {}
