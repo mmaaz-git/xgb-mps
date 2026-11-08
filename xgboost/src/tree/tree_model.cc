@@ -8,6 +8,7 @@
 #include <dmlc/json.h>
 #include <dmlc/registry.h>
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <limits>  // for numeric_limits
@@ -72,6 +73,41 @@ std::string ToStr(linalg::VectorView<Float> value, bst_target_t truncate_limit =
   ss << value(value.Size() - 1) << "]";
   return ss.str();
 }
+
+template <typename Float>
+std::enable_if_t<std::is_floating_point_v<Float>, std::string> ToJsonNumber(Float value) {
+  if (std::isfinite(value)) {
+    return ToStr(value);  // Keep existing finite-number formatting in inspection dumps.
+  }
+  // Missing-only splits can use infinity. Match the model serializer's
+  // Infinity/NaN spelling instead of ostream's unparseable inf/nan tokens.
+  std::string result;
+  xgboost::Json::Dump(xgboost::Json{xgboost::Number{value}}, &result);
+  return result;
+}
+
+template <typename Float>
+std::string ToJsonNumber(linalg::VectorView<Float> values) {
+  if (values.Size() == 1) return ToJsonNumber(values(0));
+  std::string result = "[";
+  for (std::size_t i = 0; i < values.Size(); ++i) {
+    if (i) result += ", ";
+    result += ToJsonNumber(values(i));
+  }
+  return result + "]";
+}
+
+std::string IntegerThreshold(bst_float condition, bool json) {
+  auto threshold = std::ceil(static_cast<double>(condition));
+  // Feature-map integer annotations do not restrict feature values to int32.
+  // Check the range before narrowing, including infinite missing-only splits.
+  if (!std::isfinite(threshold) || threshold < std::numeric_limits<std::int32_t>::min() ||
+      threshold > std::numeric_limits<std::int32_t>::max()) {
+    return json ? ToJsonNumber(static_cast<bst_float>(threshold))
+                : ToStr(static_cast<bst_float>(threshold));
+  }
+  return std::to_string(static_cast<std::int32_t>(threshold));
+}
 }  // namespace
 
 /**
@@ -91,17 +127,34 @@ class TreeGenerator {
     }
     return res;
   }
-  /* @brief Find the first occurrence of key in input and replace it with corresponding
-   *        value.
+  /* @brief Replace each key's first occurrence in the original template.
+   *        Replacement text, including feature names and subtrees, is literal.
    */
   [[nodiscard]] static std::string Match(std::string const& input,
                                          std::map<std::string, std::string> const& replacements) {
-    std::string result = input;
+    struct Replacement {
+      std::size_t position;
+      std::size_t length;
+      std::string const* value;
+    };
+    std::vector<Replacement> matches;
+    matches.reserve(replacements.size());
     for (auto const& kv : replacements) {
-      auto pos = result.find(kv.first);
+      auto pos = input.find(kv.first);
       CHECK_NE(pos, std::string::npos);
-      result.replace(pos, kv.first.length(), kv.second);
+      matches.push_back({pos, kv.first.length(), &kv.second});
     }
+    std::sort(matches.begin(), matches.end(),
+              [](auto const& lhs, auto const& rhs) { return lhs.position < rhs.position; });
+    std::string result;
+    std::size_t cursor = 0;
+    for (auto const& match : matches) {
+      CHECK_GE(match.position, cursor);
+      result.append(input, cursor, match.position - cursor);
+      result.append(*match.value);
+      cursor = match.position + match.length;
+    }
+    result.append(input, cursor, std::string::npos);
     return result;
   }
 
@@ -271,11 +324,8 @@ class TextGenerator : public TreeGenerator<TreeView> {
   std::string Integer(TreeView tree, int32_t nid, uint32_t depth) const override {
     static std::string const kIntegerTemplate =
         "{tabs}{nid}:[{fname}<{cond}] yes={left},no={right},missing={missing}";
-    auto cond = tree.SplitCond(nid);
-    const bst_float floored = std::floor(cond);
-    const int32_t integer_threshold =
-        (floored == cond) ? static_cast<int>(floored) : static_cast<int>(floored) + 1;
-    return SplitNodeImpl(tree, nid, kIntegerTemplate, std::to_string(integer_threshold), depth);
+    return SplitNodeImpl(tree, nid, kIntegerTemplate,
+                         IntegerThreshold(tree.SplitCond(nid), false), depth);
   }
 
   std::string Quantitive(TreeView tree, int32_t nid, uint32_t depth) const override {
@@ -350,9 +400,9 @@ class JsonGenerator : public TreeGenerator<TreeView> {
     std::string result = SuperT::Match(
         kLeafTemplate,
         {{"{nid}", std::to_string(nid)},
-         {"{leaf}", ToStr(tree.LeafValue(nid), NoTruncate())},
+         {"{leaf}", ToJsonNumber(tree.LeafValue(nid))},
          {"{stat}", SuperT::with_stats_
-                        ? SuperT::Match(kStatTemplate, {{"{sum_hess}", ToStr(tree.SumHess(nid))}})
+                        ? SuperT::Match(kStatTemplate, {{"{sum_hess}", ToJsonNumber(tree.SumHess(nid))}})
                         : ""}});
     return result;
   }
@@ -404,15 +454,12 @@ class JsonGenerator : public TreeGenerator<TreeView> {
   }
 
   std::string Integer(TreeView tree, int32_t nid, uint32_t depth) const override {
-    auto cond = tree.SplitCond(nid);
-    const bst_float floored = std::floor(cond);
-    const int32_t integer_threshold =
-        (floored == cond) ? static_cast<int32_t>(floored) : static_cast<int32_t>(floored) + 1;
     static std::string const kIntegerTemplate =
         R"I( "nodeid": {nid}, "depth": {depth}, "split": "{fname}", )I"
         R"I("split_condition": {cond}, "yes": {left}, "no": {right}, )I"
         R"I("missing": {missing})I";
-    return SplitNodeImpl(tree, nid, kIntegerTemplate, std::to_string(integer_threshold), depth);
+    return SplitNodeImpl(tree, nid, kIntegerTemplate,
+                         IntegerThreshold(tree.SplitCond(nid), true), depth);
   }
 
   std::string Quantitive(TreeView tree, int32_t nid, uint32_t depth) const override {
@@ -421,7 +468,7 @@ class JsonGenerator : public TreeGenerator<TreeView> {
         R"I("split_condition": {cond}, "yes": {left}, "no": {right}, )I"
         R"I("missing": {missing})I";
     bst_float cond = tree.SplitCond(nid);
-    return SplitNodeImpl(tree, nid, kQuantitiveTemplate, ToStr(cond), depth);
+    return SplitNodeImpl(tree, nid, kQuantitiveTemplate, ToJsonNumber(cond), depth);
   }
 
   std::string PlainNode(TreeView tree, int32_t nid, uint32_t depth) const override {
@@ -430,13 +477,13 @@ class JsonGenerator : public TreeGenerator<TreeView> {
         R"I( "nodeid": {nid}, "depth": {depth}, "split": "{fname}", )I"
         R"I("split_condition": {cond}, "yes": {left}, "no": {right}, )I"
         R"I("missing": {missing})I";
-    return SplitNodeImpl(tree, nid, kNodeTemplate, ToStr(cond), depth);
+    return SplitNodeImpl(tree, nid, kNodeTemplate, ToJsonNumber(cond), depth);
   }
 
   std::string NodeStat(TreeView tree, int32_t nid) const override {
     static std::string kStatTemplate = R"S(, "gain": {loss_chg}, "cover": {sum_hess})S";
-    auto result = SuperT::Match(kStatTemplate, {{"{loss_chg}", ToStr(tree.LossChg(nid))},
-                                                {"{sum_hess}", ToStr(tree.SumHess(nid))}});
+    auto result = SuperT::Match(kStatTemplate, {{"{loss_chg}", ToJsonNumber(tree.LossChg(nid))},
+                                                {"{sum_hess}", ToJsonNumber(tree.SumHess(nid))}});
     return result;
   }
 

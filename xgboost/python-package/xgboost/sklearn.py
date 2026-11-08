@@ -1229,7 +1229,7 @@ class XGBModel(XGBModelBase):
         if is_classifier(self):
             self.n_classes_ = int(config["learner"]["learner_model_param"]["num_class"])
             # binary classification is treated as regression in XGBoost.
-            self.n_classes_ = 2 if self.n_classes_ < 2 else self.n_classes_
+            self.n_classes_ = 2 if self.n_classes_ == 0 else self.n_classes_
 
     # pylint: disable=too-many-branches
     def _configure_fit(
@@ -1327,6 +1327,10 @@ class XGBModel(XGBModelBase):
     def _set_evaluation_result(self, evals_result: EvalsLog) -> None:
         if evals_result:
             self.evals_result_ = cast(Dict[str, Dict[str, List[float]]], evals_result)
+        elif hasattr(self, "evals_result_"):
+            # A successful refit replaces the old training session, including
+            # its evaluation history when no validation set is supplied.
+            del self.evals_result_
 
     @_deprecate_positional_args
     def fit(
@@ -1770,6 +1774,21 @@ class XGBClassifier(XGBClassifierMixIn, XGBModel):
     ) -> None:
         super().__init__(objective=objective, **kwargs)
 
+    def score(
+        self,
+        X: ArrayLike,
+        y: ArrayLike,
+        sample_weight: Optional[ArrayLike] = None,
+    ) -> float:
+        """Return accuracy, accepting native Metal labels and sample weights."""
+        return super().score(
+            X,
+            metal_to_host(y) if is_metal(y) else y,
+            sample_weight=(
+                metal_to_host(sample_weight) if is_metal(sample_weight) else sample_weight
+            ),
+        )
+
     @_deprecate_positional_args
     def fit(
         self,
@@ -1832,6 +1851,9 @@ class XGBClassifier(XGBClassifierMixIn, XGBModel):
                 # Switch to using a multiclass objective in the underlying XGB instance
                 if params.get("objective", None) != "multi:softmax":
                     params["objective"] = "multi:softprob"
+            if params.get("objective") in ("multi:softmax", "multi:softprob"):
+                # Multiclass objectives also support one or two classes. This
+                # includes a refit after the wrapper selected softprob earlier.
                 params["num_class"] = self.n_classes_
 
             model, metric, params, feature_weights = self._configure_fit(
@@ -1906,9 +1928,15 @@ class XGBClassifier(XGBClassifierMixIn, XGBModel):
                 # If output_margin is active, simply return the scores
                 return class_probs
 
-            if len(class_probs.shape) > 1 and self.n_classes_ != 2:
+            if self.objective == "multi:softprob":
+                # With one class the native predictor returns a flat vector;
+                # with two classes this is multiclass, not multilabel output.
+                column_indexes: np.ndarray = np.argmax(
+                    class_probs.reshape(-1, self.n_classes_), axis=1
+                )
+            elif len(class_probs.shape) > 1 and self.n_classes_ != 2:
                 # multi-class, turns softprob into softmax
-                column_indexes: np.ndarray = np.argmax(class_probs, axis=1)
+                column_indexes = np.argmax(class_probs, axis=1)
             elif len(class_probs.shape) > 1 and class_probs.shape[1] != 1:
                 # multi-label
                 column_indexes = np.zeros(class_probs.shape)
@@ -1972,7 +2000,7 @@ class XGBClassifier(XGBClassifierMixIn, XGBModel):
                 iteration_range=iteration_range,
                 output_margin=True,
             )
-            class_prob = softmax(raw_predt, axis=1)
+            class_prob = softmax(raw_predt.reshape(-1, self.n_classes_), axis=1)
             return class_prob
         class_probs = super().predict(
             X=X,
@@ -1980,6 +2008,8 @@ class XGBClassifier(XGBClassifierMixIn, XGBModel):
             base_margin=base_margin,
             iteration_range=iteration_range,
         )
+        if self.objective == "multi:softprob":
+            return class_probs.reshape(-1, self.n_classes_)
         return _cls_predict_proba(self.n_classes_, class_probs, np.vstack)
 
 
@@ -2061,6 +2091,21 @@ class XGBRegressor(XGBRegressorMixIn, XGBModel):
         self, *, objective: SklObjective = "reg:squarederror", **kwargs: Any
     ) -> None:
         super().__init__(objective=objective, **kwargs)
+
+    def score(
+        self,
+        X: ArrayLike,
+        y: ArrayLike,
+        sample_weight: Optional[ArrayLike] = None,
+    ) -> float:
+        """Return R-squared, accepting native Metal labels and sample weights."""
+        return super().score(
+            X,
+            metal_to_host(y) if is_metal(y) else y,
+            sample_weight=(
+                metal_to_host(sample_weight) if is_metal(sample_weight) else sample_weight
+            ),
+        )
 
 
 @xgboost_model_doc(
