@@ -90,6 +90,28 @@ def test_unsupported_configuration_is_rejected(extra):
                   | ({"device": extra["device"]} if "device" in extra else {}), d, num_boost_round=1)
 
 
+def test_nonzero_mps_ordinal_names_the_limit():
+    d = xgb.DMatrix(*dataset()[:2])
+    with pytest.raises(xgb.core.XGBoostError, match="only device ordinal 0"):
+        xgb.train(parameters(device="mps:1"), d, num_boost_round=1)
+
+
+@pytest.mark.gpu
+def test_mps_ordinal_zero_is_the_mps_device(metal):
+    """`mps:0` trains on Metal, saves as `mps` and matches `device="mps"` exactly."""
+    x, y, _ = dataset()
+    d = xgb.DMatrix(x, label=y)
+    before = xgb.metal_info()["histogram_dispatches"]
+    booster = xgb.train(parameters(device="mps:0"), d, num_boost_round=3)
+    assert xgb.metal_info()["histogram_dispatches"] > before
+    assert json.loads(booster.save_config())["learner"]["generic_param"]["device"] == "mps"
+    expected = xgb.train(parameters(device="mps"), d, num_boost_round=3)
+    np.testing.assert_array_equal(booster.predict(d), expected.predict(d))
+    model = xgb.XGBRegressor(device="mps:0", n_estimators=3).fit(x, y)
+    np.testing.assert_array_equal(
+        model.predict(x), xgb.XGBRegressor(device="mps", n_estimators=3).fit(x, y).predict(x))
+
+
 @pytest.mark.gpu
 @pytest.mark.parametrize("seed", [13, 41])
 @pytest.mark.parametrize("layout", ["dense", "missing", "sparse"])

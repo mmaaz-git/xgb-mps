@@ -118,9 +118,13 @@ DeviceOrd CUDAOrdinal(DeviceOrd device, bool) {
     LOG(FATAL) << "device=mps requires XGBoost built with USE_METAL=ON.";
 #endif
   }
+  if (input.rfind("mps:", 0) == 0) {
+    LOG(FATAL) << "device=mps supports only device ordinal 0 (`mps` or `mps:0`). Got: `" << input
+               << "`.";
+  }
   StringView msg{R"(Invalid argument for `device`. Expected to be one of the following:
 - cpu
-- mps  # experimental Apple Metal histogram backend
+- mps, mps:0  # experimental Apple Metal histogram backend
 - cuda
 - cuda:<device ordinal>  # e.g. cuda:0
 - gpu
@@ -266,6 +270,11 @@ void Context::SetDeviceOrdinal(Args const& kwargs) {
   auto device_it = std::find_if(kwargs.cbegin(), kwargs.cend(),
                                 [](auto const& p) { return p.first == kDevice; });
   auto has_device = device_it != kwargs.cend();
+  // `mps:0` names the only supported Metal device. Store the canonical spelling
+  // so every `device == "mps"` check, and the saved configuration, see one name.
+  if (this->device == "mps:0") {
+    this->device = "mps";
+  }
   auto new_d = MakeDeviceOrd(this->device, this->fail_on_invalid_gpu_id);
 
   if (!has_device) {
