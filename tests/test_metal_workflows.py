@@ -145,3 +145,22 @@ def test_ranker_query_split_early_stopping_and_reload(metal, tmp_path):
             assert_model_roundtrip(model, values[test], tmp_path / "ranker.ubj")
     assert abs(scores["cpu"] - scores["mps"]) < 0.03
     assert_metal_work(before)
+
+
+def test_threads_share_one_dmatrix(metal):
+    """Concurrent boosters must not race on a shared DMatrix's lazily synced metadata."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    rng = np.random.default_rng(1)
+    x = rng.normal(size=(20000, 32)).astype(np.float32)
+    y = x[:, 0] - x[:, 1]
+    weight = rng.random(len(x)).astype(np.float32)
+    query = xgb.DMatrix(x[:100])
+    params = dict(device="mps", seed=0)
+    expected = xgb.train(params, xgb.DMatrix(x, label=y, weight=weight), 5).predict(query)
+    with ThreadPoolExecutor(8) as pool:
+        for _ in range(30):
+            shared = xgb.DMatrix(x, label=y, weight=weight)
+            results = pool.map(lambda _: xgb.train(params, shared, 5).predict(query), range(8))
+            for result in results:
+                np.testing.assert_array_equal(result, expected)

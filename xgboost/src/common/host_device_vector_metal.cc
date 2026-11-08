@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 #include "metal_vector.h"
@@ -22,6 +23,10 @@ class HostDeviceVectorImpl {
   std::vector<T> data_h_;
   std::unique_ptr<common::metal::VectorBuffer> data_d_;
   GPUAccess access_{kNone};
+  // Lazy host/device transitions mutate shared state even on const access, and
+  // a DMatrix's metadata is read by every booster training on it. Serialize the
+  // transitions so concurrent boosters cannot replace a buffer another is using.
+  mutable std::recursive_mutex mutex_;
 
   static std::size_t Bytes(std::size_t size) {
     CHECK_LE(size, std::numeric_limits<std::size_t>::max() / sizeof(T));
@@ -81,51 +86,78 @@ class HostDeviceVectorImpl {
       data_h_ = init;
     }
   }
-  HostDeviceVectorImpl(HostDeviceVectorImpl&& other) noexcept
-      : device_{other.device_},
-        data_h_{std::move(other.data_h_)},
-        data_d_{std::move(other.data_d_)},
-        access_{other.access_} {
+  HostDeviceVectorImpl(HostDeviceVectorImpl&& other) noexcept {
+    std::lock_guard<std::recursive_mutex> guard{other.mutex_};
+    device_ = other.device_;
+    data_h_ = std::move(other.data_h_);
+    data_d_ = std::move(other.data_d_);
+    access_ = other.access_;
     // Keep moved-from objects reusable with a coherent empty host state.
     other.data_h_.clear();
     other.access_ = kNone;
   }
   std::size_t Size() const {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     return HostCanRead() ? data_h_.size() : data_d_ ? data_d_->SizeBytes() / sizeof(T) : 0;
   }
-  DeviceOrd Device() const { return device_; }
+  DeviceOrd Device() const {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
+    return device_;
+  }
   T* DevicePointer() {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     if (device_.IsCPU()) return nullptr;
     LazySyncDevice(kWrite);
     return static_cast<T*>(data_d_->Data());
   }
   T const* ConstDevicePointer() {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     if (device_.IsCPU()) return nullptr;
     LazySyncDevice(kRead);
     return static_cast<T const*>(data_d_->Data());
   }
   common::Span<T> DeviceSpan() {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     auto ptr = DevicePointer();
     return {ptr, device_.IsMPS() ? Size() : 0};
   }
   common::Span<T const> ConstDeviceSpan() {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     auto ptr = ConstDevicePointer();
     return {ptr, device_.IsMPS() ? Size() : 0};
   }
   std::vector<T>& HostVector() {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     LazySyncHost(kNone);
     return data_h_;
   }
   std::vector<T> const& ConstHostVector() {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     LazySyncHost(kRead);
     return data_h_;
   }
-  bool HostCanRead() const { return access_ <= kRead; }
-  bool HostCanWrite() const { return access_ == kNone; }
-  bool DeviceCanRead() const { return access_ >= kRead; }
-  bool DeviceCanWrite() const { return access_ == kWrite; }
-  GPUAccess Access() const { return access_; }
+  bool HostCanRead() const {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
+    return access_ <= kRead;
+  }
+  bool HostCanWrite() const {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
+    return access_ == kNone;
+  }
+  bool DeviceCanRead() const {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
+    return access_ >= kRead;
+  }
+  bool DeviceCanWrite() const {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
+    return access_ == kWrite;
+  }
+  GPUAccess Access() const {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
+    return access_;
+  }
   void SetDevice(DeviceOrd device) {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     CHECK(device.IsCPU() || (device.IsMPS() && device.ordinal == 0));
     if (device == device_) return;
     if (device_.IsMPS()) LazySyncHost(kNone);
@@ -133,6 +165,7 @@ class HostDeviceVectorImpl {
     if (device.IsMPS()) LazyResizeDevice(data_h_.size());
   }
   void Fill(T value) {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     if (HostCanWrite()) {
       std::fill(data_h_.begin(), data_h_.end(), value);
     } else {
@@ -141,8 +174,9 @@ class HostDeviceVectorImpl {
     }
   }
   void Copy(HostDeviceVectorImpl* other) {
-    CHECK_EQ(Size(), other->Size());
     if (this == other) return;
+    std::scoped_lock guard{mutex_, other->mutex_};
+    CHECK_EQ(Size(), other->Size());
     SetDevice(other->device_);
     if (HostCanWrite() && other->HostCanWrite()) {
       std::copy(other->data_h_.begin(), other->data_h_.end(), data_h_.begin());
@@ -156,6 +190,7 @@ class HostDeviceVectorImpl {
   }
   template <typename Initializer>
   void Copy(Initializer const& source) {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     CHECK_EQ(Size(), source.size());
     if (HostCanWrite())
       std::copy(source.begin(), source.end(), data_h_.begin());
@@ -165,6 +200,7 @@ class HostDeviceVectorImpl {
   void Resize(std::size_t size) { ResizeImpl(size, nullptr); }
   void Resize(std::size_t size, T value) { ResizeImpl(size, &value); }
   void ResizeImpl(std::size_t size, T const* value) {
+    std::lock_guard<std::recursive_mutex> guard{mutex_};
     auto previous = Size();
     if (size == previous) return;
     if (device_.IsMPS() && (previous == 0 || DeviceCanWrite())) {
@@ -181,6 +217,8 @@ class HostDeviceVectorImpl {
     }
   }
   void Extend(HostDeviceVectorImpl* other) {
+    CHECK_NE(this, other) << "Cannot extend a vector with itself.";
+    std::scoped_lock guard{mutex_, other->mutex_};
     auto original = Size(), extra = other->Size();
     CHECK_LE(extra, std::numeric_limits<std::size_t>::max() - original);
     if (!extra) return;
