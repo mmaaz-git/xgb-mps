@@ -19,6 +19,31 @@ def producer(name, values):
     return mx.array(values)
 
 
+@pytest.mark.parametrize("name", ["torch", "mlx"])
+@pytest.mark.parametrize("n_classes", [2, 3])
+@pytest.mark.parametrize("native_features", [False, True])
+@pytest.mark.parametrize("dtype", [np.int32, np.float32])
+def test_classifier_native_labels(metal, name, n_classes, native_features, dtype):
+    rng = np.random.default_rng(107)
+    x = rng.normal(size=(257, 5)).astype(np.float32)
+    y = np.digitize(x[:, 0], np.linspace(-0.5, 0.5, n_classes - 1)).astype(dtype)
+    features = producer(name, x) if native_features else x
+    # Sliced labels exercise the host class check and strided native import.
+    labels = producer(name, np.column_stack([y, y]))[:, 0]
+    options = dict(device="mps", n_estimators=3, max_depth=2, n_jobs=2)
+    expected = xgb.XGBClassifier(**options).fit(features, y)
+    before = xgb.metal_info()["tensor_imports"]
+    model = xgb.XGBClassifier(**options).fit(features, labels)
+    assert model.n_classes_ == n_classes
+    np.testing.assert_array_equal(model.classes_, np.arange(n_classes))
+    np.testing.assert_array_equal(model.predict_proba(x), expected.predict_proba(x))
+    if not native_features:
+        # With host features, only native labels can account for this import.
+        assert xgb.metal_info()["tensor_imports"] > before
+    with pytest.raises(ValueError, match="Invalid classes inferred"):
+        xgb.XGBClassifier(**options).fit(features, producer(name, y + 1))
+
+
 def no_staging(before):
     after = xgb.metal_info()
     for key in (

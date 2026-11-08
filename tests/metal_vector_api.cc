@@ -1,12 +1,16 @@
 // CUDA access-state rules, exact GPU payloads and independent metadata row oracles.
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
+#include <future>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 #include "../xgboost/src/common/metal_histogram.h"
@@ -321,8 +325,67 @@ void FeatureTypes() {
     ++cases;
   }
 }
+
+void ConcurrentReaders() {
+  constexpr std::size_t kReaders = 8;
+  std::vector<float> expected(20000);
+  std::iota(expected.begin(), expected.end(), 1.0f);
+  // Exercise cold device allocation, re-upload of a dirty host mirror, and
+  // first host readback. Const readers must publish each transition only once.
+  for (int mode = 0; mode < 3; ++mode) {
+    for (int repeat = 0; repeat < 10; ++repeat) {
+      HostDeviceVector<float> values(expected);
+      if (mode == 1) {
+        metal::ConstDeviceSpan(values);
+        values.HostVector();
+      } else if (mode == 2) {
+        values.SetDevice(DeviceOrd::MPS());
+        values.DevicePointer();
+      }
+      auto before = metal::GetStatistics();
+      std::promise<void> start;
+      auto ready = start.get_future().share();
+      std::atomic<std::size_t> waiting{0};
+      std::array<std::thread, kReaders> threads;
+      std::array<std::exception_ptr, kReaders> errors{};
+      std::array<bool, kReaders> equal{};
+      std::array<float const*, kReaders> pointers{};
+      for (std::size_t i = 0; i < kReaders; ++i) {
+        threads[i] = std::thread{[&, i] {
+          waiting.fetch_add(1);
+          ready.wait();
+          try {
+            auto span = mode == 2 ? values.ConstHostSpan() : metal::ConstDeviceSpan(values);
+            pointers[i] = span.data();
+            equal[i] = span.size() == expected.size() &&
+                       std::equal(span.begin(), span.end(), expected.begin());
+          } catch (...) {
+            errors[i] = std::current_exception();
+          }
+        }};
+      }
+      while (waiting.load() != kReaders) std::this_thread::yield();
+      start.set_value();
+      for (auto& thread : threads) thread.join();
+      for (std::size_t i = 0; i < kReaders; ++i) {
+        if (errors[i]) std::rethrow_exception(errors[i]);
+        Check(equal[i], "Concurrent const readers see the complete payload");
+        Check(pointers[i] == pointers[0], "Concurrent const readers share one allocation");
+      }
+      auto after = metal::GetStatistics();
+      Check(after.vector_upload_bytes - before.vector_upload_bytes ==
+                (mode == 2 ? 0 : expected.size() * sizeof(float)),
+            "Concurrent device readers upload once");
+      Check(after.vector_readback_bytes - before.vector_readback_bytes ==
+                (mode == 2 ? expected.size() * sizeof(float) : 0),
+            "Concurrent host readers read back once");
+      ++cases;
+    }
+  }
+}
 int main() {
   try {
+    ConcurrentReaders();
     for (auto size : {0ul, 1ul, 17ul, 1025ul, 65537ul}) {
       State<float>(size);
       State<double>(size);

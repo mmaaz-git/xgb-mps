@@ -89,6 +89,18 @@ def is_metal(data: Any) -> bool:
     return device is not None and device()[0] == 8
 
 
+def to_host(data: Any) -> np.ndarray:
+    """Read supported producer tensors for host-side checks, retaining the input."""
+    if isinstance(data, MetalOutput):
+        return data.numpy()
+    if hasattr(data, "detach") and hasattr(data, "cpu"):
+        # PyTorch MPS tensors forbid implicit NumPy conversion, even on unified
+        # memory. Detach before copying so validation never joins an autograd graph.
+        data = data.detach().cpu()
+    # MLX supports NumPy readback directly.
+    return np.asarray(data)
+
+
 def _synchronize() -> None:
     # DLPack's stream argument does not define a portable Metal queue handshake.
     # Known producers are explicitly completed; foreign/raw-capsule producers

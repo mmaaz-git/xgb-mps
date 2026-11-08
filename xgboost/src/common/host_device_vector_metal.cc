@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <utility>
 
 #include "metal_vector.h"
@@ -18,10 +19,20 @@ namespace xgboost {
 template <typename T>
 class HostDeviceVectorImpl {
   static_assert(std::is_trivially_copyable_v<T>);
+  // Const access can allocate/copy storage and change its authority. Keep those
+  // transitions atomic for readers sharing initially host-resident metadata.
+  // Returned views outlive the lock: callers must coordinate writes, resizing,
+  // device changes and destruction with any outstanding readers.
+  mutable std::mutex mutex_;
   DeviceOrd device_{DeviceOrd::CPU()};
   std::vector<T> data_h_;
   std::unique_ptr<common::metal::VectorBuffer> data_d_;
   GPUAccess access_{kNone};
+
+  // Private helpers require mutex_ (or an unpublished object in a constructor).
+  std::size_t SizeImpl() const {
+    return access_ <= kRead ? data_h_.size() : data_d_ ? data_d_->SizeBytes() / sizeof(T) : 0;
+  }
 
   static std::size_t Bytes(std::size_t size) {
     CHECK_LE(size, std::numeric_limits<std::size_t>::max() / sizeof(T));
@@ -37,7 +48,7 @@ class HostDeviceVectorImpl {
   }
   void LazySyncDevice(GPUAccess access) {
     if (access_ >= access) return;
-    if (DeviceCanRead()) {
+    if (access_ >= kRead) {
       access_ = access;
       return;
     }
@@ -47,16 +58,28 @@ class HostDeviceVectorImpl {
   }
   void LazySyncHost(GPUAccess access) {
     if (access_ <= access) return;
-    if (!HostCanRead()) {
+    if (access_ > kRead) {
       data_h_.resize(data_d_->SizeBytes() / sizeof(T));
       data_d_->Readback(data_h_.data(), Bytes(data_h_.size()));
     }
     access_ = access;
   }
   void CopyToDevice(T const* source) {
-    LazyResizeDevice(Size());
+    LazyResizeDevice(SizeImpl());
     data_d_->Import(source, 0, data_d_->SizeBytes());
     access_ = kWrite;
+  }
+  void SetDeviceImpl(DeviceOrd device) {
+    CHECK(device.IsCPU() || (device.IsMPS() && device.ordinal == 0));
+    if (device == device_) return;
+    if (device_.IsMPS()) LazySyncHost(kNone);
+    device_ = device;
+    if (device.IsMPS()) LazyResizeDevice(data_h_.size());
+  }
+  T* DevicePointerImpl(GPUAccess access) {
+    if (device_.IsCPU()) return nullptr;
+    LazySyncDevice(access);
+    return static_cast<T*>(data_d_->Data());
   }
 
  public:
@@ -81,59 +104,67 @@ class HostDeviceVectorImpl {
       data_h_ = init;
     }
   }
-  HostDeviceVectorImpl(HostDeviceVectorImpl&& other) noexcept
-      : device_{other.device_},
-        data_h_{std::move(other.data_h_)},
-        data_d_{std::move(other.data_d_)},
-        access_{other.access_} {
+  HostDeviceVectorImpl(HostDeviceVectorImpl&& other) noexcept {
+    std::lock_guard<std::mutex> lock{other.mutex_};
+    device_ = other.device_;
+    data_h_ = std::move(other.data_h_);
+    data_d_ = std::move(other.data_d_);
+    access_ = other.access_;
     // Keep moved-from objects reusable with a coherent empty host state.
     other.data_h_.clear();
     other.access_ = kNone;
   }
   std::size_t Size() const {
-    return HostCanRead() ? data_h_.size() : data_d_ ? data_d_->SizeBytes() / sizeof(T) : 0;
+    std::lock_guard<std::mutex> lock{mutex_};
+    return SizeImpl();
   }
-  DeviceOrd Device() const { return device_; }
+  DeviceOrd Device() const {
+    std::lock_guard<std::mutex> lock{mutex_};
+    return device_;
+  }
   T* DevicePointer() {
-    if (device_.IsCPU()) return nullptr;
-    LazySyncDevice(kWrite);
-    return static_cast<T*>(data_d_->Data());
+    std::lock_guard<std::mutex> lock{mutex_};
+    return DevicePointerImpl(kWrite);
   }
   T const* ConstDevicePointer() {
-    if (device_.IsCPU()) return nullptr;
-    LazySyncDevice(kRead);
-    return static_cast<T const*>(data_d_->Data());
+    std::lock_guard<std::mutex> lock{mutex_};
+    return DevicePointerImpl(kRead);
   }
   common::Span<T> DeviceSpan() {
-    auto ptr = DevicePointer();
-    return {ptr, device_.IsMPS() ? Size() : 0};
+    std::lock_guard<std::mutex> lock{mutex_};
+    auto ptr = DevicePointerImpl(kWrite);
+    return {ptr, device_.IsMPS() ? SizeImpl() : 0};
   }
   common::Span<T const> ConstDeviceSpan() {
-    auto ptr = ConstDevicePointer();
-    return {ptr, device_.IsMPS() ? Size() : 0};
+    std::lock_guard<std::mutex> lock{mutex_};
+    auto ptr = DevicePointerImpl(kRead);
+    return {ptr, device_.IsMPS() ? SizeImpl() : 0};
   }
   std::vector<T>& HostVector() {
+    std::lock_guard<std::mutex> lock{mutex_};
     LazySyncHost(kNone);
     return data_h_;
   }
   std::vector<T> const& ConstHostVector() {
+    std::lock_guard<std::mutex> lock{mutex_};
     LazySyncHost(kRead);
     return data_h_;
   }
-  bool HostCanRead() const { return access_ <= kRead; }
-  bool HostCanWrite() const { return access_ == kNone; }
-  bool DeviceCanRead() const { return access_ >= kRead; }
-  bool DeviceCanWrite() const { return access_ == kWrite; }
-  GPUAccess Access() const { return access_; }
+  bool HostCanRead() const { return Access() <= kRead; }
+  bool HostCanWrite() const { return Access() == kNone; }
+  bool DeviceCanRead() const { return Access() >= kRead; }
+  bool DeviceCanWrite() const { return Access() == kWrite; }
+  GPUAccess Access() const {
+    std::lock_guard<std::mutex> lock{mutex_};
+    return access_;
+  }
   void SetDevice(DeviceOrd device) {
-    CHECK(device.IsCPU() || (device.IsMPS() && device.ordinal == 0));
-    if (device == device_) return;
-    if (device_.IsMPS()) LazySyncHost(kNone);
-    device_ = device;
-    if (device.IsMPS()) LazyResizeDevice(data_h_.size());
+    std::lock_guard<std::mutex> lock{mutex_};
+    SetDeviceImpl(device);
   }
   void Fill(T value) {
-    if (HostCanWrite()) {
+    std::lock_guard<std::mutex> lock{mutex_};
+    if (access_ == kNone) {
       std::fill(data_h_.begin(), data_h_.end(), value);
     } else {
       data_d_->Fill(Pattern(value), 0, data_d_->SizeBytes());
@@ -141,33 +172,53 @@ class HostDeviceVectorImpl {
     }
   }
   void Copy(HostDeviceVectorImpl* other) {
-    CHECK_EQ(Size(), other->Size());
     if (this == other) return;
-    SetDevice(other->device_);
-    if (HostCanWrite() && other->HostCanWrite()) {
+    std::scoped_lock lock{mutex_, other->mutex_};
+    CHECK_EQ(SizeImpl(), other->SizeImpl());
+    SetDeviceImpl(other->device_);
+    if (access_ == kNone && other->access_ == kNone) {
       std::copy(other->data_h_.begin(), other->data_h_.end(), data_h_.begin());
-    } else if (other->HostCanWrite()) {
+    } else if (other->access_ == kNone) {
       CopyToDevice(other->data_h_.data());
     } else {
-      LazyResizeDevice(Size());
+      LazyResizeDevice(SizeImpl());
       data_d_->Copy(*other->data_d_, 0, 0, data_d_->SizeBytes());
       access_ = kWrite;
     }
   }
   template <typename Initializer>
   void Copy(Initializer const& source) {
-    CHECK_EQ(Size(), source.size());
-    if (HostCanWrite())
+    std::lock_guard<std::mutex> lock{mutex_};
+    CHECK_EQ(SizeImpl(), source.size());
+    if (access_ == kNone)
       std::copy(source.begin(), source.end(), data_h_.begin());
     else
       CopyToDevice(std::data(source));
   }
-  void Resize(std::size_t size) { ResizeImpl(size, nullptr); }
-  void Resize(std::size_t size, T value) { ResizeImpl(size, &value); }
+  void Resize(std::size_t size) {
+    std::lock_guard<std::mutex> lock{mutex_};
+    ResizeImpl(size, nullptr);
+  }
+  void Resize(std::size_t size, T value) {
+    std::lock_guard<std::mutex> lock{mutex_};
+    ResizeImpl(size, &value);
+  }
+  void Extend(HostDeviceVectorImpl* other) {
+    if (this == other) {
+      // Self-extension duplicates the original contents and only locks once.
+      std::lock_guard<std::mutex> lock{mutex_};
+      ExtendImpl(other);
+    } else {
+      std::scoped_lock lock{mutex_, other->mutex_};
+      ExtendImpl(other);
+    }
+  }
+
+ private:
   void ResizeImpl(std::size_t size, T const* value) {
-    auto previous = Size();
+    auto previous = SizeImpl();
     if (size == previous) return;
-    if (device_.IsMPS() && (previous == 0 || DeviceCanWrite())) {
+    if (device_.IsMPS() && (previous == 0 || access_ == kWrite)) {
       LazyResizeDevice(size);
       if (size > previous && value)
         data_d_->Fill(Pattern(*value), Bytes(previous), Bytes(size - previous));
@@ -180,24 +231,25 @@ class HostDeviceVectorImpl {
         data_h_.resize(size);
     }
   }
-  void Extend(HostDeviceVectorImpl* other) {
-    auto original = Size(), extra = other->Size();
+  void ExtendImpl(HostDeviceVectorImpl* other) {
+    auto original = SizeImpl(), extra = other->SizeImpl();
     CHECK_LE(extra, std::numeric_limits<std::size_t>::max() - original);
     if (!extra) return;
     // Mixed host/native iterator batches remain supported. A device-only source
     // supplies the destination device; a host source can be imported directly.
-    if (device_.IsCPU() && !other->HostCanRead()) SetDevice(other->Device());
-    Resize(original + extra, T{});
-    if (HostCanWrite() && other->HostCanRead()) {
-      auto& source = other->HostVector();  // Match CUDA's access transition.
-      std::copy_n(source.begin(), extra, data_h_.begin() + original);
-    } else if (other->HostCanWrite()) {
-      DevicePointer();
+    if (device_.IsCPU() && other->access_ > kRead) SetDeviceImpl(other->device_);
+    T value{};
+    ResizeImpl(original + extra, &value);
+    if (access_ == kNone && other->access_ <= kRead) {
+      other->LazySyncHost(kNone);  // Match CUDA's access transition.
+      std::copy_n(other->data_h_.begin(), extra, data_h_.begin() + original);
+    } else if (other->access_ == kNone) {
+      DevicePointerImpl(kWrite);
       data_d_->Import(other->data_h_.data(), Bytes(original), Bytes(extra));
     } else {
-      CHECK_EQ(Device(), other->Device());
-      other->ConstDevicePointer();
-      DevicePointer();
+      CHECK_EQ(device_, other->device_);
+      other->DevicePointerImpl(kRead);
+      DevicePointerImpl(kWrite);
       data_d_->Copy(*other->data_d_, 0, Bytes(original), Bytes(extra));
     }
   }
